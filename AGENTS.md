@@ -21,11 +21,19 @@ The code so far covers the extension skeleton and a streaming chat with a provid
 - `docs/adr/`: architecture decision records.
 - `src/core/`: modules that import nothing from `vscode`: settings parsing, the API key shape check, the provider
   HTTP client, the CA trust and certificate error classification (`tls.ts`), the SSE reader, the typed provider
-  errors, the chat controller (conversation state, streaming, Stop), the dialog queue, and the host-webview
-  message protocol. Unit tests sit next to them as `*.test.ts`, because `bun test` cannot load `vscode`.
-  `tlsFixture.ts` generates test certificates with `/usr/bin/openssl` at test time; no private key is committed.
-- `src/extension/`: the extension host glue (activation, webview view, API keys in `SecretStorage`).
-- `src/webview/`: the React chat panel and its CSS.
+  errors, the chat controller (conversation state, streaming, Stop), the dialog queue, the host-webview message
+  protocol and its validation, workspace file access (`workspaceFiles.ts`: the inside-workspace check, capped reads,
+  one-level listings, line truncation, with `node:fs`), mentions (`mentions.ts`: token detection, picked and typed
+  mentions merged, reading, and the text the model receives), where a message holds Markdown code
+  (`markdownCode.ts`), the mention menu logic (`suggestions.ts`: the `@` token at the caret, index entries,
+  filtering, the index exclusions), and the menu's file index (`fileIndex.ts`: one scan shared until a file
+  changes, behind a scan port). `markdownCode.ts` and `suggestions.ts` import nothing from `node:`, since the
+  webview loads them. Unit tests sit next to them as `*.test.ts`, because `bun test` cannot load `vscode`. `tlsFixture.ts`
+  generates test certificates with `/usr/bin/openssl` at test time; no private key is committed.
+- `src/extension/`: the extension host glue (activation, webview view, API keys in `SecretStorage`, and the
+  file index's `findFiles` scan and watcher in `fileIndex.ts`).
+- `src/webview/`: the React chat panel and its CSS. `SuggestionMenu.tsx` is the autocomplete list the `@` menu
+  uses and the `/` menu (#11) is meant to reuse.
 - `src/l10n.test.ts`: checks that every `l10n.t` message has a French translation and that the
   `package.nls*.json` files match.
 - `l10n/bundle.l10n.fr.json`, `package.nls.json`, `package.nls.fr.json`: French strings for the host and
@@ -118,7 +126,42 @@ The code so far covers the extension skeleton and a streaming chat with a provid
   v1 has no automatic summarization.
 - The system prompt includes `~/.agents/AGENTS.md`, then the workspace `AGENTS.md`, when they exist.
   `CLAUDE.md` is not read.
-- A mention `@file` attaches the file content. A mention `@folder` attaches its file listing.
+- A mention `@file` attaches the file content. A mention `@folder` attaches its direct children, folders suffixed
+  with `/`, sorted by name; never a recursive listing.
+- A mention is `@` at the start of the message or after whitespace, up to the next whitespace, less trailing
+  `.,;:!?)`. Fenced code blocks and inline code spans hold no mentions. A path mentioned twice is attached once.
+- Mentions are read when the message is sent, never again: later turns resend the message as composed then. The
+  composed text lives in the chat controller, outside the state posted to the webview. The message and its waiting
+  reply show, with Stop, while the mentions are read.
+- A mention path resolves against the workspace folders; in a multi-root workspace, a leading folder name and `/`
+  select that folder, the longest name winning, since a custom name may hold `/`. After resolving symlinks the
+  path must be inside a workspace folder, or its status is `outsideWorkspace`. The file is opened, then its path
+  resolved again, and the open handle must be the same file (device and inode) as that inside path: this refuses a
+  committed symlink out and a component swapped for one between the first check and the open. A writer swapping
+  again between the later checks is out of scope: it already runs with the user's rights and can read the outside
+  file itself. Other statuses: `missing`, `binary` (NUL byte in the first 8 KiB), `tooLarge` (over 1 MiB),
+  `unreadable` (any other failure, such as a permission error or a FIFO), `attached`, and `truncated` (cut to its
+  first 2,000 lines, then `[truncated: N more lines not shown]`).
+- The model receives the user text, then one block per mention: a header `@<path> (<kind>, <count or status>)`,
+  then the content in a backtick fence longer than any backtick run inside it, or a one-line notice when nothing
+  is attached. The message is sent whatever the statuses. The chat shows each mention as a chip under the
+  message, with its kind and status.
+- An `@` at the start or after whitespace, outside code, opens the mention menu while the caret ends its token; the
+  query is the non-space text after `@`, possibly empty. The menu lists up to 20 index entries whose path contains the query,
+  ignoring case, shorter paths first, then in code order. Arrow keys move and wrap, Enter or Tab picks, a click
+  picks, Escape closes; while the menu shows rows, Enter never sends. A pick replaces the token with `@<path> ` and
+  records the path. At send, a picked path counts while its `@<path>` still stands as a whole token in the text, and
+  its text is not parsed again, so a path with spaces or backticks is one mention. A backtick in a picked path can
+  make the text read two ways; a picked path follows the reading with picked paths set aside, and a typed token
+  counts, and opens the menu, only when it is outside code in both. Answers carry the query id; the
+  webview drops stale ones. While the answer to a new query is pending, the menu shows only the earlier rows that
+  match it, never a row for an older query. When the files cannot be listed, the menu says so instead of "No match".
+- The file index is built on the first menu query with `findFiles("**/*", "**/{node_modules,.git,dist,out,build}/**",
+  5000)`: an explicit exclude adds to `files.exclude` (only `null` drops it). `.gitignore` is not read. Folders are
+  derived from file paths, none inside a multi-root folder name that holds `/`. Paths are `asRelativePath` with its default prefix, the folder name in a multi-root
+  workspace only, which the mention resolver accepts. A file watcher marks the index stale on create and delete
+  outside the excluded folders, and so does a workspace folder or `files.exclude` change; the next query rebuilds it, and queries
+  during a build share it. At 5,000 files the menu's last line says the index is limited.
 - Conversations are saved per workspace.
 
 ### Skills and slash commands

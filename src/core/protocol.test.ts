@@ -1,0 +1,91 @@
+import { describe, expect, test } from "bun:test";
+import {
+  type ChatState,
+  chatStateOf,
+  MAX_MENTION_PATH_LENGTH,
+  MAX_QUERY_LENGTH,
+  parseWebviewMessage,
+} from "./protocol";
+
+describe("parseWebviewMessage", () => {
+  test("accepts the messages without fields and those with a string field", () => {
+    expect(parseWebviewMessage({ type: "stop" })).toEqual({ type: "stop" });
+    expect(parseWebviewMessage({ type: "selectModel", model: "m" })).toEqual({ type: "selectModel", model: "m" });
+    expect(parseWebviewMessage({ type: "setApiKey", provider: "P" })).toEqual({ type: "setApiKey", provider: "P" });
+  });
+
+  test("rejects a non-object, an unknown type, and a missing string field", () => {
+    for (const raw of [
+      null,
+      "send",
+      3,
+      { type: "nope" },
+      { type: "selectModel" },
+      { type: "setApiKey", provider: 1 },
+    ]) {
+      expect(parseWebviewMessage(raw)).toBeUndefined();
+    }
+  });
+
+  test("accepts a send with its picked mention paths", () => {
+    expect(parseWebviewMessage({ type: "send", text: "hi @my file.ts", mentions: ["my file.ts"] })).toEqual({
+      type: "send",
+      text: "hi @my file.ts",
+      mentions: ["my file.ts"],
+    });
+  });
+
+  test("accepts any number of picked mentions, since the text bounds which ones count", () => {
+    const picked = Array.from({ length: 101 }, (_, index) => `my file ${index}.ts`);
+    expect(parseWebviewMessage({ type: "send", text: "hi", mentions: picked })).toMatchObject({ mentions: picked });
+  });
+
+  test("rejects a send whose mentions are missing, not strings, empty, or too long", () => {
+    const send = (mentions: unknown) => parseWebviewMessage({ type: "send", text: "hi", mentions });
+    expect(send(undefined)).toBeUndefined();
+    expect(send("a.ts")).toBeUndefined();
+    expect(send([1])).toBeUndefined();
+    expect(send([""])).toBeUndefined();
+    expect(send(["a".repeat(MAX_MENTION_PATH_LENGTH + 1)])).toBeUndefined();
+    expect(send(["a".repeat(MAX_MENTION_PATH_LENGTH)])).toBeDefined();
+  });
+
+  test("accepts a file query with an integer id", () => {
+    expect(parseWebviewMessage({ type: "queryFiles", query: "src/co", id: 7 })).toEqual({
+      type: "queryFiles",
+      query: "src/co",
+      id: 7,
+    });
+    expect(parseWebviewMessage({ type: "queryFiles", query: "", id: 0 })).toBeDefined();
+  });
+
+  test("rejects a file query with a bad id or an over-long query", () => {
+    const query = (fields: Record<string, unknown>) => parseWebviewMessage({ type: "queryFiles", ...fields });
+    expect(query({ query: "a" })).toBeUndefined();
+    expect(query({ query: "a", id: "1" })).toBeUndefined();
+    expect(query({ query: "a", id: 1.5 })).toBeUndefined();
+    expect(query({ query: "a", id: -1 })).toBeUndefined();
+    expect(query({ id: 1 })).toBeUndefined();
+    expect(query({ query: "a".repeat(MAX_QUERY_LENGTH + 1), id: 1 })).toBeUndefined();
+  });
+});
+
+describe("chatStateOf", () => {
+  const state: ChatState = {
+    providers: [],
+    skipped: [],
+    provider: undefined,
+    models: { status: "noProvider" },
+    model: undefined,
+    entries: [],
+  };
+
+  test("takes the chat state from init and state messages", () => {
+    expect(chatStateOf({ type: "init", l10n: undefined, state })).toBe(state);
+    expect(chatStateOf({ type: "state", state })).toBe(state);
+  });
+
+  test("leaves the chat state alone for file suggestions", () => {
+    expect(chatStateOf({ type: "fileSuggestions", id: 1, items: [], capped: false, failed: false })).toBeUndefined();
+  });
+});

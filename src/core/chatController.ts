@@ -2,9 +2,10 @@
  * @module chatController
  * Chat state owner: provider and model choice, model listing, streamed replies, stop, new chat.
  * Conversation lives in memory for window (extension host) lifetime; survives view being hidden (persistence: #12).
- * vscode-free: host passes key store and workspace memento through ports below.
+ * vscode-free: host passes key store, workspace memento, and mention reader through ports below.
  */
 import { type ChatMessage, listModels, type ProviderAccess, streamChat } from "./client";
+import { composeUserMessage, findMentions, type MentionReader, type MentionResult, type ReadMention } from "./mentions";
 import { type ChatEntry, type ChatState, isReplying } from "./protocol";
 import type { ParsedProviders, Provider } from "./providers";
 
@@ -35,11 +36,18 @@ export class ChatController {
   private reply: { abort: AbortController; provider: Provider } | undefined;
   /** Bumped per listing request; stale listings dropped. */
   private listingId = 0;
+  /**
+   * Model-facing text of each user entry: typed text plus mention blocks, composed once at send time and resent
+   * verbatim on later turns. Kept out of `ChatState`, which is posted to the webview on every streamed delta.
+   * Persistence (#12) must save it beside the entries.
+   */
+  private readonly modelText = new WeakMap<ChatEntry, string>();
 
   constructor(
     private readonly apiKeys: KeyStore,
     private readonly workspaceState: ChoiceStore,
     private readonly publish: (state: ChatState) => void,
+    private readonly mentions: MentionReader,
   ) {}
 
   get snapshot(): ChatState {
@@ -128,27 +136,51 @@ export class ChatController {
     this.emit();
   }
 
-  /** Send user message and stream reply. Ignored while replying or without provider and model. */
-  async send(text: string): Promise<void> {
+  /**
+   * Send user message with its mentions read now, and stream reply. Ignored while replying or without provider
+   * and model. `picked`: paths chosen in the menu, mentions while their `@<path>` is still in the text. A mention
+   * that cannot be read is reported to the model and in the entry; the message still goes.
+   */
+  async send(text: string, picked: readonly string[] = []): Promise<void> {
     const provider = this.currentProvider();
     const model = this.state.model;
     const content = text.trim();
     if (!provider || !model || !content || isReplying(this.state)) return;
 
-    const history = toHistory(this.state.entries);
-    history.push({ role: "user", content });
+    const history = this.toHistory();
+    const user: ChatEntry & { role: "user" } = { role: "user", content, mentions: [] };
     const reply: ChatEntry & { role: "assistant" } = {
       role: "assistant",
       reasoning: "",
       content: "",
       status: "waiting",
     };
-    this.state.entries.push({ role: "user", content }, reply);
-    this.emit();
-
+    // [>]: Published before the reads, so the panel shows a reply in flight (Stop, composer locked) while they run;
+    // published again once the mentions are known.
+    this.state.entries.push(user, reply);
     const abort = new AbortController();
     this.reply = { abort, provider };
-    const outcome = await streamChat(await this.accessOf(provider), {
+    this.emit();
+
+    // [>]: Stop ends the wait at once, even if a read or the key lookup never settles; their late results are dropped.
+    const prepared = await unlessAborted(
+      Promise.all([this.readMentions(content, picked), this.accessOf(provider)]),
+      abort.signal,
+    );
+    if (!prepared) {
+      if (this.reply?.abort === abort) this.reply = undefined;
+      reply.status = "stopped";
+      this.emit();
+      return;
+    }
+    const [mentions, access] = prepared;
+    user.mentions = mentions.map(toResult);
+    const composed = composeUserMessage(content, mentions);
+    this.modelText.set(user, composed);
+    history.push({ role: "user", content: composed });
+    if (mentions.length > 0) this.emit();
+
+    const outcome = await streamChat(access, {
       model,
       messages: history,
       signal: abort.signal,
@@ -184,6 +216,29 @@ export class ChatController {
     this.emit();
   }
 
+  /** Each mention of `text`, read in parallel. A reader that rejects despite its contract yields `unreadable`. */
+  private readMentions(text: string, picked: readonly string[]): Promise<ReadMention[]> {
+    return Promise.all(
+      findMentions(text, picked).map((path) =>
+        this.mentions.read(path).catch((error: unknown): ReadMention => {
+          console.error("broke-code: could not read mention", path, error);
+          const kind = path.endsWith("/") ? "folder" : "file";
+          return { path, kind, status: "unreadable", content: "", omitted: 0, cause: String(error) };
+        }),
+      ),
+    );
+  }
+
+  /**
+   * Conversation sent to model: user messages as composed at send time, plus assistant answers with text (stopped
+   * and cut-off partials included). Reasoning never sent; a reply with reasoning only is left out.
+   */
+  private toHistory(): ChatMessage[] {
+    return this.state.entries
+      .filter((entry) => entry.role === "user" || entry.content !== "")
+      .map((entry) => ({ role: entry.role, content: this.modelText.get(entry) ?? entry.content }));
+  }
+
   private currentProvider(): Provider | undefined {
     return this.providers.find((provider) => provider.name === this.state.provider);
   }
@@ -207,12 +262,17 @@ export class ChatController {
   }
 }
 
-/**
- * Conversation sent to model: user messages plus assistant answers with text (stopped and cut-off partials
- * included). Reasoning never sent; a reply with reasoning only is left out.
- */
-function toHistory(entries: ChatEntry[]): ChatMessage[] {
-  return entries
-    .filter((entry) => entry.role === "user" || entry.content !== "")
-    .map((entry) => ({ role: entry.role, content: entry.content }));
+/** `work`'s result, or `undefined` as soon as `signal` aborts (already aborted included). */
+function unlessAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T | undefined> {
+  if (signal.aborted) return Promise.resolve(undefined);
+  return new Promise((resolve, reject) => {
+    const onAbort = () => resolve(undefined);
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
+}
+
+/** What the chat shows and keeps of a read mention: no content. */
+function toResult({ path, kind, status, lines }: ReadMention): MentionResult {
+  return { path, kind, status, ...(lines !== undefined ? { lines } : {}) };
 }

@@ -50,5 +50,21 @@
   "The CA file of {0} could not be read: {1}": "Le fichier CA de {0} n'a pas pu être lu : {1}",
   "The CA file of {0} is not a PEM certificate: {1}": "Le fichier CA de {0} n'est pas un certificat PEM : {1}",
   "{0} answered with a compression that broke-code cannot read (Content-Encoding: {1}).": "{0} a répondu avec une compression que broke-code ne sait pas lire (Content-Encoding : {1}).",
-  "An API key can contain only visible ASCII characters, with no spaces or accents.": "Une clé d'API ne peut contenir que des caractères ASCII visibles, sans espace ni accent."
+  "An API key can contain only visible ASCII characters, with no spaces or accents.": "Une clé d'API ne peut contenir que des caractères ASCII visibles, sans espace ni accent.",
+  "Mentions": "Mentions",
+  "1 line": "1 ligne",
+  "{0} lines": "{0} lignes",
+  "1 entry": "1 élément",
+  "{0} entries": "{0} éléments",
+  "truncated to {0} lines": "tronqué à {0} lignes",
+  "truncated to {0} entries": "tronqué à {0} éléments",
+  "not found": "introuvable",
+  "outside the workspace": "hors de l'espace de travail",
+  "binary file, not attached": "fichier binaire, non joint",
+  "over 1 MiB, not attached": "plus de 1 Mio, non joint",
+  "could not be read": "illisible",
+  "No match": "Aucun résultat",
+  "Could not list the workspace files": "Impossible de lister les fichiers de l'espace de travail",
+  "Index limited to 5,000 files": "Index limité à 5 000 fichiers",
+  "Files and folders": "Fichiers et dossiers"
 }

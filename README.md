@@ -6,8 +6,9 @@ Some services speak the OpenAI chat API but reject the `tools` request field, so
 it fail against them. In broke-code, the model writes each tool call in the text of its reply, and the
 extension reads and runs it. broke-code never sends `tools`, even to a service that supports them.
 
-The current version is a streaming chat with a provider: pick a model, send a message, stop a reply, and read
-the model's reasoning collapsed above its answer. The agent loop, skills, and slash commands come next.
+The current version is a streaming chat with a provider: pick a model, send a message with files and folders
+attached, stop a reply, and read the model's reasoning collapsed above its answer. The agent loop, skills, and slash
+commands come next.
 
 ## Requirements
 
@@ -54,14 +55,37 @@ that needs no key, such as Ollama.
 Keys live in the editor's secret storage (the macOS Keychain), never in `settings.json`. broke-code sends a key
 only to its own provider, as a bearer token.
 
+## Mention files and folders
+
+Type `@` in the message box to attach a workspace file or folder. A menu lists up to 20 files and folders whose
+path contains what you type after `@`, ignoring case, shortest paths first; folders end with `/`. Move with the
+arrow keys, pick with Enter, Tab, or a click, and close the menu with Escape. A picked path goes into the message
+as `@<path>`, spaces included. You can also type `@path` yourself; a typed path ends at the first space. An `@`
+inside code, between backticks or in a fenced block, opens no menu and attaches nothing.
+
+When you send the message, broke-code reads each mention and sends it to the model with your text:
+
+- A file is attached whole, or cut to its first 2,000 lines with a note saying how many lines were left out.
+- A folder attaches the names of its direct children, not their content and not deeper levels.
+- A binary file, a file over 1 MiB, a missing path, a path outside the workspace folders (symlinks
+  included), and a path that cannot be read (no permission, not a regular file) are not attached; the model gets a
+  note saying why, and the message is still sent.
+
+Each mention shows as a chip under your message with what was attached or why it was not.
+
+The menu lists files from the workspace folders, except those hidden by your `files.exclude` setting and anything
+inside `node_modules`, `.git`, `dist`, `out`, or `build` folders. It lists at most 5,000 files; past that, the
+menu says the index is limited, and you can still type the path of a file it does not show. New and deleted
+files show up in the menu without reloading the window.
+
 ## Privacy
 
 broke-code collects no telemetry. It contacts only the providers you configure.
 
 ## Credits
 
-The chat panel's visual style follows [twinny](https://github.com/twinnydotdev/twinny), released under the MIT
-license.
+The chat panel's visual style and the `@` token detection of the mention menu follow
+[twinny](https://github.com/twinnydotdev/twinny), released under the MIT license.
 
 ## License
 
