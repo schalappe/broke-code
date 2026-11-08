@@ -3,7 +3,8 @@ import { type KeyboardEvent, useEffect, useLayoutEffect, useRef, useState } from
 import Markdown from "react-markdown";
 import { type ChatEntry, type ChatState, type HostMessage, isReplying, MAX_QUERY_LENGTH } from "../core/protocol";
 import type { ProviderError } from "../core/providerError";
-import { findMentionToken, type Suggestion } from "../core/suggestions";
+import { findMentionToken, type MentionToken, type Suggestion } from "../core/suggestions";
+import { type MenuAnswer, menuView } from "./composer";
 import { moveHighlight, optionId, SuggestionMenu } from "./SuggestionMenu";
 import { describeMention, describeProviderError, describeSkippedProvider } from "./text";
 import { post } from "./vscodeApi";
@@ -261,9 +262,6 @@ function Reasoning({ entry }: { entry: ChatEntry & { role: "assistant" } }) {
   );
 }
 
-/** Answer to the latest file query. */
-type MenuAnswer = { items: Suggestion[]; capped: boolean };
-
 /**
  * Message box with the mention menu. Typing `@` and a query asks the host for matching paths; a pick replaces the
  * token with `@<path> ` and records the path, so a path with spaces still counts as one mention. Picked paths are
@@ -276,17 +274,20 @@ function Composer({ state }: { state: ChatState }) {
   const [picked, setPicked] = useState<string[]>([]);
   const [answer, setAnswer] = useState<MenuAnswer>();
   const [highlighted, setHighlighted] = useState(0);
-  /** Token closed with Escape, as `start:query`; typing on reopens the menu. */
-  const [dismissed, setDismissed] = useState<string>();
-  const queryId = useRef(0);
+  /** Token closed with Escape; typing on reopens the menu. */
+  const [dismissed, setDismissed] = useState<MentionToken>();
+  /** Latest file query; an answer counts only for it. */
+  const latest = useRef<{ id: number; query: string | undefined }>({ id: 0, query: undefined });
   const nextCaret = useRef<number>(undefined);
   const replying = isReplying(state);
   const ready = state.model !== undefined;
   const input = useRef<HTMLTextAreaElement>(null);
 
-  const token = findMentionToken(text, caret);
-  const tokenKey = token && token.query.length <= MAX_QUERY_LENGTH ? `${token.start}:${token.query}` : undefined;
-  const menu = focused && tokenKey !== undefined && tokenKey !== dismissed ? answer : undefined;
+  const found = findMentionToken(text, caret);
+  const token = found && found.query.length <= MAX_QUERY_LENGTH ? found : undefined;
+  const query = token?.query;
+  const closed = !focused || !token || (dismissed?.start === token.start && dismissed.query === token.query);
+  const menu = closed ? undefined : menuView(answer, token.query);
 
   useEffect(() => {
     if (!replying) input.current?.focus();
@@ -295,21 +296,23 @@ function Composer({ state }: { state: ChatState }) {
   // [>]: Each query gets a new id and an answer counts only for the latest one; leaving the token also bumps it, so
   // an answer still in flight cannot reopen the menu.
   useEffect(() => {
-    const id = ++queryId.current;
-    const query = tokenKey?.slice(tokenKey.indexOf(":") + 1);
+    const id = latest.current.id + 1;
+    latest.current = { id, query };
+    setHighlighted(0);
     if (query === undefined) {
       setAnswer(undefined);
       setDismissed(undefined);
       return;
     }
     post({ type: "queryFiles", query, id });
-  }, [tokenKey]);
+  }, [query]);
 
   useEffect(() => {
     const onMessage = (event: MessageEvent<HostMessage>) => {
       const message = event.data;
-      if (message.type !== "fileSuggestions" || message.id !== queryId.current) return;
-      setAnswer({ items: message.items, capped: message.capped });
+      const { id, query } = latest.current;
+      if (message.type !== "fileSuggestions" || message.id !== id || query === undefined) return;
+      setAnswer({ query, items: message.items, capped: message.capped });
       setHighlighted(0);
     };
     window.addEventListener("message", onMessage);
@@ -346,7 +349,7 @@ function Composer({ state }: { state: ChatState }) {
     if (!menu || event.nativeEvent.isComposing) return false;
     const count = menu.items.length;
     if (event.key === "Escape") {
-      setDismissed(tokenKey);
+      setDismissed(token);
       return true;
     }
     if (count === 0) return false;
