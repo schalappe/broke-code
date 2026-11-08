@@ -44,6 +44,24 @@ function sse(chunks: string[]): Response {
   return new Response(body, { headers: { "content-type": "text/event-stream" } });
 }
 
+/** Raw TCP server: writes `head` + one chunk of a chunked body, then closes without the final chunk. */
+function truncatedServer(head: string, chunk: string) {
+  return Bun.listen({
+    hostname: "127.0.0.1",
+    port: 0,
+    socket: {
+      data(socket) {
+        socket.write(`${head}\r\nTransfer-Encoding: chunked\r\n\r\n${Buffer.byteLength(chunk).toString(16)}\r\n${chunk}\r\n`);
+        setTimeout(() => socket.end(), 20);
+      },
+    },
+  });
+}
+
+function event(payload: unknown): string {
+  return `data: ${JSON.stringify(payload)}\n\n`;
+}
+
 function delta(content: string, finishReason: string | null = null): string {
   return `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content }, finish_reason: finishReason }] })}\n\n`;
 }
@@ -197,21 +215,7 @@ describe("streamChat", () => {
   });
 
   test("classifies a dropped connection mid-reply as cut off", async () => {
-    // Raw TCP: one chunk of a chunked body, then the socket closes without the final chunk.
-    const event = delta("Partial ");
-    const listener = Bun.listen({
-      hostname: "127.0.0.1",
-      port: 0,
-      socket: {
-        data(socket) {
-          socket.write(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n" +
-              `${Buffer.byteLength(event).toString(16)}\r\n${event}\r\n`,
-          );
-          setTimeout(() => socket.end(), 20);
-        },
-      },
-    });
+    const listener = truncatedServer("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream", delta("Partial "));
     try {
       const access: ProviderAccess = {
         provider: { name: "Dropper", baseUrl: `http://127.0.0.1:${listener.port}/v1` },
@@ -223,6 +227,56 @@ describe("streamChat", () => {
     } finally {
       listener.stop(true);
     }
+  });
+
+  test("classifies a delta.content of the wrong type as a malformed chunk, not success", async () => {
+    const access = routed("chat-content-number", () =>
+      sse([delta("Partial "), event({ choices: [{ delta: { content: 42 } }] }), "data: [DONE]\n\n"]),
+    );
+    const { outcome, text } = await run(access);
+    expect(text).toBe("Partial ");
+    expect(outcome).toMatchObject({ status: "failed", error: { kind: "cutOff", reason: "malformed" } });
+  });
+
+  test("classifies wrong types in choices, delta, or finish_reason as malformed", async () => {
+    const malformed = [
+      { choices: "nope" },
+      { choices: [42] },
+      { choices: [{ delta: "text" }] },
+      { choices: [{ delta: {}, finish_reason: 1 }] },
+    ];
+    for (const [index, payload] of malformed.entries()) {
+      const access = routed(`chat-malformed-${index}`, () => sse([event(payload), "data: [DONE]\n\n"]));
+      expect((await run(access)).outcome).toMatchObject({ status: "failed", error: { kind: "cutOff", reason: "malformed" } });
+    }
+  });
+
+  test("accepts null content, reasoning-only, role-only, usage-only, and empty-choices chunks", async () => {
+    const access = routed("chat-metadata", () =>
+      sse([
+        event({ choices: [{ delta: { role: "assistant" } }] }),
+        event({ choices: [{ delta: { content: null, reasoning: "hmm" } }] }),
+        event({ choices: [{ index: 0, delta: { content: "Hi" }, finish_reason: null }] }),
+        event({ choices: [{ delta: {}, finish_reason: "stop" }] }),
+        event({ choices: [], usage: { prompt_tokens: 3, completion_tokens: 1 } }),
+        event({ id: "chatcmpl-1", object: "chat.completion.chunk", error: null }),
+        "data: [DONE]\n\n",
+      ]),
+    );
+    expect(await run(access)).toEqual({ outcome: { status: "done" }, text: "Hi" });
+  });
+
+  test("reports stop as stopped even when [DONE] is already buffered behind the content", async () => {
+    const controller = new AbortController();
+    const access = routed("chat-stop-done", () => sse([delta("partial") + "data: [DONE]\n\n"]));
+    const outcome = await streamChat(access, {
+      model: "m",
+      messages,
+      signal: controller.signal,
+      // Stop lands after this content is handled, while [DONE] waits in the same buffer.
+      onContent: () => queueMicrotask(() => controller.abort()),
+    });
+    expect(outcome).toEqual({ status: "stopped" });
   });
 
   test("reports stop as stopped, not cut off, and keeps the partial text", async () => {

@@ -82,13 +82,14 @@ export async function streamChat(access: ProviderAccess, options: StreamChatOpti
   let finished = false;
   try {
     for await (const data of readSseData(body)) {
+      // [!]: Check before each event: buffered events (even `[DONE]`) must not override a Stop.
+      if (signal.aborted) return { status: "stopped" };
       if (data === "[DONE]") return { status: "done" };
       const chunk = parseChunk(data);
       if (chunk.kind === "malformed") return cutOff("malformed", truncate(data));
       if (chunk.kind === "error") return cutOff("providerError", chunk.message);
       if (chunk.content) options.onContent(chunk.content);
       if (chunk.finished) finished = true;
-      if (signal.aborted) return { status: "stopped" };
     }
   } catch (error) {
     if (signal.aborted) return { status: "stopped" };
@@ -131,6 +132,10 @@ type Chunk =
   | { kind: "error"; message: string }
   | { kind: "malformed" };
 
+/**
+ * Validate fields read from chunk. Absent or `null` fields fine (role-only, reasoning-only, usage-only,
+ * empty `choices`); present with wrong type -> malformed, never silently dropped.
+ */
 function parseChunk(data: string): Chunk {
   let value: unknown;
   try {
@@ -139,16 +144,25 @@ function parseChunk(data: string): Chunk {
     return { kind: "malformed" };
   }
   if (!isRecord(value)) return { kind: "malformed" };
-  if (value.error !== undefined) return { kind: "error", message: errorMessage(value.error) ?? JSON.stringify(value.error) };
+  if (!isAbsent(value.error)) return { kind: "error", message: errorMessage(value.error) ?? JSON.stringify(value.error) };
 
-  const choice = Array.isArray(value.choices) ? value.choices[0] : undefined;
-  if (!isRecord(choice)) return { kind: "delta", content: "", finished: false };
-  const delta = isRecord(choice.delta) ? choice.delta : {};
-  return {
-    kind: "delta",
-    content: typeof delta.content === "string" ? delta.content : "",
-    finished: typeof choice.finish_reason === "string" && choice.finish_reason !== "",
-  };
+  const empty: Chunk = { kind: "delta", content: "", finished: false };
+  if (isAbsent(value.choices)) return empty;
+  if (!Array.isArray(value.choices)) return { kind: "malformed" };
+  const choice: unknown = value.choices[0];
+  if (choice === undefined) return empty;
+  if (!isRecord(choice)) return { kind: "malformed" };
+
+  const delta = isAbsent(choice.delta) ? {} : choice.delta;
+  if (!isRecord(delta)) return { kind: "malformed" };
+  const content = isAbsent(delta.content) ? "" : delta.content;
+  const finishReason = isAbsent(choice.finish_reason) ? "" : choice.finish_reason;
+  if (typeof content !== "string" || typeof finishReason !== "string") return { kind: "malformed" };
+  return { kind: "delta", content, finished: finishReason !== "" };
+}
+
+function isAbsent(value: unknown): value is null | undefined {
+  return value === undefined || value === null;
 }
 
 function parseModelIds(body: string): string[] | undefined {
