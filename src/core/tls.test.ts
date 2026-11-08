@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { X509Certificate } from "node:crypto";
 import * as tls from "node:tls";
-import { certificateErrorCode, providerTrust } from "./tls";
+import { certificateErrorCode, providerTrust, unexpired } from "./tls";
 import { createTlsFixture, type TlsFixture } from "./tlsFixture";
 
 function coded(code: string, message = "boom", cause?: unknown): Error {
@@ -63,11 +63,32 @@ describe("providerTrust", () => {
     expect(await providerTrust({ name: "P", baseUrl: "https://p/v1" })).toEqual({ ok: true, ca: undefined });
   });
 
-  test("extends the default store and the OS store with the CA file, never replaces them", async () => {
+  test("extends the default store and the unexpired OS store with the CA file, never replaces them", async () => {
     const trust = await providerTrust({ name: "P", baseUrl: "https://p/v1", caFile: fixture.selfSigned.certPath });
     if (!trust.ok || trust.ca === undefined) throw new Error(`expected a CA list, got ${JSON.stringify(trust)}`);
     const trusted = new Set(trust.ca.map((pem) => new X509Certificate(pem).fingerprint256));
-    const expected = [...tls.getCACertificates("default"), ...tls.getCACertificates("system"), fixture.selfSigned.cert];
+    const system = unexpired(tls.getCACertificates("system"), Date.now());
+    const expected = [...tls.getCACertificates("default"), ...system, fixture.selfSigned.cert];
     expect(expected.filter((pem) => !trusted.has(new X509Certificate(pem).fingerprint256))).toEqual([]);
+  });
+});
+
+describe("unexpired", () => {
+  let fixture: TlsFixture;
+  beforeAll(() => {
+    fixture = createTlsFixture();
+  });
+
+  test("keeps certificates valid at the given time and drops expired ones", () => {
+    const { valid, expired } = fixture;
+    expect(unexpired([expired.cert, valid.cert], Date.now())).toEqual([valid.cert]);
+    // [>]: `expired` ran from 2020-01-01 to 2020-01-02.
+    expect(unexpired([expired.cert, valid.cert], Date.parse("2020-01-01T12:00:00Z"))).toEqual([expired.cert, valid.cert]);
+  });
+
+  test("drops an entry that does not parse", () => {
+    expect(unexpired(["-----BEGIN CERTIFICATE-----\nnot base64\n-----END CERTIFICATE-----", fixture.valid.cert], Date.now())).toEqual([
+      fixture.valid.cert,
+    ]);
   });
 });

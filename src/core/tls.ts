@@ -41,7 +41,8 @@ export async function providerTrust(provider: Provider): Promise<Trust> {
   const parsed = parseCertificates(text);
   if (!parsed.ok) return refused("notPem", parsed.cause);
 
-  return { ok: true, ca: [...tls.getCACertificates("default"), ...systemCertificates(), ...parsed.certificates] };
+  const system = unexpired(tls.getCACertificates("system"), Date.now());
+  return { ok: true, ca: [...tls.getCACertificates("default"), ...system, ...parsed.certificates] };
 }
 
 const PEM_CERTIFICATE = /-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g;
@@ -61,14 +62,13 @@ function parseCertificates(text: string): { ok: true; certificates: string[] } |
 }
 
 /**
- * OS store as Node reads it: certificates the OS trusts for TLS. VS Code reads it the same way when
- * `http.systemCertificatesNode` is on (the default from 1.140). Expired certificates dropped, as VS Code does, so an
- * expired copy cannot shadow a valid one. Node reads the store once per process; an unreadable keychain yields fewer
- * certificates, not an error.
+ * PEM certificates of `pems` not yet expired at `now` (ms since epoch); an unparseable entry is dropped.
+ * Applied to the OS store as Node reads it (`tls.getCACertificates("system")`), as VS Code does when
+ * `http.systemCertificatesNode` is on (the default from 1.140), so an expired copy cannot shadow a valid one. Node
+ * reads the store once per process; an unreadable keychain yields fewer certificates, not an error.
  */
-function systemCertificates(): string[] {
-  const now = Date.now();
-  return tls.getCACertificates("system").filter((pem) => {
+export function unexpired(pems: readonly string[], now: number): string[] {
+  return pems.filter((pem) => {
     try {
       return Date.parse(new X509Certificate(pem).validTo) > now;
     } catch {
