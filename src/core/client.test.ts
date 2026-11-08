@@ -696,6 +696,19 @@ describe("compressed responses", () => {
     expect(await Promise.race([downloadEnded.then(() => "ended"), Bun.sleep(2000).then(() => "still downloading")])).toBe("ended");
   });
 
+  test("reads coding names case-insensitively, as RFC 9110 defines them", async () => {
+    const access = routed("enc-upper", () => encoded(gzipSync(modelList), " GZIP "));
+    expect(await listModels(access)).toEqual({ ok: true, models: ["m"] });
+  });
+
+  test.each(["__proto__", "constructor", "toString", "gzip, br", "gzip,gzip"])(
+    "reports Content-Encoding %p as an invalid response, never a crash",
+    async (value) => {
+      const access = routed(`enc-odd-${encodeURIComponent(value)}`, () => encoded(new TextEncoder().encode(modelList), value));
+      expect(await listModels(access)).toMatchObject({ ok: false, error: { kind: "invalidResponse", detail: "", encoding: value.toLowerCase() } });
+    },
+  );
+
   test("reports an unknown encoding as an invalid response naming it, for listing and chat", async () => {
     const listing = routed("enc-zstd", () => encoded(new TextEncoder().encode(modelList), "zstd"));
     expect(await listModels(listing)).toEqual({

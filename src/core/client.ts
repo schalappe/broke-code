@@ -245,12 +245,13 @@ type ProviderResponse = {
 
 /** `Accept-Encoding` sent with every request, as Node `fetch` did; one decoder per value. */
 const ACCEPT_ENCODING = "gzip, deflate, br";
-const DECODERS: Record<string, () => zlib.Zlib & NodeJS.ReadWriteStream> = {
-  gzip: zlib.createGunzip,
-  "x-gzip": zlib.createGunzip,
-  deflate: zlib.createInflate,
-  br: zlib.createBrotliDecompress,
-};
+// [!]: A `Map`, not an object literal: `Content-Encoding: __proto__` must not find an inherited property.
+const DECODERS = new Map<string, () => NodeJS.ReadWriteStream>([
+  ["gzip", zlib.createGunzip],
+  ["x-gzip", zlib.createGunzip],
+  ["deflate", zlib.createInflate],
+  ["br", zlib.createBrotliDecompress],
+]);
 
 type Sent = { ok: true; response: ProviderResponse } | { ok: false; error: ProviderError };
 
@@ -332,23 +333,13 @@ function transmit(
         received = incoming;
         timer.refresh();
         incoming.once("close", () => clearTimeout(timer));
-        const response = { status: incoming.statusCode ?? 0, location: incoming.headers.location };
-        const encoding = incoming.headers["content-encoding"]?.trim().toLowerCase() || "identity";
-        const decoder = DECODERS[encoding];
-        if (encoding !== "identity" && decoder === undefined) {
-          resolve({ ...response, body: webStream(incoming), unsupportedEncoding: encoding });
-          return;
+        try {
+          resolve(responseOf(incoming, () => timer.refresh()));
+        } catch (error) {
+          // [!]: Thrown here, an error would escape the client as an uncaught exception.
+          incoming.destroy();
+          reject(error);
         }
-        const watch = new Transform({
-          transform(chunk, _encoding, done) {
-            timer.refresh();
-            done(null, chunk);
-          },
-        });
-        // [&]: `pipeline` destroys every stream when one fails or the last is cancelled, so a cap (counted on
-        // decoded bytes) or a Stop ends the download too.
-        const body = decoder === undefined ? pipeline(incoming, watch, noop) : pipeline(incoming, watch, decoder(), noop);
-        resolve({ ...response, body: webStream(body) });
       },
     );
     // [>]: After headers, errors surface through the body stream; this rejection is then a no-op.
@@ -358,6 +349,30 @@ function transmit(
     });
     outgoing.end(request.body);
   });
+}
+
+/**
+ * Response of `incoming` with its body decoded. `onChunk` runs for each raw body chunk, to re-arm the idle timer.
+ * Content codings are case-insensitive (RFC 9110 8.4.1). One coding is supported; a list of several, like any coding
+ * outside `DECODERS`, is reported as unsupported.
+ */
+function responseOf(incoming: http.IncomingMessage, onChunk: () => void): ProviderResponse {
+  const response = { status: incoming.statusCode ?? 0, location: incoming.headers.location };
+  const encoding = incoming.headers["content-encoding"]?.trim().toLowerCase() || "identity";
+  const decoder = DECODERS.get(encoding);
+  if (encoding !== "identity" && decoder === undefined) {
+    return { ...response, body: webStream(incoming), unsupportedEncoding: encoding };
+  }
+  const watch = new Transform({
+    transform(chunk, _encoding, done) {
+      onChunk();
+      done(null, chunk);
+    },
+  });
+  // [&]: `pipeline` destroys every stream when one fails or the last is cancelled, so a cap (counted on decoded
+  // bytes) or a Stop ends the download too.
+  const body = decoder === undefined ? pipeline(incoming, watch, noop) : pipeline(incoming, watch, decoder(), noop);
+  return { ...response, body: webStream(body) };
 }
 
 function timeoutError(message: string): Error {
