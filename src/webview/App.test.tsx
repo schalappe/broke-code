@@ -8,7 +8,7 @@ import type { Suggestion } from "../core/suggestions";
 (globalThis as { acquireVsCodeApi?: () => { postMessage(message: unknown): void } }).acquireVsCodeApi = () => ({
   postMessage() {},
 });
-const { App, MentionMenu } = await import("./App");
+const { App, ConversationList, MentionMenu } = await import("./App");
 const { moveHighlight } = await import("./SuggestionMenu");
 
 type Reply = ChatEntry & { role: "assistant" };
@@ -31,7 +31,7 @@ function render(reply: Omit<Reply, "role">): string {
       { role: "assistant", ...reply },
     ],
   };
-  return renderToStaticMarkup(<App state={state} />);
+  return renderToStaticMarkup(<App state={state} language="en" />);
 }
 
 describe("reasoning block", () => {
@@ -92,7 +92,7 @@ describe("error actions", () => {
       model: undefined,
       entries: [],
     };
-    return renderToStaticMarkup(<App state={state} />);
+    return renderToStaticMarkup(<App state={state} language="en" />);
   }
 
   test("offers the provider settings for a certificate error and an unusable CA file", () => {
@@ -122,7 +122,7 @@ describe("mentions", () => {
       model: "m",
       entries: [{ role: "user", content: "look", mentions }],
     };
-    return renderToStaticMarkup(<App state={state} />);
+    return renderToStaticMarkup(<App state={state} language="en" />);
   }
 
   test("shows no mention list for a message without mentions", () => {
@@ -213,5 +213,61 @@ describe("moveHighlight", () => {
     expect(moveHighlight(2, 1, 3)).toBe(0);
     expect(moveHighlight(0, -1, 3)).toBe(2);
     expect(moveHighlight(0, 1, 0)).toBe(0);
+  });
+});
+
+describe("conversation history", () => {
+  const OTHER_ID = "1b0d4c1e-8f9a-4c3b-9d2e-1a2b3c4d5e6f";
+  const list = (conversations: { id: string; title: string; updatedAt: number }[]) =>
+    renderToStaticMarkup(
+      <ConversationList
+        conversations={conversations}
+        currentId={CONVERSATION_ID}
+        language="en"
+        onOpen={() => {}}
+        onDelete={() => {}}
+      />,
+    );
+
+  test("has a History toggle in the header, closed at first", () => {
+    const html = render({ reasoning: "", content: "Hello", status: "done" });
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).toContain(">History<");
+    expect(html).not.toContain('class="history"');
+  });
+
+  test("lists each conversation in the order given with its title and date, the current one marked", () => {
+    const noon = Date.parse("2026-11-08T12:00:00Z");
+    const html = list([
+      { id: CONVERSATION_ID, title: "Newest", updatedAt: noon },
+      { id: OTHER_ID, title: "Older", updatedAt: noon - 86_400_000 },
+    ]);
+    expect(html.indexOf("Newest")).toBeLessThan(html.indexOf("Older"));
+    expect(html).toContain("Nov 8, 2026");
+    expect(html).toContain("Nov 7, 2026");
+    expect(html.match(/aria-current="true"/g)).toHaveLength(1);
+    expect(html).toMatch(/aria-current="true"[^>]*>.*Newest/);
+    expect(html.match(/<button type="button" class="secondary">Delete<\/button>/g)).toHaveLength(2);
+    expect(html).not.toContain("No past conversations.");
+  });
+
+  test("says when there is no past conversation", () => {
+    expect(list([])).toContain("No past conversations.");
+  });
+
+  test("shows a storage problem as an alert", () => {
+    const state: ChatState = {
+      providers: ["P"],
+      skipped: [],
+      ...unsaved,
+      storageProblem: { kind: "deleteFailed", cause: "Error: EACCES" },
+      provider: "P",
+      models: { status: "loaded", models: ["m"] },
+      model: "m",
+      entries: [],
+    };
+    const html = renderToStaticMarkup(<App state={state} language="en" />);
+    expect(html).toContain("Could not delete the conversation.");
+    expect(html).toContain("Error: EACCES");
   });
 });

@@ -66,5 +66,13 @@
   "No match": "Aucun résultat",
   "Could not list the workspace files": "Impossible de lister les fichiers de l'espace de travail",
   "Index limited to 5,000 files": "Index limité à 5 000 fichiers",
-  "Files and folders": "Fichiers et dossiers"
+  "Files and folders": "Fichiers et dossiers",
+  "History": "Historique",
+  "Delete": "Supprimer",
+  "No past conversations.": "Aucune discussion passée.",
+  "Could not save the conversation.": "Impossible d'enregistrer la discussion.",
+  "Could not delete the conversation.": "Impossible de supprimer la discussion.",
+  "Could not list the past conversations.": "Impossible de lister les discussions passées.",
+  "Could not open the conversation.": "Impossible d'ouvrir la discussion.",
+  "This conversation is missing or unreadable; it was removed from the list.": "Cette discussion est introuvable ou illisible ; elle a été retirée de la liste."
 }
