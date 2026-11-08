@@ -8,7 +8,7 @@ export type CutOffReason =
   | "ended"
   /** Chunk not valid JSON. */
   | "malformed"
-  /** Connection failed while reading body. */
+  /** Network failed while reading body. */
   | "dropped"
   /** Provider sent `{ error }` event mid-stream. */
   | "providerError";

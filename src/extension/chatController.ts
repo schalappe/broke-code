@@ -4,7 +4,7 @@
  * Conversation lives in memory for extension host lifetime (persistence: #12).
  */
 import type * as vscode from "vscode";
-import { listModels, streamChat, type ChatMessage, type Connection } from "../core/client";
+import { listModels, streamChat, type ChatMessage, type ProviderAccess } from "../core/client";
 import { isReplying, type ChatEntry, type ChatState } from "../core/protocol";
 import type { ParsedProviders, Provider } from "../core/providers";
 import type { ApiKeys } from "./apiKeys";
@@ -89,7 +89,7 @@ export class ChatController {
     this.state.models = { status: "loading" };
     this.emit();
 
-    const listing = await listModels(await this.connection(provider));
+    const listing = await listModels(await this.accessOf(provider));
     if (id !== this.listingId) return;
     if (!listing.ok) {
       this.state.models = { status: "failed", error: listing.error };
@@ -120,7 +120,7 @@ export class ChatController {
 
     const abort = new AbortController();
     this.reply = abort;
-    const outcome = await streamChat(await this.connection(provider), {
+    const outcome = await streamChat(await this.accessOf(provider), {
       model,
       messages: history,
       signal: abort.signal,
@@ -155,7 +155,7 @@ export class ChatController {
     return this.providers.find((provider) => provider.name === this.state.provider);
   }
 
-  private async connection(provider: Provider): Promise<Connection> {
+  private async accessOf(provider: Provider): Promise<ProviderAccess> {
     return { provider, apiKey: await this.apiKeys.get(provider.name) };
   }
 

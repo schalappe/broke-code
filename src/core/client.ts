@@ -7,7 +7,7 @@ import type { Provider } from "./providers";
 import type { CutOffReason, ProviderError } from "./providerError";
 import { readSseData } from "./sse";
 
-export type Connection = {
+export type ProviderAccess = {
   provider: Provider;
   /** Absent or empty -> no `Authorization` header. */
   apiKey: string | undefined;
@@ -26,23 +26,23 @@ const DETAIL_LIMIT = 500;
 /**
  * Build streaming chat request. Body: `model`, `messages`, `stream: true`. No `tools` key, ever.
  */
-export function buildChatRequest(connection: Connection, model: string, messages: ChatMessage[]): HttpRequest {
+export function buildChatRequest(access: ProviderAccess, model: string, messages: ChatMessage[]): HttpRequest {
   return {
-    url: `${connection.provider.baseUrl}/chat/completions`,
+    url: `${access.provider.baseUrl}/chat/completions`,
     init: {
       method: "POST",
-      headers: { ...authorization(connection.apiKey), "Content-Type": "application/json", Accept: "text/event-stream" },
+      headers: { ...authorization(access.apiKey), "Content-Type": "application/json", Accept: "text/event-stream" },
       body: JSON.stringify({ model, messages: messages.map(({ role, content }) => ({ role, content })), stream: true }),
     },
   };
 }
 
 /** List model ids of provider. */
-export async function listModels(connection: Connection): Promise<ModelListing> {
-  const { provider } = connection;
-  const sent = await send(connection, {
+export async function listModels(access: ProviderAccess): Promise<ModelListing> {
+  const { provider } = access;
+  const sent = await send(access, {
     url: `${provider.baseUrl}/models`,
-    init: { method: "GET", headers: { ...authorization(connection.apiKey), Accept: "application/json" } },
+    init: { method: "GET", headers: { ...authorization(access.apiKey), Accept: "application/json" } },
   });
   if (!sent.ok) return { ok: false, error: sent.error };
 
@@ -65,11 +65,11 @@ export type StreamChatOptions = {
  * Stream chat reply. Only `choices[0].delta.content` read; `reasoning` and other delta fields ignored.
  * Complete when `[DONE]` arrives, or stream ends after a `finish_reason`.
  */
-export async function streamChat(connection: Connection, options: StreamChatOptions): Promise<ChatOutcome> {
+export async function streamChat(access: ProviderAccess, options: StreamChatOptions): Promise<ChatOutcome> {
   const { signal } = options;
-  const provider = connection.provider.name;
-  const request = buildChatRequest(connection, options.model, options.messages);
-  const sent = await send(connection, { url: request.url, init: { ...request.init, signal } });
+  const provider = access.provider.name;
+  const request = buildChatRequest(access, options.model, options.messages);
+  const sent = await send(access, { url: request.url, init: { ...request.init, signal } });
   if (!sent.ok) return signal.aborted ? { status: "stopped" } : { status: "failed", error: sent.error };
 
   const body = sent.response.body;
@@ -105,8 +105,8 @@ export async function streamChat(connection: Connection, options: StreamChatOpti
 type Sent = { ok: true; response: Response } | { ok: false; error: ProviderError };
 
 /** Fetch and classify non-2xx. Caller checks own signal to tell stop from unreachable. */
-async function send(connection: Connection, request: HttpRequest): Promise<Sent> {
-  const { name, baseUrl } = connection.provider;
+async function send(access: ProviderAccess, request: HttpRequest): Promise<Sent> {
+  const { name, baseUrl } = access.provider;
   let response: Response;
   try {
     response = await fetch(request.url, request.init);
