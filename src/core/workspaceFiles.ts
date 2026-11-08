@@ -4,8 +4,9 @@
  * listings, and line truncation. Mentions use it; `read_file` and `list_files` (#6) are meant to.
  * Plain `node:fs`: v1 runs on local macOS folders only, and real files keep the boundary rules testable.
  */
+import type { Dirent } from "node:fs";
 import { open, readdir, realpath, stat } from "node:fs/promises";
-import { isAbsolute, relative, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 
 /** A workspace folder: its name in a multi-root workspace and its absolute path. */
 export type WorkspaceRoot = { name: string; path: string };
@@ -119,10 +120,22 @@ async function readFile(realPath: string): Promise<WorkspaceEntry> {
 
 async function listFolder(realPath: string): Promise<string[]> {
   const children = await readdir(realPath, { withFileTypes: true });
-  return children
-    .map((child) => ({ name: child.name, folder: child.isDirectory() }))
+  const listed = await Promise.all(
+    children.map(async (child) => ({
+      name: child.name,
+      folder: child.isDirectory() || (await isFolderLink(realPath, child)),
+    })),
+  );
+  return listed
     .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
     .map((child) => (child.folder ? `${child.name}/` : child.name));
+}
+
+/** True for a symlink whose target is a folder; a broken link is not. */
+async function isFolderLink(folder: string, child: Dirent): Promise<boolean> {
+  if (!child.isSymbolicLink()) return false;
+  const target = await stat(join(folder, child.name)).catch(() => undefined);
+  return target?.isDirectory() ?? false;
 }
 
 function errorCode(error: unknown): string | undefined {

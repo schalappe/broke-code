@@ -49,6 +49,19 @@ describe("readWorkspaceEntry in one folder", () => {
     expect(await readWorkspaceEntry([app], "src")).toMatchObject({ kind: "folder" });
   });
 
+  test("lists a symlink to a folder with /, and a symlink to a file or a broken one as a plain name", async () => {
+    const links = join(app.path, "links");
+    await mkdir(links);
+    await symlink(join(app.path, "src", "core"), join(links, "to-folder"));
+    await symlink(join(app.path, "src", "main.ts"), join(links, "to-file"));
+    await symlink(join(app.path, "nowhere"), join(links, "broken"));
+    expect(await readWorkspaceEntry([app], "links/")).toEqual({
+      status: "ok",
+      kind: "folder",
+      entries: ["broken", "to-file", "to-folder/"],
+    });
+  });
+
   test("refuses a path that leaves the folder, existing or not", async () => {
     for (const path of ["../outside.txt", "../nothing.txt", "src/../../outside.txt", join(base, "outside.txt")]) {
       expect(await readWorkspaceEntry([app], path)).toEqual({ status: "outsideWorkspace", kind: "file" });
