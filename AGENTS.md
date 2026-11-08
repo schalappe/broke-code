@@ -83,6 +83,9 @@ The code so far covers the extension skeleton and a streaming chat with a provid
 - Never disable certificate verification. Report a certificate failure (unknown issuer, self-signed, expired,
   hostname mismatch) as a certificate error with its code, never as a generic network error. Connection refused,
   DNS failures, and timeouts stay `unreachable`.
+- A request gets 300 seconds from its start to the response headers, DNS, connect, and TLS included; past that it
+  is `unreachable` and says it timed out. After the headers, 300 seconds without a byte cut the reply off, with a
+  cause saying how long nothing came. Node `fetch` used the same 300-second limits.
 
 ### Harness
 

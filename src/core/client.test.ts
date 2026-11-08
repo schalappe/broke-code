@@ -709,3 +709,78 @@ describe("compressed responses", () => {
     });
   });
 });
+
+describe("timeouts", () => {
+  const network = { timeoutMs: 50 };
+
+  /** Raw TCP server: `reply` (or nothing) per request, then the connection stays open and silent. */
+  function silentServer(reply?: string) {
+    return Bun.listen({
+      hostname: "127.0.0.1",
+      port: 0,
+      socket: {
+        data(socket) {
+          if (reply !== undefined) socket.write(reply);
+        },
+      },
+    });
+  }
+
+  function at(port: number, name: string): ProviderAccess {
+    return { provider: { name, baseUrl: `http://127.0.0.1:${port}/v1` }, apiKey: undefined };
+  }
+
+  test("reports a provider that accepts the connection but never answers as unreachable, saying it timed out", async () => {
+    const listener = silentServer();
+    try {
+      const result = await listModels(at(listener.port, "Mute"), network);
+      expect(result).toMatchObject({ ok: false, error: { kind: "unreachable", provider: "Mute" } });
+      if (!result.ok && result.error.kind === "unreachable") expect(result.error.cause).toContain("timed out");
+    } finally {
+      listener.stop(true);
+    }
+  });
+
+  test("reports a host name that never resolves as unreachable, saying it timed out", async () => {
+    const stalledLookup = () => {
+      // [>]: Never calls back, like a DNS server that does not answer.
+    };
+    const access: ProviderAccess = { provider: { name: "Nowhere", baseUrl: "http://stalled.example.test/v1" }, apiKey: undefined };
+    const result = await listModels(access, { ...network, lookup: stalledLookup });
+    expect(result).toMatchObject({ ok: false, error: { kind: "unreachable", provider: "Nowhere" } });
+    if (!result.ok && result.error.kind === "unreachable") expect(result.error.cause).toContain("timed out");
+  });
+
+  test("reports silence after the headers as a dropped reply that says how long nothing came", async () => {
+    const head = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n";
+    const models = silentServer(`${head}Content-Type: application/json\r\n\r\n2\r\n{"\r\n`);
+    const chat = silentServer(`${head}Content-Type: text/event-stream\r\n\r\n${chunk(delta("Partial "))}`);
+    try {
+      expect(await listModels(at(models.port, "Stall"), network)).toEqual({
+        ok: false,
+        error: { kind: "cutOff", provider: "Stall", reason: "listDropped", cause: "no data from the provider for 0.05 s" },
+      });
+      const parts: string[] = [];
+      const outcome = await streamChat(at(chat.port, "Stall"), {
+        model: "m",
+        messages: [{ role: "user", content: "Hi" }],
+        signal: new AbortController().signal,
+        onContent: (text) => parts.push(text),
+        onReasoning: () => {},
+        network,
+      });
+      expect(outcome).toEqual({
+        status: "failed",
+        error: { kind: "cutOff", provider: "Stall", reason: "dropped", cause: "no data from the provider for 0.05 s" },
+      });
+      expect(parts.join("")).toBe("Partial ");
+    } finally {
+      models.stop(true);
+      chat.stop(true);
+    }
+  });
+
+  function chunk(text: string): string {
+    return `${Buffer.byteLength(text).toString(16)}\r\n${text}\r\n`;
+  }
+});
