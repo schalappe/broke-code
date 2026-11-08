@@ -31,16 +31,24 @@ The code so far covers the extension skeleton and a streaming chat with a provid
   webview, and the English and French manifest strings. English messages are the keys of `l10n.t`.
 - `scripts/build.ts`: `bun run build` writes the host bundle (`dist/extension.js`, CommonJS) and the webview
   bundle (`dist/webview/`).
-- `.github/workflows/ci.yml`: type check, unit tests, and build on macOS.
+- `scripts/next-version.ts`: computes the next release version from the commits since the last `v*` tag. The
+  release workflow runs it as a CLI. Its tests sit next to it.
+- `.github/workflows/ci.yml`: type check, unit tests, build, and a packaging dry run on macOS.
+- `.github/workflows/release.yml`: the release on each push to `main`. The Marketplace Trusted Publishing
+  policy fixes its file name.
+- `README.md`: the user documentation, also shown on Open VSX and the Visual Studio Marketplace.
 - `LICENSE`: MIT.
 
 ## Stack
 
 - TypeScript for both the extension host and the chat webview.
-- Use `bun` for everything, including packaging and publishing. The project needs no Node and no npm. Run the
-  publishing tools under the Bun runtime with `bunx --bun @vscode/vsce` and `bunx --bun ovsx`, and always pass
+- Use `bun` for everything, including packaging and publishing. The project needs no Node and no npm.
+  `@vscode/vsce` and `ovsx` are exact-pinned dev dependencies, so `bun.lock` also pins their dependencies. Run
+  them under the Bun runtime with `bunx --bun vsce` and `bunx --bun ovsx`, and always pass
   `--no-dependencies` to `vsce`, because it otherwise calls npm to list dependencies. The bun bundle
   already contains them.
+- If a registry upload fails under Bun, switch that release step alone to the current Node LTS, and say so
+  here. Packaging and the other upload stay under Bun.
 - The webview uses React and `react-markdown`, with hand-written CSS built on VS Code theme variables. Do not
   add Tailwind or a component kit, and do not use `@vscode/webview-ui-toolkit`, which Microsoft deprecated.
 - The UI ships in English and French and follows the VS Code display language, with English as the fallback.
@@ -110,6 +118,10 @@ The code so far covers the extension skeleton and a streaming chat with a provid
 
 - `bun run typecheck`, `bun test`, and `bun run build` run in CI on every pull request and on `develop` and
   `main`.
+- `bun run package` builds and writes `broke-code-<version>.vsix` with the version from `VERSION` (default
+  `0.0.0`). It writes the version into the VSIX only, never into `package.json`. CI runs it on every pull
+  request as a dry run of the release and checks the version inside the VSIX.
+- Run `actionlint` on the workflow files after editing them.
 - To try the extension, run `bun run build`, then `codium --extensionDevelopmentPath=<repository path>`
   (VSCodium is the maintainer's editor). Rebuild and reload the window after each change.
 - `bun run eval` (to be created) plays fixed scenarios against a local Ollama with `qwen3.8:27b` and
@@ -124,13 +136,21 @@ The code so far covers the extension skeleton and a streaming chat with a provid
   `develop` to `main`.
 - Merge `develop` into `main` with a merge commit, never a squash. A squash rewrites the commits on `main`, so
   `develop` would always look ahead of `main`.
-- Commit messages follow Conventional Commits in English. On each merge to `main`, CI computes the version
-  from those messages (`fix` bumps the patch, `feat` bumps the minor, the major stays at 0), tags it, builds,
-  tests, and publishes to Open VSX and the Visual Studio Marketplace. The first release is `0.1.0`.
+- Commit messages follow Conventional Commits in English. On each merge to `main`, `release.yml` computes the
+  version from the non-merge commits since the last `v*` tag: `feat` or a breaking change (`!` or a
+  `BREAKING CHANGE:` footer) bumps the minor, `fix` bumps the patch, and the major stays at 0. The first
+  release is `0.1.0`. A range with no `feat`, `fix`, or breaking change publishes nothing, and the run
+  succeeds with a log line saying so.
+- The release builds, tests, packages, publishes to Open VSX, then to the Visual Studio Marketplace, and last
+  creates tag `v<version>` together with a GitHub Release that carries the `.vsix`. A failed run leaves no tag.
+  Re-running it skips a registry that already has the version. The run fails before publishing if the tag
+  already exists.
 - The git tag is the only source of the version. CI writes the version into the package at build time and
   never commits to `main`, so `package.json` keeps `0.0.0`.
-- Only `main` publishes. Open VSX uses a token stored as a GitHub secret. The Visual Studio Marketplace uses
-  Trusted Publishing, with no stored token.
+- Only `main` publishes, through the GitHub environment `release`, whose branch policy allows `main` only.
+  Open VSX uses the environment secret `OVSX_PAT`, passed to the publish step as an environment variable and
+  never on a command line. The Visual Studio Marketplace uses Trusted Publishing (`vsce publish --oidc`), with
+  no stored token.
 
 ## Boundaries
 
