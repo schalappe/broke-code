@@ -58,6 +58,11 @@ export type WebviewMessage =
   | { type: "setApiKey"; provider: string }
   | { type: "openSettings" };
 
+/** Chat state carried by `message`; `undefined` for a message that must leave the panel's state alone. */
+export function chatStateOf(message: HostMessage): ChatState | undefined {
+  return message.type === "fileSuggestions" ? undefined : message.state;
+}
+
 /** True while a reply is in flight. */
 export function isReplying(state: ChatState): boolean {
   const last = state.entries.at(-1);

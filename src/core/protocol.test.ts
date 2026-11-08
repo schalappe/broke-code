@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { MAX_MENTION_PATH_LENGTH, MAX_QUERY_LENGTH, parseWebviewMessage } from "./protocol";
+import {
+  type ChatState,
+  chatStateOf,
+  MAX_MENTION_PATH_LENGTH,
+  MAX_QUERY_LENGTH,
+  parseWebviewMessage,
+} from "./protocol";
 
 describe("parseWebviewMessage", () => {
   test("accepts the messages without fields and those with a string field", () => {
@@ -61,5 +67,25 @@ describe("parseWebviewMessage", () => {
     expect(query({ query: "a", id: -1 })).toBeUndefined();
     expect(query({ id: 1 })).toBeUndefined();
     expect(query({ query: "a".repeat(MAX_QUERY_LENGTH + 1), id: 1 })).toBeUndefined();
+  });
+});
+
+describe("chatStateOf", () => {
+  const state: ChatState = {
+    providers: [],
+    skipped: [],
+    provider: undefined,
+    models: { status: "noProvider" },
+    model: undefined,
+    entries: [],
+  };
+
+  test("takes the chat state from init and state messages", () => {
+    expect(chatStateOf({ type: "init", l10n: undefined, state })).toBe(state);
+    expect(chatStateOf({ type: "state", state })).toBe(state);
+  });
+
+  test("leaves the chat state alone for file suggestions", () => {
+    expect(chatStateOf({ type: "fileSuggestions", id: 1, items: [], capped: false, failed: false })).toBeUndefined();
   });
 });
