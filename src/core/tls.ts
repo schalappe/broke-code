@@ -36,7 +36,7 @@ export async function providerTrust(provider: Provider): Promise<Trust> {
   try {
     text = await readFile(caFile, "utf8");
   } catch (error) {
-    return refused("unreadable", error instanceof Error ? error.message : String(error));
+    return refused("unreadable", messageOf(error));
   }
   const parsed = parseCertificates(text);
   if (!parsed.ok) return refused("notPem", parsed.cause);
@@ -55,10 +55,14 @@ function parseCertificates(text: string): { ok: true; certificates: string[] } |
     try {
       new X509Certificate(block);
     } catch (error) {
-      return { ok: false, cause: `certificate ${index + 1}: ${error instanceof Error ? error.message : String(error)}` };
+      return { ok: false, cause: `certificate ${index + 1}: ${messageOf(error)}` };
     }
   }
   return { ok: true, certificates: blocks };
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /**
