@@ -22,8 +22,10 @@ The code so far covers the extension skeleton and a streaming chat with a provid
 - `src/core/`: modules that import nothing from `vscode`: settings parsing, the API key shape check, the provider
   HTTP client, the CA trust and certificate error classification (`tls.ts`), the SSE reader, the typed provider
   errors, the chat controller (conversation state, streaming, Stop, saving, reopen, delete), the conversation record
-  (`conversation.ts`: version 1, its validation on load, title, id) and its store (`conversationStore.ts`: one file
-  per conversation behind a file port, writes in call order), the dialog queue, the host-webview message
+  (`conversation.ts`: version 1, its validation on load, title, id), its store (`conversationStore.ts`: one file
+  per conversation, reads, writes, and deletes in call order), and the store's file access (`conversationFiles.ts`:
+  the file port, and its implementation over a `vscode.FileSystem`-shaped port: missing versus failed, regular files
+  only, atomic writes, leftover temporary files), the dialog queue, the host-webview message
   protocol and its validation, workspace file access (`workspaceFiles.ts`: the inside-workspace check, capped reads,
   one-level listings, line truncation, with `node:fs`), mentions (`mentions.ts`: token detection, picked and typed
   mentions merged, reading, and the text the model receives), where a message holds Markdown code
@@ -34,8 +36,8 @@ The code so far covers the extension skeleton and a streaming chat with a provid
   generates test certificates with `/usr/bin/openssl` at test time; no private key is committed.
   `conversationFixture.ts` is the in-memory conversation file port for tests.
 - `src/extension/`: the extension host glue (activation, webview view, API keys in `SecretStorage`, the
-  file index's `findFiles` scan and watcher in `fileIndex.ts`, and the conversation files on `workspace.fs` in
-  `conversationFiles.ts`).
+  file index's `findFiles` scan and watcher in `fileIndex.ts`, and `conversationFiles.ts`, which passes
+  `workspace.fs`, `storageUri`, and the `FileSystemError` "FileNotFound" check to the core file access).
 - `src/webview/`: the React chat panel and its CSS. `SuggestionMenu.tsx` is the autocomplete list the `@` menu
   uses and the `/` menu (#11) is meant to reuse.
 - `src/l10n.test.ts`: checks that every `l10n.t` message has a French translation and that the
@@ -169,21 +171,29 @@ The code so far covers the extension skeleton and a streaming chat with a provid
 - Conversations are saved per workspace, as one JSON file per conversation in the extension's per-workspace storage
   directory (`ExtensionContext.storageUri`), never in the memento: the memento serializes every key on each update
   and VS Code warns from about 500 KB. A write goes to a uniquely named temporary file, then a rename over the final
-  one; writes run one at a time in call order. The workspace memento holds only the last provider and model choice
-  and the id of the conversation shown. The list is derived from the directory, newest first; 50 conversations are
-  kept, and a save deletes the oldest beyond them by update time, never the one shown.
+  one; the first listing deletes temporary files left by a crash. Reads, writes, and deletes run one at a time in
+  call order, so a read sees every write and delete asked before it. The workspace memento holds only the last
+  provider and model choice and the id of the conversation shown. The list is derived from the directory, newest
+  first, conversations without entries left out; 50 conversations are kept, and a save deletes the oldest beyond
+  them by update time, never the one shown or the one being opened.
 - The record is versioned (`version: 1`) and holds the displayed entries, each user entry with the text the model
   received (`modelText`), so a reopened conversation resends exactly what was sent and never reads its mentions
-  again. It holds no API key or provider address. A file that fails validation or has an unknown version is logged
-  and skipped. On load, a reply still `waiting` or `streaming` becomes `stopped`.
-- A conversation is saved when a message is sent, before the reply starts, then at most every 500 ms while the reply
+  again. It holds no API key and nothing else of `ProviderAccess`; a failed reply's error keeps the provider's base
+  URL for display, since it is user settings, not a secret. Times are whole milliseconds within the `Date` range. A
+  file that fails validation or has an unknown version is logged and skipped; a file that cannot be read is shown as
+  a listing failure. On load, a reply still `waiting` or `streaming` becomes `stopped`.
+- A conversation is saved when a message is sent, and the request waits for that save (a failed save is shown and the
+  request still goes), then at most every 500 ms while the reply
   streams, and when the reply ends (done, stopped, failed, or cut off). A reply's saves go to the record it was sent
   in, also after New chat or opening another one, and a deleted conversation is never written again. A conversation
   without entries is never written.
 - New chat (and `/new`, #11, through the same `newChat` method), opening, and deleting during a reply stop it first.
-  Reopening restores the entries only; it does not switch the provider or model. Without a folder or workspace open,
-  there is no storage directory: the conversation stays in memory and the list is empty. A failed save, delete,
-  listing, or open is logged and shown in the panel.
+  Deleting the conversation shown shows a new one at once. An open whose read settles after another navigation, or
+  after its conversation was deleted, is dropped, entries and error alike; reopening a conversation whose stopped
+  reply has not settled shows it from memory. Reopening restores the entries only; it does not switch the provider
+  or model. History works without a provider: past conversations can be read, reopened, and deleted; only the
+  composer needs one. Without a folder or workspace open, there is no storage directory: the conversation stays in
+  memory and the list is empty. A failed save, delete, listing, or open is logged and shown in the panel.
 
 ### Skills and slash commands
 
