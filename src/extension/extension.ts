@@ -9,18 +9,17 @@ import { ChatController } from "./chatController";
 import { CHAT_VIEW_ID, ChatView } from "./chatView";
 
 export function activate(context: vscode.ExtensionContext): void {
-  const apiKeys = new ApiKeys(context.secrets);
   const readProviders = () => parseProviders(vscode.workspace.getConfiguration("brokeCode").get<unknown>("providers"));
-  const setApiKey = (provider?: string) => apiKeys.runSetCommand(readProviders().providers, provider);
+  const apiKeys = new ApiKeys(context.secrets, () => readProviders().providers);
+  const setApiKey = (provider?: string) => apiKeys.runSetCommand(provider);
 
   let view: ChatView | undefined;
   const controller = new ChatController(apiKeys, context.workspaceState, (state) => view?.publish(state));
   view = new ChatView(context.extensionUri, controller, { setApiKey });
 
   const applySettings = () => {
-    const parsed = readProviders();
-    controller.setProviders(parsed);
-    apiKeys.promptMissing(parsed.providers);
+    controller.setProviders(readProviders());
+    apiKeys.promptMissing();
   };
 
   context.subscriptions.push(
