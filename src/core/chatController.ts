@@ -155,11 +155,12 @@ export class ChatController {
       content: "",
       status: "waiting",
     };
-    // [>]: Entries go in before the reads so a second send or a stop during them sees a reply in flight; the
-    // panel sees them once, with their mentions.
+    // [>]: Published before the reads, so the panel shows a reply in flight (Stop, composer locked) while they run;
+    // published again once the mentions are known.
     this.state.entries.push(user, reply);
     const abort = new AbortController();
     this.reply = { abort, provider };
+    this.emit();
 
     const mentions = await this.readMentions(content, picked);
     user.mentions = mentions.map(toResult);
@@ -172,7 +173,7 @@ export class ChatController {
       this.emit();
       return;
     }
-    this.emit();
+    if (mentions.length > 0) this.emit();
 
     const outcome = await streamChat(await this.accessOf(provider), {
       model,

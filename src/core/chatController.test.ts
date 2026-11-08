@@ -100,8 +100,12 @@ const noMentions: MentionReader = {
 };
 
 /** Controller with `provider` configured and its model listed. */
-async function ready(provider: Provider = ollama, mentions: MentionReader = noMentions) {
-  const controller = new ChatController({ get: async () => undefined }, memoryStore(), () => {}, mentions);
+async function ready(
+  provider: Provider = ollama,
+  mentions: MentionReader = noMentions,
+  publish: (state: ChatState) => void = () => {},
+) {
+  const controller = new ChatController({ get: async () => undefined }, memoryStore(), publish, mentions);
   const state = () => controller.snapshot;
   controller.setProviders({ providers: [provider], skipped: [] });
   await until(state, (s) => s.model === "m");
@@ -390,6 +394,59 @@ describe("ChatController mentions", () => {
     );
     expect(controller.snapshot.entries[0]).toMatchObject({ mentions: [{ path: "x.ts", status: "unreadable" }] });
     expect(controller.snapshot.entries[1]).toMatchObject({ status: "done", content: "Answer" });
+  });
+
+  /** Reader whose reads wait for `release`, each then reporting its path missing. */
+  function pendingReader() {
+    const waiting: (() => void)[] = [];
+    const reader: MentionReader = {
+      read: (path) =>
+        new Promise((resolve) => {
+          waiting.push(() => resolve({ path, kind: "file", status: "missing", content: "", omitted: 0 }));
+        }),
+    };
+    const release = () => {
+      for (const resolve of waiting.splice(0)) resolve();
+    };
+    return { reader, release };
+  }
+
+  test("publishes the message and a waiting reply before its mentions are read, then their statuses", async () => {
+    const { reader, release } = pendingReader();
+    const published: ChatState[] = [];
+    const { controller } = await ready(mentionsProvider, reader, (state) => published.push(structuredClone(state)));
+    published.length = 0;
+    const sent = controller.send("read @slow.ts");
+
+    expect(published.at(-1)?.entries).toEqual([
+      { role: "user", content: "read @slow.ts", mentions: [] },
+      { role: "assistant", reasoning: "", content: "", status: "waiting" },
+    ]);
+    release();
+    await sent;
+    expect(published.at(-1)?.entries[0]).toEqual({
+      role: "user",
+      content: "read @slow.ts",
+      mentions: [{ path: "slow.ts", kind: "file", status: "missing" }],
+    });
+  });
+
+  test("a send dropped by a new chat while its mentions are read leaves Stop on the next reply", async () => {
+    const { reader, release } = pendingReader();
+    const { controller, state } = await ready(ollama, reader);
+    const dropped = controller.send("read @slow.ts");
+    controller.newChat();
+    const next = controller.send("Hi");
+    await until(state, (s) => s.entries.at(-1)?.content === "Partial ");
+    release();
+    await dropped;
+    // [>]: A lost abort handle makes this Stop a no-op, and `next` never settles: the test times out.
+    controller.stop();
+    await next;
+    expect(state().entries).toMatchObject([
+      { role: "user", content: "Hi" },
+      { role: "assistant", content: "Partial ", status: "stopped" },
+    ]);
   });
 
   test("sends nothing when the reply is stopped while mentions are read", async () => {
