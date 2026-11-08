@@ -36,17 +36,30 @@ const MASK = "\0";
 const TRAILING_PUNCTUATION = /[.,;:!?)]+$/;
 
 /**
- * Paths mentioned in `text`, in order, each once. A mention is `@` at the start of the text or after whitespace,
- * then everything up to the next whitespace, less trailing `.,;:!?)`. Fenced code blocks and inline code spans
- * never hold mentions.
+ * Paths mentioned in `text`, in order of first appearance, each once. A mention is `@` at the start of the text
+ * or after whitespace, then everything up to the next whitespace, less trailing `.,;:!?)`. A `picked` path (chosen
+ * in the menu, so it may hold spaces) is a mention wherever `@<path>` stands as a whole token; its text is then
+ * not read again as typed tokens. Fenced code blocks and inline code spans never hold mentions.
  */
-export function findMentions(text: string): string[] {
-  const paths = new Set<string>();
-  for (const match of maskCode(text).matchAll(/(?<=^|\s)@(\S+)/g)) {
-    const path = match[1]!.split(MASK)[0]!.replace(TRAILING_PUNCTUATION, "");
-    if (path !== "") paths.add(path);
+export function findMentions(text: string, picked: readonly string[] = []): string[] {
+  const found: { path: string; index: number }[] = [];
+  let masked = maskCode(text);
+  // [>]: Longest first, so a picked `a b.ts` wins over a picked `a` at the same `@`.
+  for (const path of picked.filter((path) => path !== "").sort((a, b) => b.length - a.length)) {
+    const token = `@${path}`;
+    for (let index = masked.indexOf(token); index !== -1; index = masked.indexOf(token, index + token.length)) {
+      const before = masked.charAt(index - 1);
+      const after = masked.slice(index + token.length);
+      if ((before !== "" && !/\s/.test(before)) || !/^[.,;:!?)]*(\s|$)/.test(after)) continue;
+      found.push({ path, index });
+      masked = masked.slice(0, index) + MASK.repeat(token.length) + masked.slice(index + token.length);
+    }
   }
-  return [...paths];
+  for (const match of masked.matchAll(/(?<=^|\s)@(\S+)/g)) {
+    const path = match[1]!.split(MASK)[0]!.replace(TRAILING_PUNCTUATION, "");
+    if (path !== "") found.push({ path, index: match.index });
+  }
+  return [...new Set(found.sort((a, b) => a.index - b.index).map((mention) => mention.path))];
 }
 
 /** `text` with fenced blocks and inline code spans masked, lengths and newlines kept. */

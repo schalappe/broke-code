@@ -62,5 +62,8 @@
   "outside the workspace": "hors de l'espace de travail",
   "binary file, not attached": "fichier binaire, non joint",
   "over 1 MiB, not attached": "plus de 1 Mio, non joint",
-  "could not be read": "illisible"
+  "could not be read": "illisible",
+  "No match": "Aucun résultat",
+  "Index limited to 5,000 files": "Index limité à 5 000 fichiers",
+  "Files and folders": "Fichiers et dossiers"
 }

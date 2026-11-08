@@ -1,6 +1,6 @@
 /**
  * @module main
- * Webview entry: posts `ready`, then renders each state snapshot from host.
+ * Webview entry: posts `ready`, then renders each state snapshot from host. File suggestions go to the composer.
  * L10n bundle applied from `init` before first render (`@vscode/l10n` must be configured before `t()`).
  */
 import * as l10n from "@vscode/l10n";
@@ -17,6 +17,8 @@ function Root() {
   useEffect(() => {
     const onMessage = (event: MessageEvent<HostMessage>) => {
       const message = event.data;
+      // [>]: File suggestions go to the composer, which listens for them itself.
+      if (message.type === "fileSuggestions") return;
       if (message.type === "init" && message.l10n) l10n.config({ contents: message.l10n });
       setState(message.state);
     };

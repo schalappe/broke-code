@@ -138,9 +138,10 @@ export class ChatController {
 
   /**
    * Send user message with its mentions read now, and stream reply. Ignored while replying or without provider
-   * and model. A mention that cannot be read is reported to the model and in the entry; the message still goes.
+   * and model. `picked`: paths chosen in the menu, mentions while their `@<path>` is still in the text. A mention
+   * that cannot be read is reported to the model and in the entry; the message still goes.
    */
-  async send(text: string): Promise<void> {
+  async send(text: string, picked: readonly string[] = []): Promise<void> {
     const provider = this.currentProvider();
     const model = this.state.model;
     const content = text.trim();
@@ -160,7 +161,7 @@ export class ChatController {
     const abort = new AbortController();
     this.reply = { abort, provider };
 
-    const mentions = await this.readMentions(content);
+    const mentions = await this.readMentions(content, picked);
     user.mentions = mentions.map(toResult);
     const composed = composeUserMessage(content, mentions);
     this.modelText.set(user, composed);
@@ -210,9 +211,9 @@ export class ChatController {
   }
 
   /** Each mention of `text`, read in parallel. A reader that rejects despite its contract yields `unreadable`. */
-  private readMentions(text: string): Promise<ReadMention[]> {
+  private readMentions(text: string, picked: readonly string[]): Promise<ReadMention[]> {
     return Promise.all(
-      findMentions(text).map((path) =>
+      findMentions(text, picked).map((path) =>
         this.mentions.read(path).catch((error: unknown): ReadMention => {
           console.error("broke-code: could not read mention", path, error);
           const kind = path.endsWith("/") ? "folder" : "file";

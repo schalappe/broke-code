@@ -22,12 +22,16 @@ The code so far covers the extension skeleton and a streaming chat with a provid
 - `src/core/`: modules that import nothing from `vscode`: settings parsing, the API key shape check, the provider
   HTTP client, the CA trust and certificate error classification (`tls.ts`), the SSE reader, the typed provider
   errors, the chat controller (conversation state, streaming, Stop), the dialog queue, the host-webview message
-  protocol, workspace file access (`workspaceFiles.ts`: the inside-workspace check, capped reads, one-level
-  listings, line truncation, with `node:fs`), and mentions (`mentions.ts`: token detection, reading, and the text
-  the model receives). Unit tests sit next to them as `*.test.ts`, because `bun test` cannot load `vscode`.
-  `tlsFixture.ts` generates test certificates with `/usr/bin/openssl` at test time; no private key is committed.
-- `src/extension/`: the extension host glue (activation, webview view, API keys in `SecretStorage`).
-- `src/webview/`: the React chat panel and its CSS.
+  protocol and its validation, workspace file access (`workspaceFiles.ts`: the inside-workspace check, capped reads,
+  one-level listings, line truncation, with `node:fs`), mentions (`mentions.ts`: token detection, picked and typed
+  mentions merged, reading, and the text the model receives), and the mention menu logic (`suggestions.ts`: the `@`
+  token at the caret, index entries, filtering, the index exclusions; no `node:` import, since the webview loads
+  it). Unit tests sit next to them as `*.test.ts`, because `bun test` cannot load `vscode`. `tlsFixture.ts`
+  generates test certificates with `/usr/bin/openssl` at test time; no private key is committed.
+- `src/extension/`: the extension host glue (activation, webview view, API keys in `SecretStorage`, and the
+  mention menu's file index in `fileIndex.ts`).
+- `src/webview/`: the React chat panel and its CSS. `SuggestionMenu.tsx` is the autocomplete list the `@` menu
+  uses and the `/` menu (#11) is meant to reuse.
 - `src/l10n.test.ts`: checks that every `l10n.t` message has a French translation and that the
   `package.nls*.json` files match.
 - `l10n/bundle.l10n.fr.json`, `package.nls.json`, `package.nls.fr.json`: French strings for the host and
@@ -133,8 +137,21 @@ The code so far covers the extension skeleton and a streaming chat with a provid
   (cut to its first 2,000 lines, then `[truncated: N more lines not shown]`).
 - The model receives the user text, then one block per mention: a header `@<path> (<kind>, <count or status>)`,
   then the content in a backtick fence longer than any backtick run inside it, or a one-line notice when nothing
-  is attached. The message is sent whatever the statuses. The chat shows each mention and its status under the
-  message.
+  is attached. The message is sent whatever the statuses. The chat shows each mention as a chip under the
+  message, with its kind and status.
+- An `@` at the start or after whitespace opens the mention menu while the caret ends its token; the query is the
+  non-space text after `@`, possibly empty. The menu lists up to 20 index entries whose path contains the query,
+  ignoring case, shorter paths first, then in code order. Arrow keys move and wrap, Enter or Tab picks, a click
+  picks, Escape closes; while the menu shows rows, Enter never sends. A pick replaces the token with `@<path> ` and
+  records the path. At send, a picked path counts while its `@<path>` still stands as a whole token in the text, and
+  its text is not parsed again, so a path with spaces is one mention. Answers carry the query id; the webview drops
+  stale ones.
+- The file index is built on the first menu query with `findFiles("**/*", "**/{node_modules,.git,dist,out,build}/**",
+  5000)`: an explicit exclude adds to `files.exclude` (only `null` drops it). `.gitignore` is not read. Folders are
+  derived from file paths. Paths are `asRelativePath` with its default prefix, the folder name in a multi-root
+  workspace only, which the mention resolver accepts. A file watcher marks the index stale on create and delete
+  outside the excluded folders, and so does a workspace folder change; the next query rebuilds it, and queries
+  during a build share it. At 5,000 files the menu's last line says the index is limited.
 - Conversations are saved per workspace.
 
 ### Skills and slash commands

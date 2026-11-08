@@ -59,6 +59,34 @@ describe("findMentions", () => {
   });
 });
 
+describe("findMentions with picked paths", () => {
+  test("takes a picked path with a space whole, with no mention for its first word", () => {
+    expect(findMentions("explain @my file.ts please", ["my file.ts"])).toEqual(["my file.ts"]);
+  });
+
+  test("merges picked and typed mentions in order of first appearance, each once", () => {
+    expect(findMentions("@b.ts then @my notes.md and @b.ts, @c.ts @my notes.md.", ["my notes.md", "c.ts"])).toEqual([
+      "b.ts",
+      "my notes.md",
+      "c.ts",
+    ]);
+  });
+
+  test("drops a picked path whose @path text is gone or was edited into another word", () => {
+    expect(findMentions("nothing left", ["my file.ts"])).toEqual([]);
+    expect(findMentions("see @src/a.tsx", ["src/a.ts"])).toEqual(["src/a.tsx"]);
+  });
+
+  test("takes a picked path only at the start of the text or after whitespace, and outside code", () => {
+    expect(findMentions("mail x@my file.ts", ["my file.ts"])).toEqual([]);
+    expect(findMentions("run `cat @my file.ts`", ["my file.ts"])).toEqual([]);
+  });
+
+  test("masks the longer of two overlapping picked paths first", () => {
+    expect(findMentions("@a b c.ts", ["a", "a b c.ts"])).toEqual(["a b c.ts"]);
+  });
+});
+
 /** A read mention with defaults for an attached file. */
 const read = (fields: Partial<ReadMention> & Pick<ReadMention, "path">): ReadMention => ({
   kind: "file",

@@ -4,13 +4,16 @@
  */
 import * as vscode from "vscode";
 import type { ChatController } from "../core/chatController";
-import type { ChatState, HostMessage, WebviewMessage } from "../core/protocol";
+import { type ChatState, type HostMessage, parseWebviewMessage } from "../core/protocol";
+import type { Suggestion } from "../core/suggestions";
 import { renderWebviewHtml } from "../core/webviewHtml";
 
 export const CHAT_VIEW_ID = "brokeCode.chat";
 
 export type ChatViewActions = {
   setApiKey: (provider: string) => Promise<void>;
+  /** Mention menu entries matching `query`. */
+  queryFiles: (query: string) => Promise<{ items: Suggestion[]; capped: boolean }>;
 };
 
 export class ChatView implements vscode.WebviewViewProvider {
@@ -51,6 +54,17 @@ export class ChatView implements vscode.WebviewViewProvider {
     void this.view?.webview.postMessage(message);
   }
 
+  private async answerQuery(query: string, id: number): Promise<void> {
+    try {
+      const { items, capped } = await this.actions.queryFiles(query);
+      this.post({ type: "fileSuggestions", id, items, capped });
+    } catch (error) {
+      // [>]: The menu then says "No match"; the composer still sends typed mentions.
+      console.error("broke-code: could not list workspace files", error);
+      this.post({ type: "fileSuggestions", id, items: [], capped: false });
+    }
+  }
+
   private receive(raw: unknown): void {
     const message = parseWebviewMessage(raw);
     if (!message) return;
@@ -69,7 +83,9 @@ export class ChatView implements vscode.WebviewViewProvider {
       case "retryModels":
         return void controller.loadModels();
       case "send":
-        return void controller.send(message.text);
+        return void controller.send(message.text, message.mentions);
+      case "queryFiles":
+        return void this.answerQuery(message.query, message.id);
       case "stop":
         controller.stop();
         return;
@@ -85,35 +101,5 @@ export class ChatView implements vscode.WebviewViewProvider {
       case "openSettings":
         return void vscode.commands.executeCommand("workbench.action.openSettings", "brokeCode.providers");
     }
-  }
-}
-
-/** Validate webview message shape at host boundary. Unknown -> `undefined`. */
-function parseWebviewMessage(raw: unknown): WebviewMessage | undefined {
-  if (typeof raw !== "object" || raw === null) return undefined;
-  const message = raw as Record<string, unknown>;
-  const text = (key: string) => (typeof message[key] === "string" ? (message[key] as string) : undefined);
-  switch (message.type) {
-    case "ready":
-    case "retryModels":
-    case "stop":
-    case "newChat":
-    case "openSettings":
-      return { type: message.type };
-    case "selectProvider":
-    case "setApiKey": {
-      const provider = text("provider");
-      return provider === undefined ? undefined : { type: message.type, provider };
-    }
-    case "selectModel": {
-      const model = text("model");
-      return model === undefined ? undefined : { type: "selectModel", model };
-    }
-    case "send": {
-      const value = text("text");
-      return value === undefined ? undefined : { type: "send", text: value };
-    }
-    default:
-      return undefined;
   }
 }

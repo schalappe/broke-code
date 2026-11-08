@@ -341,6 +341,20 @@ describe("ChatController mentions", () => {
     expect(JSON.stringify(controller.snapshot)).not.toContain("export const a");
   });
 
+  test("reads a path picked in the menu whole, spaces included, beside a typed mention", async () => {
+    const { reader, reads } = fakeReader();
+    const { controller } = await ready(mentionsProvider, reader);
+    await controller.send("compare @my file.ts with @src/a.ts", ["my file.ts"]);
+
+    expect(reads).toEqual(["my file.ts", "src/a.ts"]);
+    expect(controller.snapshot.entries[0]).toMatchObject({
+      mentions: [
+        { path: "my file.ts", status: "missing" },
+        { path: "src/a.ts", status: "attached" },
+      ],
+    });
+  });
+
   test("resends the message composed at send time on later turns, without reading the files again", async () => {
     const { reader, reads } = fakeReader();
     const { controller } = await ready(mentionsProvider, reader);

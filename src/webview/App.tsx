@@ -1,8 +1,17 @@
 import * as l10n from "@vscode/l10n";
 import { type KeyboardEvent, useEffect, useLayoutEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
-import { type ChatEntry, type ChatState, isReplying } from "../core/protocol";
+import {
+  type ChatEntry,
+  type ChatState,
+  type HostMessage,
+  isReplying,
+  MAX_PICKED_MENTIONS,
+  MAX_QUERY_LENGTH,
+} from "../core/protocol";
 import type { ProviderError } from "../core/providerError";
+import { findMentionToken, type Suggestion } from "../core/suggestions";
+import { moveHighlight, optionId, SuggestionMenu } from "./SuggestionMenu";
 import { describeMention, describeProviderError, describeSkippedProvider } from "./text";
 import { post } from "./vscodeApi";
 
@@ -187,19 +196,52 @@ function Conversation({ entries }: { entries: ChatEntry[] }) {
   );
 }
 
-/** Each mention of a user message with its status. Plain labels: the menu and chips are #19. */
+/** One chip per mention of a user message: kind, path, and status; failed ones stand out. */
 function Mentions({ entry }: { entry: ChatEntry & { role: "user" } }) {
   return (
     <ul className="mentions" aria-label={l10n.t("Mentions")}>
       {entry.mentions.map((mention) => {
         const attached = mention.status === "attached" || mention.status === "truncated";
         return (
-          <li key={mention.path} className={attached ? undefined : "failed"}>
-            @{mention.path} · {describeMention(mention)}
+          <li key={mention.path} className={attached ? "chip" : "chip failed"}>
+            <span className={`kind ${mention.kind}`} aria-hidden="true" />
+            <span className="chip-path">@{mention.path}</span>
+            <span className="chip-status">{describeMention(mention)}</span>
           </li>
         );
       })}
     </ul>
+  );
+}
+
+const MENTION_MENU_ID = "mention-menu";
+
+/** Mention menu rows for `items`, with a "No match" line when empty and a last line when the index is capped. */
+export function MentionMenu({
+  items,
+  capped,
+  highlighted,
+  onPick,
+}: {
+  items: Suggestion[];
+  capped: boolean;
+  highlighted: number;
+  onPick: (index: number) => void;
+}) {
+  const notices = [
+    ...(items.length === 0 ? [l10n.t("No match")] : []),
+    ...(capped ? [l10n.t("Index limited to 5,000 files")] : []),
+  ];
+  return (
+    <SuggestionMenu
+      id={MENTION_MENU_ID}
+      trigger="@"
+      label={l10n.t("Files and folders")}
+      items={items.map((item) => ({ key: item.path, label: item.path, icon: item.kind }))}
+      highlighted={highlighted}
+      onPick={onPick}
+      notices={notices}
+    />
   );
 }
 
@@ -226,22 +268,112 @@ function Reasoning({ entry }: { entry: ChatEntry & { role: "assistant" } }) {
   );
 }
 
+/** Answer to the latest file query. */
+type MenuAnswer = { items: Suggestion[]; capped: boolean };
+
+/**
+ * Message box with the mention menu. Typing `@` and a query asks the host for matching paths; a pick replaces the
+ * token with `@<path> ` and records the path, so a path with spaces still counts as one mention. Picked paths are
+ * sent while their `@<path>` text is still in the message.
+ */
 function Composer({ state }: { state: ChatState }) {
   const [text, setText] = useState("");
+  const [caret, setCaret] = useState(0);
+  const [focused, setFocused] = useState(true);
+  const [picked, setPicked] = useState<string[]>([]);
+  const [answer, setAnswer] = useState<MenuAnswer>();
+  const [highlighted, setHighlighted] = useState(0);
+  /** Token closed with Escape, as `start:query`; typing on reopens the menu. */
+  const [dismissed, setDismissed] = useState<string>();
+  const queryId = useRef(0);
+  const nextCaret = useRef<number>(undefined);
   const replying = isReplying(state);
   const ready = state.model !== undefined;
   const input = useRef<HTMLTextAreaElement>(null);
+
+  const token = findMentionToken(text, caret);
+  const tokenKey = token && token.query.length <= MAX_QUERY_LENGTH ? `${token.start}:${token.query}` : undefined;
+  const menu = focused && tokenKey !== undefined && tokenKey !== dismissed ? answer : undefined;
 
   useEffect(() => {
     if (!replying) input.current?.focus();
   }, [replying]);
 
+  // [>]: Each query gets a new id and an answer counts only for the latest one; leaving the token also bumps it, so
+  // an answer still in flight cannot reopen the menu.
+  useEffect(() => {
+    const id = ++queryId.current;
+    const query = tokenKey?.slice(tokenKey.indexOf(":") + 1);
+    if (query === undefined) {
+      setAnswer(undefined);
+      setDismissed(undefined);
+      return;
+    }
+    post({ type: "queryFiles", query, id });
+  }, [tokenKey]);
+
+  useEffect(() => {
+    const onMessage = (event: MessageEvent<HostMessage>) => {
+      const message = event.data;
+      if (message.type !== "fileSuggestions" || message.id !== queryId.current) return;
+      setAnswer({ items: message.items, capped: message.capped });
+      setHighlighted(0);
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (nextCaret.current === undefined) return;
+    input.current?.setSelectionRange(nextCaret.current, nextCaret.current);
+    nextCaret.current = undefined;
+  });
+
+  const pick = (index: number) => {
+    const item = menu?.items[index];
+    if (!item || !token) return;
+    const inserted = `@${item.path} `;
+    const end = token.start + inserted.length;
+    setText(text.slice(0, token.start) + inserted + text.slice(caret));
+    setCaret(end);
+    nextCaret.current = end;
+    setPicked((paths) => (paths.includes(item.path) ? paths : [...paths, item.path]));
+  };
+
   const send = () => {
     if (!ready || replying || text.trim() === "") return;
-    post({ type: "send", text });
+    const mentions = picked.filter((path) => text.includes(`@${path}`)).slice(0, MAX_PICKED_MENTIONS);
+    post({ type: "send", text, mentions });
     setText("");
+    setCaret(0);
+    setPicked([]);
   };
+
+  const onMenuKey = (event: KeyboardEvent<HTMLTextAreaElement>): boolean => {
+    if (!menu || event.nativeEvent.isComposing) return false;
+    const count = menu.items.length;
+    if (event.key === "Escape") {
+      setDismissed(tokenKey);
+      return true;
+    }
+    if (count === 0) return false;
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      setHighlighted((current) => moveHighlight(current, event.key === "ArrowDown" ? 1 : -1, count));
+      return true;
+    }
+    if (event.key === "Tab" || (event.key === "Enter" && !event.shiftKey)) {
+      pick(highlighted);
+      return true;
+    }
+    return false;
+  };
+
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (onMenuKey(event)) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault();
       send();
@@ -250,6 +382,7 @@ function Composer({ state }: { state: ChatState }) {
 
   return (
     <footer className="composer">
+      {menu && <MentionMenu items={menu.items} capped={menu.capped} highlighted={highlighted} onPick={pick} />}
       <textarea
         ref={input}
         rows={3}
@@ -260,7 +393,16 @@ function Composer({ state }: { state: ChatState }) {
             : l10n.t("Choose a model to start.")
         }
         aria-label={l10n.t("Message")}
-        onChange={(event) => setText(event.target.value)}
+        aria-autocomplete="list"
+        aria-controls={menu ? MENTION_MENU_ID : undefined}
+        aria-activedescendant={menu && menu.items.length > 0 ? optionId(MENTION_MENU_ID, highlighted) : undefined}
+        onChange={(event) => {
+          setText(event.target.value);
+          setCaret(event.target.selectionStart);
+        }}
+        onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
         onKeyDown={onKeyDown}
       />
       {replying ? (

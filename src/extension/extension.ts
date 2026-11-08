@@ -1,6 +1,7 @@
 /**
  * @module extension
- * Activation entry point: wires settings, API keys, mentions, chat controller, chat view, and `broke-code.setApiKey`.
+ * Activation entry point: wires settings, API keys, mentions, file index, chat controller, chat view, and
+ * `broke-code.setApiKey`.
  */
 import * as vscode from "vscode";
 import { ChatController } from "../core/chatController";
@@ -9,6 +10,7 @@ import { parseProviders } from "../core/providers";
 import type { WorkspaceRoot } from "../core/workspaceFiles";
 import { ApiKeys } from "./apiKeys";
 import { CHAT_VIEW_ID, ChatView } from "./chatView";
+import { FileIndex } from "./fileIndex";
 
 export function activate(context: vscode.ExtensionContext): void {
   // [!]: User settings only. A workspace value could reuse a provider name with another base URL and receive its stored key.
@@ -23,7 +25,8 @@ export function activate(context: vscode.ExtensionContext): void {
 
   let view: ChatView | undefined;
   const controller = new ChatController(apiKeys, context.workspaceState, (state) => view?.publish(state), mentions);
-  view = new ChatView(context.extensionUri, controller, { setApiKey });
+  const fileIndex = new FileIndex();
+  view = new ChatView(context.extensionUri, controller, { setApiKey, queryFiles: (query) => fileIndex.query(query) });
 
   const applySettings = () => {
     controller.setProviders(readProviders());
@@ -39,6 +42,7 @@ export function activate(context: vscode.ExtensionContext): void {
       if (event.affectsConfiguration("brokeCode.providers")) applySettings();
     }),
     apiKeys.onDidChange((provider) => controller.keyChanged(provider)),
+    fileIndex,
     { dispose: () => controller.stop() },
   );
   applySettings();
