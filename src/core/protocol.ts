@@ -25,11 +25,12 @@ export type ChatEntry =
   | { role: "assistant"; reasoning: string; content: string; status: ReplyStatus; error?: ProviderError };
 
 /**
- * Why the saved conversations could not be used: a save, delete, listing, or open that failed (`cause`: runtime
- * error text), or a conversation to open that is missing or unreadable.
+ * Why the conversation shown or the user's last action on a saved conversation failed: a save, delete, or open
+ * that failed (`cause`: runtime error text), or a conversation to open that is missing or unreadable. A listing
+ * failure has its own field, `ChatState.listFailed`.
  */
 export type StorageProblem =
-  | { kind: "saveFailed" | "deleteFailed" | "listFailed" | "openFailed"; cause: string }
+  | { kind: "saveFailed" | "deleteFailed" | "openFailed"; cause: string }
   | { kind: "notFound" };
 
 export type ChatState = {
@@ -43,6 +44,11 @@ export type ChatState = {
   entries: ChatEntry[];
   /** Saved conversations of the workspace, newest first; the one shown is listed once saved. */
   conversations: ConversationSummary[];
+  /**
+   * The list could not be read whole (`cause`: runtime error text, one line per unreadable file). Cleared only by
+   * the next listing that succeeds; independent of `storageProblem`, so both can show at once.
+   */
+  listFailed: { cause: string } | undefined;
   storageProblem: StorageProblem | undefined;
 };
 

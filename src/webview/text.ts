@@ -145,14 +145,16 @@ export function formatConversationDate(time: number, language: string): string {
   }
 }
 
+export function describeListFailure(failure: { cause: string }): ErrorText {
+  return { message: l10n.t("Could not list the past conversations."), detail: failure.cause };
+}
+
 export function describeStorageProblem(problem: StorageProblem): ErrorText {
   switch (problem.kind) {
     case "saveFailed":
       return { message: l10n.t("Could not save the conversation."), detail: problem.cause };
     case "deleteFailed":
       return { message: l10n.t("Could not delete the conversation."), detail: problem.cause };
-    case "listFailed":
-      return { message: l10n.t("Could not list the past conversations."), detail: problem.cause };
     case "openFailed":
       return { message: l10n.t("Could not open the conversation."), detail: problem.cause };
     case "notFound":

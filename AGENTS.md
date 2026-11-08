@@ -190,18 +190,20 @@ The code so far covers the extension skeleton and a streaming chat with a provid
   without entries is never written.
 - Navigation runs one operation at a time, in request order: restore, New chat (and `/new`, #11, through the same
   `newChat` method), open, delete, and prune. The operations that change the conversation shown (New chat, open,
-  deleting the one shown) stop the reply in flight at request time and wait until it settles, its last save handed
-  to the store, so a later read sees that save. Restore stops nothing: no reply exists at activation. Deleting
-  another row and pruning leave the reply running; a reply's own save triggers the prune. The conversation shown is
-  therefore the result of the last request, never one deleted or pruned before it: an open queued after a delete or
-  prune of its id reads it as missing and says so. Each user request clears the open or not-found error it
-  supersedes; its own failure is shown. A listing error is cleared only by the next listing that succeeds. Stop ends
-  a reply at once even when a step it waits on cannot be aborted (such as a CA file read on a FIFO): the reply is
-  stopped and saved, and late reply text or outcome is dropped. A row is dropped only once its delete has succeeded. Deleting the conversation shown shows a new
-  one first. `send` is not navigation: its saves go straight to the store. Accepted cost: a request waits behind a
-  slow disk operation already queued. Reopening restores the entries only; it does not switch the provider or
-  model. History works without a provider: past conversations can be read, reopened, and deleted; only the
-  composer needs one. Without a folder or workspace open, there is no storage directory: the conversation stays in
+  deleting the one shown) stop the reply in flight at request time and wait until it settles, its last save handed to
+  the store, so a later read sees that save. Restore stops nothing: no reply exists at activation. Deleting another row
+  and pruning leave the reply running; a reply's own save triggers the prune. The conversation shown is therefore the
+  result of the last request, never one deleted or pruned before it: an open queued after a delete or prune of its id
+  reads it as missing and says so. Each user request clears the open or not-found error it supersedes; its own failure
+  is shown. A listing error has its own field in the panel state (`listFailed`), apart from the error of the
+  conversation shown and the user's actions (`storageProblem`: save, delete, open, not found), so the panel can show
+  both and neither hides or clears the other; it is cleared only by the next listing that succeeds. Stop ends a reply at
+  once even when a step it waits on cannot be aborted (such as a CA file read on a FIFO): the reply is stopped and
+  saved, and late reply text or outcome is dropped. A row is dropped only once its delete has succeeded. Deleting the
+  conversation shown shows a new one first. `send` is not navigation: its saves go straight to the store. Accepted cost:
+  a request waits behind a slow disk operation already queued. Reopening restores the entries only; it does not switch
+  the provider or model. History works without a provider: past conversations can be read, reopened, and deleted; only
+  the composer needs one. Without a folder or workspace open, there is no storage directory: the conversation stays in
   memory and the list is empty. A failed save, delete, listing, or open is logged and shown in the panel.
 
 ### Skills and slash commands

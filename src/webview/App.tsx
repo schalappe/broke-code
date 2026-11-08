@@ -8,6 +8,7 @@ import type { MentionToken, Suggestion } from "../core/suggestions";
 import { composerKeyAction, type MenuAnswer, menuToken, menuView, openMenuToken, pickedInText } from "./composer";
 import { moveHighlight, optionId, SuggestionMenu } from "./SuggestionMenu";
 import {
+  describeListFailure,
   describeMention,
   describeProviderError,
   describeSkippedProvider,
@@ -27,6 +28,7 @@ export function App({ state, language }: { state: ChatState; language: string })
       <Header state={state} historyOpen={historyOpen} toggleHistory={() => setHistoryOpen(!historyOpen)} />
       {!configured && <EmptyState />}
       <Warnings state={state} />
+      {state.listFailed && <TextBlock text={describeListFailure(state.listFailed)} />}
       {state.storageProblem && <TextBlock text={describeStorageProblem(state.storageProblem)} />}
       {state.models.status === "failed" && (
         <ErrorBlock error={state.models.error} retry={() => post({ type: "retryModels" })} />

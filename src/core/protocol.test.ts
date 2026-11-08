@@ -94,6 +94,7 @@ describe("chatStateOf", () => {
     conversationId: "0b0d4c1e-8f9a-4c3b-9d2e-1a2b3c4d5e6f",
     entries: [],
     conversations: [],
+    listFailed: undefined,
     storageProblem: undefined,
   };
 

@@ -18,7 +18,12 @@ type Reply = ChatEntry & { role: "assistant" };
 
 const CONVERSATION_ID = "0b0d4c1e-8f9a-4c3b-9d2e-1a2b3c4d5e6f";
 /** Conversation fields of a state with nothing saved. */
-const unsaved = { conversationId: CONVERSATION_ID, conversations: [], storageProblem: undefined };
+const unsaved = {
+  conversationId: CONVERSATION_ID,
+  conversations: [],
+  listFailed: undefined,
+  storageProblem: undefined,
+};
 
 /** Panel markup for a conversation of one question and `reply`, English strings. */
 function render(reply: Omit<Reply, "role">): string {
@@ -315,6 +320,18 @@ describe("conversation history", () => {
     const html = renderToStaticMarkup(<App state={state} language="en" />);
     expect(html).toContain("Could not delete the conversation.");
     expect(html).toContain("Error: EACCES");
+  });
+
+  test("shows a listing failure and an action error at once", () => {
+    const state = stateWith(true, {
+      listFailed: { cause: "Error: EACCES: listing denied" },
+      storageProblem: { kind: "openFailed", cause: "Error: EIO" },
+    });
+    const html = renderToStaticMarkup(<App state={state} language="en" />);
+    expect(html).toContain("Could not list the past conversations.");
+    expect(html).toContain("Error: EACCES: listing denied");
+    expect(html).toContain("Could not open the conversation.");
+    expect(html.match(/role="alert"/g)).toHaveLength(2);
   });
 });
 

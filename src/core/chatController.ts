@@ -99,6 +99,7 @@ export class ChatController {
       conversationId: this.conversation.id,
       entries: this.conversation.entries,
       conversations: [],
+      listFailed: undefined,
       storageProblem: undefined,
     };
   }
@@ -125,13 +126,13 @@ export class ChatController {
         ...conversations.filter((summary) => !known.has(summary.id)),
       ]);
       // [>]: A listing error is about the list: only a listing that succeeds clears it.
-      if (this.state.storageProblem?.kind === "listFailed") this.state.storageProblem = undefined;
+      this.state.listFailed = undefined;
       if (unreadable.length > 0) {
         const cause = unreadable.map((file) => `${file.id}: ${file.cause}`).join("\n");
-        this.report({ kind: "listFailed", cause }, "could not read saved conversations", unreadable);
+        this.reportList(cause, "could not read saved conversations", unreadable);
       }
     } catch (error) {
-      this.report({ kind: "listFailed", cause: String(error) }, "could not list saved conversations", error);
+      this.reportList(String(error), "could not list saved conversations", error);
     }
 
     // [>]: `send` is not navigation: a message sent before the read settles keeps its conversation in front.
@@ -518,6 +519,13 @@ export class ChatController {
   private report(problem: StorageProblem, what: string, error: unknown): void {
     console.error(`broke-code: ${what}`, error);
     this.state.storageProblem = problem;
+    this.emit();
+  }
+
+  /** Log `error` and show the listing failure in the panel, beside any `storageProblem`. */
+  private reportList(cause: string, what: string, error: unknown): void {
+    console.error(`broke-code: ${what}`, error);
+    this.state.listFailed = { cause };
     this.emit();
   }
 

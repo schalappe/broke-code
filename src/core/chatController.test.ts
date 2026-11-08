@@ -812,10 +812,8 @@ describe("ChatController conversations", () => {
     try {
       const { state } = await load(workspace(files));
       expect(state().conversations).toMatchObject([{ id: good }]);
-      expect(state().storageProblem).toEqual({
-        kind: "listFailed",
-        cause: `${locked}: Error: EACCES: permission denied`,
-      });
+      expect(state().listFailed).toEqual({ cause: `${locked}: Error: EACCES: permission denied` });
+      expect(state().storageProblem).toBeUndefined();
     } finally {
       logged.mockRestore();
     }
@@ -1365,18 +1363,18 @@ describe("ChatController conversations", () => {
     const logged = spyOn(console, "error").mockImplementation(() => {});
     try {
       const { controller, state } = await load(ws);
-      const listFailed = { kind: "listFailed" as const, cause: "Error: EACCES: listing denied" };
-      expect(state().storageProblem).toEqual(listFailed);
+      const listFailed = { cause: "Error: EACCES: listing denied" };
+      expect(state().listFailed).toEqual(listFailed);
       await controller.openConversation(kept.id);
-      expect(state()).toMatchObject({ conversationId: kept.id, storageProblem: listFailed });
+      expect(state()).toMatchObject({ conversationId: kept.id, listFailed });
       await controller.deleteConversation(dropped.id);
-      expect(state().storageProblem).toEqual(listFailed);
+      expect(state().listFailed).toEqual(listFailed);
       await controller.newChat();
-      expect(state().storageProblem).toEqual(listFailed);
+      expect(state().listFailed).toEqual(listFailed);
 
       ws.files.names = names;
       await controller.restore();
-      expect(state().storageProblem).toBeUndefined();
+      expect(state().listFailed).toBeUndefined();
       expect(state().conversations.map((summary) => summary.id)).toEqual([kept.id]);
     } finally {
       logged.mockRestore();
@@ -1410,4 +1408,35 @@ describe("ChatController conversations", () => {
       }
     });
   }
+
+  test("an open failure while a listing error shows keeps both, and the next navigation clears only the open error", async () => {
+    const record = savedRecord("unreadable later");
+    const ws = workspace(filesOf(record));
+    const names = ws.files.names;
+    ws.files.names = async () => {
+      throw new Error("EACCES: listing denied");
+    };
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { controller, state } = await load(ws);
+      ws.files.names = names;
+      const read = ws.files.read;
+      ws.files.read = async () => {
+        throw new Error("EIO: i/o error");
+      };
+      await controller.openConversation(record.id);
+      expect(state()).toMatchObject({
+        listFailed: { cause: "Error: EACCES: listing denied" },
+        storageProblem: { kind: "openFailed", cause: "Error: EIO: i/o error" },
+      });
+      ws.files.read = read;
+      await controller.newChat();
+      expect(state()).toMatchObject({
+        listFailed: { cause: "Error: EACCES: listing denied" },
+        storageProblem: undefined,
+      });
+    } finally {
+      logged.mockRestore();
+    }
+  });
 });
