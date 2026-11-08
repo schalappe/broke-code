@@ -31,6 +31,13 @@ describe("findMentionToken", () => {
     expect(findMentionToken("mail me@host.com", 16)).toBeUndefined();
   });
 
+  test("ignores an @ inside an inline code span or a fenced block, where a mention never counts", () => {
+    expect(findMentionToken("run `cat @sse` now", 13)).toBeUndefined();
+    expect(findMentionToken("```\n@sse", 8)).toBeUndefined();
+    expect(findMentionToken("```\n@x\n```\n@sse", 15)).toEqual({ start: 11, query: "sse" });
+    expect(findMentionToken("a ` lone backtick @sse", 22)).toEqual({ start: 18, query: "sse" });
+  });
+
   test("ignores a caret after whitespace or with no @ token before it", () => {
     expect(findMentionToken("@sse ", 5)).toBeUndefined();
     expect(findMentionToken("plain text", 10)).toBeUndefined();

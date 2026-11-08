@@ -3,6 +3,7 @@
  * Mention menu logic shared by host and webview: the `@` token at the caret, the file index entries, and their
  * filtering. No `node:` or `vscode` import, since the webview bundle loads it.
  */
+import { MASK, maskCode } from "./markdownCode";
 import type { EntryKind } from "./workspaceFiles";
 
 /** `@` token ending at the caret. `start`: index of the `@`. `query`: text typed after it. */
@@ -10,12 +11,14 @@ export type MentionToken = { start: number; query: string };
 
 /**
  * The `@` token the caret ends, if any: `@` at the start of the text or after whitespace, then non-space
- * characters up to the caret, with no non-space character right after the caret.
+ * characters up to the caret, with no non-space character right after the caret, and not inside Markdown code,
+ * where a mention never counts.
  */
 export function findMentionToken(text: string, caret: number): MentionToken | undefined {
   if (/\S/.test(text.charAt(caret))) return undefined;
   const match = /(?<=^|\s)@(\S*)$/.exec(text.slice(0, caret));
-  return match ? { start: match.index, query: match[1]! } : undefined;
+  if (!match || maskCode(text).charAt(match.index) === MASK) return undefined;
+  return { start: match.index, query: match[1]! };
 }
 
 /** Files the menu offers, at most; past it the menu says the index is limited. */
