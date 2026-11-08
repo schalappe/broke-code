@@ -77,13 +77,14 @@ jobs:
         run: bunx --bun ovsx publish --packagePath "broke-code-$VERSION.vsix" --skip-duplicate
       - name: Publish to the Visual Studio Marketplace
         run: bunx --bun vsce publish --oidc --packagePath "broke-code-$VERSION.vsix" --skip-duplicate --no-dependencies
+      # Three idempotent steps, so a re-run finishes a Release left as a draft or without its .vsix.
       - name: Create the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          if gh release view "v$VERSION" >/dev/null 2>&1; then
-            echo "Release v$VERSION already exists."
-          else
-            gh release create "v$VERSION" "broke-code-$VERSION.vsix" --verify-tag --title "v$VERSION" --generate-notes
+          if ! gh release view "v$VERSION" >/dev/null 2>&1; then
+            gh release create "v$VERSION" --verify-tag --draft --title "v$VERSION" --generate-notes
           fi
+          gh release upload "v$VERSION" "broke-code-$VERSION.vsix" --clobber
+          gh release edit "v$VERSION" --draft=false
