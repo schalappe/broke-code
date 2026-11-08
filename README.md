@@ -67,8 +67,9 @@ When you send the message, broke-code reads each mention and sends it to the mod
 
 - A file is attached whole, or cut to its first 2,000 lines with a note saying how many lines were left out.
 - A folder attaches the names of its direct children, not their content and not deeper levels.
-- A binary file, a file over 1 MiB, a missing path, and a path outside the workspace folders (symlinks
-  included) are not attached; the model gets a note saying why, and the message is still sent.
+- A binary file, a file over 1 MiB, a missing path, a path outside the workspace folders (symlinks
+  included), and a path that cannot be read (no permission, not a regular file) are not attached; the model gets a
+  note saying why, and the message is still sent.
 
 Each mention shows as a chip under your message with what was attached or why it was not.
 
