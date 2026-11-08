@@ -30,6 +30,7 @@ beforeAll(async () => {
   await symlink(join(app.path, "src", "main.ts"), join(app.path, "link-in.ts"));
 });
 afterAll(async () => {
+  // [>]: The file exists only once its test ran; without it there is nothing to unlock.
   await chmod(join(app.path, "locked.txt"), 0o600).catch(() => {});
   await rm(base, { recursive: true, force: true });
 });
@@ -55,10 +56,11 @@ describe("readWorkspaceEntry in one folder", () => {
     await symlink(join(app.path, "src", "core"), join(links, "to-folder"));
     await symlink(join(app.path, "src", "main.ts"), join(links, "to-file"));
     await symlink(join(app.path, "nowhere"), join(links, "broken"));
+    await symlink(join(links, "loop"), join(links, "loop"));
     expect(await readWorkspaceEntry([app], "links/")).toEqual({
       status: "ok",
       kind: "folder",
-      entries: ["broken", "to-file", "to-folder/"],
+      entries: ["broken", "loop", "to-file", "to-folder/"],
     });
   });
 
@@ -179,6 +181,18 @@ describe("readWorkspaceEntry in several folders", () => {
       kind: "folder",
       entries: ["only-lib.txt", "x.txt"],
     });
+  });
+
+  test("reads from a folder whose custom name holds a /, preferring the longest name that prefixes the path", async () => {
+    const libsCore = { name: "libs/core", path: lib.path };
+    const libs = { name: "libs", path: app.path };
+    expect(await readWorkspaceEntry([libs, libsCore], "libs/core/x.txt")).toEqual({
+      status: "ok",
+      kind: "file",
+      text: "lib x\n",
+    });
+    expect(await readWorkspaceEntry([libs, libsCore], "libs/docs/x.txt")).toMatchObject({ text: "app docs\n" });
+    expect(await readWorkspaceEntry([libs, libsCore], "libs/core")).toMatchObject({ status: "ok", kind: "folder" });
   });
 
   test("otherwise reads from the first folder that holds the path", async () => {

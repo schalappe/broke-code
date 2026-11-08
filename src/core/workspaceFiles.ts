@@ -32,11 +32,12 @@ export type RaceSeam = { beforeOpen?: () => Promise<void> };
 const MAX_FILE_BYTES = 1024 * 1024;
 const BINARY_PROBE_BYTES = 8 * 1024;
 const MISSING_CODES = new Set(["ENOENT", "ENOTDIR"]);
+const BROKEN_LINK_CODES = new Set(["ENOENT", "ENOTDIR", "ELOOP"]);
 
 /**
- * Read `path` inside `roots`. With several roots, a first segment naming a root resolves against that root only;
- * any other relative path resolves against each root in turn, the first that holds it winning. Never rejects. The kind of
- * a path that could not be inspected is a guess: `folder` when it ends with `/`.
+ * Read `path` inside `roots`. With several roots, a path starting with a root's name and `/` resolves against that
+ * root only; any other relative path resolves against each root in turn, the first that holds it winning. Never
+ * rejects. The kind of a path that could not be inspected is a guess: `folder` when it ends with `/`.
  */
 export async function readWorkspaceEntry(
   roots: WorkspaceRoot[],
@@ -124,10 +125,15 @@ async function locate(
   return { status: "missing" };
 }
 
+/** A custom folder name may hold `/` (`libs/core`): the longest name that prefixes the path wins. */
 function candidatePaths(roots: WorkspaceRoot[], path: string): string[] {
-  const [first, ...rest] = path.split("/");
-  const named = roots.length > 1 ? roots.find((root) => root.name === first) : undefined;
-  if (named) return [resolve(named.path, rest.join("/"))];
+  const named =
+    roots.length > 1
+      ? roots
+          .filter((root) => path === root.name || path.startsWith(`${root.name}/`))
+          .sort((a, b) => b.name.length - a.name.length)[0]
+      : undefined;
+  if (named) return [resolve(named.path, path.slice(named.name.length + 1))];
   return roots.map((root) => resolve(root.path, path));
 }
 
@@ -168,10 +174,13 @@ async function listFolder(realPath: string): Promise<string[]> {
     .map((child) => (child.folder ? `${child.name}/` : child.name));
 }
 
-/** True for a symlink whose target is a folder; a broken link is not. */
+/** True for a symlink whose target is a folder; a broken or looping link is not. */
 async function isFolderLink(folder: string, child: Dirent): Promise<boolean> {
   if (!child.isSymbolicLink()) return false;
-  const target = await stat(join(folder, child.name)).catch(() => undefined);
+  const target = await stat(join(folder, child.name)).catch((error: unknown) => {
+    if (BROKEN_LINK_CODES.has(errorCode(error) ?? "")) return undefined;
+    throw error;
+  });
   return target?.isDirectory() ?? false;
 }
 
