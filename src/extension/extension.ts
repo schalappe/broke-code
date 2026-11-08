@@ -9,7 +9,10 @@ import { ChatController } from "../core/chatController";
 import { CHAT_VIEW_ID, ChatView } from "./chatView";
 
 export function activate(context: vscode.ExtensionContext): void {
-  const readProviders = () => parseProviders(vscode.workspace.getConfiguration("brokeCode").get<unknown>("providers"));
+  // [!]: User settings only. A workspace value could reuse a provider name with another base URL and receive its stored key.
+  // The manifest's `application` scope already makes VS Code ignore it; reading `globalValue` keeps that explicit here.
+  const readProviders = () =>
+    parseProviders(vscode.workspace.getConfiguration("brokeCode").inspect<unknown>("providers")?.globalValue);
   const apiKeys = new ApiKeys(context.secrets, () => readProviders().providers);
   const setApiKey = (provider?: string) => apiKeys.runSetCommand(provider);
 

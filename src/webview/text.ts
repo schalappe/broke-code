@@ -13,6 +13,15 @@ export function describeProviderError(error: ProviderError): ErrorText {
   switch (error.kind) {
     case "unreachable":
       return { message: l10n.t("Cannot reach {0} at {1}.", error.provider, error.baseUrl), detail: error.cause };
+    case "redirected":
+      return {
+        message: l10n.t(
+          "{0} answered with a redirect (HTTP {1}), which broke-code does not follow. Set its base URL to the final address.",
+          error.provider,
+          error.status,
+        ),
+        ...(error.location ? { detail: error.location } : {}),
+      };
     case "invalidKey":
       return { message: l10n.t("{0} refused the API key (HTTP {1}).", error.provider, error.status) };
     case "rejected":
@@ -48,6 +57,10 @@ function cutOffMessage(error: ProviderError & { kind: "cutOff" }): string {
       return l10n.t("The reply from {0} was cut off: the connection dropped.", error.provider);
     case "listDropped":
       return l10n.t("The model list from {0} was cut off: the connection dropped.", error.provider);
+    case "tooLarge":
+      return l10n.t("The reply from {0} was cut off: it exceeded the size limit.", error.provider);
+    case "listTooLarge":
+      return l10n.t("The model list from {0} was cut off: it exceeded the size limit.", error.provider);
     case "providerError":
       return l10n.t("The reply from {0} was cut off: the provider reported an error.", error.provider);
   }

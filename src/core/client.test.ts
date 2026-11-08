@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { buildChatRequest, listModels, streamChat, type ProviderAccess } from "./client";
+import { buildChatRequest, listModels, MODEL_LIST_MAX_BYTES, REPLY_MAX_LENGTH, streamChat, type ProviderAccess } from "./client";
 
 type Handler = (request: Request) => Response | Promise<Response>;
 
@@ -56,6 +56,21 @@ function truncatedServer(head: string, chunk: string) {
       },
     },
   });
+}
+
+/** Body that never ends: `first`, then `filler` forever. Proves caps are enforced while reading, not after. */
+function endless(first: string, filler: string, init?: ResponseInit): Response {
+  const encoder = new TextEncoder();
+  const head = encoder.encode(first);
+  const rest = encoder.encode(filler);
+  let sentHead = false;
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      controller.enqueue(sentHead ? rest : head);
+      sentHead = true;
+    },
+  });
+  return new Response(body, init);
 }
 
 function event(payload: unknown): string {
@@ -176,6 +191,36 @@ describe("listModels", () => {
       rejected.stop(true);
       unauthorized.stop(true);
     }
+  });
+
+  test("reports a model list with an empty id as an invalid response", async () => {
+    const access = routed("models-empty-id", () => Response.json({ data: [{ id: "qwen3.8:27b" }, { id: "" }] }));
+    expect(await listModels(access)).toMatchObject({ ok: false, error: { kind: "invalidResponse", provider: "P-models-empty-id" } });
+  });
+
+  test("does not follow a redirect, and reports it with its target", async () => {
+    const target = routed("models-redirect-target", () => Response.json({ data: [{ id: "m" }] }));
+    received.delete("models-redirect-target");
+    const access = routed("models-redirect", () => Response.redirect(`${target.provider.baseUrl}/models`, 302), "sk-secret");
+    expect(await listModels(access)).toEqual({
+      ok: false,
+      error: { kind: "redirected", provider: "P-models-redirect", status: 302, location: `${target.provider.baseUrl}/models` },
+    });
+    expect(received.has("models-redirect-target")).toBe(false);
+  });
+
+  test("cancels a model list larger than the cap and reports it as too large", async () => {
+    const access = routed("models-endless", () => endless('{"data":[', '{"id":"m"},'.repeat(10_000)));
+    expect(await listModels(access)).toEqual({ ok: false, error: { kind: "cutOff", provider: "P-models-endless", reason: "listTooLarge" } });
+    expect(MODEL_LIST_MAX_BYTES).toBeGreaterThan(1024 * 1024);
+  });
+
+  test("reads only the start of an endless error body, and keeps the HTTP classification", async () => {
+    const access = routed("models-500-endless", () => endless("Internal error ", "x".repeat(64 * 1024), { status: 500 }));
+    const result = await listModels(access);
+    if (result.ok || result.error.kind !== "rejected") throw new Error(`expected rejected, got ${JSON.stringify(result)}`);
+    expect(result.error.status).toBe(500);
+    expect(result.error.detail.startsWith("Internal error xxx")).toBe(true);
   });
 
   test("reports a 2xx body that is not a model list as an invalid response", async () => {
@@ -343,6 +388,30 @@ describe("streamChat", () => {
     });
     setTimeout(() => controller.abort(), 20);
     expect(await run(access, controller.signal)).toEqual({ outcome: { status: "stopped" }, text: "" });
+  });
+
+  test("does not follow a redirect, so the conversation is never resent elsewhere", async () => {
+    const target = routed("chat-redirect-target", () => sse([delta("Hi", "stop")]));
+    received.delete("chat-redirect-target");
+    const access = routed("chat-redirect", () => Response.redirect(`${target.provider.baseUrl}/chat/completions`, 307));
+    expect((await run(access)).outcome).toMatchObject({ status: "failed", error: { kind: "redirected", status: 307 } });
+    expect(received.has("chat-redirect-target")).toBe(false);
+  });
+
+  test("cancels a stream whose line never ends and reports it as too large", async () => {
+    const access = routed("chat-endless-line", () => endless(delta("Partial ") + "data: ", "x".repeat(64 * 1024)));
+    const { outcome, text } = await run(access);
+    expect(text).toBe("Partial ");
+    expect(outcome).toEqual({ status: "failed", error: { kind: "cutOff", provider: "P-chat-endless-line", reason: "tooLarge" } });
+  });
+
+  test("stops a reply longer than the cap, keeping the text received under it", async () => {
+    const piece = "x".repeat(512 * 1024);
+    const access = routed("chat-endless-reply", () => endless("", delta(piece)));
+    const { outcome, text } = await run(access);
+    expect(outcome).toEqual({ status: "failed", error: { kind: "cutOff", provider: "P-chat-endless-reply", reason: "tooLarge" } });
+    expect(text.length).toBeLessThanOrEqual(REPLY_MAX_LENGTH);
+    expect(text.length).toBeGreaterThan(REPLY_MAX_LENGTH - piece.length);
   });
 
   test("classifies connection refused, 401, and a 500 the same way as model listing", async () => {

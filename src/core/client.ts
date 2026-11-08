@@ -5,7 +5,7 @@
  */
 import type { Provider } from "./providers";
 import type { CutOffReason, ProviderError } from "./providerError";
-import { readSseData } from "./sse";
+import { readSseData, SseEventTooLargeError } from "./sse";
 
 export type ProviderAccess = {
   provider: Provider;
@@ -22,6 +22,15 @@ export type ModelListing = { ok: true; models: string[] } | { ok: false; error: 
 export type ChatOutcome = { status: "done" } | { status: "stopped" } | { status: "failed"; error: ProviderError };
 
 const DETAIL_LIMIT = 500;
+
+// Size caps on provider-controlled bodies, enforced while reading: everything lives in the shared extension host.
+// Generous on purpose: a real model list or reply stays far below them.
+/** `GET /models` body. Large gateways list hundreds of models with metadata, about 1 MB. */
+export const MODEL_LIST_MAX_BYTES = 8 * 1024 * 1024;
+/** Non-2xx body; only its first `DETAIL_LIMIT` characters are shown. */
+const ERROR_BODY_MAX_BYTES = 64 * 1024;
+/** Total `delta.content` of one reply, in UTF-16 code units. */
+export const REPLY_MAX_LENGTH = 4 * 1024 * 1024;
 
 /**
  * Build streaming chat request. Body: `model`, `messages`, `stream: true`. No `tools` key, ever.
@@ -46,8 +55,9 @@ export async function listModels(access: ProviderAccess): Promise<ModelListing> 
   });
   if (!sent.ok) return { ok: false, error: sent.error };
 
-  const read = await readText(sent.response);
+  const read = await readText(sent.response, MODEL_LIST_MAX_BYTES);
   if (!read.ok) return { ok: false, error: { kind: "cutOff", provider: provider.name, reason: "listDropped", cause: read.cause } };
+  if (!read.complete) return { ok: false, error: { kind: "cutOff", provider: provider.name, reason: "listTooLarge" } };
   const body = read.text;
   const models = parseModelIds(body);
   if (!models) return { ok: false, error: { kind: "invalidResponse", provider: provider.name, detail: truncate(body) } };
@@ -66,6 +76,7 @@ export type StreamChatOptions = {
 /**
  * Stream chat reply. Only `choices[0].delta.content` read; `reasoning` and other delta fields ignored.
  * Complete when `[DONE]` arrives, or stream ends after a `finish_reason`.
+ * Reply over `REPLY_MAX_LENGTH`, or one event over the SSE cap -> cut off (`tooLarge`), stream cancelled.
  */
 export async function streamChat(access: ProviderAccess, options: StreamChatOptions): Promise<ChatOutcome> {
   const { signal } = options;
@@ -82,6 +93,7 @@ export async function streamChat(access: ProviderAccess, options: StreamChatOpti
   if (!body) return cutOff("ended");
 
   let finished = false;
+  let length = 0;
   try {
     for await (const data of readSseData(body)) {
       // [!]: Check before each event: buffered events (even `[DONE]`) must not override a Stop.
@@ -90,11 +102,14 @@ export async function streamChat(access: ProviderAccess, options: StreamChatOpti
       const chunk = parseChunk(data);
       if (chunk.kind === "malformed") return cutOff("malformed", truncate(data));
       if (chunk.kind === "error") return cutOff("providerError", chunk.message);
+      length += chunk.content.length;
+      if (length > REPLY_MAX_LENGTH) return cutOff("tooLarge");
       if (chunk.content) options.onContent(chunk.content);
       if (chunk.finished) finished = true;
     }
   } catch (error) {
     if (signal.aborted) return { status: "stopped" };
+    if (error instanceof SseEventTooLargeError) return cutOff("tooLarge");
     return cutOff("dropped", describeError(error));
   } finally {
     body.cancel().catch(() => {
@@ -107,33 +122,63 @@ export async function streamChat(access: ProviderAccess, options: StreamChatOpti
 
 type Sent = { ok: true; response: Response } | { ok: false; error: ProviderError };
 
-/** Fetch and classify non-2xx. Caller checks own signal to tell stop from unreachable. */
+/**
+ * Fetch and classify non-2xx. Caller checks own signal to tell stop from unreachable.
+ * Redirects never followed: only the configured base URL receives requests, key, and conversation.
+ */
 async function send(access: ProviderAccess, request: HttpRequest): Promise<Sent> {
   const { name, baseUrl } = access.provider;
   let response: Response;
   try {
-    response = await fetch(request.url, request.init);
+    response = await fetch(request.url, { ...request.init, redirect: "manual" });
   } catch (error) {
     return { ok: false, error: { kind: "unreachable", provider: name, baseUrl, cause: describeError(error) } };
   }
   if (response.ok) return { ok: true, response };
 
   const { status } = response;
-  if (status === 401 || status === 403) {
-    // [>]: Invalid-key message shows no body -> release it unread.
+  // [>]: Browser-style fetch hides a manual redirect behind `opaqueredirect` with status 0; Node and Bun expose the 3xx.
+  const redirected = response.type === "opaqueredirect" || (status >= 300 && status < 400);
+  if (redirected || status === 401 || status === 403) {
+    // [>]: Neither message shows the body -> release it unread.
     response.body?.cancel().catch(() => {
       // [>]: Body already closed or errored; nothing left to release.
     });
+    if (redirected) {
+      return { ok: false, error: { kind: "redirected", provider: name, status, location: truncate(response.headers.get("location") ?? "") } };
+    }
     return { ok: false, error: { kind: "invalidKey", provider: name, status } };
   }
-  const read = await readText(response);
+  const read = await readText(response, ERROR_BODY_MAX_BYTES);
   if (!read.ok) return { ok: false, error: { kind: "rejected", provider: name, status, detail: "", bodyReadError: read.cause } };
   return { ok: false, error: { kind: "rejected", provider: name, status, detail: errorDetail(read.text) } };
 }
 
-async function readText(response: Response): Promise<{ ok: true; text: string } | { ok: false; cause: string }> {
+type TextRead = { ok: true; text: string; complete: boolean } | { ok: false; cause: string };
+
+/**
+ * Read body as UTF-8 text, at most `maxBytes`. Over the cap -> download cancelled, `complete: false`,
+ * `text` = first `maxBytes` bytes.
+ */
+async function readText(response: Response, maxBytes: number): Promise<TextRead> {
+  if (!response.body) return { ok: true, text: "", complete: true };
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  let bytes = 0;
   try {
-    return { ok: true, text: await response.text() };
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return { ok: true, text: text + decoder.decode(), complete: true };
+      if (bytes + value.byteLength > maxBytes) {
+        reader.cancel().catch(() => {
+          // [>]: Body already closed or errored; nothing left to release.
+        });
+        return { ok: true, text: text + decoder.decode(value.subarray(0, maxBytes - bytes)), complete: false };
+      }
+      bytes += value.byteLength;
+      text += decoder.decode(value, { stream: true });
+    }
   } catch (error) {
     return { ok: false, cause: describeError(error) };
   }
@@ -189,7 +234,8 @@ function parseModelIds(body: string): string[] | undefined {
     return undefined;
   }
   if (!isRecord(value) || !Array.isArray(value.data)) return undefined;
-  const ids = value.data.map((model: unknown) => (isRecord(model) && typeof model.id === "string" ? model.id : undefined));
+  // [!]: Empty id rejected: the panel would treat "" as a chosen model while send refuses it.
+  const ids = value.data.map((model: unknown) => (isRecord(model) && typeof model.id === "string" && model.id !== "" ? model.id : undefined));
   return ids.every((id) => id !== undefined) ? ids : undefined;
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readSseData } from "./sse";
+import { readSseData, SseEventTooLargeError } from "./sse";
 
 function streamOf(chunks: (string | Uint8Array)[]): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
@@ -11,9 +11,9 @@ function streamOf(chunks: (string | Uint8Array)[]): ReadableStream<Uint8Array> {
   });
 }
 
-async function collect(stream: ReadableStream<Uint8Array>): Promise<string[]> {
+async function collect(stream: ReadableStream<Uint8Array>, maxEventLength?: number): Promise<string[]> {
   const events: string[] = [];
-  for await (const data of readSseData(stream)) events.push(data);
+  for await (const data of readSseData(stream, maxEventLength)) events.push(data);
   return events;
 }
 
@@ -61,5 +61,21 @@ describe("readSseData", () => {
 
   test("yields a last event ending in a lone CR", async () => {
     expect(await collect(streamOf(["data: [DONE]\r"]))).toEqual(["[DONE]"]);
+  });
+
+  test("throws instead of buffering a line longer than the cap", async () => {
+    const events: string[] = [];
+    const reading = (async () => {
+      for await (const data of readSseData(streamOf(['data: {"a":1}\n\n', "data: ", "x".repeat(40), "x".repeat(40)]), 64)) {
+        events.push(data);
+      }
+    })();
+    await expect(reading).rejects.toBeInstanceOf(SseEventTooLargeError);
+    expect(events).toEqual(['{"a":1}']);
+  });
+
+  test("throws instead of accumulating an event whose data lines never close it", async () => {
+    const lines = Array.from({ length: 20 }, () => `data: ${"x".repeat(10)}\n`);
+    await expect(collect(streamOf(lines), 64)).rejects.toBeInstanceOf(SseEventTooLargeError);
   });
 });

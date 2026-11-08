@@ -50,6 +50,7 @@
       "properties": {
         "brokeCode.providers": {
           "type": "array",
+          "scope": "application",
           "default": [],
           "markdownDescription": "%config.providers.description%",
           "items": {

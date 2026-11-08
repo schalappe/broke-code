@@ -52,8 +52,11 @@ The code so far covers the extension skeleton and a streaming chat with a provid
 - broke-code speaks one contract: streaming `POST /v1/chat/completions` and `GET /v1/models`. It covers the
   internal service and Ollama.
 - Never send `tools` or read `tool_calls`, even to a provider that supports them. See ADR 0001.
-- Providers (name and base URL) live in the VS Code settings. Each API key lives in `SecretStorage`, never in
-  `settings.json`.
+- Providers (name and base URL) live in the VS Code user settings only (`application` scope). A workspace
+  `settings.json` must not override them, because keys are stored by provider name and a repository could
+  otherwise point that name at its own URL. Each API key lives in `SecretStorage`, never in `settings.json`.
+- Requests never follow HTTP redirects; a redirect is reported as an error. Provider response bodies are read
+  under size caps that cancel the download when exceeded.
 - The API does not report a model's context size. A settings table maps model names to sizes, and unknown
   models default to 32k. When the user picks an unknown model, the chat shows a link to set its size.
 - TLS goes through the OS certificate store, which the VS Code extension host already applies to `fetch`.

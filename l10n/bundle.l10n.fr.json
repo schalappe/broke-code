@@ -39,5 +39,8 @@
   "Enter a new key to set or replace it. Leave empty to clear it.": "Saisissez une nouvelle clé pour la définir ou la remplacer. Laissez vide pour l'effacer.",
   "API key for {0} saved.": "Clé d'API de {0} enregistrée.",
   "API key for {0} cleared.": "Clé d'API de {0} effacée.",
-  "The response body could not be read: {0}": "Le corps de la réponse n'a pas pu être lu : {0}"
+  "The response body could not be read: {0}": "Le corps de la réponse n'a pas pu être lu : {0}",
+  "{0} answered with a redirect (HTTP {1}), which broke-code does not follow. Set its base URL to the final address.": "{0} a répondu par une redirection (HTTP {1}), que broke-code ne suit pas. Indiquez l'adresse finale comme URL de base.",
+  "The reply from {0} was cut off: it exceeded the size limit.": "La réponse de {0} a été interrompue : elle dépassait la taille maximale.",
+  "The model list from {0} was cut off: it exceeded the size limit.": "La liste des modèles de {0} a été interrompue : elle dépassait la taille maximale."
 }

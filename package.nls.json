@@ -3,7 +3,7 @@
   "viewContainer.title": "broke-code",
   "view.chat.name": "Chat",
   "command.setApiKey.title": "Set API key",
-  "config.providers.description": "LLM services that speak the OpenAI chat API. Each entry has a unique `name` and a `baseUrl`, the API root such as `http://localhost:11434/v1`. API keys are stored in the editor's secret storage, never here.",
+  "config.providers.description": "LLM services that speak the OpenAI chat API. Each entry has a unique `name` and a `baseUrl`, the API root such as `http://localhost:11434/v1`. API keys are stored in the editor's secret storage, never here. Read from user settings only: a workspace cannot override this list, so a repository cannot redirect a stored key.",
   "config.providers.name.description": "Unique name shown in the chat panel.",
   "config.providers.baseUrl.description": "API root, for example `http://localhost:11434/v1`. broke-code appends `/models` and `/chat/completions`."
 }
