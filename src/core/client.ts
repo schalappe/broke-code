@@ -11,8 +11,8 @@ import * as https from "node:https";
 import type { LookupFunction } from "node:net";
 import { pipeline, Readable, Transform } from "node:stream";
 import * as zlib from "node:zlib";
-import type { Provider } from "./providers";
 import type { CutOffReason, ProviderError } from "./providerError";
+import type { Provider } from "./providers";
 import { readSseData, SseEventTooLargeError } from "./sse";
 import { certificateErrorCode, providerTrust } from "./tls";
 
@@ -75,11 +75,13 @@ export async function listModels(access: ProviderAccess, network: NetworkOptions
   if (!sent.ok) return { ok: false, error: sent.error };
 
   const read = await readText(sent.response.body, MODEL_LIST_MAX_BYTES);
-  if (!read.ok) return { ok: false, error: { kind: "cutOff", provider: provider.name, reason: "listDropped", cause: read.cause } };
+  if (!read.ok)
+    return { ok: false, error: { kind: "cutOff", provider: provider.name, reason: "listDropped", cause: read.cause } };
   if (!read.complete) return { ok: false, error: { kind: "cutOff", provider: provider.name, reason: "listTooLarge" } };
   const body = read.text;
   const models = parseModelIds(body);
-  if (!models) return { ok: false, error: { kind: "invalidResponse", provider: provider.name, detail: truncate(body) } };
+  if (!models)
+    return { ok: false, error: { kind: "invalidResponse", provider: provider.name, detail: truncate(body) } };
   return { ok: true, models };
 }
 
@@ -110,7 +112,11 @@ export async function streamChat(access: ProviderAccess, options: StreamChatOpti
   return outcome;
 }
 
-async function readReply(access: ProviderAccess, options: StreamChatOptions, splitter: ReplySplitter): Promise<ChatOutcome> {
+async function readReply(
+  access: ProviderAccess,
+  options: StreamChatOptions,
+  splitter: ReplySplitter,
+): Promise<ChatOutcome> {
   const { signal } = options;
   const provider = access.provider.name;
   const request = buildChatRequest(access, options.model, options.messages);
@@ -259,7 +265,12 @@ type Sent = { ok: true; response: ProviderResponse } | { ok: false; error: Provi
  * Send request with the provider's CA trust and classify non-2xx. Caller checks own signal to tell stop from
  * unreachable. Redirects never followed: only the configured base URL receives requests, key, and conversation.
  */
-async function send(access: ProviderAccess, request: HttpRequest, network: NetworkOptions, signal?: AbortSignal): Promise<Sent> {
+async function send(
+  access: ProviderAccess,
+  request: HttpRequest,
+  network: NetworkOptions,
+  signal?: AbortSignal,
+): Promise<Sent> {
   const { name, baseUrl } = access.provider;
   const trust = await providerTrust(access.provider);
   if (!trust.ok) return trust;
@@ -278,17 +289,24 @@ async function send(access: ProviderAccess, request: HttpRequest, network: Netwo
     // [>]: Neither message shows the body -> release it unread.
     release(response.body);
     if (redirected) {
-      return { ok: false, error: { kind: "redirected", provider: name, status, location: truncate(response.location ?? "") } };
+      return {
+        ok: false,
+        error: { kind: "redirected", provider: name, status, location: truncate(response.location ?? "") },
+      };
     }
     return { ok: false, error: { kind: "invalidKey", provider: name, status } };
   }
   if (response.unsupportedEncoding !== undefined) {
     release(response.body);
-    return { ok: false, error: { kind: "invalidResponse", provider: name, detail: "", encoding: response.unsupportedEncoding } };
+    return {
+      ok: false,
+      error: { kind: "invalidResponse", provider: name, detail: "", encoding: response.unsupportedEncoding },
+    };
   }
   if (status >= 200 && status < 300) return { ok: true, response };
   const read = await readText(response.body, ERROR_BODY_MAX_BYTES);
-  if (!read.ok) return { ok: false, error: { kind: "rejected", provider: name, status, detail: "", bodyReadError: read.cause } };
+  if (!read.ok)
+    return { ok: false, error: { kind: "rejected", provider: name, status, detail: "", bodyReadError: read.cause } };
   return { ok: false, error: { kind: "rejected", provider: name, status, detail: errorDetail(read.text) } };
 }
 
@@ -443,7 +461,8 @@ function parseChunk(data: string): Chunk {
     return { kind: "malformed" };
   }
   if (!isRecord(value)) return { kind: "malformed" };
-  if (!isAbsent(value.error)) return { kind: "error", message: errorMessage(value.error) ?? JSON.stringify(value.error) };
+  if (!isAbsent(value.error))
+    return { kind: "error", message: errorMessage(value.error) ?? JSON.stringify(value.error) };
 
   const empty: Chunk = { kind: "delta", reasoning: "", content: "", finished: false };
   if (isAbsent(value.choices)) return empty;
@@ -475,7 +494,9 @@ function parseModelIds(body: string): string[] | undefined {
   }
   if (!isRecord(value) || !Array.isArray(value.data)) return undefined;
   // [!]: Empty id rejected: the panel would treat "" as a chosen model while send refuses it.
-  const ids = value.data.map((model: unknown) => (isRecord(model) && typeof model.id === "string" && model.id !== "" ? model.id : undefined));
+  const ids = value.data.map((model: unknown) =>
+    isRecord(model) && typeof model.id === "string" && model.id !== "" ? model.id : undefined,
+  );
   return ids.every((id) => id !== undefined) ? ids : undefined;
 }
 

@@ -1,6 +1,13 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { brotliCompressSync, deflateSync, gzipSync } from "node:zlib";
-import { buildChatRequest, listModels, MODEL_LIST_MAX_BYTES, REPLY_MAX_LENGTH, streamChat, type ProviderAccess } from "./client";
+import {
+  buildChatRequest,
+  listModels,
+  MODEL_LIST_MAX_BYTES,
+  type ProviderAccess,
+  REPLY_MAX_LENGTH,
+  streamChat,
+} from "./client";
 import { vllmOpening, vllmPlainStream, vllmReasoningRest } from "./vllmFixture";
 
 type Handler = (request: Request) => Response | Promise<Response>;
@@ -53,7 +60,9 @@ function truncatedServer(head: string, chunk: string) {
     port: 0,
     socket: {
       data(socket) {
-        socket.write(`${head}\r\nTransfer-Encoding: chunked\r\n\r\n${Buffer.byteLength(chunk).toString(16)}\r\n${chunk}\r\n`);
+        socket.write(
+          `${head}\r\nTransfer-Encoding: chunked\r\n\r\n${Buffer.byteLength(chunk).toString(16)}\r\n${chunk}\r\n`,
+        );
         setTimeout(() => socket.end(), 20);
       },
     },
@@ -89,7 +98,10 @@ function reasoningDelta(text: string, field: "reasoning" | "reasoning_content" =
 }
 
 describe("buildChatRequest", () => {
-  const access: ProviderAccess = { provider: { name: "Ollama", baseUrl: "http://localhost:11434/v1" }, apiKey: undefined };
+  const access: ProviderAccess = {
+    provider: { name: "Ollama", baseUrl: "http://localhost:11434/v1" },
+    apiKey: undefined,
+  };
   const messages = [{ role: "user" as const, content: "Hi" }];
 
   test("posts to /chat/completions with stream true, the model, the messages, and no tools key", () => {
@@ -172,8 +184,12 @@ describe("listModels", () => {
   test("reports a model list whose body download fails as cut off with the cause, not as an invalid response", async () => {
     const listener = truncatedServer("HTTP/1.1 200 OK\r\nContent-Type: application/json", '{"data":[{"id":"qw');
     try {
-      const result = await listModels({ provider: { name: "Half", baseUrl: `http://127.0.0.1:${listener.port}/v1` }, apiKey: undefined });
-      if (result.ok || result.error.kind !== "cutOff") throw new Error(`expected cutOff, got ${JSON.stringify(result)}`);
+      const result = await listModels({
+        provider: { name: "Half", baseUrl: `http://127.0.0.1:${listener.port}/v1` },
+        apiKey: undefined,
+      });
+      if (result.ok || result.error.kind !== "cutOff")
+        throw new Error(`expected cutOff, got ${JSON.stringify(result)}`);
       expect(result.error).toMatchObject({ provider: "Half", reason: "listDropped" });
       expect(result.error.cause?.length).toBeGreaterThan(0);
     } finally {
@@ -185,12 +201,21 @@ describe("listModels", () => {
     const rejected = truncatedServer("HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain", "Internal err");
     const unauthorized = truncatedServer("HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain", "Unauth");
     try {
-      const result = await listModels({ provider: { name: "Half", baseUrl: `http://127.0.0.1:${rejected.port}/v1` }, apiKey: undefined });
-      if (result.ok || result.error.kind !== "rejected") throw new Error(`expected rejected, got ${JSON.stringify(result)}`);
+      const result = await listModels({
+        provider: { name: "Half", baseUrl: `http://127.0.0.1:${rejected.port}/v1` },
+        apiKey: undefined,
+      });
+      if (result.ok || result.error.kind !== "rejected")
+        throw new Error(`expected rejected, got ${JSON.stringify(result)}`);
       expect(result.error).toMatchObject({ provider: "Half", status: 500, detail: "" });
       expect(result.error.bodyReadError?.length).toBeGreaterThan(0);
 
-      expect(await listModels({ provider: { name: "Key", baseUrl: `http://127.0.0.1:${unauthorized.port}/v1` }, apiKey: "k" })).toEqual({
+      expect(
+        await listModels({
+          provider: { name: "Key", baseUrl: `http://127.0.0.1:${unauthorized.port}/v1` },
+          apiKey: "k",
+        }),
+      ).toEqual({
         ok: false,
         error: { kind: "invalidKey", provider: "Key", status: 401 },
       });
@@ -202,30 +227,48 @@ describe("listModels", () => {
 
   test("reports a model list with an empty id as an invalid response", async () => {
     const access = routed("models-empty-id", () => Response.json({ data: [{ id: "qwen3.8:27b" }, { id: "" }] }));
-    expect(await listModels(access)).toMatchObject({ ok: false, error: { kind: "invalidResponse", provider: "P-models-empty-id" } });
+    expect(await listModels(access)).toMatchObject({
+      ok: false,
+      error: { kind: "invalidResponse", provider: "P-models-empty-id" },
+    });
   });
 
   test("does not follow a redirect, and reports it with its target", async () => {
     const target = routed("models-redirect-target", () => Response.json({ data: [{ id: "m" }] }));
     received.delete("models-redirect-target");
-    const access = routed("models-redirect", () => Response.redirect(`${target.provider.baseUrl}/models`, 302), "sk-secret");
+    const access = routed(
+      "models-redirect",
+      () => Response.redirect(`${target.provider.baseUrl}/models`, 302),
+      "sk-secret",
+    );
     expect(await listModels(access)).toEqual({
       ok: false,
-      error: { kind: "redirected", provider: "P-models-redirect", status: 302, location: `${target.provider.baseUrl}/models` },
+      error: {
+        kind: "redirected",
+        provider: "P-models-redirect",
+        status: 302,
+        location: `${target.provider.baseUrl}/models`,
+      },
     });
     expect(received.has("models-redirect-target")).toBe(false);
   });
 
   test("cancels a model list larger than the cap and reports it as too large", async () => {
     const access = routed("models-endless", () => endless('{"data":[', '{"id":"m"},'.repeat(10_000)));
-    expect(await listModels(access)).toEqual({ ok: false, error: { kind: "cutOff", provider: "P-models-endless", reason: "listTooLarge" } });
+    expect(await listModels(access)).toEqual({
+      ok: false,
+      error: { kind: "cutOff", provider: "P-models-endless", reason: "listTooLarge" },
+    });
     expect(MODEL_LIST_MAX_BYTES).toBeGreaterThan(1024 * 1024);
   });
 
   test("reads only the start of an endless error body, and keeps the HTTP classification", async () => {
-    const access = routed("models-500-endless", () => endless("Internal error ", "x".repeat(64 * 1024), { status: 500 }));
+    const access = routed("models-500-endless", () =>
+      endless("Internal error ", "x".repeat(64 * 1024), { status: 500 }),
+    );
     const result = await listModels(access);
-    if (result.ok || result.error.kind !== "rejected") throw new Error(`expected rejected, got ${JSON.stringify(result)}`);
+    if (result.ok || result.error.kind !== "rejected")
+      throw new Error(`expected rejected, got ${JSON.stringify(result)}`);
     expect(result.error.status).toBe(500);
     expect(result.error.detail.startsWith("Internal error xxx")).toBe(true);
   });
@@ -272,7 +315,11 @@ describe("streamChat", () => {
   test("splits delta.reasoning, delta.reasoning_content, and a leading <think> block into the same reasoning and answer", async () => {
     const shapes: Record<string, string[]> = {
       reasoning: [reasoningDelta("Plan "), reasoningDelta("the reply."), delta("Hello"), delta(" **world**")],
-      reasoningContent: [reasoningDelta("Plan ", "reasoning_content"), reasoningDelta("the reply.", "reasoning_content"), delta("\n\nHello **world**")],
+      reasoningContent: [
+        reasoningDelta("Plan ", "reasoning_content"),
+        reasoningDelta("the reply.", "reasoning_content"),
+        delta("\n\nHello **world**"),
+      ],
       thinkTag: [delta("<think>Plan "), delta("the reply.</think>\n\nHello"), delta(" **world**")],
     };
     for (const [shape, chunks] of Object.entries(shapes)) {
@@ -288,14 +335,28 @@ describe("streamChat", () => {
 
   test("recognizes <think> and </think> split across deltas, after leading whitespace", async () => {
     const access = routed("chat-split-tag", () =>
-      sse([delta("\n <thi"), delta("nk>\nPlan"), delta(" the reply.\n</th"), delta("ink>"), delta("\n\nHel"), delta("lo"), delta("", "stop")]),
+      sse([
+        delta("\n <thi"),
+        delta("nk>\nPlan"),
+        delta(" the reply.\n</th"),
+        delta("ink>"),
+        delta("\n\nHel"),
+        delta("lo"),
+        delta("", "stop"),
+      ]),
     );
     expect(await run(access)).toEqual({ outcome: { status: "done" }, reasoning: "\nPlan the reply.\n", text: "Hello" });
   });
 
   test("starts the answer at its first non-blank line, keeping that line's indentation", async () => {
-    const access = routed("chat-blank-lines", () => sse([delta("<think>Plan</think>\n \n"), delta("    indented code\nnext"), delta("", "stop")]));
-    expect(await run(access)).toEqual({ outcome: { status: "done" }, reasoning: "Plan", text: "    indented code\nnext" });
+    const access = routed("chat-blank-lines", () =>
+      sse([delta("<think>Plan</think>\n \n"), delta("    indented code\nnext"), delta("", "stop")]),
+    );
+    expect(await run(access)).toEqual({
+      outcome: { status: "done" },
+      reasoning: "Plan",
+      text: "    indented code\nnext",
+    });
     const plain = routed("chat-blank-lines-plain", () => sse([delta("\n\n"), delta("Hi"), delta("", "stop")]));
     expect(await run(plain)).toEqual({ outcome: { status: "done" }, reasoning: "", text: "Hi" });
     const blank = routed("chat-blank-only", () => sse([delta("\n\n "), delta("", "stop")]));
@@ -306,7 +367,11 @@ describe("streamChat", () => {
     const access = routed("chat-late-tag", () =>
       sse([delta("Use the "), delta("<think>"), delta(" tag.</think> Done"), delta("", "stop")]),
     );
-    expect(await run(access)).toEqual({ outcome: { status: "done" }, reasoning: "", text: "Use the <think> tag.</think> Done" });
+    expect(await run(access)).toEqual({
+      outcome: { status: "done" },
+      reasoning: "",
+      text: "Use the <think> tag.</think> Done",
+    });
   });
 
   test("keeps text that only starts like <think> in the answer", async () => {
@@ -360,7 +425,11 @@ describe("streamChat", () => {
       onContent: (text) => answer.push(text),
       onReasoning: (text) => reasoning.push(text),
     });
-    expect({ outcome, reasoning, answer }).toEqual({ outcome: { status: "done" }, reasoning: ["Plan", " more "], answer: ["Done"] });
+    expect({ outcome, reasoning, answer }).toEqual({
+      outcome: { status: "done" },
+      reasoning: ["Plan", " more "],
+      answer: ["Done"],
+    });
   });
 
   test("leaves a <think> block that never closes in the reasoning, with an empty answer", async () => {
@@ -449,7 +518,10 @@ describe("streamChat", () => {
       };
       const { outcome, text } = await run(access);
       expect(text).toBe("Partial ");
-      expect(outcome).toMatchObject({ status: "failed", error: { kind: "cutOff", provider: "Dropper", reason: "dropped" } });
+      expect(outcome).toMatchObject({
+        status: "failed",
+        error: { kind: "cutOff", provider: "Dropper", reason: "dropped" },
+      });
     } finally {
       listener.stop(true);
     }
@@ -475,7 +547,10 @@ describe("streamChat", () => {
     ];
     for (const [index, payload] of malformed.entries()) {
       const access = routed(`chat-malformed-${index}`, () => sse([event(payload), "data: [DONE]\n\n"]));
-      expect((await run(access)).outcome).toMatchObject({ status: "failed", error: { kind: "cutOff", reason: "malformed" } });
+      expect((await run(access)).outcome).toMatchObject({
+        status: "failed",
+        error: { kind: "cutOff", reason: "malformed" },
+      });
     }
   });
 
@@ -496,7 +571,7 @@ describe("streamChat", () => {
 
   test("reports stop as stopped even when [DONE] is already buffered behind the content", async () => {
     const controller = new AbortController();
-    const access = routed("chat-stop-done", () => sse([delta("partial") + "data: [DONE]\n\n"]));
+    const access = routed("chat-stop-done", () => sse([`${delta("partial")}data: [DONE]\n\n`]));
     const outcome = await streamChat(access, {
       model: "m",
       messages,
@@ -553,17 +628,23 @@ describe("streamChat", () => {
   });
 
   test("cancels a stream whose line never ends and reports it as too large", async () => {
-    const access = routed("chat-endless-line", () => endless(delta("Partial ") + "data: ", "x".repeat(64 * 1024)));
+    const access = routed("chat-endless-line", () => endless(`${delta("Partial ")}data: `, "x".repeat(64 * 1024)));
     const { outcome, text } = await run(access);
     expect(text).toBe("Partial ");
-    expect(outcome).toEqual({ status: "failed", error: { kind: "cutOff", provider: "P-chat-endless-line", reason: "tooLarge" } });
+    expect(outcome).toEqual({
+      status: "failed",
+      error: { kind: "cutOff", provider: "P-chat-endless-line", reason: "tooLarge" },
+    });
   });
 
   test("stops a reply longer than the cap, keeping the text received under it", async () => {
     const piece = "x".repeat(512 * 1024);
     const access = routed("chat-endless-reply", () => endless("", delta(piece)));
     const { outcome, text } = await run(access);
-    expect(outcome).toEqual({ status: "failed", error: { kind: "cutOff", provider: "P-chat-endless-reply", reason: "tooLarge" } });
+    expect(outcome).toEqual({
+      status: "failed",
+      error: { kind: "cutOff", provider: "P-chat-endless-reply", reason: "tooLarge" },
+    });
     expect(text.length).toBeLessThanOrEqual(REPLY_MAX_LENGTH);
     expect(text.length).toBeGreaterThan(REPLY_MAX_LENGTH - piece.length);
   });
@@ -572,7 +653,10 @@ describe("streamChat", () => {
     const piece = "x".repeat(512 * 1024);
     const access = routed("chat-endless-reasoning", () => endless(delta("Answer"), reasoningDelta(piece)));
     const { outcome, text, reasoning } = await run(access);
-    expect(outcome).toEqual({ status: "failed", error: { kind: "cutOff", provider: "P-chat-endless-reasoning", reason: "tooLarge" } });
+    expect(outcome).toEqual({
+      status: "failed",
+      error: { kind: "cutOff", provider: "P-chat-endless-reasoning", reason: "tooLarge" },
+    });
     expect(text).toBe("Answer");
     expect(text.length + reasoning.length).toBeLessThanOrEqual(REPLY_MAX_LENGTH);
     expect(text.length + reasoning.length).toBeGreaterThan(REPLY_MAX_LENGTH - piece.length);
@@ -597,7 +681,11 @@ describe("streamChat", () => {
 
 describe("compressed responses", () => {
   const modelList = '{"data":[{"id":"m"}]}';
-  const reply = [event({ choices: [{ delta: { content: "Hel" } }] }), event({ choices: [{ delta: { content: "lo" } }] }), "data: [DONE]\n\n"].join("");
+  const reply = [
+    event({ choices: [{ delta: { content: "Hel" } }] }),
+    event({ choices: [{ delta: { content: "lo" } }] }),
+    "data: [DONE]\n\n",
+  ].join("");
 
   function encoded(body: Uint8Array, encoding: string, init?: ResponseInit): Response {
     return new Response(new Uint8Array(body), { ...init, headers: { ...init?.headers, "content-encoding": encoding } });
@@ -627,7 +715,9 @@ describe("compressed responses", () => {
   });
 
   test("decodes a gzip reply stream", async () => {
-    const access = routed("enc-gzip-chat", () => encoded(gzipSync(reply), "gzip", { headers: { "content-type": "text/event-stream" } }));
+    const access = routed("enc-gzip-chat", () =>
+      encoded(gzipSync(reply), "gzip", { headers: { "content-type": "text/event-stream" } }),
+    );
     expect(await chat(access)).toEqual({ outcome: { status: "done" }, text: "Hello" });
   });
 
@@ -639,7 +729,9 @@ describe("compressed responses", () => {
   });
 
   test("decodes a compressed error body", async () => {
-    const access = routed("enc-500", () => encoded(gzipSync('{"error":{"message":"overloaded"}}'), "gzip", { status: 500 }));
+    const access = routed("enc-500", () =>
+      encoded(gzipSync('{"error":{"message":"overloaded"}}'), "gzip", { status: 500 }),
+    );
     expect(await listModels(access)).toEqual({
       ok: false,
       error: { kind: "rejected", provider: "P-enc-500", status: 500, detail: "overloaded" },
@@ -650,7 +742,10 @@ describe("compressed responses", () => {
     const bomb = gzipSync(`{"data":[${'{"id":"m"},'.repeat(MODEL_LIST_MAX_BYTES / 10)}{"id":"m"}]}`);
     expect(bomb.byteLength).toBeLessThan(MODEL_LIST_MAX_BYTES / 100);
     const access = routed("enc-bomb", () => encoded(bomb, "gzip"));
-    expect(await listModels(access)).toEqual({ ok: false, error: { kind: "cutOff", provider: "P-enc-bomb", reason: "listTooLarge" } });
+    expect(await listModels(access)).toEqual({
+      ok: false,
+      error: { kind: "cutOff", provider: "P-enc-bomb", reason: "listTooLarge" },
+    });
   });
 
   test("ends the download of an endless compressed model list once its decoded size passes the cap", async () => {
@@ -667,8 +762,13 @@ describe("compressed responses", () => {
       cancel: () => cancelled(),
     });
     const access = routed("enc-endless", () => new Response(body, { headers: { "content-encoding": "gzip" } }));
-    expect(await listModels(access)).toEqual({ ok: false, error: { kind: "cutOff", provider: "P-enc-endless", reason: "listTooLarge" } });
-    expect(await Promise.race([downloadEnded.then(() => "ended"), Bun.sleep(2000).then(() => "still downloading")])).toBe("ended");
+    expect(await listModels(access)).toEqual({
+      ok: false,
+      error: { kind: "cutOff", provider: "P-enc-endless", reason: "listTooLarge" },
+    });
+    expect(
+      await Promise.race([downloadEnded.then(() => "ended"), Bun.sleep(2000).then(() => "still downloading")]),
+    ).toBe("ended");
   });
 
   test("reports a body that does not decode as cut off, with the decoder's cause", async () => {
@@ -683,8 +783,14 @@ describe("compressed responses", () => {
     const downloadEnded = new Promise<void>((resolve) => (cancelled = resolve));
     // [>]: Concatenated gzip members: each chunk decodes on its own, like a server flushing per event.
     const piece = gzipSync(event({ choices: [{ delta: { content: "x" } }] }));
-    const body = new ReadableStream<Uint8Array>({ pull: (stream) => stream.enqueue(new Uint8Array(piece)), cancel: () => cancelled() });
-    const access = routed("enc-stop", () => new Response(body, { headers: { "content-type": "text/event-stream", "content-encoding": "gzip" } }));
+    const body = new ReadableStream<Uint8Array>({
+      pull: (stream) => stream.enqueue(new Uint8Array(piece)),
+      cancel: () => cancelled(),
+    });
+    const access = routed(
+      "enc-stop",
+      () => new Response(body, { headers: { "content-type": "text/event-stream", "content-encoding": "gzip" } }),
+    );
     const outcome = await streamChat(access, {
       model: "m",
       messages: [{ role: "user", content: "Hi" }],
@@ -693,7 +799,9 @@ describe("compressed responses", () => {
       onReasoning: () => {},
     });
     expect(outcome).toEqual({ status: "stopped" });
-    expect(await Promise.race([downloadEnded.then(() => "ended"), Bun.sleep(2000).then(() => "still downloading")])).toBe("ended");
+    expect(
+      await Promise.race([downloadEnded.then(() => "ended"), Bun.sleep(2000).then(() => "still downloading")]),
+    ).toBe("ended");
   });
 
   test("reads coding names case-insensitively, as RFC 9110 defines them", async () => {
@@ -704,8 +812,13 @@ describe("compressed responses", () => {
   test.each(["__proto__", "constructor", "toString", "gzip, br", "gzip,gzip"])(
     "reports Content-Encoding %p as an invalid response, never a crash",
     async (value) => {
-      const access = routed(`enc-odd-${encodeURIComponent(value)}`, () => encoded(new TextEncoder().encode(modelList), value));
-      expect(await listModels(access)).toMatchObject({ ok: false, error: { kind: "invalidResponse", detail: "", encoding: value.toLowerCase() } });
+      const access = routed(`enc-odd-${encodeURIComponent(value)}`, () =>
+        encoded(new TextEncoder().encode(modelList), value),
+      );
+      expect(await listModels(access)).toMatchObject({
+        ok: false,
+        error: { kind: "invalidResponse", detail: "", encoding: value.toLowerCase() },
+      });
     },
   );
 
@@ -717,7 +830,10 @@ describe("compressed responses", () => {
     });
     const chatting = routed("enc-zstd-chat", () => encoded(new TextEncoder().encode(reply), "zstd"));
     expect(await chat(chatting)).toEqual({
-      outcome: { status: "failed", error: { kind: "invalidResponse", provider: "P-enc-zstd-chat", detail: "", encoding: "zstd" } },
+      outcome: {
+        status: "failed",
+        error: { kind: "invalidResponse", provider: "P-enc-zstd-chat", detail: "", encoding: "zstd" },
+      },
       text: "",
     });
   });
@@ -774,9 +890,15 @@ describe("timeouts", () => {
     const listener = silentServer();
     try {
       for (const apiKey of ["k€y", "line\nbreak"]) {
-        const access: ProviderAccess = { provider: { name: "Bad key", baseUrl: `http://127.0.0.1:${listener.port}/v1` }, apiKey };
+        const access: ProviderAccess = {
+          provider: { name: "Bad key", baseUrl: `http://127.0.0.1:${listener.port}/v1` },
+          apiKey,
+        };
         const fired = await timersFiredAfter(41, async () => {
-          expect(await listModels(access, { timeoutMs: 41 })).toMatchObject({ ok: false, error: { kind: "unreachable" } });
+          expect(await listModels(access, { timeoutMs: 41 })).toMatchObject({
+            ok: false,
+            error: { kind: "unreachable" },
+          });
         });
         expect(fired).toBe(0);
       }
@@ -800,7 +922,10 @@ describe("timeouts", () => {
     const stalledLookup = () => {
       // [>]: Never calls back, like a DNS server that does not answer.
     };
-    const access: ProviderAccess = { provider: { name: "Nowhere", baseUrl: "http://stalled.example.test/v1" }, apiKey: undefined };
+    const access: ProviderAccess = {
+      provider: { name: "Nowhere", baseUrl: "http://stalled.example.test/v1" },
+      apiKey: undefined,
+    };
     const result = await listModels(access, { ...network, lookup: stalledLookup });
     expect(result).toMatchObject({ ok: false, error: { kind: "unreachable", provider: "Nowhere" } });
     if (!result.ok && result.error.kind === "unreachable") expect(result.error.cause).toContain("timed out");
@@ -813,7 +938,12 @@ describe("timeouts", () => {
     try {
       expect(await listModels(at(models.port, "Stall"), network)).toEqual({
         ok: false,
-        error: { kind: "cutOff", provider: "Stall", reason: "listDropped", cause: "no data from the provider for 0.05 s" },
+        error: {
+          kind: "cutOff",
+          provider: "Stall",
+          reason: "listDropped",
+          cause: "no data from the provider for 0.05 s",
+        },
       });
       const parts: string[] = [];
       const outcome = await streamChat(at(chat.port, "Stall"), {
@@ -870,7 +1000,9 @@ describe("timeouts", () => {
   test("leaves no timer behind after a refused connection or a Stop", async () => {
     expect(await timersFiredAfter(43, () => listModels(refused, { timeoutMs: 43 }))).toBe(0);
 
-    const listener = silentServer(`HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n${chunk(delta("Partial "))}`);
+    const listener = silentServer(
+      `HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n${chunk(delta("Partial "))}`,
+    );
     try {
       const controller = new AbortController();
       const fired = await timersFiredAfter(44, async () => {

@@ -45,7 +45,11 @@ export function describeProviderError(error: ProviderError): ErrorText {
     case "invalidResponse":
       if (error.encoding !== undefined) {
         return {
-          message: l10n.t("{0} answered with a compression that broke-code cannot read (Content-Encoding: {1}).", error.provider, error.encoding),
+          message: l10n.t(
+            "{0} answered with a compression that broke-code cannot read (Content-Encoding: {1}).",
+            error.provider,
+            error.encoding,
+          ),
         };
       }
       return {
@@ -59,7 +63,8 @@ export function describeProviderError(error: ProviderError): ErrorText {
 }
 
 function rejectedDetail(error: ProviderError & { kind: "rejected" }): { detail?: string } {
-  if (error.bodyReadError !== undefined) return { detail: l10n.t("The response body could not be read: {0}", error.bodyReadError) };
+  if (error.bodyReadError !== undefined)
+    return { detail: l10n.t("The response body could not be read: {0}", error.bodyReadError) };
   return error.detail ? { detail: error.detail } : {};
 }
 

@@ -34,7 +34,11 @@ The code so far covers the extension skeleton and a streaming chat with a provid
   bundle (`dist/webview/`).
 - `scripts/next-version.ts`: computes the next release version from the commits since the last `v*` tag. The
   release workflow runs it as a CLI. Its tests sit next to it.
-- `.github/workflows/ci.yml`: type check, unit tests, build, and a packaging dry run on macOS.
+- `biome.jsonc`: the Biome linter and formatter settings. Markdown is excluded, because Biome's Markdown formatter
+  breaks the YAML frontmatter of the ADRs.
+- `.vscode/`: the launch configuration, Biome as the workspace formatter for TS, TSX, JSON, and CSS, and the Biome
+  extension as a recommendation.
+- `.github/workflows/ci.yml`: lint and format check, type check, unit tests, build, and a packaging dry run on macOS.
 - `.github/workflows/release.yml`: the release on each push to `main`. The Marketplace Trusted Publishing
   policy fixes its file name.
 - `README.md`: the user documentation, also shown on Open VSX and the Visual Studio Marketplace.
@@ -132,8 +136,10 @@ The code so far covers the extension skeleton and a streaming chat with a provid
 
 ## Verification
 
-- `bun run typecheck`, `bun test`, and `bun run build` run in CI on every pull request and on `develop` and
-  `main`.
+- `bun run lint`, `bun run typecheck`, `bun test`, and `bun run build` run in CI on every pull request and on
+  `develop` and `main`.
+- `bun run lint` runs Biome over code, CSS, and JSON without writing. `bun run format` applies its formatting,
+  import sorting, and safe lint fixes. Run it before committing.
 - `bun run package` builds and writes `broke-code-<version>.vsix` with the version from `VERSION` (default
   `0.0.0`). It writes the version into the VSIX only, never into `package.json`. CI runs it on every pull
   request as a dry run of the release and checks the version inside the VSIX.

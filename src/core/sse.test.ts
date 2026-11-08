@@ -80,7 +80,10 @@ describe("readSseData", () => {
   test("throws instead of buffering a line longer than the cap", async () => {
     const events: string[] = [];
     const reading = (async () => {
-      for await (const data of readSseData(streamOf(['data: {"a":1}\n\n', "data: ", "x".repeat(40), "x".repeat(40)]), 64)) {
+      for await (const data of readSseData(
+        streamOf(['data: {"a":1}\n\n', "data: ", "x".repeat(40), "x".repeat(40)]),
+        64,
+      )) {
         events.push(data);
       }
     })();

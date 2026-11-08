@@ -3,9 +3,9 @@
  * Activation entry point: wires settings, API keys, chat controller, chat view, and `broke-code.setApiKey`.
  */
 import * as vscode from "vscode";
+import { ChatController } from "../core/chatController";
 import { parseProviders } from "../core/providers";
 import { ApiKeys } from "./apiKeys";
-import { ChatController } from "../core/chatController";
 import { CHAT_VIEW_ID, ChatView } from "./chatView";
 
 export function activate(context: vscode.ExtensionContext): void {

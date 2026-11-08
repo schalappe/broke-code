@@ -31,7 +31,9 @@ export type ChatState = {
 /** L10n bundle as `vscode.l10n.bundle`: absent in English. */
 export type L10nBundle = Record<string, string>;
 
-export type HostMessage = { type: "init"; l10n: L10nBundle | undefined; state: ChatState } | { type: "state"; state: ChatState };
+export type HostMessage =
+  | { type: "init"; l10n: L10nBundle | undefined; state: ChatState }
+  | { type: "state"; state: ChatState };
 
 export type WebviewMessage =
   | { type: "ready" }

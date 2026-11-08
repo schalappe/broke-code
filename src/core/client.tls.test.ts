@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { listModels, streamChat, type ChatOutcome, type ProviderAccess } from "./client";
+import { type ChatOutcome, listModels, type ProviderAccess, streamChat } from "./client";
 import type { ProviderError } from "./providerError";
 import type { Provider } from "./providers";
 import { createTlsFixture, type KeyPair, type TlsFixture } from "./tlsFixture";
@@ -17,7 +17,9 @@ function serve(pair: KeyPair): string {
     fetch(request) {
       if (new URL(request.url).pathname.endsWith("/models")) return Response.json({ data: [{ id: "m" }] });
       const chunk = { choices: [{ index: 0, delta: { content: "Hi" }, finish_reason: "stop" }] };
-      return new Response(`data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
+      return new Response(`data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`, {
+        headers: { "content-type": "text/event-stream" },
+      });
     },
   });
   servers.push(server);
@@ -65,7 +67,12 @@ async function chat(target: ProviderAccess): Promise<{ outcome: ChatOutcome; tex
 describe("provider certificates", () => {
   test("reports a self-signed certificate as a certificate error naming the provider, for listing and chat", async () => {
     const target = access("Corp", selfSignedUrl);
-    const expected: ProviderError = { kind: "certificate", provider: "Corp", baseUrl: selfSignedUrl, code: "DEPTH_ZERO_SELF_SIGNED_CERT" };
+    const expected: ProviderError = {
+      kind: "certificate",
+      provider: "Corp",
+      baseUrl: selfSignedUrl,
+      code: "DEPTH_ZERO_SELF_SIGNED_CERT",
+    };
     expect(await listModels(target)).toEqual({ ok: false, error: expected });
     expect((await chat(target)).outcome).toEqual({ status: "failed", error: expected });
   });
@@ -83,9 +90,17 @@ describe("provider certificates", () => {
 
   test("keeps the CA file to its own provider: a second provider without one still fails on the same server", async () => {
     // [!]: Trusted request first, so a pooled connection or a shared agent would let the second one through.
-    expect(await listModels(access("Trusting", selfSignedUrl, fixture.selfSigned.certPath))).toMatchObject({ ok: true });
-    expect(await listModels(access("Plain", selfSignedUrl))).toMatchObject({ ok: false, error: { kind: "certificate", provider: "Plain" } });
-    expect((await chat(access("Plain", selfSignedUrl))).outcome).toMatchObject({ status: "failed", error: { kind: "certificate" } });
+    expect(await listModels(access("Trusting", selfSignedUrl, fixture.selfSigned.certPath))).toMatchObject({
+      ok: true,
+    });
+    expect(await listModels(access("Plain", selfSignedUrl))).toMatchObject({
+      ok: false,
+      error: { kind: "certificate", provider: "Plain" },
+    });
+    expect((await chat(access("Plain", selfSignedUrl))).outcome).toMatchObject({
+      status: "failed",
+      error: { kind: "certificate" },
+    });
   });
 
   test("reports an expired certificate as a certificate error, even with its CA trusted", async () => {
@@ -97,7 +112,8 @@ describe("provider certificates", () => {
 
   test("reports a hostname mismatch as a certificate error, even with its CA trusted", async () => {
     const result = await listModels(access("Elsewhere", mismatchUrl, bundlePath));
-    if (result.ok || result.error.kind !== "certificate") throw new Error(`expected certificate, got ${JSON.stringify(result)}`);
+    if (result.ok || result.error.kind !== "certificate")
+      throw new Error(`expected certificate, got ${JSON.stringify(result)}`);
     expect(result.error.provider).toBe("Elsewhere");
     expect(["ERR_TLS_CERT_ALTNAME_INVALID", "HOSTNAME_MISMATCH"]).toContain(result.error.code);
   });
@@ -105,7 +121,8 @@ describe("provider certificates", () => {
   test("reports a CA file that does not exist, naming the path, for listing and chat", async () => {
     const path = join(fixture.dir, "missing.pem");
     const listing = await listModels(access("Corp", selfSignedUrl, path));
-    if (listing.ok || listing.error.kind !== "caFileInvalid") throw new Error(`expected caFileInvalid, got ${JSON.stringify(listing)}`);
+    if (listing.ok || listing.error.kind !== "caFileInvalid")
+      throw new Error(`expected caFileInvalid, got ${JSON.stringify(listing)}`);
     expect(listing.error).toMatchObject({ provider: "Corp", path, reason: "unreadable" });
     expect(listing.error.cause).toContain("ENOENT");
     expect((await chat(access("Corp", selfSignedUrl, path))).outcome).toMatchObject({

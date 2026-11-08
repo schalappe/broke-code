@@ -30,7 +30,9 @@ export class ApiKeys {
     try {
       return await this.secrets.get(SECRET_PREFIX + provider);
     } catch (error) {
-      void vscode.window.showErrorMessage(vscode.l10n.t("Could not read the API key for {0}: {1}", provider, String(error)));
+      void vscode.window.showErrorMessage(
+        vscode.l10n.t("Could not read the API key for {0}: {1}", provider, String(error)),
+      );
       return undefined;
     }
   }
@@ -57,7 +59,9 @@ export class ApiKeys {
           await this.askAndStore(name, vscode.l10n.t("broke-code sends this key to {0} as a bearer token.", name));
         })
         .catch((error: unknown) => {
-          void vscode.window.showErrorMessage(vscode.l10n.t("Could not save the API key for {0}: {1}", name, String(error)));
+          void vscode.window.showErrorMessage(
+            vscode.l10n.t("Could not save the API key for {0}: {1}", name, String(error)),
+          );
         })
         .finally(() => this.prompting.delete(name));
     }
@@ -74,20 +78,28 @@ export class ApiKeys {
       if (providers.length === 0) {
         const open = vscode.l10n.t("Open settings");
         const choice = await vscode.window.showWarningMessage(vscode.l10n.t("No provider is configured."), open);
-        if (choice === open) await vscode.commands.executeCommand("workbench.action.openSettings", "brokeCode.providers");
+        if (choice === open)
+          await vscode.commands.executeCommand("workbench.action.openSettings", "brokeCode.providers");
         return;
       }
       const name =
         providers.find((provider) => provider.name === preselected)?.name ??
-        (await vscode.window.showQuickPick(
-          providers.map((provider) => ({ label: provider.name, description: provider.baseUrl })),
-          { title: vscode.l10n.t("Set API key"), placeHolder: vscode.l10n.t("Choose a provider") },
-        ))?.label;
+        (
+          await vscode.window.showQuickPick(
+            providers.map((provider) => ({ label: provider.name, description: provider.baseUrl })),
+            { title: vscode.l10n.t("Set API key"), placeHolder: vscode.l10n.t("Choose a provider") },
+          )
+        )?.label;
       if (!name) return;
 
-      const outcome = await this.askAndStore(name, vscode.l10n.t("Enter a new key to set or replace it. Leave empty to clear it."));
-      if (outcome === "stored") void vscode.window.showInformationMessage(vscode.l10n.t("API key for {0} saved.", name));
-      if (outcome === "cleared") void vscode.window.showInformationMessage(vscode.l10n.t("API key for {0} cleared.", name));
+      const outcome = await this.askAndStore(
+        name,
+        vscode.l10n.t("Enter a new key to set or replace it. Leave empty to clear it."),
+      );
+      if (outcome === "stored")
+        void vscode.window.showInformationMessage(vscode.l10n.t("API key for {0} saved.", name));
+      if (outcome === "cleared")
+        void vscode.window.showInformationMessage(vscode.l10n.t("API key for {0} cleared.", name));
     });
   }
 
@@ -108,7 +120,9 @@ export class ApiKeys {
     try {
       await this.secrets.store(SECRET_PREFIX + name, key.trim());
     } catch (error) {
-      void vscode.window.showErrorMessage(vscode.l10n.t("Could not save the API key for {0}: {1}", name, String(error)));
+      void vscode.window.showErrorMessage(
+        vscode.l10n.t("Could not save the API key for {0}: {1}", name, String(error)),
+      );
       return "failed";
     }
     return key.trim() ? "stored" : "cleared";

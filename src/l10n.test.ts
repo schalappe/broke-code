@@ -12,7 +12,9 @@ async function readJson(path: string): Promise<Record<string, string>> {
 /** Source files of host and webview, tests excluded. */
 async function sourceFiles(): Promise<string[]> {
   const entries = await readdir(join(root, "src"), { recursive: true });
-  return entries.filter((path) => /\.tsx?$/.test(path) && !/\.test\.tsx?$/.test(path)).map((path) => join(root, "src", path));
+  return entries
+    .filter((path) => /\.tsx?$/.test(path) && !/\.test\.tsx?$/.test(path))
+    .map((path) => join(root, "src", path));
 }
 
 /** Messages passed to `vscode.l10n.t` and `@vscode/l10n` `l10n.t`, by file. */
@@ -22,7 +24,9 @@ async function usedMessages(): Promise<{ messages: Set<string>; nonLiteralCalls:
   for (const file of await sourceFiles()) {
     const source = await Bun.file(file).text();
     const calls = source.match(/\bl10n\.t\(/g)?.length ?? 0;
-    const literals = [...source.matchAll(/\bl10n\.t\(\s*("(?:[^"\\]|\\.)*")/g)].map((match) => JSON.parse(match[1]!) as string);
+    const literals = [...source.matchAll(/\bl10n\.t\(\s*("(?:[^"\\]|\\.)*")/g)].map(
+      (match) => JSON.parse(match[1]!) as string,
+    );
     if (literals.length !== calls) nonLiteralCalls.push(file);
     for (const message of literals) messages.add(message);
   }
@@ -49,7 +53,9 @@ describe("localization", () => {
 
   test("each French message keeps the placeholders of its English key", async () => {
     const french = await readJson("l10n/bundle.l10n.fr.json");
-    const mismatched = Object.entries(french).filter(([key, value]) => placeholders(key).join() !== placeholders(value).join());
+    const mismatched = Object.entries(french).filter(
+      ([key, value]) => placeholders(key).join() !== placeholders(value).join(),
+    );
     expect(mismatched).toEqual([]);
   });
 

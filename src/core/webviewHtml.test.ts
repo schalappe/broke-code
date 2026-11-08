@@ -31,7 +31,9 @@ describe("renderWebviewHtml", () => {
 
   test("loads the bundle script with the nonce and the stylesheet from the extension", () => {
     const html = renderWebviewHtml(input);
-    expect(html).toContain('<script type="module" nonce="abc123" src="https://webview.test/dist/webview/main.js"></script>');
+    expect(html).toContain(
+      '<script type="module" nonce="abc123" src="https://webview.test/dist/webview/main.js"></script>',
+    );
     expect(html).toContain('<link rel="stylesheet" href="https://webview.test/dist/webview/main.css">');
     expect(html).toContain('<html lang="fr">');
   });

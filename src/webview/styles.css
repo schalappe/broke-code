@@ -30,11 +30,6 @@ body {
   align-items: center;
 }
 
-.header select {
-  flex: 1 1 0;
-  min-width: 0;
-}
-
 select,
 textarea {
   color: var(--vscode-input-foreground);
@@ -49,6 +44,11 @@ select {
   color: var(--vscode-dropdown-foreground);
   background: var(--vscode-dropdown-background);
   border-color: var(--vscode-dropdown-border, transparent);
+}
+
+.header select {
+  flex: 1 1 0;
+  min-width: 0;
 }
 
 select:focus,

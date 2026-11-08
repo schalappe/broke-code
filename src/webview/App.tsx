@@ -1,8 +1,8 @@
 import * as l10n from "@vscode/l10n";
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
+import { type KeyboardEvent, useEffect, useLayoutEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
+import { type ChatEntry, type ChatState, isReplying } from "../core/protocol";
 import type { ProviderError } from "../core/providerError";
-import { isReplying, type ChatEntry, type ChatState } from "../core/protocol";
 import { describeProviderError, describeSkippedProvider } from "./text";
 import { post } from "./vscodeApi";
 
@@ -162,10 +162,12 @@ function Conversation({ entries }: { entries: ChatEntry[] }) {
     >
       {entries.map((entry, index) =>
         entry.role === "user" ? (
+          // biome-ignore lint/suspicious/noArrayIndexKey: entries are only appended or cleared, never reordered or removed.
           <div key={index} className="message user">
             {entry.content}
           </div>
         ) : (
+          // biome-ignore lint/suspicious/noArrayIndexKey: entries are only appended or cleared, never reordered or removed.
           <div key={index} className="message assistant">
             {entry.reasoning !== "" && <Reasoning key="reasoning" entry={entry} />}
             {entry.content !== "" && <Markdown>{entry.content}</Markdown>}
@@ -235,7 +237,11 @@ function Composer({ state }: { state: ChatState }) {
         ref={input}
         rows={3}
         value={text}
-        placeholder={ready ? l10n.t("Ask anything. Enter to send, Shift+Enter for a new line.") : l10n.t("Choose a model to start.")}
+        placeholder={
+          ready
+            ? l10n.t("Ask anything. Enter to send, Shift+Enter for a new line.")
+            : l10n.t("Choose a model to start.")
+        }
         aria-label={l10n.t("Message")}
         onChange={(event) => setText(event.target.value)}
         onKeyDown={onKeyDown}
