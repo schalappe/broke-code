@@ -162,20 +162,25 @@ export class ChatController {
     this.reply = { abort, provider };
     this.emit();
 
-    const mentions = await this.readMentions(content, picked);
-    user.mentions = mentions.map(toResult);
-    const composed = composeUserMessage(content, mentions);
-    this.modelText.set(user, composed);
-    history.push({ role: "user", content: composed });
-    if (abort.signal.aborted) {
+    // [>]: Stop ends the wait at once, even if a read or the key lookup never settles; their late results are dropped.
+    const prepared = await unlessAborted(
+      Promise.all([this.readMentions(content, picked), this.accessOf(provider)]),
+      abort.signal,
+    );
+    if (!prepared) {
       if (this.reply?.abort === abort) this.reply = undefined;
       reply.status = "stopped";
       this.emit();
       return;
     }
+    const [mentions, access] = prepared;
+    user.mentions = mentions.map(toResult);
+    const composed = composeUserMessage(content, mentions);
+    this.modelText.set(user, composed);
+    history.push({ role: "user", content: composed });
     if (mentions.length > 0) this.emit();
 
-    const outcome = await streamChat(await this.accessOf(provider), {
+    const outcome = await streamChat(access, {
       model,
       messages: history,
       signal: abort.signal,
@@ -255,6 +260,16 @@ export class ChatController {
   private emit(): void {
     this.publish(this.state);
   }
+}
+
+/** `work`'s result, or `undefined` as soon as `signal` aborts (already aborted included). */
+function unlessAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T | undefined> {
+  if (signal.aborted) return Promise.resolve(undefined);
+  return new Promise((resolve, reject) => {
+    const onAbort = () => resolve(undefined);
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
 }
 
 /** What the chat shows and keeps of a read mention: no content. */

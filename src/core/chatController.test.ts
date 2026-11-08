@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import { ChatController, type ChoiceStore } from "./chatController";
 import type { MentionReader, ReadMention } from "./mentions";
-import type { ChatState } from "./protocol";
+import { type ChatState, isReplying } from "./protocol";
 import type { Provider } from "./providers";
 import { vllmOpening, vllmReasoningRest } from "./vllmFixture";
 
@@ -447,6 +447,24 @@ describe("ChatController mentions", () => {
       { role: "user", content: "Hi" },
       { role: "assistant", content: "Partial ", status: "stopped" },
     ]);
+  });
+
+  test("Stop ends the reply at once while a mention read hangs, and a new send works", async () => {
+    const { reader, release } = pendingReader();
+    const { controller, state } = await ready(mentionsProvider, reader);
+    const stuck = controller.send("read @stuck.ts");
+    controller.stop();
+    await Promise.race([stuck, Bun.sleep(100)]);
+
+    expect(isReplying(state())).toBe(false);
+    expect(state().entries.at(-1)).toMatchObject({ role: "assistant", status: "stopped" });
+    expect(state().entries.at(-2)).toMatchObject({ role: "user", mentions: [] });
+
+    await controller.send("Hi");
+    expect(state().entries.at(-1)).toMatchObject({ role: "assistant", status: "done", content: "Answer" });
+    release();
+    await Bun.sleep(0);
+    expect(state().entries.at(-4)).toMatchObject({ role: "user", mentions: [] });
   });
 
   test("sends nothing when the reply is stopped while mentions are read", async () => {
