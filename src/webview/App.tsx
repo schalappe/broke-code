@@ -184,11 +184,12 @@ function Conversation({ entries }: { entries: ChatEntry[] }) {
  * state the user chose survives every re-render while the answer streams. Plain text, never Markdown.
  */
 function Reasoning({ entry }: { entry: ChatEntry & { role: "assistant" } }) {
-  const thinking = (entry.status === "waiting" || entry.status === "streaming") && entry.content === "";
+  // [>]: First reasoning piece already turns `waiting` into `streaming`.
+  const stillReasoning = entry.status === "streaming" && entry.content === "";
   return (
     <details className="reasoning">
       <summary>
-        {thinking ? (
+        {stillReasoning ? (
           <span className="loading" role="status">
             {l10n.t("Thinking…")}
           </span>
