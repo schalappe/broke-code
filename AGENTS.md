@@ -19,11 +19,11 @@ The code so far covers the extension skeleton and a streaming chat with a provid
 - `GLOSSARY.md`: the domain terms (body tool call, harness, agent turn, provider, skill, slash command,
   mention). Code and docs use these names.
 - `docs/adr/`: architecture decision records.
-- `src/core/`: modules that import nothing from `vscode`: settings parsing, the provider HTTP client, the CA
-  trust and certificate error classification (`tls.ts`), the SSE reader, the typed provider errors, the chat
-  controller (conversation state, streaming, Stop), the dialog queue, and the host-webview message protocol. Unit
-  tests sit next to them as `*.test.ts`, because `bun test` cannot load `vscode`. `tlsFixture.ts` generates test
-  certificates with `/usr/bin/openssl` at test time; no private key is committed.
+- `src/core/`: modules that import nothing from `vscode`: settings parsing, the API key shape check, the provider
+  HTTP client, the CA trust and certificate error classification (`tls.ts`), the SSE reader, the typed provider
+  errors, the chat controller (conversation state, streaming, Stop), the dialog queue, and the host-webview
+  message protocol. Unit tests sit next to them as `*.test.ts`, because `bun test` cannot load `vscode`.
+  `tlsFixture.ts` generates test certificates with `/usr/bin/openssl` at test time; no private key is committed.
 - `src/extension/`: the extension host glue (activation, webview view, API keys in `SecretStorage`).
 - `src/webview/`: the React chat panel and its CSS.
 - `src/l10n.test.ts`: checks that every `l10n.t` message has a French translation and that the

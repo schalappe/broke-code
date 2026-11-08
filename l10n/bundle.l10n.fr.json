@@ -49,5 +49,6 @@
   "The CA file of {0} must be an absolute path or start with ~/: {1}": "Le fichier CA de {0} doit être un chemin absolu ou commencer par ~/ : {1}",
   "The CA file of {0} could not be read: {1}": "Le fichier CA de {0} n'a pas pu être lu : {1}",
   "The CA file of {0} is not a PEM certificate: {1}": "Le fichier CA de {0} n'est pas un certificat PEM : {1}",
-  "{0} answered with a compression that broke-code cannot read (Content-Encoding: {1}).": "{0} a répondu avec une compression que broke-code ne sait pas lire (Content-Encoding : {1})."
+  "{0} answered with a compression that broke-code cannot read (Content-Encoding: {1}).": "{0} a répondu avec une compression que broke-code ne sait pas lire (Content-Encoding : {1}).",
+  "An API key can contain only visible ASCII characters, with no spaces or accents.": "Une clé d'API ne peut contenir que des caractères ASCII visibles, sans espace ni accent."
 }
