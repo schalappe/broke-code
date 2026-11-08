@@ -131,23 +131,27 @@ The code so far covers the extension skeleton and a streaming chat with a provid
 - A mention is `@` at the start of the message or after whitespace, up to the next whitespace, less trailing
   `.,;:!?)`. Fenced code blocks and inline code spans hold no mentions. A path mentioned twice is attached once.
 - Mentions are read when the message is sent, never again: later turns resend the message as composed then. The
-  composed text lives in the chat controller, outside the state posted to the webview.
-- A mention path resolves against the workspace folders; in a multi-root workspace, a first segment naming a
-  folder selects that folder. After resolving symlinks the path must be inside a workspace folder, or its status
-  is `outsideWorkspace`. Other statuses: `missing`, `binary` (NUL byte in the first 8 KiB), `tooLarge` (over
+  composed text lives in the chat controller, outside the state posted to the webview. The message and its waiting
+  reply show, with Stop, while the mentions are read.
+- A mention path resolves against the workspace folders; in a multi-root workspace, a leading folder name and `/`
+  select that folder, the longest name winning, since a custom name may hold `/`. After resolving symlinks the
+  path must be inside a workspace folder, or its status is `outsideWorkspace`. The file is opened, then its path
+  resolved again, and the open handle must be the same file (device and inode) as that inside path, so a component
+  swapped for a symlink during the read cannot attach outside bytes. Other statuses: `missing`, `binary` (NUL byte in the first 8 KiB), `tooLarge` (over
   1 MiB), `unreadable` (any other failure, such as a permission error or a FIFO), `attached`, and `truncated`
   (cut to its first 2,000 lines, then `[truncated: N more lines not shown]`).
 - The model receives the user text, then one block per mention: a header `@<path> (<kind>, <count or status>)`,
   then the content in a backtick fence longer than any backtick run inside it, or a one-line notice when nothing
   is attached. The message is sent whatever the statuses. The chat shows each mention as a chip under the
   message, with its kind and status.
-- An `@` at the start or after whitespace opens the mention menu while the caret ends its token; the query is the
-  non-space text after `@`, possibly empty. The menu lists up to 20 index entries whose path contains the query,
+- An `@` at the start or after whitespace, outside code, opens the mention menu while the caret ends its token; the
+  query is the non-space text after `@`, possibly empty. The menu lists up to 20 index entries whose path contains the query,
   ignoring case, shorter paths first, then in code order. Arrow keys move and wrap, Enter or Tab picks, a click
   picks, Escape closes; while the menu shows rows, Enter never sends. A pick replaces the token with `@<path> ` and
   records the path. At send, a picked path counts while its `@<path>` still stands as a whole token in the text, and
-  its text is not parsed again, so a path with spaces is one mention. Answers carry the query id; the webview drops
-  stale ones.
+  its text is not parsed again, so a path with spaces or backticks is one mention. Answers carry the query id; the
+  webview drops stale ones. While the answer to a new query is pending, the menu shows only the earlier rows that
+  match it, never a row for an older query. When the files cannot be listed, the menu says so instead of "No match".
 - The file index is built on the first menu query with `findFiles("**/*", "**/{node_modules,.git,dist,out,build}/**",
   5000)`: an explicit exclude adds to `files.exclude` (only `null` drops it). `.gitignore` is not read. Folders are
   derived from file paths. Paths are `asRelativePath` with its default prefix, the folder name in a multi-root

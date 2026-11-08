@@ -60,7 +60,8 @@ only to its own provider, as a bearer token.
 Type `@` in the message box to attach a workspace file or folder. A menu lists up to 20 files and folders whose
 path contains what you type after `@`, ignoring case, shortest paths first; folders end with `/`. Move with the
 arrow keys, pick with Enter, Tab, or a click, and close the menu with Escape. A picked path goes into the message
-as `@<path>`, spaces included. You can also type `@path` yourself; a typed path ends at the first space.
+as `@<path>`, spaces included. You can also type `@path` yourself; a typed path ends at the first space. An `@`
+inside code, between backticks or in a fenced block, opens no menu and attaches nothing.
 
 When you send the message, broke-code reads each mention and sends it to the model with your text:
 
