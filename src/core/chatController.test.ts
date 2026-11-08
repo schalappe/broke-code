@@ -822,13 +822,16 @@ describe("ChatController conversations", () => {
     }
   });
 
-  test("says a conversation to open is not found, and leaves the one shown alone", async () => {
+  test("says a conversation to open is not found, leaves the one shown alone, and clears it at the next switch", async () => {
     const { controller, state } = await load(workspace(), { provider: reasoningProvider });
     await controller.send("Hi");
     const id = state().conversationId;
     await controller.openConversation(newConversationId());
     expect(state()).toMatchObject({ conversationId: id, storageProblem: { kind: "notFound" } });
     expect(state().entries).toHaveLength(2);
+
+    controller.newChat();
+    expect(state().storageProblem).toBeUndefined();
   });
 
   test("never writes the API key or the provider address into a saved conversation", async () => {

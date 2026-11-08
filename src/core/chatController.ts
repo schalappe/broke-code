@@ -116,9 +116,8 @@ export class ChatController {
       try {
         record = await this.store.load(id);
       } catch (error) {
-        // [>]: Pointer kept: the file may read fine at the next load. The conversation stays in the list.
+        // [>]: The new conversation shown takes its place as the one to reopen; it stays in the list if listed.
         this.report({ kind: "openFailed", cause: String(error) }, "could not open the last conversation", error);
-        return;
       }
       if (record && untouched()) return this.show(this.fromRecord(record));
     }
@@ -323,12 +322,12 @@ export class ChatController {
     this.show(this.fromRecord(record));
   }
 
-  /** Delete saved conversation `id` from disk and list. The one shown -> reply stopped first, then a new one shown. */
+  /**
+   * Delete saved conversation `id` from disk and list. The one shown -> reply stopped first, then a new one shown.
+   * Saves of it still pending are dropped by the store; if the delete fails, they land and it stays listed.
+   */
   async deleteConversation(id: string): Promise<void> {
-    if (id === this.conversation.id) {
-      this.stop();
-      clearTimeout(this.conversation.saveTimer);
-    }
+    if (id === this.conversation.id) this.stop();
     if (!(await this.remove(id))) return;
     if (id === this.conversation.id) {
       this.stop();
@@ -387,12 +386,17 @@ export class ChatController {
     };
   }
 
-  /** Put `conversation` in front, as the one shown and reopened at the next window load. */
+  /**
+   * Put `conversation` in front, as the one shown and reopened at the next window load. A failed open is over once
+   * another conversation shows.
+   */
   private show(conversation: Conversation): void {
     this.switchId += 1;
     this.conversation = conversation;
     this.state.conversationId = conversation.id;
     this.state.entries = conversation.entries;
+    const problem = this.state.storageProblem?.kind;
+    if (problem === "notFound" || problem === "openFailed") this.state.storageProblem = undefined;
     this.rememberConversation();
     this.emit();
   }
