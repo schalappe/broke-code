@@ -1,0 +1,9 @@
+{
+  "extension.description": "Un agent de code pour les services LLM sans appel d'outils natif.",
+  "viewContainer.title": "broke-code",
+  "view.chat.name": "Discussion",
+  "command.setApiKey.title": "Définir la clé d'API",
+  "config.providers.description": "Services LLM compatibles avec l'API de discussion d'OpenAI. Chaque entrée a un `name` unique et une `baseUrl`, la racine de l'API, par exemple `http://localhost:11434/v1`. Les clés d'API sont conservées dans le stockage des secrets de l'éditeur, jamais ici.",
+  "config.providers.name.description": "Nom unique affiché dans le panneau de discussion.",
+  "config.providers.baseUrl.description": "Racine de l'API, par exemple `http://localhost:11434/v1`. broke-code y ajoute `/models` et `/chat/completions`."
+}

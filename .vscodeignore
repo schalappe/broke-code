@@ -1,0 +1,10 @@
+**
+!dist/**
+!media/**
+!l10n/**
+!package.json
+!package.nls.json
+!package.nls.fr.json
+!LICENSE
+!README.md
+dist/**/*.map
