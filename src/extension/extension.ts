@@ -5,7 +5,7 @@
 import * as vscode from "vscode";
 import { parseProviders } from "../core/providers";
 import { ApiKeys } from "./apiKeys";
-import { ChatController } from "./chatController";
+import { ChatController } from "../core/chatController";
 import { CHAT_VIEW_ID, ChatView } from "./chatView";
 
 export function activate(context: vscode.ExtensionContext): void {

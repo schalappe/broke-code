@@ -5,7 +5,7 @@
 import * as vscode from "vscode";
 import type { ChatState, HostMessage, WebviewMessage } from "../core/protocol";
 import { renderWebviewHtml } from "../core/webviewHtml";
-import type { ChatController } from "./chatController";
+import type { ChatController } from "../core/chatController";
 
 export const CHAT_VIEW_ID = "brokeCode.chat";
 

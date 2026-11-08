@@ -7,29 +7,29 @@ import { describeProviderError, describeSkippedProvider } from "./text";
 import { post } from "./vscodeApi";
 
 export function App({ state }: { state: ChatState }) {
-  if (state.providers.length === 0) {
-    return (
-      <main className="panel">
-        <Warnings state={state} />
-        <section className="empty">
-          <p>{l10n.t("No provider is configured.")}</p>
-          <button type="button" className="link" onClick={() => post({ type: "openSettings" })}>
-            {l10n.t("Open provider settings")}
-          </button>
-        </section>
-      </main>
-    );
-  }
+  const configured = state.providers.length > 0;
   return (
     <main className="panel">
-      <Header state={state} />
+      {configured ? <Header state={state} /> : <EmptyState />}
       <Warnings state={state} />
       {state.models.status === "failed" && (
         <ErrorBlock error={state.models.error} retry={() => post({ type: "retryModels" })} />
       )}
-      <Conversation entries={state.entries} />
-      <Composer state={state} />
+      {/* Without providers, an earlier conversation stays readable and a reply in flight keeps its Stop. */}
+      {(configured || state.entries.length > 0) && <Conversation entries={state.entries} />}
+      {(configured || isReplying(state)) && <Composer state={state} />}
     </main>
+  );
+}
+
+function EmptyState() {
+  return (
+    <section className="empty">
+      <p>{l10n.t("No provider is configured.")}</p>
+      <button type="button" className="link" onClick={() => post({ type: "openSettings" })}>
+        {l10n.t("Open provider settings")}
+      </button>
+    </section>
   );
 }
 

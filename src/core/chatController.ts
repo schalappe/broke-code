@@ -1,13 +1,21 @@
 /**
  * @module chatController
  * Chat state owner: provider and model choice, model listing, streamed replies, stop, new chat.
- * Conversation lives in memory for extension host lifetime (persistence: #12).
+ * Conversation lives in memory for window (extension host) lifetime; survives view being hidden (persistence: #12).
+ * vscode-free: host passes key store and workspace memento through ports below.
  */
-import type * as vscode from "vscode";
-import { listModels, streamChat, type ChatMessage, type ProviderAccess } from "../core/client";
-import { isReplying, type ChatEntry, type ChatState } from "../core/protocol";
-import type { ParsedProviders, Provider } from "../core/providers";
-import type { ApiKeys } from "./apiKeys";
+import { listModels, streamChat, type ChatMessage, type ProviderAccess } from "./client";
+import { isReplying, type ChatEntry, type ChatState } from "./protocol";
+import type { ParsedProviders, Provider } from "./providers";
+
+/** API key lookup. `undefined` = no key; must not reject. */
+export type KeyStore = { get(provider: string): Promise<string | undefined> };
+
+/** Per-workspace storage; `vscode.Memento` fits. */
+export type ChoiceStore = {
+  get<T>(key: string): T | undefined;
+  update(key: string, value: unknown): PromiseLike<void>;
+};
 
 const LAST_CHOICE_KEY = "brokeCode.lastChoice";
 
@@ -23,13 +31,14 @@ export class ChatController {
     model: undefined,
     entries: [],
   };
-  private reply: AbortController | undefined;
+  /** In-flight reply: its abort handle and the provider it streams from. */
+  private reply: { abort: AbortController; provider: Provider } | undefined;
   /** Bumped per listing request; stale listings dropped. */
   private listingId = 0;
 
   constructor(
-    private readonly apiKeys: ApiKeys,
-    private readonly workspaceState: vscode.Memento,
+    private readonly apiKeys: KeyStore,
+    private readonly workspaceState: ChoiceStore,
     private readonly publish: (state: ChatState) => void,
   ) {}
 
@@ -37,8 +46,15 @@ export class ChatController {
     return this.state;
   }
 
-  /** Apply parsed settings. Keeps current provider when still valid, else remembered one, else first. */
+  /**
+   * Apply parsed settings. Keeps current provider when still valid, else remembered one, else first.
+   * Reply in flight whose provider was removed or changed -> stopped first, partial text kept.
+   */
   setProviders(parsed: ParsedProviders): void {
+    const replyProvider = this.reply?.provider;
+    if (replyProvider && !parsed.providers.some((p) => p.name === replyProvider.name && p.baseUrl === replyProvider.baseUrl)) {
+      this.stop();
+    }
     const previous = this.currentProvider();
     this.providers = parsed.providers;
     this.state.providers = parsed.providers.map((provider) => provider.name);
@@ -119,7 +135,7 @@ export class ChatController {
     this.emit();
 
     const abort = new AbortController();
-    this.reply = abort;
+    this.reply = { abort, provider };
     const outcome = await streamChat(await this.accessOf(provider), {
       model,
       messages: history,
@@ -130,7 +146,7 @@ export class ChatController {
         this.emit();
       },
     });
-    if (this.reply === abort) this.reply = undefined;
+    if (this.reply?.abort === abort) this.reply = undefined;
 
     if (outcome.status === "failed") {
       reply.status = "failed";
@@ -142,7 +158,7 @@ export class ChatController {
   }
 
   stop(): void {
-    this.reply?.abort();
+    this.reply?.abort.abort();
   }
 
   newChat(): void {
