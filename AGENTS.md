@@ -24,12 +24,14 @@ The code so far covers the extension skeleton and a streaming chat with a provid
   errors, the chat controller (conversation state, streaming, Stop), the dialog queue, the host-webview message
   protocol and its validation, workspace file access (`workspaceFiles.ts`: the inside-workspace check, capped reads,
   one-level listings, line truncation, with `node:fs`), mentions (`mentions.ts`: token detection, picked and typed
-  mentions merged, reading, and the text the model receives), and the mention menu logic (`suggestions.ts`: the `@`
-  token at the caret, index entries, filtering, the index exclusions; no `node:` import, since the webview loads
-  it). Unit tests sit next to them as `*.test.ts`, because `bun test` cannot load `vscode`. `tlsFixture.ts`
+  mentions merged, reading, and the text the model receives), where a message holds Markdown code
+  (`markdownCode.ts`), the mention menu logic (`suggestions.ts`: the `@` token at the caret, index entries,
+  filtering, the index exclusions), and the menu's file index (`fileIndex.ts`: one scan shared until a file
+  changes, behind a scan port). `markdownCode.ts` and `suggestions.ts` import nothing from `node:`, since the
+  webview loads them. Unit tests sit next to them as `*.test.ts`, because `bun test` cannot load `vscode`. `tlsFixture.ts`
   generates test certificates with `/usr/bin/openssl` at test time; no private key is committed.
 - `src/extension/`: the extension host glue (activation, webview view, API keys in `SecretStorage`, and the
-  mention menu's file index in `fileIndex.ts`).
+  file index's `findFiles` scan and watcher in `fileIndex.ts`).
 - `src/webview/`: the React chat panel and its CSS. `SuggestionMenu.tsx` is the autocomplete list the `@` menu
   uses and the `/` menu (#11) is meant to reuse.
 - `src/l10n.test.ts`: checks that every `l10n.t` message has a French translation and that the

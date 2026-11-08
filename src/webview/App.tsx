@@ -1,13 +1,7 @@
 import * as l10n from "@vscode/l10n";
 import { type KeyboardEvent, useEffect, useLayoutEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
-import {
-  type ChatEntry,
-  type ChatState,
-  type HostMessage,
-  isReplying,
-  MAX_QUERY_LENGTH,
-} from "../core/protocol";
+import { type ChatEntry, type ChatState, type HostMessage, isReplying, MAX_QUERY_LENGTH } from "../core/protocol";
 import type { ProviderError } from "../core/providerError";
 import { findMentionToken, type Suggestion } from "../core/suggestions";
 import { moveHighlight, optionId, SuggestionMenu } from "./SuggestionMenu";

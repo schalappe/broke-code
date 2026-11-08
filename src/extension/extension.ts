@@ -10,7 +10,7 @@ import { parseProviders } from "../core/providers";
 import type { WorkspaceRoot } from "../core/workspaceFiles";
 import { ApiKeys } from "./apiKeys";
 import { CHAT_VIEW_ID, ChatView } from "./chatView";
-import { FileIndex } from "./fileIndex";
+import { WorkspaceFileIndex } from "./fileIndex";
 
 export function activate(context: vscode.ExtensionContext): void {
   // [!]: User settings only. A workspace value could reuse a provider name with another base URL and receive its stored key.
@@ -25,7 +25,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   let view: ChatView | undefined;
   const controller = new ChatController(apiKeys, context.workspaceState, (state) => view?.publish(state), mentions);
-  const fileIndex = new FileIndex();
+  const fileIndex = new WorkspaceFileIndex();
   view = new ChatView(context.extensionUri, controller, { setApiKey, queryFiles: (query) => fileIndex.query(query) });
 
   const applySettings = () => {

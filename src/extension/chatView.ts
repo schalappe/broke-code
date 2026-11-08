@@ -4,8 +4,8 @@
  */
 import * as vscode from "vscode";
 import type { ChatController } from "../core/chatController";
+import type { FileQueryAnswer } from "../core/fileIndex";
 import { type ChatState, type HostMessage, parseWebviewMessage } from "../core/protocol";
-import type { Suggestion } from "../core/suggestions";
 import { renderWebviewHtml } from "../core/webviewHtml";
 
 export const CHAT_VIEW_ID = "brokeCode.chat";
@@ -13,7 +13,7 @@ export const CHAT_VIEW_ID = "brokeCode.chat";
 export type ChatViewActions = {
   setApiKey: (provider: string) => Promise<void>;
   /** Mention menu entries matching `query`. */
-  queryFiles: (query: string) => Promise<{ items: Suggestion[]; capped: boolean }>;
+  queryFiles: (query: string) => Promise<FileQueryAnswer>;
 };
 
 export class ChatView implements vscode.WebviewViewProvider {
