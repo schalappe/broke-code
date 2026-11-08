@@ -865,7 +865,7 @@ describe("ChatController conversations", () => {
     expect(state().storageProblem).toBeUndefined();
   });
 
-  test("never writes the API key or the provider address into a saved conversation", async () => {
+  test("never writes the API key or anything else of the provider access into a saved conversation", async () => {
     const ws = workspace();
     const { controller, state } = await load(ws, { provider: reasoningProvider, apiKey: "sk-secret-123" });
     await controller.send("Hi");
@@ -873,7 +873,241 @@ describe("ChatController conversations", () => {
     const text = ws.files.files.get(`${state().conversationId}.json`)!;
     expect(text).not.toContain("sk-secret-123");
     expect(text).not.toContain("apiKey");
-    expect(text).not.toContain("localhost");
-    expect(JSON.parse(text)).toMatchObject({ version: 1, provider: "Saved", model: "m" });
+    const saved = JSON.parse(text) as Record<string, unknown>;
+    expect(Object.keys(saved).sort()).toEqual([
+      "createdAt",
+      "entries",
+      "id",
+      "model",
+      "provider",
+      "updatedAt",
+      "version",
+    ]);
+    expect(saved).toMatchObject({ version: 1, provider: "Saved", model: "m" });
+  });
+
+  /** Files whose writes, reads, or removes wait for `release` while held. */
+  function held(files: MemoryFiles, operation: "write" | "read" | "remove") {
+    let hold: Promise<void> | undefined;
+    let release: () => void = () => {};
+    const original = files[operation] as (name: string, text: string) => Promise<unknown>;
+    const wrapped = async (name: string, text: string) => {
+      if (hold) await hold;
+      return original(name, text);
+    };
+    (files as Record<string, unknown>)[operation] = wrapped;
+    return {
+      hold: () => {
+        hold = new Promise((resolve) => {
+          release = () => {
+            hold = undefined;
+            resolve();
+          };
+        });
+      },
+      release: () => release(),
+    };
+  }
+
+  test("waits for the first save before the request starts", async () => {
+    const ws = workspace();
+    const writes = held(ws.files, "write");
+    const provider: Provider = { name: "Wait", baseUrl: `http://localhost:${server.port}/wait-save/v1` };
+    const { controller, state } = await load(ws, { provider });
+    writes.hold();
+    const sent = controller.send("Hi");
+    await Bun.sleep(50);
+    expect(requests.get("wait-save")).toBeUndefined();
+    expect(state().entries.at(-1)).toMatchObject({ status: "waiting" });
+    writes.release();
+    await until(state, () => requests.get("wait-save")?.length === 1);
+    controller.stop();
+    await sent;
+  });
+
+  test("Stop while the first save waits sends nothing and leaves the reply stopped", async () => {
+    const ws = workspace();
+    const writes = held(ws.files, "write");
+    const provider: Provider = { name: "Stop", baseUrl: `http://localhost:${server.port}/stop-save/v1` };
+    const { controller, state } = await load(ws, { provider });
+    writes.hold();
+    const sent = controller.send("Hi");
+    controller.stop();
+    await sent;
+    expect(state().entries.at(-1)).toMatchObject({ status: "stopped" });
+    writes.release();
+    await eventually(() => savedReply(ws, state().conversationId)?.status === "stopped", "the stopped save");
+    expect(requests.get("stop-save")).toBeUndefined();
+  });
+
+  test("a failed first save is shown and the reply still streams", async () => {
+    const ws = workspace();
+    const { controller, state } = await load(ws, { provider: reasoningProvider });
+    ws.files.failWrites = new Error("EROFS: read-only file system");
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await controller.send("Hi");
+      expect(state().entries.at(-1)).toMatchObject({ status: "done", content: "Answer" });
+      expect(state().storageProblem).toMatchObject({ kind: "saveFailed" });
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
+  test("reopening right after New chat shows the stopped reply as it is, never an older save", async () => {
+    const ws = workspace();
+    const { controller, state } = await load(ws);
+    const sent = controller.send("First");
+    const id = state().conversationId;
+    await until(state, (s) => s.entries.at(-1)?.content === "Partial ");
+    controller.newChat();
+    await controller.openConversation(id);
+    await sent;
+    expect(state()).toMatchObject({ conversationId: id, entries: [{ content: "First" }, { content: "Partial " }] });
+    await eventually(() => savedReply(ws, id)?.status === "stopped", "the stopped save");
+    expect(savedReply(ws, id)).toMatchObject({ content: "Partial " });
+  });
+
+  test("reopening while the stopped reply's save waits shows the saved reply, and the next turn keeps it", async () => {
+    const ws = workspace();
+    const writes = held(ws.files, "write");
+    const { controller, state } = await load(ws);
+    const sent = controller.send("First");
+    const id = state().conversationId;
+    await until(state, (s) => s.entries.at(-1)?.content === "Partial ");
+    writes.hold();
+    controller.newChat();
+    await sent;
+    const opening = controller.openConversation(id);
+    writes.release();
+    await opening;
+    expect(state().entries.at(-1)).toMatchObject({ content: "Partial ", status: "stopped" });
+
+    const next = controller.send("Follow-up");
+    await until(state, (s) => s.entries.at(-1)?.content === "Partial " && s.entries.length === 4);
+    finishReply();
+    await next;
+    await eventually(() => raw(ws, id)?.entries.length === 4 && savedReply(ws, id) !== undefined, "the next turn");
+    expect(raw(ws, id)?.entries[1]).toMatchObject({ content: "Partial " });
+  });
+
+  /** One saved conversation `content`, updated at `time`. */
+  const savedRecord = (content: string, time = 1): ConversationRecord => ({
+    version: 1,
+    id: newConversationId(),
+    createdAt: time,
+    updatedAt: time,
+    entries: [{ role: "user", content, mentions: [], modelText: content }],
+  });
+  const filesOf = (...records: ConversationRecord[]) =>
+    memoryFiles(Object.fromEntries(records.map((record) => [`${record.id}.json`, JSON.stringify(record)])));
+
+  test("a delete while the conversation is being opened wins: it is never shown", async () => {
+    const record = savedRecord("keep history");
+    const ws = workspace(filesOf(record));
+    const reads = held(ws.files, "read");
+    const { controller, state } = await load(ws);
+    reads.hold();
+    const opening = controller.openConversation(record.id);
+    const deleting = controller.deleteConversation(record.id);
+    reads.release();
+    await opening;
+    expect(state().conversationId).not.toBe(record.id);
+    await deleting;
+    expect(state().conversationId).not.toBe(record.id);
+    expect(state()).toMatchObject({ conversations: [], storageProblem: undefined });
+    expect(ws.files.files.size).toBe(0);
+  });
+
+  test("a stale open shows neither its entries nor its error", async () => {
+    const [first, second] = [savedRecord("first"), savedRecord("second")];
+    const ws = workspace(filesOf(first, second));
+    const { controller, state } = await load(ws);
+    const read = ws.files.read;
+    let failRead: ((error: Error) => void) | undefined;
+    ws.files.read = () => new Promise((_, reject) => (failRead = reject));
+    const failing = controller.openConversation(first.id);
+    controller.newChat();
+    await eventually(() => failRead !== undefined, "the read");
+    failRead!(new Error("old read failed"));
+    await failing;
+    expect(state()).toMatchObject({ entries: [], storageProblem: undefined });
+
+    let finishRead: (() => void) | undefined;
+    ws.files.read = (name) => new Promise((resolve) => (finishRead = () => resolve(read(name))));
+    const slow = controller.openConversation(first.id);
+    await eventually(() => finishRead !== undefined, "the slow read");
+    ws.files.read = read;
+    const fast = controller.openConversation(second.id);
+    finishRead!();
+    await Promise.all([slow, fast]);
+    expect(state()).toMatchObject({ conversationId: second.id, entries: [{ content: "second" }] });
+  });
+
+  test("never prunes the conversation being opened, even when it is the oldest", async () => {
+    const seeded = Array.from({ length: 50 }, (_, index) => savedRecord(`c${index}`, index + 1));
+    const oldest = seeded[0]!;
+    const ws = workspace(filesOf(...seeded));
+    const writes = held(ws.files, "write");
+    const { controller, state } = await load(ws, { provider: reasoningProvider, now: () => 1000 });
+    writes.hold();
+    const sent = controller.send("Newest");
+    const opening = controller.openConversation(oldest.id);
+    writes.release();
+    await Promise.all([sent, opening]);
+    await eventually(() => ws.files.files.size === 50, "the prune");
+    expect(state().conversationId).toBe(oldest.id);
+    expect(ws.files.files.has(`${oldest.id}.json`)).toBe(true);
+    expect(ws.files.files.has(`${seeded[1]!.id}.json`)).toBe(false);
+  });
+
+  test("deleting the conversation shown stops its reply at once, before a slow delete ends", async () => {
+    const ws = workspace();
+    const removes = held(ws.files, "remove");
+    const { controller, state } = await load(ws);
+    const sent = controller.send("Hi");
+    const id = state().conversationId;
+    await until(state, (s) => s.entries.at(-1)?.content === "Partial ");
+    removes.hold();
+    const deleting = controller.deleteConversation(id);
+    await sent;
+    expect(state()).toMatchObject({ entries: [] });
+    expect(state().conversationId).not.toBe(id);
+    removes.release();
+    await deleting;
+    expect(ws.files.files.size).toBe(0);
+  });
+
+  test("a failed delete keeps the row and says so; a later delete that works clears it", async () => {
+    const record = savedRecord("stay");
+    const ws = workspace(filesOf(record));
+    const { controller, state } = await load(ws);
+    const remove = ws.files.remove;
+    ws.files.remove = async () => {
+      throw new Error("EACCES: permission denied");
+    };
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await controller.deleteConversation(record.id);
+    } finally {
+      logged.mockRestore();
+    }
+    expect(state()).toMatchObject({
+      conversations: [{ id: record.id }],
+      storageProblem: { kind: "deleteFailed", cause: "Error: EACCES: permission denied" },
+    });
+    ws.files.remove = remove;
+    await controller.deleteConversation(record.id);
+    expect(state()).toMatchObject({ conversations: [], storageProblem: undefined });
+  });
+
+  test("opening a listed conversation whose file is gone removes that row only", async () => {
+    const [gone, other] = [savedRecord("gone", 1), savedRecord("other", 2)];
+    const ws = workspace(filesOf(gone, other));
+    const { controller, state } = await load(ws);
+    ws.files.files.delete(`${gone.id}.json`);
+    await controller.openConversation(gone.id);
+    expect(state().conversations.map((summary) => summary.id)).toEqual([other.id]);
+    expect(state().storageProblem).toEqual({ kind: "notFound" });
   });
 });

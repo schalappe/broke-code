@@ -99,11 +99,11 @@ export function summarize(record: ConversationRecord): ConversationSummary {
 /** Conversations kept per workspace. */
 export const MAX_CONVERSATIONS = 50;
 
-/** Ids to delete so at most 50 remain: the oldest by `updatedAt`, newest of them first, never `current`. */
-export function conversationsOverLimit(summaries: readonly ConversationSummary[], current: string): string[] {
-  const others = summaries.filter((summary) => summary.id !== current).sort((a, b) => b.updatedAt - a.updatedAt);
-  const room = MAX_CONVERSATIONS - (others.length < summaries.length ? 1 : 0);
-  return others.slice(room).map((summary) => summary.id);
+/** Ids to delete so at most 50 remain: the oldest by `updatedAt`, newest of them first, never one of `keep`. */
+export function conversationsOverLimit(summaries: readonly ConversationSummary[], keep: readonly string[]): string[] {
+  const others = summaries.filter((summary) => !keep.includes(summary.id)).sort((a, b) => b.updatedAt - a.updatedAt);
+  const room = MAX_CONVERSATIONS - (summaries.length - others.length);
+  return others.slice(Math.max(room, 0)).map((summary) => summary.id);
 }
 
 const REPLY_STATUSES: readonly ReplyStatus[] = ["waiting", "streaming", "done", "stopped", "failed"];
