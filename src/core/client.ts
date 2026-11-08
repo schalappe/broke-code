@@ -46,7 +46,9 @@ export async function listModels(access: ProviderAccess): Promise<ModelListing> 
   });
   if (!sent.ok) return { ok: false, error: sent.error };
 
-  const body = await sent.response.text().catch(() => "");
+  const read = await readText(sent.response);
+  if (!read.ok) return { ok: false, error: { kind: "cutOff", provider: provider.name, reason: "dropped", cause: read.cause } };
+  const body = read.text;
   const models = parseModelIds(body);
   if (!models) return { ok: false, error: { kind: "invalidResponse", provider: provider.name, detail: truncate(body) } };
   return { ok: true, models };
@@ -116,11 +118,25 @@ async function send(access: ProviderAccess, request: HttpRequest): Promise<Sent>
   }
   if (response.ok) return { ok: true, response };
 
-  const body = await response.text().catch(() => "");
-  if (response.status === 401 || response.status === 403) {
-    return { ok: false, error: { kind: "invalidKey", provider: name, status: response.status } };
+  const { status } = response;
+  if (status === 401 || status === 403) {
+    // [>]: Invalid-key message shows no body -> release it unread.
+    response.body?.cancel().catch(() => {
+      // [>]: Body already closed or errored; nothing left to release.
+    });
+    return { ok: false, error: { kind: "invalidKey", provider: name, status } };
   }
-  return { ok: false, error: { kind: "rejected", provider: name, status: response.status, detail: errorDetail(body) } };
+  const read = await readText(response);
+  if (!read.ok) return { ok: false, error: { kind: "rejected", provider: name, status, detail: "", bodyReadError: read.cause } };
+  return { ok: false, error: { kind: "rejected", provider: name, status, detail: errorDetail(read.text) } };
+}
+
+async function readText(response: Response): Promise<{ ok: true; text: string } | { ok: false; cause: string }> {
+  try {
+    return { ok: true, text: await response.text() };
+  } catch (error) {
+    return { ok: false, cause: describeError(error) };
+  }
 }
 
 function authorization(apiKey: string | undefined): Record<string, string> {

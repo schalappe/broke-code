@@ -18,7 +18,7 @@ export function describeProviderError(error: ProviderError): ErrorText {
     case "rejected":
       return {
         message: l10n.t("{0} rejected the request (HTTP {1}).", error.provider, error.status),
-        ...(error.detail ? { detail: error.detail } : {}),
+        ...rejectedDetail(error),
       };
     case "cutOff":
       return { message: cutOffMessage(error), ...(error.cause ? { detail: error.cause } : {}) };
@@ -31,6 +31,11 @@ export function describeProviderError(error: ProviderError): ErrorText {
         ...(error.detail ? { detail: error.detail } : {}),
       };
   }
+}
+
+function rejectedDetail(error: ProviderError & { kind: "rejected" }): { detail?: string } {
+  if (error.bodyReadError !== undefined) return { detail: l10n.t("The response body could not be read: {0}", error.bodyReadError) };
+  return error.detail ? { detail: error.detail } : {};
 }
 
 function cutOffMessage(error: ProviderError & { kind: "cutOff" }): string {

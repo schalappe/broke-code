@@ -147,6 +147,37 @@ describe("listModels", () => {
     expect(result.error.detail.endsWith("…")).toBe(true);
   });
 
+  test("reports a model list whose body download fails as cut off with the cause, not as an invalid response", async () => {
+    const listener = truncatedServer("HTTP/1.1 200 OK\r\nContent-Type: application/json", '{"data":[{"id":"qw');
+    try {
+      const result = await listModels({ provider: { name: "Half", baseUrl: `http://127.0.0.1:${listener.port}/v1` }, apiKey: undefined });
+      if (result.ok || result.error.kind !== "cutOff") throw new Error(`expected cutOff, got ${JSON.stringify(result)}`);
+      expect(result.error).toMatchObject({ provider: "Half", reason: "dropped" });
+      expect(result.error.cause?.length).toBeGreaterThan(0);
+    } finally {
+      listener.stop(true);
+    }
+  });
+
+  test("keeps the HTTP classification when an error body cannot be read, and says so with the cause", async () => {
+    const rejected = truncatedServer("HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain", "Internal err");
+    const unauthorized = truncatedServer("HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain", "Unauth");
+    try {
+      const result = await listModels({ provider: { name: "Half", baseUrl: `http://127.0.0.1:${rejected.port}/v1` }, apiKey: undefined });
+      if (result.ok || result.error.kind !== "rejected") throw new Error(`expected rejected, got ${JSON.stringify(result)}`);
+      expect(result.error).toMatchObject({ provider: "Half", status: 500, detail: "" });
+      expect(result.error.bodyReadError?.length).toBeGreaterThan(0);
+
+      expect(await listModels({ provider: { name: "Key", baseUrl: `http://127.0.0.1:${unauthorized.port}/v1` }, apiKey: "k" })).toEqual({
+        ok: false,
+        error: { kind: "invalidKey", provider: "Key", status: 401 },
+      });
+    } finally {
+      rejected.stop(true);
+      unauthorized.stop(true);
+    }
+  });
+
   test("reports a 2xx body that is not a model list as an invalid response", async () => {
     const access = routed("models-html", () => new Response("<html>Ollama is running</html>", { status: 200 }));
     const result = await listModels(access);

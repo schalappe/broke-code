@@ -37,5 +37,6 @@
   "Choose a provider": "Choisissez un fournisseur",
   "Enter a new key to set or replace it. Leave empty to clear it.": "Saisissez une nouvelle clé pour la définir ou la remplacer. Laissez vide pour l'effacer.",
   "API key for {0} saved.": "Clé d'API de {0} enregistrée.",
-  "API key for {0} cleared.": "Clé d'API de {0} effacée."
+  "API key for {0} cleared.": "Clé d'API de {0} effacée.",
+  "The response body could not be read: {0}": "Le corps de la réponse n'a pas pu être lu : {0}"
 }
