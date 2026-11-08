@@ -153,10 +153,12 @@ The code so far covers the extension skeleton and a streaming chat with a provid
   `BREAKING CHANGE:` footer) bumps the minor, `fix` bumps the patch, and the major stays at 0. The first
   release is `0.1.0`. A range with no `feat`, `fix`, or breaking change publishes nothing, and the run
   succeeds with a log line saying so.
-- The release builds, tests, packages, publishes to Open VSX, then to the Visual Studio Marketplace, and last
-  creates tag `v<version>` together with a GitHub Release that carries the `.vsix`. A failed run leaves no tag.
-  Re-running it skips a registry that already has the version. The run fails before publishing if the tag
-  already exists.
+- The release builds, tests, and packages, then creates tag `v<version>` on the merged commit before any
+  upload. The tag reserves that version for that commit. Then it publishes to Open VSX, to the Visual Studio
+  Marketplace, and last creates a GitHub Release that carries the `.vsix`. A failed run keeps its tag; finish
+  it by re-running that run, which reuses the tag's version and skips a registry or Release that already has
+  it. The next merge moves to the next version. The run fails before any upload if the computed tag already
+  exists on another commit.
 - The git tag is the only source of the version. CI writes the version into the package at build time and
   never commits to `main`, so `package.json` keeps `0.0.0`.
 - Only `main` publishes, through the GitHub environment `release`, whose branch policy allows `main` only.

@@ -27,14 +27,11 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.4
+      # Prints the tag already on this commit (a re-run), the next version, or nothing; fails on a tag clash.
       - id: next
-        name: Compute the next version
+        name: Compute the version
         run: |
           version=$(bun scripts/next-version.ts)
-          if [ -n "$version" ] && git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
-            echo "::error::Tag v$version already exists. Nothing is published."
-            exit 1
-          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
   publish:
@@ -58,16 +55,35 @@ jobs:
       - run: bun run typecheck
       - run: bun test
       - run: bun run package
-      # --skip-duplicate lets a re-run after a partial publish pass the registry that already has the version.
+      # The tag reserves the version for this commit before any upload. A failed run keeps it and is finished by
+      # re-running it; the next merge computes the next version, so one version never names two commits.
+      - name: Reserve tag v${{ needs.version.outputs.version }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if ! gh api "repos/$GH_REPO/git/refs" -f ref="refs/tags/v$VERSION" -f sha="$GITHUB_SHA" >/dev/null; then
+            tagged=$(gh api "repos/$GH_REPO/git/ref/tags/v$VERSION" --jq .object.sha)
+            if [ "$tagged" != "$GITHUB_SHA" ]; then
+              echo "::error::Tag v$VERSION points at $tagged, not $GITHUB_SHA. Nothing is published."
+              exit 1
+            fi
+            echo "Tag v$VERSION already points at this commit: finishing its release."
+          fi
+      # --skip-duplicate lets a re-run pass the registry that already has the version.
       - name: Publish to Open VSX
         env:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
         run: bunx --bun ovsx publish --packagePath "broke-code-$VERSION.vsix" --skip-duplicate
       - name: Publish to the Visual Studio Marketplace
         run: bunx --bun vsce publish --oidc --packagePath "broke-code-$VERSION.vsix" --skip-duplicate --no-dependencies
-      # gh creates the tag together with the Release, so a failure cannot leave a tag without its Release.
-      - name: Tag and create the GitHub Release
+      - name: Create the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: gh release create "v$VERSION" "broke-code-$VERSION.vsix" --target "$GITHUB_SHA" --title "v$VERSION" --generate-notes
+        run: |
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "Release v$VERSION already exists."
+          else
+            gh release create "v$VERSION" "broke-code-$VERSION.vsix" --verify-tag --title "v$VERSION" --generate-notes
+          fi
