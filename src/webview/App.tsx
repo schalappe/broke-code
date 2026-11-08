@@ -145,7 +145,6 @@ function Conversation({ entries }: { entries: ChatEntry[] }) {
     <section
       className="conversation"
       ref={list}
-      aria-live="polite"
       onScroll={() => {
         const element = list.current;
         if (element) setPinned(element.scrollHeight - element.scrollTop - element.clientHeight < 24);

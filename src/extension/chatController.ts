@@ -62,14 +62,14 @@ export class ChatController {
     if (isReplying(this.state) || name === this.state.provider || !this.state.providers.includes(name)) return;
     this.state.provider = name;
     this.state.model = undefined;
-    void this.remember();
+    this.remember();
     void this.loadModels();
   }
 
   selectModel(model: string): void {
     if (isReplying(this.state) || this.state.models.status !== "loaded" || !this.state.models.models.includes(model)) return;
     this.state.model = model;
-    void this.remember();
+    this.remember();
     this.emit();
   }
 
@@ -101,7 +101,7 @@ export class ChatController {
     const remembered = this.workspaceState.get<LastChoice>(LAST_CHOICE_KEY);
     const preferred = [this.state.model, remembered?.provider === provider.name ? remembered.model : undefined];
     this.state.model = preferred.find((model) => model !== undefined && listing.models.includes(model)) ?? listing.models[0];
-    void this.remember();
+    this.remember();
     this.emit();
   }
 
@@ -159,11 +159,14 @@ export class ChatController {
     return { provider, apiKey: await this.apiKeys.get(provider.name) };
   }
 
-  private remember(): Thenable<void> {
+  private remember(): void {
     const choice: LastChoice | undefined = this.state.provider
       ? { provider: this.state.provider, ...(this.state.model ? { model: this.state.model } : {}) }
       : undefined;
-    return this.workspaceState.update(LAST_CHOICE_KEY, choice);
+    this.workspaceState.update(LAST_CHOICE_KEY, choice).then(undefined, (error: unknown) => {
+      // [>]: Losing remembered choice only costs a re-pick next session -> log, don't interrupt chat.
+      console.error("broke-code: could not remember provider and model choice", error);
+    });
   }
 
   private emit(): void {

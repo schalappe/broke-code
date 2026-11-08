@@ -1,5 +1,6 @@
 **
-!dist/**
+!dist/**/*.js
+!dist/**/*.css
 !media/**
 !l10n/**
 !package.json
@@ -7,4 +8,3 @@
 !package.nls.fr.json
 !LICENSE
 !README.md
-dist/**/*.map
