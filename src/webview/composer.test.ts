@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Suggestion } from "../core/suggestions";
-import { composerKeyAction, type MenuAnswer, menuView } from "./composer";
+import { composerKeyAction, type MenuAnswer, menuView, pickedInText } from "./composer";
 
 const file = (path: string): Suggestion => ({ path, kind: "file" });
 
@@ -68,5 +68,15 @@ describe("composerKeyAction", () => {
       expect(composerKeyAction(key(name), 0)).toEqual({ type: "none" });
       expect(composerKeyAction(key(name), undefined)).toEqual({ type: "none" });
     }
+  });
+});
+
+describe("pickedInText", () => {
+  test("keeps the picked paths whose @path text is still in the message, and drops a deleted one", () => {
+    expect(pickedInText(["my file.ts", "gone.ts", "src/"], "see @my file.ts and @src/ now")).toEqual([
+      "my file.ts",
+      "src/",
+    ]);
+    expect(pickedInText(["gone.ts"], "the mention was deleted, gone.ts stays as a word")).toEqual([]);
   });
 });

@@ -1,6 +1,7 @@
 /**
  * @module composer
- * Decisions of the message box, kept out of React so tests need no DOM: which menu rows to show, what a key does.
+ * Decisions of the message box, kept out of React so tests need no DOM: which menu rows to show, what a key does,
+ * which picked paths to send.
  */
 import { filterSuggestions, MAX_SUGGESTIONS, type Suggestion } from "../core/suggestions";
 
@@ -46,4 +47,12 @@ export function composerKeyAction(pressed: ComposerKey, rows: number | undefined
   }
   if (pressed.key === "Enter" && !pressed.shift) return { type: "send" };
   return { type: "none" };
+}
+
+/**
+ * Picked paths still worth sending: those whose `@<path>` is still in `text`. The host keeps only those standing as
+ * whole tokens; this drops the ones the user deleted.
+ */
+export function pickedInText(picked: readonly string[], text: string): string[] {
+  return picked.filter((path) => text.includes(`@${path}`));
 }

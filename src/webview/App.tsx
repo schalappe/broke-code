@@ -4,7 +4,7 @@ import Markdown from "react-markdown";
 import { type ChatEntry, type ChatState, type HostMessage, isReplying, MAX_QUERY_LENGTH } from "../core/protocol";
 import type { ProviderError } from "../core/providerError";
 import { findMentionToken, type MentionToken, type Suggestion } from "../core/suggestions";
-import { composerKeyAction, type MenuAnswer, menuView } from "./composer";
+import { composerKeyAction, type MenuAnswer, menuView, pickedInText } from "./composer";
 import { moveHighlight, optionId, SuggestionMenu } from "./SuggestionMenu";
 import { describeMention, describeProviderError, describeSkippedProvider } from "./text";
 import { post } from "./vscodeApi";
@@ -338,8 +338,7 @@ function Composer({ state }: { state: ChatState }) {
 
   const send = () => {
     if (!ready || replying || text.trim() === "") return;
-    const mentions = picked.filter((path) => text.includes(`@${path}`));
-    post({ type: "send", text, mentions });
+    post({ type: "send", text, mentions: pickedInText(picked, text) });
     setText("");
     setCaret(0);
     setPicked([]);
