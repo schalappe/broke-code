@@ -20,6 +20,8 @@ const reasoningOnly = [event({ content: "<think>Plan, never closed" })];
 
 /** Body of each chat request, by path prefix. */
 const requests = new Map<string, unknown[]>();
+/** Number of model listings, by path prefix. */
+const listings = new Map<string, number>();
 
 // Provider that lists one model. Path `/a/` and `/b/` stream "Partial ", then finish only when `finishReply` is
 // called; `/shape-<name>/` streams that shape whole; `/unclosed/` streams `reasoningOnly`; `/vllm/` sends the vLLM
@@ -30,8 +32,11 @@ const server = Bun.serve({
   port: 0,
   async fetch(request) {
     const path = new URL(request.url).pathname;
-    if (path.endsWith("/models")) return Response.json({ data: [{ id: "m" }] });
     const prefix = path.split("/")[1]!;
+    if (path.endsWith("/models")) {
+      listings.set(prefix, (listings.get(prefix) ?? 0) + 1);
+      return Response.json({ data: [{ id: "m" }] });
+    }
     requests.set(prefix, [...(requests.get(prefix) ?? []), await request.json()]);
     const whole = prefix === "unclosed" ? reasoningOnly : shapes[prefix.replace(/^shape-/, "")];
     if (whole) return new Response(whole.join("") + "data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
@@ -118,6 +123,47 @@ describe("ChatController settings change during a reply", () => {
     finishReply();
     await sent;
     expect(controller.snapshot.entries.at(-1)).toEqual({ role: "assistant", reasoning: "", content: "Partial end", status: "done" });
+  });
+});
+
+describe("ChatController settings reapplied", () => {
+  const at = (prefix: string): Provider => ({ name: prefix, baseUrl: `http://localhost:${server.port}/${prefix}/v1` });
+
+  test("keeps the model list when the active provider's settings did not change", async () => {
+    const provider = at("same");
+    const { controller } = await ready(provider);
+    controller.setProviders({ providers: [{ ...provider }, at("extra")], skipped: [] });
+    await Bun.sleep(50);
+    expect(listings.get("same")).toBe(1);
+    expect(controller.snapshot).toMatchObject({ provider: "same", model: "m" });
+  });
+
+  test("relists when the active provider is renamed", async () => {
+    const provider = at("renamed");
+    const { controller, state } = await ready(provider);
+    controller.setProviders({ providers: [{ ...provider, name: "New name" }], skipped: [] });
+    await until(state, (s) => s.provider === "New name" && s.model === "m");
+    expect(listings.get("renamed")).toBe(2);
+  });
+
+  test("relists when the active provider gets another base URL", async () => {
+    const { controller, state } = await ready(at("moved-from"));
+    controller.setProviders({ providers: [{ ...at("moved-to"), name: "moved-from" }], skipped: [] });
+    await until(state, (s) => listings.get("moved-to") === 1 && s.model === "m");
+    expect(listings.get("moved-from")).toBe(1);
+  });
+});
+
+describe("ChatController CA file change", () => {
+  test("relists the models when the active provider's CA file changes, without a retry", async () => {
+    const controller = new ChatController({ get: async () => undefined }, memoryStore(), () => {});
+    const state = () => controller.snapshot;
+    controller.setProviders({ providers: [{ ...ollama, caFile: "relative.pem" }], skipped: [] });
+    await until(state, (s) => s.models.status === "failed");
+    expect(state().models).toMatchObject({ status: "failed", error: { kind: "caFileInvalid", path: "relative.pem" } });
+
+    controller.setProviders({ providers: [ollama], skipped: [] });
+    await until(state, (s) => s.model === "m");
   });
 });
 

@@ -3,10 +3,18 @@
  * Provider HTTP client: `GET {baseUrl}/models`, streaming `POST {baseUrl}/chat/completions`.
  * Never sends `tools`, never reads `tool_calls` (ADR 0001). Failures returned as typed values, never thrown.
  * Only module that knows the reasoning wire shapes: callers see the reasoning and the answer apart.
+ * One network path for every request: `http`/`https` requests, with the provider's CA trust (see `tls`).
  */
+// [>]: VS Code patches these builtins in place (proxy, OS certificates), so the `node:` form carries the patch too.
+import * as http from "node:http";
+import * as https from "node:https";
+import type { LookupFunction } from "node:net";
+import { pipeline, Readable, Transform } from "node:stream";
+import * as zlib from "node:zlib";
 import type { Provider } from "./providers";
 import type { CutOffReason, ProviderError } from "./providerError";
 import { readSseData, SseEventTooLargeError } from "./sse";
+import { certificateErrorCode, providerTrust } from "./tls";
 
 export type ProviderAccess = {
   provider: Provider;
@@ -16,7 +24,7 @@ export type ProviderAccess = {
 
 export type ChatMessage = { role: "user" | "assistant"; content: string };
 
-export type HttpRequest = { url: string; init: RequestInit };
+export type HttpRequest = { url: string; method: "GET" | "POST"; headers: Record<string, string>; body?: string };
 
 export type ModelListing = { ok: true; models: string[] } | { ok: false; error: ProviderError };
 
@@ -32,6 +40,16 @@ export const MODEL_LIST_MAX_BYTES = 8 * 1024 * 1024;
 const ERROR_BODY_MAX_BYTES = 64 * 1024;
 /** Total `delta.content` plus reasoning fields of one reply, in UTF-16 code units. */
 export const REPLY_MAX_LENGTH = 4 * 1024 * 1024;
+/** Deadline for the response headers (DNS, connect, TLS included), then for each gap between body bytes. Node `fetch` used 300 s too. */
+const TIMEOUT_MS = 300_000;
+
+/** Network tuning for tests only; production requests use the defaults. */
+export type NetworkOptions = {
+  /** Replaces `TIMEOUT_MS`. */
+  timeoutMs?: number;
+  /** Replaces the system host name resolution. */
+  lookup?: LookupFunction;
+};
 
 /**
  * Build streaming chat request. Body: `model`, `messages`, `stream: true`. No `tools` key, ever.
@@ -39,24 +57,24 @@ export const REPLY_MAX_LENGTH = 4 * 1024 * 1024;
 export function buildChatRequest(access: ProviderAccess, model: string, messages: ChatMessage[]): HttpRequest {
   return {
     url: `${access.provider.baseUrl}/chat/completions`,
-    init: {
-      method: "POST",
-      headers: { ...authorization(access.apiKey), "Content-Type": "application/json", Accept: "text/event-stream" },
-      body: JSON.stringify({ model, messages: messages.map(({ role, content }) => ({ role, content })), stream: true }),
-    },
+    method: "POST",
+    headers: { ...authorization(access.apiKey), "Content-Type": "application/json", Accept: "text/event-stream" },
+    body: JSON.stringify({ model, messages: messages.map(({ role, content }) => ({ role, content })), stream: true }),
   };
 }
 
 /** List model ids of provider. */
-export async function listModels(access: ProviderAccess): Promise<ModelListing> {
+export async function listModels(access: ProviderAccess, network: NetworkOptions = {}): Promise<ModelListing> {
   const { provider } = access;
-  const sent = await send(access, {
+  const request: HttpRequest = {
     url: `${provider.baseUrl}/models`,
-    init: { method: "GET", headers: { ...authorization(access.apiKey), Accept: "application/json" } },
-  });
+    method: "GET",
+    headers: { ...authorization(access.apiKey), Accept: "application/json" },
+  };
+  const sent = await send(access, request, network);
   if (!sent.ok) return { ok: false, error: sent.error };
 
-  const read = await readText(sent.response, MODEL_LIST_MAX_BYTES);
+  const read = await readText(sent.response.body, MODEL_LIST_MAX_BYTES);
   if (!read.ok) return { ok: false, error: { kind: "cutOff", provider: provider.name, reason: "listDropped", cause: read.cause } };
   if (!read.complete) return { ok: false, error: { kind: "cutOff", provider: provider.name, reason: "listTooLarge" } };
   const body = read.text;
@@ -74,6 +92,7 @@ export type StreamChatOptions = {
   onContent: (text: string) => void;
   /** Called with each non-empty piece of the reasoning, in order, tags removed. */
   onReasoning: (text: string) => void;
+  network?: NetworkOptions;
 };
 
 /**
@@ -95,7 +114,7 @@ async function readReply(access: ProviderAccess, options: StreamChatOptions, spl
   const { signal } = options;
   const provider = access.provider.name;
   const request = buildChatRequest(access, options.model, options.messages);
-  const sent = await send(access, { url: request.url, init: { ...request.init, signal } });
+  const sent = await send(access, request, options.network ?? {}, signal);
   if (!sent.ok) return signal.aborted ? { status: "stopped" } : { status: "failed", error: sent.error };
 
   const body = sent.response.body;
@@ -103,7 +122,6 @@ async function readReply(access: ProviderAccess, options: StreamChatOptions, spl
     status: "failed",
     error: cause === undefined ? { kind: "cutOff", provider, reason } : { kind: "cutOff", provider, reason, cause },
   });
-  if (!body) return cutOff("ended");
 
   let finished = false;
   let length = 0;
@@ -214,39 +232,165 @@ function partialSuffix(text: string, tag: string): number {
   return 0;
 }
 
-type Sent = { ok: true; response: Response } | { ok: false; error: ProviderError };
+/**
+ * Response as the client needs it: status, redirect target, and the decoded body, read under its caps by the caller.
+ * `unsupportedEncoding` set when the body uses a `Content-Encoding` the client cannot decode; `body` is then raw.
+ */
+type ProviderResponse = {
+  status: number;
+  location: string | undefined;
+  body: ReadableStream<Uint8Array>;
+  unsupportedEncoding?: string;
+};
+
+/** `Accept-Encoding` sent with every request, as Node `fetch` did; one decoder per value. */
+const ACCEPT_ENCODING = "gzip, deflate, br";
+// [!]: A `Map`, not an object literal: `Content-Encoding: __proto__` must not find an inherited property.
+const DECODERS = new Map<string, () => NodeJS.ReadWriteStream>([
+  ["gzip", zlib.createGunzip],
+  ["x-gzip", zlib.createGunzip],
+  ["deflate", zlib.createInflate],
+  ["br", zlib.createBrotliDecompress],
+]);
+
+type Sent = { ok: true; response: ProviderResponse } | { ok: false; error: ProviderError };
 
 /**
- * Fetch and classify non-2xx. Caller checks own signal to tell stop from unreachable.
- * Redirects never followed: only the configured base URL receives requests, key, and conversation.
+ * Send request with the provider's CA trust and classify non-2xx. Caller checks own signal to tell stop from
+ * unreachable. Redirects never followed: only the configured base URL receives requests, key, and conversation.
  */
-async function send(access: ProviderAccess, request: HttpRequest): Promise<Sent> {
+async function send(access: ProviderAccess, request: HttpRequest, network: NetworkOptions, signal?: AbortSignal): Promise<Sent> {
   const { name, baseUrl } = access.provider;
-  let response: Response;
+  const trust = await providerTrust(access.provider);
+  if (!trust.ok) return trust;
+
+  let response: ProviderResponse;
   try {
-    response = await fetch(request.url, { ...request.init, redirect: "manual" });
+    response = await transmit(request, trust.ca, network, signal);
   } catch (error) {
+    const code = certificateErrorCode(error);
+    if (code !== undefined) return { ok: false, error: { kind: "certificate", provider: name, baseUrl, code } };
     return { ok: false, error: { kind: "unreachable", provider: name, baseUrl, cause: describeError(error) } };
   }
-  if (response.ok) return { ok: true, response };
-
   const { status } = response;
-  // [>]: Browser-style fetch hides a manual redirect behind `opaqueredirect` with status 0; Node and Bun expose the 3xx.
-  const redirected = response.type === "opaqueredirect" || (status >= 300 && status < 400);
+  const redirected = status >= 300 && status < 400;
   if (redirected || status === 401 || status === 403) {
     // [>]: Neither message shows the body -> release it unread.
-    response.body?.cancel().catch(() => {
-      // [>]: Body already closed or errored; nothing left to release.
-    });
+    release(response.body);
     if (redirected) {
-      return { ok: false, error: { kind: "redirected", provider: name, status, location: truncate(response.headers.get("location") ?? "") } };
+      return { ok: false, error: { kind: "redirected", provider: name, status, location: truncate(response.location ?? "") } };
     }
     return { ok: false, error: { kind: "invalidKey", provider: name, status } };
   }
-  const read = await readText(response, ERROR_BODY_MAX_BYTES);
+  if (response.unsupportedEncoding !== undefined) {
+    release(response.body);
+    return { ok: false, error: { kind: "invalidResponse", provider: name, detail: "", encoding: response.unsupportedEncoding } };
+  }
+  if (status >= 200 && status < 300) return { ok: true, response };
+  const read = await readText(response.body, ERROR_BODY_MAX_BYTES);
   if (!read.ok) return { ok: false, error: { kind: "rejected", provider: name, status, detail: "", bodyReadError: read.cause } };
   return { ok: false, error: { kind: "rejected", provider: name, status, detail: errorDetail(read.text) } };
 }
+
+/**
+ * One HTTP exchange. Resolves on response headers; the body streams after. `ca: undefined` sends no `ca` key at all,
+ * so VS Code's patch adds the OS store as it does for any extension request.
+ * Rejects on DNS, connect, TLS, abort, and no headers within the timeout. After headers, the body stream errors
+ * when no byte arrives for the timeout.
+ */
+function transmit(
+  request: HttpRequest,
+  ca: string[] | undefined,
+  network: NetworkOptions,
+  signal: AbortSignal | undefined,
+): Promise<ProviderResponse> {
+  const transport = new URL(request.url).protocol === "https:" ? https : http;
+  const headers = {
+    ...request.headers,
+    "Accept-Encoding": ACCEPT_ENCODING,
+    ...(request.body === undefined ? {} : { "Content-Length": String(Buffer.byteLength(request.body)) }),
+  };
+  const timeoutMs = network.timeoutMs ?? TIMEOUT_MS;
+  const seconds = timeoutMs / 1000;
+  return new Promise((resolve, reject) => {
+    let received: http.IncomingMessage | undefined;
+    // [>]: Throws synchronously on an invalid header (an API key with a newline): the promise rejects, no timer armed.
+    const outgoing = transport.request(
+      request.url,
+      {
+        method: request.method,
+        headers,
+        ...(ca ? { ca } : {}),
+        ...(signal ? { signal } : {}),
+        ...(network.lookup ? { lookup: network.lookup } : {}),
+      },
+      (incoming) => {
+        received = incoming;
+        timer.refresh();
+        incoming.once("close", () => clearTimeout(timer));
+        try {
+          resolve(responseOf(incoming, () => timer.refresh()));
+        } catch (error) {
+          // [!]: Thrown here, an error would escape the client as an uncaught exception.
+          incoming.destroy();
+          reject(error);
+        }
+      },
+    );
+    // [!]: One timer from the start, not the socket's idle timeout: that one is armed only once connected, so a
+    // stalled DNS lookup would hang forever. Re-armed by each body chunk once headers arrive.
+    const timer = setTimeout(() => {
+      if (received) received.destroy(timeoutError(`no data from the provider for ${seconds} s`));
+      else outgoing.destroy(timeoutError(`timed out: no response from the provider within ${seconds} s`));
+    }, timeoutMs);
+    // [>]: After headers, errors surface through the body stream; this rejection is then a no-op.
+    outgoing.on("error", (error) => {
+      if (!received) clearTimeout(timer);
+      reject(error);
+    });
+    outgoing.end(request.body);
+  });
+}
+
+/**
+ * Response of `incoming` with its body decoded. `onChunk` runs for each raw body chunk, to re-arm the idle timer.
+ * Content codings are case-insensitive (RFC 9110 8.4.1). One coding is supported; a list of several, like any coding
+ * outside `DECODERS`, is reported as unsupported.
+ */
+function responseOf(incoming: http.IncomingMessage, onChunk: () => void): ProviderResponse {
+  const response = { status: incoming.statusCode ?? 0, location: incoming.headers.location };
+  const encoding = incoming.headers["content-encoding"]?.trim().toLowerCase() || "identity";
+  const decoder = DECODERS.get(encoding);
+  if (encoding !== "identity" && decoder === undefined) {
+    return { ...response, body: webStream(incoming), unsupportedEncoding: encoding };
+  }
+  const watch = new Transform({
+    transform(chunk, _encoding, done) {
+      onChunk();
+      done(null, chunk);
+    },
+  });
+  // [&]: `pipeline` destroys every stream when one fails or the last is cancelled, so a cap (counted on decoded
+  // bytes) or a Stop ends the download too.
+  const body = decoder === undefined ? pipeline(incoming, watch, noop) : pipeline(incoming, watch, decoder(), noop);
+  return { ...response, body: webStream(body) };
+}
+
+function timeoutError(message: string): Error {
+  return Object.assign(new Error(message), { code: "ETIMEDOUT" });
+}
+
+/** `toWeb` cancel destroys the Node stream, so cancelling the body ends the download. */
+function webStream(stream: Readable | NodeJS.ReadableStream): ReadableStream<Uint8Array> {
+  return Readable.toWeb(stream as Readable) as unknown as ReadableStream<Uint8Array>;
+}
+
+function release(body: ReadableStream<Uint8Array>): void {
+  body.cancel().catch(noop);
+}
+
+/** [>]: Errors already reach the caller through the stream it reads; this callback has nothing left to do. */
+function noop(): void {}
 
 type TextRead = { ok: true; text: string; complete: boolean } | { ok: false; cause: string };
 
@@ -254,9 +398,8 @@ type TextRead = { ok: true; text: string; complete: boolean } | { ok: false; cau
  * Read body as UTF-8 text, at most `maxBytes`. Over the cap -> download cancelled, `complete: false`,
  * `text` = first `maxBytes` bytes.
  */
-async function readText(response: Response, maxBytes: number): Promise<TextRead> {
-  if (!response.body) return { ok: true, text: "", complete: true };
-  const reader = response.body.getReader();
+async function readText(body: ReadableStream<Uint8Array>, maxBytes: number): Promise<TextRead> {
+  const reader = body.getReader();
   const decoder = new TextDecoder();
   let text = "";
   let bytes = 0;

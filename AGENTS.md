@@ -19,10 +19,11 @@ The code so far covers the extension skeleton and a streaming chat with a provid
 - `GLOSSARY.md`: the domain terms (body tool call, harness, agent turn, provider, skill, slash command,
   mention). Code and docs use these names.
 - `docs/adr/`: architecture decision records.
-- `src/core/`: modules that import nothing from `vscode`: settings parsing, the provider HTTP client, the SSE
-  reader, the typed provider errors, the chat controller (conversation state, streaming, Stop), the dialog
-  queue, and the host-webview message protocol. Unit tests sit next to them as `*.test.ts`, because
-  `bun test` cannot load `vscode`.
+- `src/core/`: modules that import nothing from `vscode`: settings parsing, the API key shape check, the provider
+  HTTP client, the CA trust and certificate error classification (`tls.ts`), the SSE reader, the typed provider
+  errors, the chat controller (conversation state, streaming, Stop), the dialog queue, and the host-webview
+  message protocol. Unit tests sit next to them as `*.test.ts`, because `bun test` cannot load `vscode`.
+  `tlsFixture.ts` generates test certificates with `/usr/bin/openssl` at test time; no private key is committed.
 - `src/extension/`: the extension host glue (activation, webview view, API keys in `SecretStorage`).
 - `src/webview/`: the React chat panel and its CSS.
 - `src/l10n.test.ts`: checks that every `l10n.t` message has a French translation and that the
@@ -31,16 +32,24 @@ The code so far covers the extension skeleton and a streaming chat with a provid
   webview, and the English and French manifest strings. English messages are the keys of `l10n.t`.
 - `scripts/build.ts`: `bun run build` writes the host bundle (`dist/extension.js`, CommonJS) and the webview
   bundle (`dist/webview/`).
-- `.github/workflows/ci.yml`: type check, unit tests, and build on macOS.
+- `scripts/next-version.ts`: computes the next release version from the commits since the last `v*` tag. The
+  release workflow runs it as a CLI. Its tests sit next to it.
+- `.github/workflows/ci.yml`: type check, unit tests, build, and a packaging dry run on macOS.
+- `.github/workflows/release.yml`: the release on each push to `main`. The Marketplace Trusted Publishing
+  policy fixes its file name.
+- `README.md`: the user documentation, also shown on Open VSX and the Visual Studio Marketplace.
 - `LICENSE`: MIT.
 
 ## Stack
 
 - TypeScript for both the extension host and the chat webview.
-- Use `bun` for everything, including packaging and publishing. The project needs no Node and no npm. Run the
-  publishing tools under the Bun runtime with `bunx --bun @vscode/vsce` and `bunx --bun ovsx`, and always pass
+- Use `bun` for everything, including packaging and publishing. The project needs no Node and no npm.
+  `@vscode/vsce` and `ovsx` are exact-pinned dev dependencies, so `bun.lock` also pins their dependencies. Run
+  them under the Bun runtime with `bunx --bun vsce` and `bunx --bun ovsx`, and always pass
   `--no-dependencies` to `vsce`, because it otherwise calls npm to list dependencies. The bun bundle
   already contains them.
+- If a registry upload fails under Bun, switch that release step alone to the current Node LTS, and say so
+  here. Packaging and the other upload stay under Bun.
 - The webview uses React and `react-markdown`, with hand-written CSS built on VS Code theme variables. Do not
   add Tailwind or a component kit, and do not use `@vscode/webview-ui-toolkit`, which Microsoft deprecated.
 - The UI ships in English and French and follows the VS Code display language, with English as the fallback.
@@ -56,12 +65,27 @@ The code so far covers the extension skeleton and a streaming chat with a provid
   `settings.json` must not override them, because keys are stored by provider name and a repository could
   otherwise point that name at its own URL. Each API key lives in `SecretStorage`, never in `settings.json`.
 - Requests never follow HTTP redirects; a redirect is reported as an error. Provider response bodies are read
-  under size caps that cancel the download when exceeded.
+  under size caps that cancel the download when exceeded. Responses may be compressed with gzip, deflate, or br;
+  the caps count decoded bytes, and any other `Content-Encoding` is reported as an error.
 - The API does not report a model's context size. A settings table maps model names to sizes, and unknown
   models default to 32k. When the user picks an unknown model, the chat shows a link to set its size.
-- TLS goes through the OS certificate store, which the VS Code extension host already applies to `fetch`.
-  Each provider has an optional CA file (`.pem`) setting as a fallback. Never disable certificate
-  verification. Report a certificate failure as a certificate failure, not as a generic network error.
+- Every provider request goes through Node's `http`/`https` modules. VS Code patches them in place in the
+  extension host, adding its proxy support and, to requests without a `ca` option, the OS certificate store. A
+  provider without a CA file sends no `ca`, so it trusts exactly what VS Code trusts.
+- Each provider has an optional `caFile`: an absolute or `~/` path to a PEM file. It applies to that provider's
+  requests only. Node's `ca` option replaces the default store, so the client passes
+  `tls.getCACertificates("default")` (bundled roots and `NODE_EXTRA_CA_CERTS`), `tls.getCACertificates("system")`
+  (the OS store, expired certificates dropped), and every certificate of the file together. A provider with a CA
+  file always trusts the OS store, whatever VS Code's `http.systemCertificates` setting says. The file is read and
+  checked with `X509Certificate` on every request, because Node ignores an invalid `ca` silently. A relative
+  path, an unreadable file, or a file without a valid PEM certificate is reported naming the path, and no
+  request is sent.
+- Never disable certificate verification. Report a certificate failure (unknown issuer, self-signed, expired,
+  hostname mismatch) as a certificate error with its code, never as a generic network error. Connection refused,
+  DNS failures, and timeouts stay `unreachable`.
+- A request gets 300 seconds from its start to the response headers, DNS, connect, and TLS included; past that it
+  is `unreachable` and says it timed out. After the headers, 300 seconds without a byte cut the reply off, with a
+  cause saying how long nothing came. Node `fetch` used the same 300-second limits.
 
 ### Harness
 
@@ -110,6 +134,10 @@ The code so far covers the extension skeleton and a streaming chat with a provid
 
 - `bun run typecheck`, `bun test`, and `bun run build` run in CI on every pull request and on `develop` and
   `main`.
+- `bun run package` builds and writes `broke-code-<version>.vsix` with the version from `VERSION` (default
+  `0.0.0`). It writes the version into the VSIX only, never into `package.json`. CI runs it on every pull
+  request as a dry run of the release and checks the version inside the VSIX.
+- Run `actionlint` on the workflow files after editing them.
 - To try the extension, run `bun run build`, then `codium --extensionDevelopmentPath=<repository path>`
   (VSCodium is the maintainer's editor). Rebuild and reload the window after each change.
 - `bun run eval` (to be created) plays fixed scenarios against a local Ollama with `qwen3.8:27b` and
@@ -124,13 +152,23 @@ The code so far covers the extension skeleton and a streaming chat with a provid
   `develop` to `main`.
 - Merge `develop` into `main` with a merge commit, never a squash. A squash rewrites the commits on `main`, so
   `develop` would always look ahead of `main`.
-- Commit messages follow Conventional Commits in English. On each merge to `main`, CI computes the version
-  from those messages (`fix` bumps the patch, `feat` bumps the minor, the major stays at 0), tags it, builds,
-  tests, and publishes to Open VSX and the Visual Studio Marketplace. The first release is `0.1.0`.
+- Commit messages follow Conventional Commits in English. On each merge to `main`, `release.yml` computes the
+  version from the non-merge commits since the last `v*` tag: `feat` or a breaking change (`!` or a
+  `BREAKING CHANGE:` footer) bumps the minor, `fix` bumps the patch, and the major stays at 0. The first
+  release is `0.1.0`. A range with no `feat`, `fix`, or breaking change publishes nothing, and the run
+  succeeds with a log line saying so.
+- The release builds, tests, and packages, then creates tag `v<version>` on the merged commit before any
+  upload. The tag reserves that version for that commit. Then it publishes to Open VSX, to the Visual Studio
+  Marketplace, and last creates a GitHub Release that carries the `.vsix`. A failed run keeps its tag; finish
+  it by re-running that run, which reuses the tag's version, skips a registry that already has it, and
+  completes the Release. The next merge moves to the next version. The run fails before any upload if the
+  computed tag already exists on another commit.
 - The git tag is the only source of the version. CI writes the version into the package at build time and
   never commits to `main`, so `package.json` keeps `0.0.0`.
-- Only `main` publishes. Open VSX uses a token stored as a GitHub secret. The Visual Studio Marketplace uses
-  Trusted Publishing, with no stored token.
+- Only `main` publishes, through the GitHub environment `release`, whose branch policy allows `main` only.
+  Open VSX uses the environment secret `OVSX_PAT`, passed to the publish step as an environment variable and
+  never on a command line. The Visual Studio Marketplace uses Trusted Publishing (`vsce publish --oidc`), with
+  no stored token.
 
 ## Boundaries
 

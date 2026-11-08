@@ -48,7 +48,7 @@ export class ChatController {
 
   /**
    * Apply parsed settings. Keeps current provider when still valid, else remembered one, else first.
-   * Reply in flight whose provider was removed or changed -> stopped first, partial text kept.
+   * Reply in flight whose provider was removed or got another base URL -> stopped first, partial text kept.
    */
   setProviders(parsed: ParsedProviders): void {
     const replyProvider = this.reply?.provider;
@@ -65,7 +65,9 @@ export class ChatController {
     const keep = [previous?.name, remembered].find((name) => name !== undefined && names.includes(name));
     const next = this.providers.find((provider) => provider.name === (keep ?? names[0]));
 
-    if (next?.name === previous?.name && next?.baseUrl === previous?.baseUrl) {
+    // [>]: A CA file change relists too: the last listing may have failed on the old trust. A reply in flight keeps
+    // running, since its connection is already verified.
+    if (next?.name === previous?.name && next?.baseUrl === previous?.baseUrl && next?.caFile === previous?.caFile) {
       this.emit();
       return;
     }

@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { brotliCompressSync, deflateSync, gzipSync } from "node:zlib";
 import { buildChatRequest, listModels, MODEL_LIST_MAX_BYTES, REPLY_MAX_LENGTH, streamChat, type ProviderAccess } from "./client";
 import { vllmOpening, vllmPlainStream, vllmReasoningRest } from "./vllmFixture";
 
@@ -94,18 +95,18 @@ describe("buildChatRequest", () => {
   test("posts to /chat/completions with stream true, the model, the messages, and no tools key", () => {
     const request = buildChatRequest(access, "qwen3.8:27b", messages);
     expect(request.url).toBe("http://localhost:11434/v1/chat/completions");
-    expect(request.init.method).toBe("POST");
-    const body = JSON.parse(String(request.init.body));
+    expect(request.method).toBe("POST");
+    const body = JSON.parse(String(request.body));
     expect(body).toEqual({ model: "qwen3.8:27b", messages: [{ role: "user", content: "Hi" }], stream: true });
     expect("tools" in body).toBe(false);
   });
 
   test("sends no Authorization header without a key, and a bearer header with one", () => {
-    const withoutKey = new Headers(buildChatRequest(access, "m", messages).init.headers);
+    const withoutKey = new Headers(buildChatRequest(access, "m", messages).headers);
     expect(withoutKey.has("authorization")).toBe(false);
-    const withEmptyKey = new Headers(buildChatRequest({ ...access, apiKey: "" }, "m", messages).init.headers);
+    const withEmptyKey = new Headers(buildChatRequest({ ...access, apiKey: "" }, "m", messages).headers);
     expect(withEmptyKey.has("authorization")).toBe(false);
-    const withKey = new Headers(buildChatRequest({ ...access, apiKey: "sk-1" }, "m", messages).init.headers);
+    const withKey = new Headers(buildChatRequest({ ...access, apiKey: "sk-1" }, "m", messages).headers);
     expect(withKey.get("authorization")).toBe("Bearer sk-1");
   });
 });
@@ -591,5 +592,329 @@ describe("streamChat", () => {
       status: "failed",
       error: { kind: "rejected", provider: "P-chat-404", status: 404, detail: "model 'nope' not found" },
     });
+  });
+});
+
+describe("compressed responses", () => {
+  const modelList = '{"data":[{"id":"m"}]}';
+  const reply = [event({ choices: [{ delta: { content: "Hel" } }] }), event({ choices: [{ delta: { content: "lo" } }] }), "data: [DONE]\n\n"].join("");
+
+  function encoded(body: Uint8Array, encoding: string, init?: ResponseInit): Response {
+    return new Response(new Uint8Array(body), { ...init, headers: { ...init?.headers, "content-encoding": encoding } });
+  }
+
+  async function chat(access: ProviderAccess) {
+    const parts: string[] = [];
+    const outcome = await streamChat(access, {
+      model: "m",
+      messages: [{ role: "user", content: "Hi" }],
+      signal: new AbortController().signal,
+      onContent: (text) => parts.push(text),
+      onReasoning: () => {},
+    });
+    return { outcome, text: parts.join("") };
+  }
+
+  test("asks for gzip, deflate, and br", async () => {
+    const access = routed("enc-accept", () => Response.json({ data: [] }));
+    await listModels(access);
+    expect(received.get("enc-accept")?.headers.get("accept-encoding")).toBe("gzip, deflate, br");
+  });
+
+  test("decodes a gzip model list", async () => {
+    const access = routed("enc-gzip-models", () => encoded(gzipSync(modelList), "gzip"));
+    expect(await listModels(access)).toEqual({ ok: true, models: ["m"] });
+  });
+
+  test("decodes a gzip reply stream", async () => {
+    const access = routed("enc-gzip-chat", () => encoded(gzipSync(reply), "gzip", { headers: { "content-type": "text/event-stream" } }));
+    expect(await chat(access)).toEqual({ outcome: { status: "done" }, text: "Hello" });
+  });
+
+  test("decodes br and deflate", async () => {
+    const br = routed("enc-br", () => encoded(brotliCompressSync(modelList), "br"));
+    expect(await listModels(br)).toEqual({ ok: true, models: ["m"] });
+    const deflate = routed("enc-deflate", () => encoded(deflateSync(reply), "deflate"));
+    expect(await chat(deflate)).toEqual({ outcome: { status: "done" }, text: "Hello" });
+  });
+
+  test("decodes a compressed error body", async () => {
+    const access = routed("enc-500", () => encoded(gzipSync('{"error":{"message":"overloaded"}}'), "gzip", { status: 500 }));
+    expect(await listModels(access)).toEqual({
+      ok: false,
+      error: { kind: "rejected", provider: "P-enc-500", status: 500, detail: "overloaded" },
+    });
+  });
+
+  test("applies the size cap to decoded bytes, so a small compressed body cannot expand past it", async () => {
+    const bomb = gzipSync(`{"data":[${'{"id":"m"},'.repeat(MODEL_LIST_MAX_BYTES / 10)}{"id":"m"}]}`);
+    expect(bomb.byteLength).toBeLessThan(MODEL_LIST_MAX_BYTES / 100);
+    const access = routed("enc-bomb", () => encoded(bomb, "gzip"));
+    expect(await listModels(access)).toEqual({ ok: false, error: { kind: "cutOff", provider: "P-enc-bomb", reason: "listTooLarge" } });
+  });
+
+  test("ends the download of an endless compressed model list once its decoded size passes the cap", async () => {
+    let cancelled!: () => void;
+    const downloadEnded = new Promise<void>((resolve) => (cancelled = resolve));
+    const head = gzipSync('{"data":[');
+    const filler = gzipSync('{"id":"m"},'.repeat(10_000));
+    let sentHead = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull(stream) {
+        stream.enqueue(new Uint8Array(sentHead ? filler : head));
+        sentHead = true;
+      },
+      cancel: () => cancelled(),
+    });
+    const access = routed("enc-endless", () => new Response(body, { headers: { "content-encoding": "gzip" } }));
+    expect(await listModels(access)).toEqual({ ok: false, error: { kind: "cutOff", provider: "P-enc-endless", reason: "listTooLarge" } });
+    expect(await Promise.race([downloadEnded.then(() => "ended"), Bun.sleep(2000).then(() => "still downloading")])).toBe("ended");
+  });
+
+  test("reports a body that does not decode as cut off, with the decoder's cause", async () => {
+    const access = routed("enc-corrupt", () => encoded(new TextEncoder().encode(modelList), "gzip"));
+    const result = await listModels(access);
+    expect(result).toMatchObject({ ok: false, error: { kind: "cutOff", reason: "listDropped" } });
+  });
+
+  test("stops a compressed endless stream and ends its download", async () => {
+    const controller = new AbortController();
+    let cancelled!: () => void;
+    const downloadEnded = new Promise<void>((resolve) => (cancelled = resolve));
+    // [>]: Concatenated gzip members: each chunk decodes on its own, like a server flushing per event.
+    const piece = gzipSync(event({ choices: [{ delta: { content: "x" } }] }));
+    const body = new ReadableStream<Uint8Array>({ pull: (stream) => stream.enqueue(new Uint8Array(piece)), cancel: () => cancelled() });
+    const access = routed("enc-stop", () => new Response(body, { headers: { "content-type": "text/event-stream", "content-encoding": "gzip" } }));
+    const outcome = await streamChat(access, {
+      model: "m",
+      messages: [{ role: "user", content: "Hi" }],
+      signal: controller.signal,
+      onContent: () => controller.abort(),
+      onReasoning: () => {},
+    });
+    expect(outcome).toEqual({ status: "stopped" });
+    expect(await Promise.race([downloadEnded.then(() => "ended"), Bun.sleep(2000).then(() => "still downloading")])).toBe("ended");
+  });
+
+  test("reads coding names case-insensitively, as RFC 9110 defines them", async () => {
+    const access = routed("enc-upper", () => encoded(gzipSync(modelList), " GZIP "));
+    expect(await listModels(access)).toEqual({ ok: true, models: ["m"] });
+  });
+
+  test.each(["__proto__", "constructor", "toString", "gzip, br", "gzip,gzip"])(
+    "reports Content-Encoding %p as an invalid response, never a crash",
+    async (value) => {
+      const access = routed(`enc-odd-${encodeURIComponent(value)}`, () => encoded(new TextEncoder().encode(modelList), value));
+      expect(await listModels(access)).toMatchObject({ ok: false, error: { kind: "invalidResponse", detail: "", encoding: value.toLowerCase() } });
+    },
+  );
+
+  test("reports an unknown encoding as an invalid response naming it, for listing and chat", async () => {
+    const listing = routed("enc-zstd", () => encoded(new TextEncoder().encode(modelList), "zstd"));
+    expect(await listModels(listing)).toEqual({
+      ok: false,
+      error: { kind: "invalidResponse", provider: "P-enc-zstd", detail: "", encoding: "zstd" },
+    });
+    const chatting = routed("enc-zstd-chat", () => encoded(new TextEncoder().encode(reply), "zstd"));
+    expect(await chat(chatting)).toEqual({
+      outcome: { status: "failed", error: { kind: "invalidResponse", provider: "P-enc-zstd-chat", detail: "", encoding: "zstd" } },
+      text: "",
+    });
+  });
+});
+
+describe("timeouts", () => {
+  const network = { timeoutMs: 50 };
+
+  /** Raw TCP server: `reply` (or nothing) per request, then the connection stays open and silent. */
+  function silentServer(reply?: string) {
+    return Bun.listen({
+      hostname: "127.0.0.1",
+      port: 0,
+      socket: {
+        data(socket) {
+          if (reply !== undefined) socket.write(reply);
+        },
+      },
+    });
+  }
+
+  function at(port: number, name: string): ProviderAccess {
+    return { provider: { name, baseUrl: `http://127.0.0.1:${port}/v1` }, apiKey: undefined };
+  }
+
+  /**
+   * Runs `run` with the global timers watched, then waits past `delay` and returns how many timers of `delay` ms
+   * fired after `run` settled. The client's deadline is the only timer with that delay.
+   */
+  async function timersFiredAfter(delay: number, run: () => Promise<unknown>): Promise<number> {
+    const realSetTimeout = globalThis.setTimeout;
+    let settled = false;
+    let firedAfter = 0;
+    globalThis.setTimeout = ((callback: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) =>
+      realSetTimeout(
+        (...callArgs: unknown[]) => {
+          if (ms === delay && settled) firedAfter++;
+          callback(...callArgs);
+        },
+        ms,
+        ...args,
+      )) as typeof setTimeout;
+    try {
+      await run();
+      settled = true;
+      await Bun.sleep(delay * 3);
+      return firedAfter;
+    } finally {
+      globalThis.setTimeout = realSetTimeout;
+    }
+  }
+
+  test("reports a key that cannot go in a header without leaving its deadline behind", async () => {
+    const listener = silentServer();
+    try {
+      for (const apiKey of ["k€y", "line\nbreak"]) {
+        const access: ProviderAccess = { provider: { name: "Bad key", baseUrl: `http://127.0.0.1:${listener.port}/v1` }, apiKey };
+        const fired = await timersFiredAfter(41, async () => {
+          expect(await listModels(access, { timeoutMs: 41 })).toMatchObject({ ok: false, error: { kind: "unreachable" } });
+        });
+        expect(fired).toBe(0);
+      }
+    } finally {
+      listener.stop(true);
+    }
+  });
+
+  test("reports a provider that accepts the connection but never answers as unreachable, saying it timed out", async () => {
+    const listener = silentServer();
+    try {
+      const result = await listModels(at(listener.port, "Mute"), network);
+      expect(result).toMatchObject({ ok: false, error: { kind: "unreachable", provider: "Mute" } });
+      if (!result.ok && result.error.kind === "unreachable") expect(result.error.cause).toContain("timed out");
+    } finally {
+      listener.stop(true);
+    }
+  });
+
+  test("reports a host name that never resolves as unreachable, saying it timed out", async () => {
+    const stalledLookup = () => {
+      // [>]: Never calls back, like a DNS server that does not answer.
+    };
+    const access: ProviderAccess = { provider: { name: "Nowhere", baseUrl: "http://stalled.example.test/v1" }, apiKey: undefined };
+    const result = await listModels(access, { ...network, lookup: stalledLookup });
+    expect(result).toMatchObject({ ok: false, error: { kind: "unreachable", provider: "Nowhere" } });
+    if (!result.ok && result.error.kind === "unreachable") expect(result.error.cause).toContain("timed out");
+  });
+
+  test("reports silence after the headers as a dropped reply that says how long nothing came", async () => {
+    const head = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n";
+    const models = silentServer(`${head}Content-Type: application/json\r\n\r\n2\r\n{"\r\n`);
+    const chat = silentServer(`${head}Content-Type: text/event-stream\r\n\r\n${chunk(delta("Partial "))}`);
+    try {
+      expect(await listModels(at(models.port, "Stall"), network)).toEqual({
+        ok: false,
+        error: { kind: "cutOff", provider: "Stall", reason: "listDropped", cause: "no data from the provider for 0.05 s" },
+      });
+      const parts: string[] = [];
+      const outcome = await streamChat(at(chat.port, "Stall"), {
+        model: "m",
+        messages: [{ role: "user", content: "Hi" }],
+        signal: new AbortController().signal,
+        onContent: (text) => parts.push(text),
+        onReasoning: () => {},
+        network,
+      });
+      expect(outcome).toEqual({
+        status: "failed",
+        error: { kind: "cutOff", provider: "Stall", reason: "dropped", cause: "no data from the provider for 0.05 s" },
+      });
+      expect(parts.join("")).toBe("Partial ");
+    } finally {
+      models.stop(true);
+      chat.stop(true);
+    }
+  });
+
+  /** Raw TCP server: headers after `headersAfter` ms, then each of `pieces` `every` ms apart, then the end. */
+  function slowServer(headersAfter: number, every: number, pieces: string[]) {
+    return Bun.listen({
+      hostname: "127.0.0.1",
+      port: 0,
+      socket: {
+        async data(socket) {
+          await Bun.sleep(headersAfter);
+          socket.write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n");
+          for (const piece of pieces) {
+            await Bun.sleep(every);
+            socket.write(chunk(piece));
+          }
+          socket.write("0\r\n\r\n");
+        },
+      },
+    });
+  }
+
+  test("lets a slow but steady provider take longer than the timeout in total, and leaves no timer behind", async () => {
+    // [>]: Headers and each piece come within the timeout of the previous byte; the whole takes over three timeouts.
+    const listener = slowServer(140, 120, ['{"data":', '[{"id":', '"m"}', "]}"]);
+    try {
+      const fired = await timersFiredAfter(200, async () => {
+        expect(await listModels(at(listener.port, "Slow"), { timeoutMs: 200 })).toEqual({ ok: true, models: ["m"] });
+      });
+      expect(fired).toBe(0);
+    } finally {
+      listener.stop(true);
+    }
+  });
+
+  test("leaves no timer behind after a refused connection or a Stop", async () => {
+    expect(await timersFiredAfter(43, () => listModels(refused, { timeoutMs: 43 }))).toBe(0);
+
+    const listener = silentServer(`HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n${chunk(delta("Partial "))}`);
+    try {
+      const controller = new AbortController();
+      const fired = await timersFiredAfter(44, async () => {
+        const outcome = await streamChat(at(listener.port, "Stopped"), {
+          model: "m",
+          messages: [{ role: "user", content: "Hi" }],
+          signal: controller.signal,
+          onContent: () => controller.abort(),
+          onReasoning: () => {},
+          network: { timeoutMs: 44 },
+        });
+        expect(outcome).toEqual({ status: "stopped" });
+      });
+      expect(fired).toBe(0);
+    } finally {
+      listener.stop(true);
+    }
+  });
+
+  function chunk(text: string): string {
+    return `${Buffer.byteLength(text).toString(16)}\r\n${text}\r\n`;
+  }
+});
+
+describe("bodies left unread", () => {
+  /** Endless body whose `ended` resolves when the client stops downloading it. */
+  function watchedEndless() {
+    let cancelled!: () => void;
+    const ended = new Promise<string>((resolve) => (cancelled = () => resolve("ended")));
+    const body = new ReadableStream<Uint8Array>({
+      pull: (stream) => stream.enqueue(new Uint8Array(64 * 1024)),
+      cancel: () => cancelled(),
+    });
+    return { body, ended: Promise.race([ended, Bun.sleep(2000).then(() => "still downloading")]) };
+  }
+
+  test.each([
+    ["401", 401, {}, "invalidKey"],
+    ["302", 302, { location: "https://elsewhere/v1" }, "redirected"],
+    ["zstd", 200, { "content-encoding": "zstd" }, "invalidResponse"],
+  ] as const)("stops downloading the body of a %s it does not read", async (name, status, headers, kind) => {
+    const { body, ended } = watchedEndless();
+    const access = routed(`unread-${name}`, () => new Response(body, { status, headers }));
+    expect(await listModels(access)).toMatchObject({ ok: false, error: { kind } });
+    expect(await ended).toBe("ended");
   });
 });

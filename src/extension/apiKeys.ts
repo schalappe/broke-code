@@ -5,6 +5,7 @@
  * Every key dialog (automatic prompt, `broke-code: Set API key`) runs through one queue -> boxes never overlap.
  */
 import * as vscode from "vscode";
+import { isHeaderSafeKey } from "../core/apiKey";
 import type { Provider } from "../core/providers";
 import { SerialQueue } from "../core/serialQueue";
 
@@ -98,6 +99,10 @@ export class ApiKeys {
       placeHolder: vscode.l10n.t("Leave empty for a provider that needs no key, such as Ollama"),
       password: true,
       ignoreFocusOut: true,
+      validateInput: (value) =>
+        isHeaderSafeKey(value.trim())
+          ? undefined
+          : vscode.l10n.t("An API key can contain only visible ASCII characters, with no spaces or accents."),
     });
     if (key === undefined) return "cancelled";
     try {

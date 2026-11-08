@@ -13,6 +13,17 @@ export function describeProviderError(error: ProviderError): ErrorText {
   switch (error.kind) {
     case "unreachable":
       return { message: l10n.t("Cannot reach {0} at {1}.", error.provider, error.baseUrl), detail: error.cause };
+    case "certificate":
+      return {
+        message: l10n.t(
+          "{0} presented a certificate that is not trusted ({1}). If it uses a corporate or self-signed certificate, set its CA file in the provider settings.",
+          error.provider,
+          error.code,
+        ),
+        detail: error.baseUrl,
+      };
+    case "caFileInvalid":
+      return { message: caFileMessage(error), ...(error.cause ? { detail: error.cause } : {}) };
     case "redirected":
       return {
         message: l10n.t(
@@ -32,6 +43,11 @@ export function describeProviderError(error: ProviderError): ErrorText {
     case "cutOff":
       return { message: cutOffMessage(error), ...(error.cause ? { detail: error.cause } : {}) };
     case "invalidResponse":
+      if (error.encoding !== undefined) {
+        return {
+          message: l10n.t("{0} answered with a compression that broke-code cannot read (Content-Encoding: {1}).", error.provider, error.encoding),
+        };
+      }
       return {
         message: l10n.t(
           "{0} did not answer with a model list. Check that its base URL is the API root, such as http://localhost:11434/v1.",
@@ -45,6 +61,17 @@ export function describeProviderError(error: ProviderError): ErrorText {
 function rejectedDetail(error: ProviderError & { kind: "rejected" }): { detail?: string } {
   if (error.bodyReadError !== undefined) return { detail: l10n.t("The response body could not be read: {0}", error.bodyReadError) };
   return error.detail ? { detail: error.detail } : {};
+}
+
+function caFileMessage(error: ProviderError & { kind: "caFileInvalid" }): string {
+  switch (error.reason) {
+    case "relative":
+      return l10n.t("The CA file of {0} must be an absolute path or start with ~/: {1}", error.provider, error.path);
+    case "unreadable":
+      return l10n.t("The CA file of {0} could not be read: {1}", error.provider, error.path);
+    case "notPem":
+      return l10n.t("The CA file of {0} is not a PEM certificate: {1}", error.provider, error.path);
+  }
 }
 
 function cutOffMessage(error: ProviderError & { kind: "cutOff" }): string {

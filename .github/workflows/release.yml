@@ -1,0 +1,90 @@
+# File name fixed by the Marketplace Trusted Publishing policy.
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+# Two merges in a row must not compute the same version; runs queue instead of racing.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.next.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+      # Prints the tag already on this commit (a re-run), the next version, or nothing; fails on a tag clash.
+      - id: next
+        name: Compute the version
+        run: |
+          version=$(bun scripts/next-version.ts)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  publish:
+    needs: version
+    if: needs.version.outputs.version != ''
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun test
+      - run: bun run package
+      # The tag reserves the version for this commit before any upload. A failed run keeps it and is finished by
+      # re-running it; the next merge computes the next version, so one version never names two commits.
+      - name: Reserve tag v${{ needs.version.outputs.version }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if ! gh api "repos/$GH_REPO/git/refs" -f ref="refs/tags/v$VERSION" -f sha="$GITHUB_SHA" >/dev/null; then
+            tagged=$(gh api "repos/$GH_REPO/git/ref/tags/v$VERSION" --jq .object.sha)
+            if [ "$tagged" != "$GITHUB_SHA" ]; then
+              echo "::error::Tag v$VERSION points at $tagged, not $GITHUB_SHA. Nothing is published."
+              exit 1
+            fi
+            echo "Tag v$VERSION already points at this commit: finishing its release."
+          fi
+      # --skip-duplicate lets a re-run pass the registry that already has the version.
+      - name: Publish to Open VSX
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: bunx --bun ovsx publish --packagePath "broke-code-$VERSION.vsix" --skip-duplicate
+      - name: Publish to the Visual Studio Marketplace
+        run: bunx --bun vsce publish --oidc --packagePath "broke-code-$VERSION.vsix" --skip-duplicate --no-dependencies
+      # Three idempotent steps, so a re-run finishes a Release left as a draft or without its .vsix.
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if ! gh release view "v$VERSION" >/dev/null 2>&1; then
+            gh release create "v$VERSION" --verify-tag --draft --title "v$VERSION" --generate-notes
+          fi
+          gh release upload "v$VERSION" "broke-code-$VERSION.vsix" --clobber
+          gh release edit "v$VERSION" --draft=false
