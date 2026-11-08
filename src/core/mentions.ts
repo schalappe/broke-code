@@ -38,24 +38,27 @@ const TRAILING_PUNCTUATION = /[.,;:!?)]+$/;
 /**
  * Paths mentioned in `text`, in order of first appearance, each once. A mention is `@` at the start of the text
  * or after whitespace, then everything up to the next whitespace, less trailing `.,;:!?)`. A `picked` path (chosen
- * in the menu, so it may hold spaces) is a mention wherever `@<path>` stands as a whole token; its text is then
- * not read again as typed tokens. Fenced code blocks and inline code spans never hold mentions.
+ * in the menu, so it may hold spaces or backticks) is a mention wherever `@<path>` stands as a whole token; its text
+ * is then not read again as typed tokens or code. Fenced code blocks and inline code spans never hold mentions.
  */
 export function findMentions(text: string, picked: readonly string[] = []): string[] {
   const found: { path: string; index: number }[] = [];
-  let masked = maskCode(text);
+  const code = maskCode(text);
+  let rest = text;
   // [>]: Longest first, so a picked `a b.ts` wins over a picked `a` at the same `@`.
   for (const path of picked.filter((path) => path !== "").sort((a, b) => b.length - a.length)) {
     const token = `@${path}`;
-    for (let index = masked.indexOf(token); index !== -1; index = masked.indexOf(token, index + token.length)) {
-      const before = masked.charAt(index - 1);
-      const after = masked.slice(index + token.length);
+    for (let index = rest.indexOf(token); index !== -1; index = rest.indexOf(token, index + token.length)) {
+      const before = rest.charAt(index - 1);
+      const after = rest.slice(index + token.length);
+      if (code.charAt(index) === MASK) continue;
       if ((before !== "" && !/\s/.test(before)) || !/^[.,;:!?)]*(\s|$)/.test(after)) continue;
       found.push({ path, index });
-      masked = masked.slice(0, index) + MASK.repeat(token.length) + masked.slice(index + token.length);
+      rest = rest.slice(0, index) + MASK.repeat(token.length) + rest.slice(index + token.length);
     }
   }
-  for (const match of masked.matchAll(/(?<=^|\s)@(\S+)/g)) {
+  // [>]: Code is masked again once picked paths are out, so backticks inside a picked path pair with nothing.
+  for (const match of maskCode(rest).matchAll(/(?<=^|\s)@(\S+)/g)) {
     const path = match[1]!.split(MASK)[0]!.replace(TRAILING_PUNCTUATION, "");
     if (path !== "") found.push({ path, index: match.index });
   }

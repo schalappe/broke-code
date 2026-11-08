@@ -82,6 +82,12 @@ describe("findMentions with picked paths", () => {
     expect(findMentions("run `cat @my file.ts`", ["my file.ts"])).toEqual([]);
   });
 
+  test("takes a picked path holding backticks whole, and its backticks open no code span", () => {
+    expect(findMentions("explain @my `file`.ts please", ["my `file`.ts"])).toEqual(["my `file`.ts"]);
+    expect(findMentions("@a`b.ts then `skip @x.ts` and @y.ts", ["a`b.ts"])).toEqual(["a`b.ts", "y.ts"]);
+    expect(findMentions("run ``cat @my `file`.ts``", ["my `file`.ts"])).toEqual([]);
+  });
+
   test("masks the longer of two overlapping picked paths first", () => {
     expect(findMentions("@a b c.ts", ["a", "a b c.ts"])).toEqual(["a b c.ts"]);
   });
