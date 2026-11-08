@@ -101,6 +101,51 @@ describe("ConversationStore", () => {
     expect([...files.files.keys()].sort()).toEqual([`${saved.id}.json`, "notes.tmp"].sort());
   });
 
+  test("a listing waits for an earlier write, and its cleanup never touches that write's temporary file", async () => {
+    const files = memoryFiles();
+    const removed: string[] = [];
+    const remove = files.remove;
+    files.remove = async (name) => {
+      removed.push(name);
+      return remove(name);
+    };
+    let release: () => void = () => {};
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    files.write = async (name, text) => {
+      const temp = `${name}.${newConversationId()}.tmp`;
+      files.files.set(temp, text);
+      await hold;
+      files.files.delete(temp);
+      files.files.set(name, text);
+    };
+    const store = new ConversationStore(files);
+    const saved = record(1000);
+    const saving = store.save(saved);
+    let listed = false;
+    const listing = store.list().then((listing) => {
+      listed = true;
+      return listing;
+    });
+    await Bun.sleep(10);
+    expect(listed).toBe(false);
+    release();
+    await saving;
+    expect((await listing).conversations).toMatchObject([{ id: saved.id }]);
+    expect(removed).toEqual([]);
+  });
+
+  test("deletes leftover temporary files at the first listing only", async () => {
+    const files = memoryFiles();
+    const store = new ConversationStore(files);
+    await store.list();
+    const leftover = `${newConversationId()}.json.${newConversationId()}.tmp`;
+    files.files.set(leftover, "{");
+    await store.list();
+    expect(files.files.has(leftover)).toBe(true);
+  });
+
   test("reads after the writes and removes queued before them", async () => {
     const files = memoryFiles();
     const store = new ConversationStore(files);

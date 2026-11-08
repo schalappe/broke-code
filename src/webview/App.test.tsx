@@ -355,6 +355,17 @@ describe("header actions", () => {
     expect(closed).not.toContain("aria-controls");
   });
 
+  test("New chat is disabled for an empty conversation only, with or without a provider", () => {
+    const newChat = (configured: boolean, entries: ChatEntry[]) =>
+      renderToStaticMarkup(
+        <Header state={stateWith(configured, { entries })} historyOpen={false} toggleHistory={() => {}} />,
+      ).match(/<button[^>]*>New chat<\/button>/)?.[0];
+    for (const configured of [true, false]) {
+      expect(newChat(configured, [])).toContain("disabled");
+      expect(newChat(configured, hi)).not.toContain("disabled");
+    }
+  });
+
   test("New chat closes an open History and starts a new chat; a closed one stays closed", () => {
     let toggles = 0;
     const toggle = () => {
