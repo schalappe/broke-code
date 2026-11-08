@@ -57,11 +57,11 @@ export class ChatView implements vscode.WebviewViewProvider {
   private async answerQuery(query: string, id: number): Promise<void> {
     try {
       const { items, capped } = await this.actions.queryFiles(query);
-      this.post({ type: "fileSuggestions", id, items, capped });
+      this.post({ type: "fileSuggestions", id, items, capped, failed: false });
     } catch (error) {
-      // [>]: The menu then says "No match"; the composer still sends typed mentions.
+      // [>]: The menu says the listing failed; the composer still sends typed mentions.
       console.error("broke-code: could not list workspace files", error);
-      this.post({ type: "fileSuggestions", id, items: [], capped: false });
+      this.post({ type: "fileSuggestions", id, items: [], capped: false, failed: true });
     }
   }
 

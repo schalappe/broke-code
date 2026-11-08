@@ -64,6 +64,7 @@
   "over 1 MiB, not attached": "plus de 1 Mio, non joint",
   "could not be read": "illisible",
   "No match": "Aucun résultat",
+  "Could not list the workspace files": "Impossible de lister les fichiers de l'espace de travail",
   "Index limited to 5,000 files": "Index limité à 5 000 fichiers",
   "Files and folders": "Fichiers et dossiers"
 }

@@ -38,8 +38,11 @@ export type L10nBundle = Record<string, string>;
 export type HostMessage =
   | { type: "init"; l10n: L10nBundle | undefined; state: ChatState }
   | { type: "state"; state: ChatState }
-  /** Answer to the `queryFiles` of the same `id`. `capped`: the index stopped at its file limit. */
-  | { type: "fileSuggestions"; id: number; items: Suggestion[]; capped: boolean };
+  /**
+   * Answer to the `queryFiles` of the same `id`. `capped`: the index stopped at its file limit. `failed`: the
+   * workspace files could not be listed, so `items` is empty for that reason, not for lack of a match.
+   */
+  | { type: "fileSuggestions"; id: number; items: Suggestion[]; capped: boolean; failed: boolean };
 
 export type WebviewMessage =
   | { type: "ready" }

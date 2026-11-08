@@ -5,11 +5,11 @@
  */
 import { filterSuggestions, MAX_SUGGESTIONS, type Suggestion } from "../core/suggestions";
 
-/** Host answer to a file query, with the query it answers. */
-export type MenuAnswer = { query: string; items: Suggestion[]; capped: boolean };
+/** Host answer to a file query, with the query it answers. `failed`: the workspace files could not be listed. */
+export type MenuAnswer = { query: string; items: Suggestion[]; capped: boolean; failed: boolean };
 
 /** What the menu shows. */
-export type MenuView = { items: Suggestion[]; capped: boolean };
+export type MenuView = { items: Suggestion[]; capped: boolean; failed: boolean };
 
 /**
  * Menu for `query` from the latest `answer`. While the answer to `query` is pending, only the earlier rows that
@@ -17,9 +17,9 @@ export type MenuView = { items: Suggestion[]; capped: boolean };
  */
 export function menuView(answer: MenuAnswer | undefined, query: string): MenuView | undefined {
   if (!answer) return undefined;
-  if (answer.query === query) return { items: answer.items, capped: answer.capped };
+  if (answer.query === query) return { items: answer.items, capped: answer.capped, failed: answer.failed };
   const items = filterSuggestions(answer.items, query, MAX_SUGGESTIONS);
-  return items.length > 0 ? { items, capped: answer.capped } : undefined;
+  return items.length > 0 ? { items, capped: answer.capped, failed: false } : undefined;
 }
 
 /** A key press in the message box. `composing`: an input method (IME) is composing text. */

@@ -210,20 +210,26 @@ function Mentions({ entry }: { entry: ChatEntry & { role: "user" } }) {
 
 const MENTION_MENU_ID = "mention-menu";
 
-/** Mention menu rows for `items`, with a "No match" line when empty and a last line when the index is capped. */
+/**
+ * Mention menu rows for `items`, with a "No match" line when empty, a failure line instead when the files could not
+ * be listed, and a last line when the index is capped.
+ */
 export function MentionMenu({
   items,
   capped,
+  failed,
   highlighted,
   onPick,
 }: {
   items: Suggestion[];
   capped: boolean;
+  failed: boolean;
   highlighted: number;
   onPick: (index: number) => void;
 }) {
   const notices = [
-    ...(items.length === 0 ? [l10n.t("No match")] : []),
+    ...(failed ? [l10n.t("Could not list the workspace files")] : []),
+    ...(!failed && items.length === 0 ? [l10n.t("No match")] : []),
     ...(capped ? [l10n.t("Index limited to 5,000 files")] : []),
   ];
   return (
@@ -312,7 +318,7 @@ function Composer({ state }: { state: ChatState }) {
       const message = event.data;
       const { id, query } = latest.current;
       if (message.type !== "fileSuggestions" || message.id !== id || query === undefined) return;
-      setAnswer({ query, items: message.items, capped: message.capped });
+      setAnswer({ query, items: message.items, capped: message.capped, failed: message.failed });
       setHighlighted(0);
     };
     window.addEventListener("message", onMessage);
@@ -365,7 +371,15 @@ function Composer({ state }: { state: ChatState }) {
 
   return (
     <footer className="composer">
-      {menu && <MentionMenu items={menu.items} capped={menu.capped} highlighted={highlighted} onPick={pick} />}
+      {menu && (
+        <MentionMenu
+          items={menu.items}
+          capped={menu.capped}
+          failed={menu.failed}
+          highlighted={highlighted}
+          onPick={pick}
+        />
+      )}
       <textarea
         ref={input}
         rows={3}

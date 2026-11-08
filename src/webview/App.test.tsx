@@ -154,8 +154,10 @@ describe("mentions", () => {
 });
 
 describe("mention menu", () => {
-  const menu = (items: Suggestion[], capped = false, highlighted = 0) =>
-    renderToStaticMarkup(<MentionMenu items={items} capped={capped} highlighted={highlighted} onPick={() => {}} />);
+  const menu = (items: Suggestion[], capped = false, highlighted = 0, failed = false) =>
+    renderToStaticMarkup(
+      <MentionMenu items={items} capped={capped} failed={failed} highlighted={highlighted} onPick={() => {}} />,
+    );
 
   test("shows a file row and a folder row with their kind markers, the highlighted one selected", () => {
     const html = menu(
@@ -179,6 +181,13 @@ describe("mention menu", () => {
   test("says No match when nothing matches", () => {
     const html = menu([]);
     expect(html).toContain('<p class="menu-notice">No match</p>');
+    expect(html).not.toContain('role="option"');
+  });
+
+  test("says the workspace files could not be listed, with no row to pick, instead of No match", () => {
+    const html = menu([], false, 0, true);
+    expect(html).toContain('<p class="menu-notice">Could not list the workspace files</p>');
+    expect(html).not.toContain("No match");
     expect(html).not.toContain('role="option"');
   });
 
