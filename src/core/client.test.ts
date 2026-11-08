@@ -743,6 +743,48 @@ describe("timeouts", () => {
     return { provider: { name, baseUrl: `http://127.0.0.1:${port}/v1` }, apiKey: undefined };
   }
 
+  /**
+   * Runs `run` with the global timers watched, then waits past `delay` and returns how many timers of `delay` ms
+   * fired after `run` settled. The client's deadline is the only timer with that delay.
+   */
+  async function timersFiredAfter(delay: number, run: () => Promise<unknown>): Promise<number> {
+    const realSetTimeout = globalThis.setTimeout;
+    let settled = false;
+    let firedAfter = 0;
+    globalThis.setTimeout = ((callback: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) =>
+      realSetTimeout(
+        (...callArgs: unknown[]) => {
+          if (ms === delay && settled) firedAfter++;
+          callback(...callArgs);
+        },
+        ms,
+        ...args,
+      )) as typeof setTimeout;
+    try {
+      await run();
+      settled = true;
+      await Bun.sleep(delay * 3);
+      return firedAfter;
+    } finally {
+      globalThis.setTimeout = realSetTimeout;
+    }
+  }
+
+  test("reports a key that cannot go in a header without leaving its deadline behind", async () => {
+    const listener = silentServer();
+    try {
+      for (const apiKey of ["k€y", "line\nbreak"]) {
+        const access: ProviderAccess = { provider: { name: "Bad key", baseUrl: `http://127.0.0.1:${listener.port}/v1` }, apiKey };
+        const fired = await timersFiredAfter(41, async () => {
+          expect(await listModels(access, { timeoutMs: 41 })).toMatchObject({ ok: false, error: { kind: "unreachable" } });
+        });
+        expect(fired).toBe(0);
+      }
+    } finally {
+      listener.stop(true);
+    }
+  });
+
   test("reports a provider that accepts the connection but never answers as unreachable, saying it timed out", async () => {
     const listener = silentServer();
     try {

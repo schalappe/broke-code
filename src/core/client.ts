@@ -314,12 +314,7 @@ function transmit(
   const seconds = timeoutMs / 1000;
   return new Promise((resolve, reject) => {
     let received: http.IncomingMessage | undefined;
-    // [!]: One timer from the start, not the socket's idle timeout: that one is armed only once connected, so a
-    // stalled DNS lookup would hang forever. Re-armed by each body chunk once headers arrive.
-    const timer = setTimeout(() => {
-      if (received) received.destroy(timeoutError(`no data from the provider for ${seconds} s`));
-      else outgoing.destroy(timeoutError(`timed out: no response from the provider within ${seconds} s`));
-    }, timeoutMs);
+    // [>]: Throws synchronously on an invalid header (an API key with a newline): the promise rejects, no timer armed.
     const outgoing = transport.request(
       request.url,
       {
@@ -342,6 +337,12 @@ function transmit(
         }
       },
     );
+    // [!]: One timer from the start, not the socket's idle timeout: that one is armed only once connected, so a
+    // stalled DNS lookup would hang forever. Re-armed by each body chunk once headers arrive.
+    const timer = setTimeout(() => {
+      if (received) received.destroy(timeoutError(`no data from the provider for ${seconds} s`));
+      else outgoing.destroy(timeoutError(`timed out: no response from the provider within ${seconds} s`));
+    }, timeoutMs);
     // [>]: After headers, errors surface through the body stream; this rejection is then a no-op.
     outgoing.on("error", (error) => {
       if (!received) clearTimeout(timer);
