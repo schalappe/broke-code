@@ -46,7 +46,20 @@ describe("readSseData", () => {
     expect(await collect(streamOf([": keep-alive\n\n", "event: message\nid: 3\ndata:x\n\n"]))).toEqual(["x"]);
   });
 
+  test("treats a CRLF split across chunks as one line ending, not two", async () => {
+    // A doubled ending would close the event early and split it in two.
+    expect(await collect(streamOf(["data: one\r", "\ndata: two\r", "\n\r", "\n"]))).toEqual(["one\ntwo"]);
+  });
+
   test("yields a last event that lacks the closing blank line", async () => {
     expect(await collect(streamOf(["data: [DONE]\n"]))).toEqual(["[DONE]"]);
+  });
+
+  test("yields a last event whose final line lacks any line ending", async () => {
+    expect(await collect(streamOf(['data: {"a":1}\n\ndata: [DO', "NE]"]))).toEqual(['{"a":1}', "[DONE]"]);
+  });
+
+  test("yields a last event ending in a lone CR", async () => {
+    expect(await collect(streamOf(["data: [DONE]\r"]))).toEqual(["[DONE]"]);
   });
 });
