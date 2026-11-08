@@ -16,7 +16,7 @@ export type ReplyStatus = "waiting" | "streaming" | "done" | "stopped" | "failed
 
 export type ChatEntry =
   | { role: "user"; content: string }
-  /** `reasoning`: model's thinking before its answer, shown collapsed, never sent back. `content`: the answer. */
+  /** `reasoning`: text the model writes before its answer, shown collapsed, never sent back. `content`: the answer. */
   | { role: "assistant"; reasoning: string; content: string; status: ReplyStatus; error?: ProviderError };
 
 export type ChatState = {

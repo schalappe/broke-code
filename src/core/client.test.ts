@@ -82,7 +82,7 @@ function delta(content: string, finishReason: string | null = null): string {
 }
 
 /** Reasoning delta as Ollama (`reasoning`) or vLLM-style servers (`reasoning_content`) send it. */
-function thought(text: string, field: "reasoning" | "reasoning_content" = "reasoning"): string {
+function reasoningDelta(text: string, field: "reasoning" | "reasoning_content" = "reasoning"): string {
   return event({ choices: [{ index: 0, delta: { content: "", [field]: text }, finish_reason: null }] });
 }
 
@@ -240,28 +240,28 @@ describe("streamChat", () => {
 
   async function run(access: ProviderAccess, signal?: AbortSignal) {
     const parts: string[] = [];
-    const thoughts: string[] = [];
+    const reasoningParts: string[] = [];
     const outcome = await streamChat(access, {
       model: "m",
       messages,
       signal: signal ?? new AbortController().signal,
       onContent: (text) => parts.push(text),
-      onReasoning: (text) => thoughts.push(text),
+      onReasoning: (text) => reasoningParts.push(text),
     });
-    return { outcome, text: parts.join(""), reasoning: thoughts.join("") };
+    return { outcome, text: parts.join(""), reasoning: reasoningParts.join("") };
   }
 
   test("streams delta.content as the answer and delta.reasoning as the reasoning, until [DONE]", async () => {
     const access = routed("chat-ok", () =>
       sse([
-        `data: ${JSON.stringify({ choices: [{ delta: { role: "assistant", content: "", reasoning: "thinking" } }] })}\n\n`,
+        `data: ${JSON.stringify({ choices: [{ delta: { role: "assistant", content: "", reasoning: "Plan." } }] })}\n\n`,
         delta("Hel"),
         delta("lo **world**"),
         delta("", "stop"),
         "data: [DONE]\n\n",
       ]),
     );
-    expect(await run(access)).toEqual({ outcome: { status: "done" }, text: "Hello **world**", reasoning: "thinking" });
+    expect(await run(access)).toEqual({ outcome: { status: "done" }, text: "Hello **world**", reasoning: "Plan." });
     const body = JSON.parse(received.get("chat-ok")!.body);
     expect(body.stream).toBe(true);
     expect("tools" in body).toBe(false);
@@ -269,8 +269,8 @@ describe("streamChat", () => {
 
   test("splits delta.reasoning, delta.reasoning_content, and a leading <think> block into the same reasoning and answer", async () => {
     const shapes: Record<string, string[]> = {
-      reasoning: [thought("Plan "), thought("the reply."), delta("Hello"), delta(" **world**")],
-      reasoningContent: [thought("Plan ", "reasoning_content"), thought("the reply.", "reasoning_content"), delta("\n\nHello **world**")],
+      reasoning: [reasoningDelta("Plan "), reasoningDelta("the reply."), delta("Hello"), delta(" **world**")],
+      reasoningContent: [reasoningDelta("Plan ", "reasoning_content"), reasoningDelta("the reply.", "reasoning_content"), delta("\n\nHello **world**")],
       thinkTag: [delta("<think>Plan "), delta("the reply.</think>\n\nHello"), delta(" **world**")],
     };
     for (const [shape, chunks] of Object.entries(shapes)) {
@@ -345,6 +345,22 @@ describe("streamChat", () => {
     expect(parts).toEqual(["Hi", " there"]);
   });
 
+  test("passes reasoning on as each delta arrives, holding back only a possible </think> start", async () => {
+    const access = routed("chat-reasoning-pieces", () =>
+      sse([delta("<think>Plan"), delta(" more <"), delta("/thi"), delta("nk>Done"), delta("", "stop")]),
+    );
+    const reasoning: string[] = [];
+    const answer: string[] = [];
+    const outcome = await streamChat(access, {
+      model: "m",
+      messages,
+      signal: new AbortController().signal,
+      onContent: (text) => answer.push(text),
+      onReasoning: (text) => reasoning.push(text),
+    });
+    expect({ outcome, reasoning, answer }).toEqual({ outcome: { status: "done" }, reasoning: ["Plan", " more "], answer: ["Done"] });
+  });
+
   test("leaves a <think> block that never closes in the reasoning, with an empty answer", async () => {
     const access = routed("chat-unclosed", () => sse([delta("<think>Plan the"), delta(" reply</thi")]));
     expect(await run(access)).toEqual({
@@ -356,7 +372,7 @@ describe("streamChat", () => {
 
   test("puts both a reasoning field and a leading <think> block into the reasoning", async () => {
     const access = routed("chat-both", () =>
-      sse([thought("First. "), delta("<think>Second.</think>Answer"), delta("", "stop")]),
+      sse([reasoningDelta("First. "), delta("<think>Second.</think>Answer"), delta("", "stop")]),
     );
     expect(await run(access)).toEqual({ outcome: { status: "done" }, reasoning: "First. Second.", text: "Answer" });
   });
@@ -521,7 +537,7 @@ describe("streamChat", () => {
 
   test("counts reasoning toward the reply cap, with the answer", async () => {
     const piece = "x".repeat(512 * 1024);
-    const access = routed("chat-endless-reasoning", () => endless(delta("Answer"), thought(piece)));
+    const access = routed("chat-endless-reasoning", () => endless(delta("Answer"), reasoningDelta(piece)));
     const { outcome, text, reasoning } = await run(access);
     expect(outcome).toEqual({ status: "failed", error: { kind: "cutOff", provider: "P-chat-endless-reasoning", reason: "tooLarge" } });
     expect(text).toBe("Answer");

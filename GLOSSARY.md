@@ -23,8 +23,8 @@ One user request and every tool call and tool result it triggers, up to the mode
 _Avoid_: run, task, iteration
 
 **Reasoning**:
-The model's thinking text before its answer, shown collapsed in the chat, never sent back to the model, and never
-read for body tool calls.
+The text a model writes before its answer to work the problem out, shown collapsed in the chat, never sent back
+to the model, and never read for body tool calls.
 _Avoid_: thoughts, chain of thought, thinking
 
 ## Connection
