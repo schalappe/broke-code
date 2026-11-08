@@ -66,9 +66,11 @@ export class ChatController {
   private listingId = 0;
   /**
    * Navigation (restore, New chat, open, delete, pruning) runs one operation at a time, in request order, so the
-   * conversation shown is always the result of the last request and never one deleted or pruned before it. Each
-   * operation stops the reply in flight and waits for it to settle; the store queue then orders every later read
-   * after that reply's last save. A request waits behind a slow disk operation already queued.
+   * conversation shown is always the result of the last request and never one deleted or pruned before it. The
+   * operations that change the conversation shown (New chat, open, deleting the one shown) stop the reply in flight
+   * at request time and wait for it to settle; the store queue then orders every later read after that reply's last
+   * save. Deleting another row and pruning leave the reply running. A request waits behind a slow disk operation
+   * already queued.
    */
   private readonly navigation = new SerialQueue();
   /**
@@ -107,14 +109,14 @@ export class ChatController {
 
   /**
    * Window load: list the saved conversations and show the one shown last, if it can still be read; else keep a
-   * new one. In-flight replies in it come back stopped (see `parseConversation`).
+   * new one. In-flight replies in it come back stopped (see `parseConversation`). Stops no reply: none exists at
+   * activation, and one sent meanwhile keeps its conversation in front.
    */
   restore(): Promise<void> {
     return this.navigate(() => this.restoreNow());
   }
 
   private async restoreNow(): Promise<void> {
-    if (this.state.storageProblem?.kind === "listFailed") this.state.storageProblem = undefined;
     try {
       const { conversations, unreadable } = await this.store.list();
       const known = new Set(this.state.conversations.map((summary) => summary.id));
@@ -122,6 +124,8 @@ export class ChatController {
         ...this.state.conversations,
         ...conversations.filter((summary) => !known.has(summary.id)),
       ]);
+      // [>]: A listing error is about the list: only a listing that succeeds clears it.
+      if (this.state.storageProblem?.kind === "listFailed") this.state.storageProblem = undefined;
       if (unreadable.length > 0) {
         const cause = unreadable.map((file) => `${file.id}: ${file.cause}`).join("\n");
         this.report({ kind: "listFailed", cause }, "could not read saved conversations", unreadable);
@@ -290,23 +294,26 @@ export class ChatController {
         if (!saved) return settle("stopped");
       }
 
-      const outcome = await streamChat(access, {
-        model,
-        messages: history,
-        signal: abort.signal,
-        onContent: (delta) => {
-          reply.content += delta;
-          reply.status = "streaming";
-          this.emit();
-          this.saveSoon(conversation);
-        },
-        onReasoning: (delta) => {
-          reply.reasoning += delta;
-          reply.status = "streaming";
-          this.emit();
-          this.saveSoon(conversation);
-        },
-      });
+      // [>]: Stop ends the reply at once, even if a step inside `streamChat` never settles (a CA file read on a FIFO):
+      // late deltas and the late outcome are dropped, so navigation never waits on work that cannot be aborted.
+      const delta = (field: "content" | "reasoning") => (text: string) => {
+        if (abort.signal.aborted) return;
+        reply[field] += text;
+        reply.status = "streaming";
+        this.emit();
+        this.saveSoon(conversation);
+      };
+      const outcome = await unlessAborted(
+        streamChat(access, {
+          model,
+          messages: history,
+          signal: abort.signal,
+          onContent: delta("content"),
+          onReasoning: delta("reasoning"),
+        }),
+        abort.signal,
+      );
+      if (!outcome) return settle("stopped");
       if (outcome.status === "failed") reply.error = outcome.error;
       settle(outcome.status);
     } finally {
@@ -355,8 +362,8 @@ export class ChatController {
   }
 
   /**
-   * Delete saved conversation `id` from disk, then from the list. The one shown -> its reply stopped and a new one
-   * shown first. A failed delete keeps the row and is reported.
+   * Delete saved conversation `id` from disk, then from the list. The one shown -> its reply stopped at request time
+   * and a new one shown first. Another row -> the reply keeps running. A failed delete keeps the row and is reported.
    */
   deleteConversation(id: string): Promise<void> {
     if (id === this.conversation.id) this.stop();
@@ -370,8 +377,8 @@ export class ChatController {
   }
 
   /**
-   * Run `operation` after every navigation asked before it. A user request first clears the open error it
-   * supersedes; its own failure is reported by itself.
+   * Run `operation` after every navigation asked before it. A user request first clears the open or not-found error
+   * it supersedes, never a listing error; its own failure is reported by itself.
    */
   private navigate(operation: () => Promise<void>, clearsOpenError = true): Promise<void> {
     return this.navigation.run(async () => {
@@ -392,7 +399,10 @@ export class ChatController {
     await reply.settled;
   }
 
-  /** Delete the conversations past the 50 kept, oldest first, sparing the one shown when this runs. */
+  /**
+   * Delete the conversations past the 50 kept, oldest first, sparing the one shown when this runs. Never stops the
+   * reply: the reply's own save queued this prune, and the conversation shown does not change.
+   */
   private async prune(): Promise<void> {
     for (const id of conversationsOverLimit(this.state.conversations, [this.conversation.id])) await this.remove(id);
   }

@@ -1,4 +1,8 @@
 import { afterAll, describe, expect, spyOn, test } from "bun:test";
+import { copyFileSync, mkdtempSync, rmSync, unlinkSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ChatController, type ChoiceStore } from "./chatController";
 import { type ConversationRecord, newConversationId } from "./conversation";
 import { type MemoryFiles, memoryFiles } from "./conversationFixture";
@@ -6,6 +10,7 @@ import { ConversationStore } from "./conversationStore";
 import type { MentionReader, ReadMention } from "./mentions";
 import { type ChatState, isReplying } from "./protocol";
 import type { Provider } from "./providers";
+import { createTlsFixture } from "./tlsFixture";
 import { vllmOpening, vllmReasoningRest } from "./vllmFixture";
 
 const encoder = new TextEncoder();
@@ -1289,4 +1294,120 @@ describe("ChatController conversations", () => {
     const reloaded = await load(ws, { provider });
     expect(reloaded.state().entries.at(-1)).toMatchObject(failed);
   });
+
+  test("Stop ends a reply at once while its CA file read never settles, and New chat then completes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "broke-code-ca-"));
+    const caFile = join(dir, "ca.pem");
+    copyFileSync(createTlsFixture().ca.certPath, caFile);
+    const provider: Provider = { name: "Hang", baseUrl: `http://localhost:${server.port}/ca-hang/v1`, caFile };
+    const ws = workspace();
+    const { controller, state } = await load(ws, { provider });
+    unlinkSync(caFile);
+    expect(Bun.spawnSync(["mkfifo", caFile]).exitCode).toBe(0);
+    const sent = controller.send("Hello");
+    const id = state().conversationId;
+    try {
+      await eventually(() => raw(ws, id) !== undefined, "the first save");
+      await Bun.sleep(50);
+      controller.stop();
+      const settled = await Promise.race([sent.then(() => true), Bun.sleep(200).then(() => false)]);
+      expect(settled).toBe(true);
+      expect(state().entries.at(-1)).toEqual({ role: "assistant", reasoning: "", content: "", status: "stopped" });
+      await eventually(() => savedReply(ws, id)?.status === "stopped", "the stopped save");
+      const newChat = await Promise.race([controller.newChat().then(() => true), Bun.sleep(200).then(() => false)]);
+      expect(newChat).toBe(true);
+      expect(state().conversationId).not.toBe(id);
+    } finally {
+      // [>]: A writer unblocks the read; its late outcome (an invalid CA file) must change nothing.
+      await writeFile(caFile, "not a certificate\n");
+      await sent;
+      await Bun.sleep(20);
+      rmSync(dir, { recursive: true, force: true });
+    }
+    expect(savedReply(ws, id)).toEqual({ role: "assistant", reasoning: "", content: "", status: "stopped" });
+    expect(requests.get("ca-hang")).toBeUndefined();
+  });
+
+  test("deleting another conversation while a reply streams leaves the reply running to its end", async () => {
+    const other = savedRecord("other");
+    const ws = workspace(filesOf(other));
+    const { controller, state } = await load(ws);
+    const sent = controller.send("Hi");
+    await until(state, (s) => s.entries.at(-1)?.content === "Partial ");
+    await controller.deleteConversation(other.id);
+    expect(ws.files.files.has(`${other.id}.json`)).toBe(false);
+    expect(state().entries.at(-1)).toMatchObject({ status: "streaming" });
+    finishReply();
+    await sent;
+    expect(state().entries.at(-1)).toMatchObject({ content: "Partial end", status: "done" });
+  });
+
+  test("pruning past 50 leaves the reply that triggered it running to its end", async () => {
+    const seeded = Array.from({ length: 50 }, (_, index) => savedRecord(`c${index}`, index + 1));
+    const ws = workspace(filesOf(...seeded));
+    const { controller, state } = await load(ws, { now: () => 1000 });
+    const sent = controller.send("Newest");
+    await until(state, (s) => s.entries.at(-1)?.content === "Partial ");
+    await eventually(() => !ws.files.files.has(`${seeded[0]!.id}.json`), "the prune");
+    expect(state().entries.at(-1)).toMatchObject({ status: "streaming" });
+    finishReply();
+    await sent;
+    expect(state().entries.at(-1)).toMatchObject({ content: "Partial end", status: "done" });
+  });
+
+  test("a listing error stays through New chat, open, and delete; the next successful listing clears it", async () => {
+    const [kept, dropped] = [savedRecord("kept"), savedRecord("dropped")];
+    const ws = workspace(filesOf(kept, dropped));
+    const names = ws.files.names;
+    ws.files.names = async () => {
+      throw new Error("EACCES: listing denied");
+    };
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { controller, state } = await load(ws);
+      const listFailed = { kind: "listFailed" as const, cause: "Error: EACCES: listing denied" };
+      expect(state().storageProblem).toEqual(listFailed);
+      await controller.openConversation(kept.id);
+      expect(state()).toMatchObject({ conversationId: kept.id, storageProblem: listFailed });
+      await controller.deleteConversation(dropped.id);
+      expect(state().storageProblem).toEqual(listFailed);
+      await controller.newChat();
+      expect(state().storageProblem).toEqual(listFailed);
+
+      ws.files.names = names;
+      await controller.restore();
+      expect(state().storageProblem).toBeUndefined();
+      expect(state().conversations.map((summary) => summary.id)).toEqual([kept.id]);
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
+  test("a finished reply no longer owns the controller's reply slot", async () => {
+    // [>]: Internal invariant: a stale slot would make the next navigation wait on, or Stop abort, a finished reply.
+    const { controller } = await load(workspace(), { provider: reasoningProvider });
+    await controller.send("done");
+    expect((controller as unknown as { reply: unknown }).reply).toBeUndefined();
+  });
+
+  for (const action of ["open", "delete the one shown"] as const) {
+    test(`${action} stops a new reply at once, behind an earlier navigation whose read waits`, async () => {
+      const record = savedRecord("slow open");
+      const ws = workspace(filesOf(record));
+      const { controller, state } = await load(ws);
+      const shown = state().conversationId;
+      const read = holdRead(ws.files, 1);
+      const opening = controller.openConversation(record.id);
+      await eventually(read.started, "the held read");
+      const sent = controller.send("sent during navigation");
+      const next = action === "open" ? controller.openConversation(record.id) : controller.deleteConversation(shown);
+      try {
+        await Bun.sleep(50);
+        expect(state().entries.at(-1)).toMatchObject({ status: "stopped" });
+      } finally {
+        read.release();
+        await Promise.all([opening, sent, next]);
+      }
+    });
+  }
 });
