@@ -1,0 +1,142 @@
+/**
+ * @module mentions
+ * Mentions: `@path` tokens in a user message, read at send time, and the text the model receives for them.
+ */
+import {
+  type AccessFailure,
+  type EntryKind,
+  readWorkspaceEntry,
+  truncateLines,
+  type WorkspaceRoot,
+} from "./workspaceFiles";
+
+/** Lines of a file, or entries of a folder, attached before the rest is cut. */
+const MAX_MENTION_LINES = 2000;
+
+/**
+ * `attached`: content sent whole. `truncated`: content cut to its first lines. Any other status: nothing
+ * attached; the model gets a notice instead.
+ */
+export type MentionStatus = "attached" | "truncated" | AccessFailure;
+
+/** One mention as the chat shows and keeps it. `lines`: lines of a file or entries of a folder attached. */
+export type MentionResult = { path: string; kind: EntryKind; status: MentionStatus; lines?: number };
+
+/**
+ * A mention read at send time. `content`: attached text, empty when nothing is attached. `omitted`: lines cut
+ * by truncation. `cause`: error code or message of an `unreadable` path.
+ */
+export type ReadMention = MentionResult & { content: string; omitted: number; cause?: string };
+
+/** Reads a mentioned path at send time. Must not reject. */
+export type MentionReader = { read(path: string): Promise<ReadMention> };
+
+/** Stands in for code characters; not whitespace, so a token cannot start right after masked code. */
+const MASK = "\0";
+const TRAILING_PUNCTUATION = /[.,;:!?)]+$/;
+
+/**
+ * Paths mentioned in `text`, in order, each once. A mention is `@` at the start of the text or after whitespace,
+ * then everything up to the next whitespace, less trailing `.,;:!?)`. Fenced code blocks and inline code spans
+ * never hold mentions.
+ */
+export function findMentions(text: string): string[] {
+  const paths = new Set<string>();
+  for (const match of maskCode(text).matchAll(/(?<=^|\s)@(\S+)/g)) {
+    const path = match[1]!.split(MASK)[0]!.replace(TRAILING_PUNCTUATION, "");
+    if (path !== "") paths.add(path);
+  }
+  return [...paths];
+}
+
+/** `text` with fenced blocks and inline code spans masked, lengths and newlines kept. */
+function maskCode(text: string): string {
+  return maskCodeSpans(maskFences(text));
+}
+
+function maskFences(text: string): string {
+  let fence: { char: string; length: number } | undefined;
+  return text
+    .split("\n")
+    .map((line) => {
+      const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+      if (!fence) {
+        if (!marker) return line;
+        fence = { char: marker[0]!, length: marker.length };
+      } else if (marker?.[0] === fence.char && marker.length >= fence.length && line.trim() === marker) {
+        fence = undefined;
+      }
+      return MASK.repeat(line.length);
+    })
+    .join("\n");
+}
+
+/** A run of N backticks opens a span closed by the next run of exactly N; an unmatched run is literal. */
+function maskCodeSpans(text: string): string {
+  const runs = [...text.matchAll(/`+/g)];
+  let masked = text;
+  for (let open = 0; open < runs.length; open++) {
+    const length = runs[open]![0].length;
+    const close = runs.findIndex((run, index) => index > open && run[0].length === length);
+    if (close === -1) continue;
+    const start = runs[open]!.index;
+    const end = runs[close]!.index + length;
+    masked = masked.slice(0, start) + masked.slice(start, end).replace(/[^\n]/g, MASK) + masked.slice(end);
+    open = close;
+  }
+  return masked;
+}
+
+/** Model-facing block of one mention: header `@<path> (<kind>, <count or status>)`, then content or notice. */
+export function formatMention(mention: ReadMention): string {
+  const { path, kind, status } = mention;
+  if (status !== "attached" && status !== "truncated") {
+    return `@${path} (${kind}, ${status})\n${notice({ ...mention, status })}`;
+  }
+
+  const count = plural(mention.lines ?? 0, kind === "file" ? "line" : "entry", kind === "file" ? "lines" : "entries");
+  const header = `@${path} (${kind}, ${count}${status === "truncated" ? ", truncated" : ""})`;
+  // [!]: No spread into Math.max: a 1 MiB file can hold more backtick runs than a call takes arguments.
+  const longestRun = (mention.content.match(/`+/g) ?? []).reduce((longest, run) => Math.max(longest, run.length), 0);
+  const fence = "`".repeat(Math.max(3, longestRun + 1));
+  const body = mention.content.endsWith("\n") || mention.content === "" ? mention.content : `${mention.content}\n`;
+  const block = `${header}\n${fence}\n${body}${fence}`;
+  return status === "truncated" ? `${block}\n[truncated: ${mention.omitted} more lines not shown]` : block;
+}
+
+/** What the model receives for a user message: the text, then one block per mention. */
+export function composeUserMessage(text: string, mentions: ReadMention[]): string {
+  return [text, ...mentions.map(formatMention)].join("\n\n");
+}
+
+function notice(mention: ReadMention & { status: Exclude<MentionStatus, "attached" | "truncated"> }): string {
+  switch (mention.status) {
+    case "missing":
+      return "Not attached: no such file or folder in the workspace.";
+    case "outsideWorkspace":
+      return "Not attached: the path is outside the workspace folders.";
+    case "binary":
+      return "Not attached: the file is binary.";
+    case "tooLarge":
+      return "Not attached: the file is larger than 1 MiB.";
+    case "unreadable":
+      return `Not attached: the path could not be read (${mention.cause ?? "unknown error"}).`;
+  }
+}
+
+function plural(count: number, one: string, many: string): string {
+  return `${count} ${count === 1 ? one : many}`;
+}
+
+/** Read mentioned `path` inside `roots`: whole or truncated content, or the reason nothing is attached. */
+export async function readMention(roots: WorkspaceRoot[], path: string): Promise<ReadMention> {
+  const entry = await readWorkspaceEntry(roots, path);
+  if (entry.status !== "ok") {
+    const cause = entry.status === "unreadable" ? { cause: entry.cause } : {};
+    return { path, kind: entry.kind, status: entry.status, content: "", omitted: 0, ...cause };
+  }
+  const whole = entry.kind === "file" ? entry.text : entry.entries.join("\n");
+  const cut = truncateLines(whole, MAX_MENTION_LINES);
+  const status = cut.omitted > 0 ? "truncated" : "attached";
+  return { path, kind: entry.kind, status, lines: cut.lines, content: cut.text, omitted: cut.omitted };
+}

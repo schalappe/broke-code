@@ -1,8 +1,9 @@
 /**
  * @module text
- * Localized panel text for provider errors and skipped providers.
+ * Localized panel text for provider errors, skipped providers, and mentions.
  */
 import * as l10n from "@vscode/l10n";
+import type { MentionResult } from "../core/mentions";
 import type { ProviderError } from "../core/providerError";
 import type { SkippedProvider } from "../core/providers";
 
@@ -106,5 +107,28 @@ export function describeSkippedProvider(skipped: SkippedProvider): string {
       return l10n.t("Provider {0} is skipped: its base URL is not an http or https URL.", skipped.name ?? "");
     case "duplicateName":
       return l10n.t("Provider {0} is skipped: another provider already uses this name.", skipped.name ?? "");
+  }
+}
+
+/** Short status of a mention: what was attached, or why nothing was. */
+export function describeMention(mention: MentionResult): string {
+  const count = mention.lines ?? 0;
+  const file = mention.kind === "file";
+  switch (mention.status) {
+    case "attached":
+      if (file) return count === 1 ? l10n.t("1 line") : l10n.t("{0} lines", count);
+      return count === 1 ? l10n.t("1 entry") : l10n.t("{0} entries", count);
+    case "truncated":
+      return file ? l10n.t("truncated to {0} lines", count) : l10n.t("truncated to {0} entries", count);
+    case "missing":
+      return l10n.t("not found");
+    case "outsideWorkspace":
+      return l10n.t("outside the workspace");
+    case "binary":
+      return l10n.t("binary file, not attached");
+    case "tooLarge":
+      return l10n.t("over 1 MiB, not attached");
+    case "unreadable":
+      return l10n.t("could not be read");
   }
 }

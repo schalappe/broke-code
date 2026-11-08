@@ -21,8 +21,10 @@ The code so far covers the extension skeleton and a streaming chat with a provid
 - `docs/adr/`: architecture decision records.
 - `src/core/`: modules that import nothing from `vscode`: settings parsing, the API key shape check, the provider
   HTTP client, the CA trust and certificate error classification (`tls.ts`), the SSE reader, the typed provider
-  errors, the chat controller (conversation state, streaming, Stop), the dialog queue, and the host-webview
-  message protocol. Unit tests sit next to them as `*.test.ts`, because `bun test` cannot load `vscode`.
+  errors, the chat controller (conversation state, streaming, Stop), the dialog queue, the host-webview message
+  protocol, workspace file access (`workspaceFiles.ts`: the inside-workspace check, capped reads, one-level
+  listings, line truncation, with `node:fs`), and mentions (`mentions.ts`: token detection, reading, and the text
+  the model receives). Unit tests sit next to them as `*.test.ts`, because `bun test` cannot load `vscode`.
   `tlsFixture.ts` generates test certificates with `/usr/bin/openssl` at test time; no private key is committed.
 - `src/extension/`: the extension host glue (activation, webview view, API keys in `SecretStorage`).
 - `src/webview/`: the React chat panel and its CSS.
@@ -118,7 +120,21 @@ The code so far covers the extension skeleton and a streaming chat with a provid
   v1 has no automatic summarization.
 - The system prompt includes `~/.agents/AGENTS.md`, then the workspace `AGENTS.md`, when they exist.
   `CLAUDE.md` is not read.
-- A mention `@file` attaches the file content. A mention `@folder` attaches its file listing.
+- A mention `@file` attaches the file content. A mention `@folder` attaches its direct children, folders suffixed
+  with `/`, sorted by name; never a recursive listing.
+- A mention is `@` at the start of the message or after whitespace, up to the next whitespace, less trailing
+  `.,;:!?)`. Fenced code blocks and inline code spans hold no mentions. A path mentioned twice is attached once.
+- Mentions are read when the message is sent, never again: later turns resend the message as composed then. The
+  composed text lives in the chat controller, outside the state posted to the webview.
+- A mention path resolves against the workspace folders; in a multi-root workspace, a first segment naming a
+  folder selects that folder. After resolving symlinks the path must be inside a workspace folder, or its status
+  is `outsideWorkspace`. Other statuses: `missing`, `binary` (NUL byte in the first 8 KiB), `tooLarge` (over
+  1 MiB), `unreadable` (any other failure, such as a permission error or a FIFO), `attached`, and `truncated`
+  (cut to its first 2,000 lines, then `[truncated: N more lines not shown]`).
+- The model receives the user text, then one block per mention: a header `@<path> (<kind>, <count or status>)`,
+  then the content in a backtick fence longer than any backtick run inside it, or a one-line notice when nothing
+  is attached. The message is sent whatever the statuses. The chat shows each mention and its status under the
+  message.
 - Conversations are saved per workspace.
 
 ### Skills and slash commands

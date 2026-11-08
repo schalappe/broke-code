@@ -3,7 +3,7 @@ import { type KeyboardEvent, useEffect, useLayoutEffect, useRef, useState } from
 import Markdown from "react-markdown";
 import { type ChatEntry, type ChatState, isReplying } from "../core/protocol";
 import type { ProviderError } from "../core/providerError";
-import { describeProviderError, describeSkippedProvider } from "./text";
+import { describeMention, describeProviderError, describeSkippedProvider } from "./text";
 import { post } from "./vscodeApi";
 
 export function App({ state }: { state: ChatState }) {
@@ -165,6 +165,7 @@ function Conversation({ entries }: { entries: ChatEntry[] }) {
           // biome-ignore lint/suspicious/noArrayIndexKey: entries are only appended or cleared, never reordered or removed.
           <div key={index} className="message user">
             {entry.content}
+            {entry.mentions.length > 0 && <Mentions entry={entry} />}
           </div>
         ) : (
           // biome-ignore lint/suspicious/noArrayIndexKey: entries are only appended or cleared, never reordered or removed.
@@ -183,6 +184,22 @@ function Conversation({ entries }: { entries: ChatEntry[] }) {
       )}
       <div ref={end} />
     </section>
+  );
+}
+
+/** Each mention of a user message with its status. Plain labels: the menu and chips are #19. */
+function Mentions({ entry }: { entry: ChatEntry & { role: "user" } }) {
+  return (
+    <ul className="mentions" aria-label={l10n.t("Mentions")}>
+      {entry.mentions.map((mention) => {
+        const attached = mention.status === "attached" || mention.status === "truncated";
+        return (
+          <li key={mention.path} className={attached ? undefined : "failed"}>
+            @{mention.path} · {describeMention(mention)}
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 

@@ -2,6 +2,7 @@
  * @module protocol
  * Messages between extension host and chat webview. Host owns state; webview renders snapshots.
  */
+import type { MentionResult } from "./mentions";
 import type { ProviderError } from "./providerError";
 import type { SkippedProvider } from "./providers";
 
@@ -15,7 +16,8 @@ export type ModelsState =
 export type ReplyStatus = "waiting" | "streaming" | "done" | "stopped" | "failed";
 
 export type ChatEntry =
-  | { role: "user"; content: string }
+  /** `content`: the text as typed. `mentions`: each mention read at send time, in order. */
+  | { role: "user"; content: string; mentions: MentionResult[] }
   /** `reasoning`: text the model writes before its answer, shown collapsed, never sent back. `content`: the answer. */
   | { role: "assistant"; reasoning: string; content: string; status: ReplyStatus; error?: ProviderError };
 

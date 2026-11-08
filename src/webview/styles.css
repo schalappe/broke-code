@@ -132,6 +132,19 @@ button.link:hover:not(:disabled) {
   background: var(--vscode-input-background);
 }
 
+.mentions {
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+  white-space: normal;
+  font-size: 0.9em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.mentions .failed {
+  color: var(--vscode-errorForeground);
+}
+
 .message.assistant > :first-child {
   margin-top: 0;
 }

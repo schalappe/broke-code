@@ -20,7 +20,7 @@ function render(reply: Omit<Reply, "role">): string {
     models: { status: "loaded", models: ["m"] },
     model: "m",
     entries: [
-      { role: "user", content: "Hi" },
+      { role: "user", content: "Hi", mentions: [] },
       { role: "assistant", ...reply },
     ],
   };
@@ -99,5 +99,53 @@ describe("error actions", () => {
     expect(
       failedListing({ kind: "unreachable", provider: "P", baseUrl: "http://p/v1", cause: "ECONNREFUSED" }),
     ).not.toContain("Open provider settings");
+  });
+});
+
+describe("mentions", () => {
+  /** Panel markup for one user message with `mentions`, English strings. */
+  function renderMentions(mentions: (ChatEntry & { role: "user" })["mentions"]): string {
+    const state: ChatState = {
+      providers: ["P"],
+      skipped: [],
+      provider: "P",
+      models: { status: "loaded", models: ["m"] },
+      model: "m",
+      entries: [{ role: "user", content: "look", mentions }],
+    };
+    return renderToStaticMarkup(<App state={state} />);
+  }
+
+  test("shows no mention list for a message without mentions", () => {
+    expect(renderMentions([])).not.toContain('class="mentions"');
+  });
+
+  test("lists each mention under the message as a plain label with its status", () => {
+    const html = renderMentions([
+      { path: "src/a.ts", kind: "file", status: "attached", lines: 83 },
+      { path: "one.ts", kind: "file", status: "attached", lines: 1 },
+      { path: "src/", kind: "folder", status: "attached", lines: 12 },
+      { path: "big.txt", kind: "file", status: "truncated", lines: 2000 },
+      { path: "gone.txt", kind: "file", status: "missing" },
+      { path: "../out.txt", kind: "file", status: "outsideWorkspace" },
+      { path: "img.png", kind: "file", status: "binary" },
+      { path: "huge.log", kind: "file", status: "tooLarge" },
+      { path: "locked", kind: "file", status: "unreadable" },
+    ]);
+    for (const label of [
+      "@src/a.ts · 83 lines",
+      "@one.ts · 1 line",
+      "@src/ · 12 entries",
+      "@big.txt · truncated to 2000 lines",
+      "@gone.txt · not found",
+      "@../out.txt · outside the workspace",
+      "@img.png · binary file, not attached",
+      "@huge.log · over 1 MiB, not attached",
+      "@locked · could not be read",
+    ]) {
+      expect(html).toContain(label);
+    }
+    expect(html).toContain('<li class="failed">@gone.txt · not found</li>');
+    expect(html).toContain("<li>@src/a.ts · 83 lines</li>");
   });
 });
