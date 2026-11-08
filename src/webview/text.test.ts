@@ -42,11 +42,4 @@ describe("describeProviderError", () => {
       message: "The CA file of Corp must be an absolute path or start with ~/: x.pem",
     });
   });
-
-  test("says the system certificates could not be read, with the cause", () => {
-    expect(describeProviderError({ kind: "systemCertificatesUnreadable", provider: "Corp", cause: "spawn failed" })).toEqual({
-      message: "The system certificates could not be read, so the CA file of Corp was not used.",
-      detail: "spawn failed",
-    });
-  });
 });

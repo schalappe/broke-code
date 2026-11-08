@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { X509Certificate } from "node:crypto";
 import * as tls from "node:tls";
-import { certificateErrorCode, providerTrust, readKeychainCertificates } from "./tls";
+import { certificateErrorCode, providerTrust } from "./tls";
 import { createTlsFixture, type TlsFixture } from "./tlsFixture";
 
 function coded(code: string, message = "boom", cause?: unknown): Error {
@@ -63,19 +63,11 @@ describe("providerTrust", () => {
     expect(await providerTrust({ name: "P", baseUrl: "https://p/v1" })).toEqual({ ok: true, ca: undefined });
   });
 
-  test("extends the bundled roots and the OS store with the CA file, never replaces them", async () => {
+  test("extends the default store and the OS store with the CA file, never replaces them", async () => {
     const trust = await providerTrust({ name: "P", baseUrl: "https://p/v1", caFile: fixture.selfSigned.certPath });
     if (!trust.ok || trust.ca === undefined) throw new Error(`expected a CA list, got ${JSON.stringify(trust)}`);
     const trusted = new Set(trust.ca.map((pem) => new X509Certificate(pem).fingerprint256));
-    const expected = [...tls.rootCertificates, ...tls.getCACertificates("system"), fixture.selfSigned.cert];
+    const expected = [...tls.getCACertificates("default"), ...tls.getCACertificates("system"), fixture.selfSigned.cert];
     expect(expected.filter((pem) => !trusted.has(new X509Certificate(pem).fingerprint256))).toEqual([]);
-  });
-});
-
-describe("readKeychainCertificates", () => {
-  test("returns the keychain certificates as parseable PEM blocks", async () => {
-    const certificates = await readKeychainCertificates();
-    expect(certificates.length).toBeGreaterThan(0);
-    for (const pem of certificates) expect(() => new X509Certificate(pem)).not.toThrow();
   });
 });

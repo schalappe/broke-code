@@ -36,11 +36,6 @@ export type ProviderError =
   /** CA file setting unusable; no request was sent. */
   | { kind: "caFileInvalid"; provider: string; path: string; reason: CaFileProblem; cause?: string }
   /**
-   * OS certificate store could not be read while combining it with the provider's CA file; no request was sent,
-   * because trusting the CA file alone would drop the certificates the system trusts.
-   */
-  | { kind: "systemCertificatesUnreadable"; provider: string; cause: string }
-  /**
    * HTTP 3xx. Redirects never followed: a 307/308 would resend the conversation, and any redirect would send a request
    * to an address the user never configured. `location` = raw `Location` header, truncated; may be empty.
    */

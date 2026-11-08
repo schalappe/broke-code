@@ -3,7 +3,6 @@
  * Certificate side of provider requests: which CAs a provider's requests trust, and which failures are certificate
  * failures. Certificate verification itself is never turned off here or anywhere.
  */
-import { execFile } from "node:child_process";
 import { X509Certificate } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { isAbsolute } from "node:path";
@@ -18,10 +17,11 @@ import type { Provider } from "./providers";
 export type Trust = { ok: true; ca: string[] | undefined } | { ok: false; error: ProviderError };
 
 /**
- * Trust for `provider`. Without `caFile` -> runtime default. With it -> bundled roots + OS store + every certificate
- * of the file: Node's `ca` replaces the default store, so the file must extend it, never stand alone, or a provider
- * behind a TLS-intercepting proxy trusted by the OS would break. File read and checked on every call, so an edit
- * applies without reload; Node would ignore an invalid `ca` silently, hence the check.
+ * Trust for `provider`. Without `caFile` -> runtime default. With it -> Node's default store (bundled roots plus
+ * `NODE_EXTRA_CA_CERTS`) + OS store + every certificate of the file, whatever VS Code's `http.systemCertificates`
+ * says. Node's `ca` replaces the default store, so the file must extend it, never stand alone, or a provider behind a
+ * TLS-intercepting proxy trusted by the OS would break. File read and checked on every call, so an edit applies
+ * without reload; Node would ignore an invalid `ca` silently, hence the check.
  */
 export async function providerTrust(provider: Provider): Promise<Trust> {
   const { name, caFile } = provider;
@@ -41,13 +41,7 @@ export async function providerTrust(provider: Provider): Promise<Trust> {
   const parsed = parseCertificates(text);
   if (!parsed.ok) return refused("notPem", parsed.cause);
 
-  let system: string[];
-  try {
-    system = await systemCertificates();
-  } catch (error) {
-    return { ok: false, error: { kind: "systemCertificatesUnreadable", provider: name, cause: error instanceof Error ? error.message : String(error) } };
-  }
-  return { ok: true, ca: [...defaultCertificates(), ...system, ...parsed.certificates] };
+  return { ok: true, ca: [...tls.getCACertificates("default"), ...systemCertificates(), ...parsed.certificates] };
 }
 
 const PEM_CERTIFICATE = /-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g;
@@ -66,46 +60,15 @@ function parseCertificates(text: string): { ok: true; certificates: string[] } |
   return { ok: true, certificates: blocks };
 }
 
-/** Runtime's default store when it can list it (bundled roots plus `NODE_EXTRA_CA_CERTS`), else the bundled roots. */
-function defaultCertificates(): readonly string[] {
-  return typeof tls.getCACertificates === "function" ? tls.getCACertificates("default") : tls.rootCertificates;
-}
-
-let systemLoad: Promise<string[]> | undefined;
-
 /**
- * OS store, read the way VS Code reads it on the same runtime: `tls.getCACertificates("system")` where it exists
- * (Node 22.15+, VSCodium 1.143), else the macOS keychains (Node 20, VS Code 1.100). Expired certificates dropped, as
- * VS Code does, so an expired copy cannot shadow a valid one. Cached for the extension host's life, failures not.
+ * OS store as Node reads it: certificates the OS trusts for TLS. VS Code reads it the same way when
+ * `http.systemCertificatesNode` is on (the default from 1.140). Expired certificates dropped, as VS Code does, so an
+ * expired copy cannot shadow a valid one. Node reads the store once per process; an unreadable keychain yields fewer
+ * certificates, not an error.
  */
-function systemCertificates(): Promise<string[]> {
-  systemLoad ??= loadSystemCertificates().catch((error: unknown) => {
-    systemLoad = undefined;
-    throw error;
-  });
-  return systemLoad;
-}
-
-async function loadSystemCertificates(): Promise<string[]> {
-  if (typeof tls.getCACertificates === "function") return unexpired(tls.getCACertificates("system"));
-  if (process.platform === "darwin") return unexpired(await readKeychainCertificates());
-  // [>]: v1 supports macOS only; Node 20 offers no OS store elsewhere without a dependency.
-  return [];
-}
-
-/** Certificates of the macOS keychains, as `security find-certificate -a -p` prints them (VS Code 1.100's source). */
-export function readKeychainCertificates(): Promise<string[]> {
-  return new Promise((resolve, reject) => {
-    execFile("/usr/bin/security", ["find-certificate", "-a", "-p"], { maxBuffer: 64 * 1024 * 1024 }, (error, stdout) => {
-      if (error) reject(error);
-      else resolve(stdout.match(PEM_CERTIFICATE) ?? []);
-    });
-  });
-}
-
-function unexpired(certificates: string[]): string[] {
+function systemCertificates(): string[] {
   const now = Date.now();
-  return certificates.filter((pem) => {
+  return tls.getCACertificates("system").filter((pem) => {
     try {
       return Date.parse(new X509Certificate(pem).validTo) > now;
     } catch {

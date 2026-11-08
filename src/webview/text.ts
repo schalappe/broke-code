@@ -24,11 +24,6 @@ export function describeProviderError(error: ProviderError): ErrorText {
       };
     case "caFileInvalid":
       return { message: caFileMessage(error), ...(error.cause ? { detail: error.cause } : {}) };
-    case "systemCertificatesUnreadable":
-      return {
-        message: l10n.t("The system certificates could not be read, so the CA file of {0} was not used.", error.provider),
-        detail: error.cause,
-      };
     case "redirected":
       return {
         message: l10n.t(

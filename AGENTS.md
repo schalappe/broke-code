@@ -64,11 +64,11 @@ The code so far covers the extension skeleton and a streaming chat with a provid
   extension host, adding its proxy support and, to requests without a `ca` option, the OS certificate store. A
   provider without a CA file sends no `ca`, so it trusts exactly what VS Code trusts.
 - Each provider has an optional `caFile`: an absolute or `~/` path to a PEM file. It applies to that provider's
-  requests only. Node's `ca` option replaces the default store, so the client passes the runtime's default
-  certificates, the OS store, and every certificate of the file together. The OS store is read as VS Code reads it
-  on the same runtime: `tls.getCACertificates("system")` where it exists (Node 22.15 and later), else the macOS
-  keychains through `security find-certificate`. The file is read and checked with `X509Certificate` on every
-  request, because Node ignores an invalid `ca` silently. A relative path, an unreadable file, or a file without a
+  requests only. Node's `ca` option replaces the default store, so the client passes
+  `tls.getCACertificates("default")` (bundled roots and `NODE_EXTRA_CA_CERTS`), `tls.getCACertificates("system")`
+  (the OS store, expired certificates dropped), and every certificate of the file together. A provider with a CA
+  file always trusts the OS store, whatever VS Code's `http.systemCertificates` setting says. The file is read and
+  checked with `X509Certificate` on every request, because Node ignores an invalid `ca` silently. A relative path, an unreadable file, or a file without a
   valid PEM certificate is reported naming the path, and no request is sent.
 - Never disable certificate verification. Report a certificate failure (unknown issuer, self-signed, expired,
   hostname mismatch) as a certificate error with its code, never as a generic network error. Connection refused,
