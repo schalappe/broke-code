@@ -30,14 +30,20 @@ export async function* readSseData(
   let dataLines: string[] = [];
   let dataLength = 0;
 
-  function* takeLines(atEnd: boolean): Generator<string> {
+  // A CR ends its line at once; an LF right after it, possibly in the next chunk, belongs to the same CRLF.
+  let skipLeadingLf = false;
+
+  function* takeLines(): Generator<string> {
     for (;;) {
+      if (skipLeadingLf && buffer !== "") {
+        if (buffer[0] === "\n") buffer = buffer.slice(1);
+        skipLeadingLf = false;
+      }
       const end = buffer.search(/[\r\n]/);
       if (end === -1) return;
-      // [>]: Lone trailing CR may be first half of CRLF split across chunks.
-      if (buffer[end] === "\r" && end === buffer.length - 1 && !atEnd) return;
       const line = buffer.slice(0, end);
-      buffer = buffer.slice(buffer.startsWith("\r\n", end) ? end + 2 : end + 1);
+      skipLeadingLf = buffer[end] === "\r";
+      buffer = buffer.slice(end + 1);
       yield line;
     }
   }
@@ -64,11 +70,11 @@ export async function* readSseData(
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
-      for (const line of takeLines(false)) yield* dispatch(line);
+      for (const line of takeLines()) yield* dispatch(line);
       if (buffer.length > maxEventLength) throw new SseEventTooLargeError(maxEventLength);
     }
     buffer += decoder.decode();
-    for (const line of takeLines(true)) yield* dispatch(line);
+    for (const line of takeLines()) yield* dispatch(line);
     if (buffer !== "") yield* dispatch(buffer);
     yield* dispatch("");
   } finally {

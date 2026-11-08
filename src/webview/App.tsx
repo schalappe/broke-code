@@ -129,6 +129,11 @@ function Conversation({ entries }: { entries: ChatEntry[] }) {
   const list = useRef<HTMLElement>(null);
   const [pinned, setPinned] = useState(true);
 
+  // New chat must not inherit the scroll-away of the conversation it replaced.
+  useEffect(() => {
+    if (entries.length === 0) setPinned(true);
+  }, [entries.length]);
+
   // Follow stream only while user stays at bottom.
   useLayoutEffect(() => {
     if (pinned) end.current?.scrollIntoView({ block: "end" });

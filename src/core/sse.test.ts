@@ -63,6 +63,20 @@ describe("readSseData", () => {
     expect(await collect(streamOf(["data: [DONE]\r"]))).toEqual(["[DONE]"]);
   });
 
+  test("yields an event ended by a lone CR without waiting for the next chunk", async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("data: a\r\r"));
+      },
+    });
+    const first = await readSseData(stream)[Symbol.asyncIterator]().next();
+    expect(first.value).toBe("a");
+  });
+
+  test("treats a CRLF split across chunks as one line ending", async () => {
+    expect(await collect(streamOf(["data: a\r", "\ndata: b\r\n\r", "\n"]))).toEqual(["a\nb"]);
+  });
+
   test("throws instead of buffering a line longer than the cap", async () => {
     const events: string[] = [];
     const reading = (async () => {
