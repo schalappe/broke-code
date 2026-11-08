@@ -4,7 +4,7 @@ import Markdown from "react-markdown";
 import { type ChatEntry, type ChatState, type HostMessage, isReplying, MAX_QUERY_LENGTH } from "../core/protocol";
 import type { ProviderError } from "../core/providerError";
 import { findMentionToken, type MentionToken, type Suggestion } from "../core/suggestions";
-import { type MenuAnswer, menuView } from "./composer";
+import { composerKeyAction, type MenuAnswer, menuView } from "./composer";
 import { moveHighlight, optionId, SuggestionMenu } from "./SuggestionMenu";
 import { describeMention, describeProviderError, describeSkippedProvider } from "./text";
 import { post } from "./vscodeApi";
@@ -345,34 +345,22 @@ function Composer({ state }: { state: ChatState }) {
     setPicked([]);
   };
 
-  const onMenuKey = (event: KeyboardEvent<HTMLTextAreaElement>): boolean => {
-    if (!menu || event.nativeEvent.isComposing) return false;
-    const count = menu.items.length;
-    if (event.key === "Escape") {
-      setDismissed(token);
-      return true;
-    }
-    if (count === 0) return false;
-    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-      setHighlighted((current) => moveHighlight(current, event.key === "ArrowDown" ? 1 : -1, count));
-      return true;
-    }
-    if (event.key === "Tab" || (event.key === "Enter" && !event.shiftKey)) {
-      pick(highlighted);
-      return true;
-    }
-    return false;
-  };
-
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (onMenuKey(event)) {
-      event.preventDefault();
-      event.stopPropagation();
-      return;
-    }
-    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-      event.preventDefault();
-      send();
+    const pressed = { key: event.key, shift: event.shiftKey, composing: event.nativeEvent.isComposing };
+    const action = composerKeyAction(pressed, menu?.items.length);
+    if (action.type === "none") return;
+    event.preventDefault();
+    event.stopPropagation();
+    switch (action.type) {
+      case "move":
+        setHighlighted((current) => moveHighlight(current, action.step, menu?.items.length ?? 0));
+        return;
+      case "pick":
+        return pick(highlighted);
+      case "dismiss":
+        return setDismissed(token);
+      case "send":
+        return send();
     }
   };
 

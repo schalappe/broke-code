@@ -1,6 +1,6 @@
 /**
  * @module composer
- * Decisions of the message box, kept out of React so tests need no DOM: which menu rows to show.
+ * Decisions of the message box, kept out of React so tests need no DOM: which menu rows to show, what a key does.
  */
 import { filterSuggestions, MAX_SUGGESTIONS, type Suggestion } from "../core/suggestions";
 
@@ -19,4 +19,31 @@ export function menuView(answer: MenuAnswer | undefined, query: string): MenuVie
   if (answer.query === query) return { items: answer.items, capped: answer.capped };
   const items = filterSuggestions(answer.items, query, MAX_SUGGESTIONS);
   return items.length > 0 ? { items, capped: answer.capped } : undefined;
+}
+
+/** A key press in the message box. `composing`: an input method (IME) is composing text. */
+export type ComposerKey = { key: string; shift: boolean; composing: boolean };
+
+/** `none`: the textarea's default behavior. */
+export type KeyAction =
+  | { type: "move"; step: 1 | -1 }
+  | { type: "pick" }
+  | { type: "dismiss" }
+  | { type: "send" }
+  | { type: "none" };
+
+/**
+ * What `pressed` does. `rows`: rows the open menu shows, `undefined` when it is closed. With rows, the menu owns
+ * the arrows, Enter, and Tab; Escape closes even a menu without rows; Enter sends otherwise, Shift+Enter never does.
+ */
+export function composerKeyAction(pressed: ComposerKey, rows: number | undefined): KeyAction {
+  if (pressed.composing) return { type: "none" };
+  if (rows !== undefined && pressed.key === "Escape") return { type: "dismiss" };
+  if (rows !== undefined && rows > 0) {
+    if (pressed.key === "ArrowDown") return { type: "move", step: 1 };
+    if (pressed.key === "ArrowUp") return { type: "move", step: -1 };
+    if (pressed.key === "Tab" || (pressed.key === "Enter" && !pressed.shift)) return { type: "pick" };
+  }
+  if (pressed.key === "Enter" && !pressed.shift) return { type: "send" };
+  return { type: "none" };
 }
