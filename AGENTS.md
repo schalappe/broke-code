@@ -60,11 +60,9 @@ The code so far covers the extension skeleton and a streaming chat with a provid
   under size caps that cancel the download when exceeded.
 - The API does not report a model's context size. A settings table maps model names to sizes, and unknown
   models default to 32k. When the user picks an unknown model, the chat shows a link to set its size.
-- Every provider request goes through `http`/`https` imported without the `node:` prefix, because VS Code adds
-  its proxy support and the OS certificate store only to `require("http")` and `require("https")`. `bun run build`
-  fails if the bundle loads `node:http` or `node:https`.
-- A provider without a CA file sends no `ca` option, so it trusts exactly what VS Code trusts (bundled roots plus
-  the OS store, through any configured proxy).
+- Every provider request goes through Node's `http`/`https` modules. VS Code patches them in place in the
+  extension host, adding its proxy support and, to requests without a `ca` option, the OS certificate store. A
+  provider without a CA file sends no `ca`, so it trusts exactly what VS Code trusts.
 - Each provider has an optional `caFile`: an absolute or `~/` path to a PEM file. It applies to that provider's
   requests only. Node's `ca` option replaces the default store, so the client passes the runtime's default
   certificates, the OS store, and every certificate of the file together. The OS store is read as VS Code reads it

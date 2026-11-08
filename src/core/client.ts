@@ -5,10 +5,9 @@
  * Only module that knows the reasoning wire shapes: callers see the reasoning and the answer apart.
  * One network path for every request: `http`/`https` requests, with the provider's CA trust (see `tls`).
  */
-// [!]: Bare `http`/`https`, never `node:`: VS Code hands its proxy and OS-certificate patch only to `require("https")`.
-// `scripts/build.ts` fails the build if the bundle loads the `node:` form.
-import * as http from "http";
-import * as https from "https";
+// [>]: VS Code patches these builtins in place (proxy, OS certificates), so the `node:` form carries the patch too.
+import * as http from "node:http";
+import * as https from "node:https";
 import { Readable } from "node:stream";
 import type { Provider } from "./providers";
 import type { CutOffReason, ProviderError } from "./providerError";
