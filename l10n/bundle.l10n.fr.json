@@ -44,5 +44,9 @@
   "The response body could not be read: {0}": "Le corps de la réponse n'a pas pu être lu : {0}",
   "{0} answered with a redirect (HTTP {1}), which broke-code does not follow. Set its base URL to the final address.": "{0} a répondu par une redirection (HTTP {1}), que broke-code ne suit pas. Indiquez l'adresse finale comme URL de base.",
   "The reply from {0} was cut off: it exceeded the size limit.": "La réponse de {0} a été interrompue : elle dépassait la taille maximale.",
-  "The model list from {0} was cut off: it exceeded the size limit.": "La liste des modèles de {0} a été interrompue : elle dépassait la taille maximale."
+  "The model list from {0} was cut off: it exceeded the size limit.": "La liste des modèles de {0} a été interrompue : elle dépassait la taille maximale.",
+  "{0} presented a certificate that is not trusted ({1}). If it uses a corporate or self-signed certificate, set its CA file in the provider settings.": "{0} présente un certificat non reconnu ({1}). S'il utilise un certificat d'entreprise ou auto-signé, indiquez son fichier CA dans les paramètres du fournisseur.",
+  "The CA file of {0} must be an absolute path or start with ~/: {1}": "Le fichier CA de {0} doit être un chemin absolu ou commencer par ~/ : {1}",
+  "The CA file of {0} could not be read: {1}": "Le fichier CA de {0} n'a pas pu être lu : {1}",
+  "The CA file of {0} is not a PEM certificate: {1}": "Le fichier CA de {0} n'est pas un certificat PEM : {1}"
 }

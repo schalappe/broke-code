@@ -19,10 +19,11 @@ The code so far covers the extension skeleton and a streaming chat with a provid
 - `GLOSSARY.md`: the domain terms (body tool call, harness, agent turn, provider, skill, slash command,
   mention). Code and docs use these names.
 - `docs/adr/`: architecture decision records.
-- `src/core/`: modules that import nothing from `vscode`: settings parsing, the provider HTTP client, the SSE
-  reader, the typed provider errors, the chat controller (conversation state, streaming, Stop), the dialog
-  queue, and the host-webview message protocol. Unit tests sit next to them as `*.test.ts`, because
-  `bun test` cannot load `vscode`.
+- `src/core/`: modules that import nothing from `vscode`: settings parsing, the provider HTTP client, the CA
+  trust and certificate error classification (`tls.ts`), the SSE reader, the typed provider errors, the chat
+  controller (conversation state, streaming, Stop), the dialog queue, and the host-webview message protocol. Unit
+  tests sit next to them as `*.test.ts`, because `bun test` cannot load `vscode`. `tlsFixture.ts` generates test
+  certificates with `/usr/bin/openssl` at test time; no private key is committed.
 - `src/extension/`: the extension host glue (activation, webview view, API keys in `SecretStorage`).
 - `src/webview/`: the React chat panel and its CSS.
 - `src/l10n.test.ts`: checks that every `l10n.t` message has a French translation and that the
@@ -67,9 +68,19 @@ The code so far covers the extension skeleton and a streaming chat with a provid
   under size caps that cancel the download when exceeded.
 - The API does not report a model's context size. A settings table maps model names to sizes, and unknown
   models default to 32k. When the user picks an unknown model, the chat shows a link to set its size.
-- TLS goes through the OS certificate store, which the VS Code extension host already applies to `fetch`.
-  Each provider has an optional CA file (`.pem`) setting as a fallback. Never disable certificate
-  verification. Report a certificate failure as a certificate failure, not as a generic network error.
+- Every provider request goes through Node's `http`/`https` modules. VS Code patches them in place in the
+  extension host, adding its proxy support and, to requests without a `ca` option, the OS certificate store. A
+  provider without a CA file sends no `ca`, so it trusts exactly what VS Code trusts.
+- Each provider has an optional `caFile`: an absolute or `~/` path to a PEM file. It applies to that provider's
+  requests only. Node's `ca` option replaces the default store, so the client passes
+  `tls.getCACertificates("default")` (bundled roots and `NODE_EXTRA_CA_CERTS`), `tls.getCACertificates("system")`
+  (the OS store, expired certificates dropped), and every certificate of the file together. A provider with a CA
+  file always trusts the OS store, whatever VS Code's `http.systemCertificates` setting says. The file is read and
+  checked with `X509Certificate` on every request, because Node ignores an invalid `ca` silently. A relative path, an unreadable file, or a file without a
+  valid PEM certificate is reported naming the path, and no request is sent.
+- Never disable certificate verification. Report a certificate failure (unknown issuer, self-signed, expired,
+  hostname mismatch) as a certificate error with its code, never as a generic network error. Connection refused,
+  DNS failures, and timeouts stay `unreachable`.
 
 ### Harness
 

@@ -114,6 +114,11 @@ function ErrorBlock({ error, retry }: { error: ProviderError; retry?: () => void
             {l10n.t("Set API key")}
           </button>
         )}
+        {(error.kind === "certificate" || error.kind === "caFileInvalid") && (
+          <button type="button" onClick={() => post({ type: "openSettings" })}>
+            {l10n.t("Open provider settings")}
+          </button>
+        )}
         {retry && (
           <button type="button" className="secondary" onClick={retry}>
             {l10n.t("Retry")}

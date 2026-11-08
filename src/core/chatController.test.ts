@@ -121,6 +121,19 @@ describe("ChatController settings change during a reply", () => {
   });
 });
 
+describe("ChatController CA file change", () => {
+  test("relists the models when the active provider's CA file changes, without a retry", async () => {
+    const controller = new ChatController({ get: async () => undefined }, memoryStore(), () => {});
+    const state = () => controller.snapshot;
+    controller.setProviders({ providers: [{ ...ollama, caFile: "relative.pem" }], skipped: [] });
+    await until(state, (s) => s.models.status === "failed");
+    expect(state().models).toMatchObject({ status: "failed", error: { kind: "caFileInvalid", path: "relative.pem" } });
+
+    controller.setProviders({ providers: [ollama], skipped: [] });
+    await until(state, (s) => s.model === "m");
+  });
+});
+
 describe("ChatController reasoning", () => {
   for (const shape of Object.keys(shapes)) {
     test(`keeps the reasoning in the entry and sends only the answer back, for ${shape}`, async () => {

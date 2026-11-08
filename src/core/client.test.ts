@@ -94,18 +94,18 @@ describe("buildChatRequest", () => {
   test("posts to /chat/completions with stream true, the model, the messages, and no tools key", () => {
     const request = buildChatRequest(access, "qwen3.8:27b", messages);
     expect(request.url).toBe("http://localhost:11434/v1/chat/completions");
-    expect(request.init.method).toBe("POST");
-    const body = JSON.parse(String(request.init.body));
+    expect(request.method).toBe("POST");
+    const body = JSON.parse(String(request.body));
     expect(body).toEqual({ model: "qwen3.8:27b", messages: [{ role: "user", content: "Hi" }], stream: true });
     expect("tools" in body).toBe(false);
   });
 
   test("sends no Authorization header without a key, and a bearer header with one", () => {
-    const withoutKey = new Headers(buildChatRequest(access, "m", messages).init.headers);
+    const withoutKey = new Headers(buildChatRequest(access, "m", messages).headers);
     expect(withoutKey.has("authorization")).toBe(false);
-    const withEmptyKey = new Headers(buildChatRequest({ ...access, apiKey: "" }, "m", messages).init.headers);
+    const withEmptyKey = new Headers(buildChatRequest({ ...access, apiKey: "" }, "m", messages).headers);
     expect(withEmptyKey.has("authorization")).toBe(false);
-    const withKey = new Headers(buildChatRequest({ ...access, apiKey: "sk-1" }, "m", messages).init.headers);
+    const withKey = new Headers(buildChatRequest({ ...access, apiKey: "sk-1" }, "m", messages).headers);
     expect(withKey.get("authorization")).toBe("Bearer sk-1");
   });
 });
