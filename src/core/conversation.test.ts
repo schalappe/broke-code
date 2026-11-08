@@ -158,13 +158,13 @@ describe("conversations over the limit", () => {
   const summaries = (count: number) =>
     Array.from({ length: count }, (_, index) => ({ id: `c${index}`, title: "t", updatedAt: index }));
 
-  test("keeps 50: lists the oldest beyond them, by update time", () => {
+  test("keeps 50: lists the oldest beyond them, oldest first", () => {
     expect(conversationsOverLimit(summaries(50), ["c49"])).toEqual([]);
-    expect(conversationsOverLimit(summaries(52).reverse(), ["c51"])).toEqual(["c1", "c0"]);
+    expect(conversationsOverLimit(summaries(52).reverse(), ["c51"])).toEqual(["c0", "c1"]);
   });
 
   test("never lists a kept conversation, even when it is the oldest", () => {
     expect(conversationsOverLimit(summaries(51), ["c0"])).toEqual(["c1"]);
-    expect(conversationsOverLimit(summaries(52), ["c50", "c0", "absent"])).toEqual(["c2", "c1"]);
+    expect(conversationsOverLimit(summaries(52), ["c50", "c0", "absent"])).toEqual(["c1", "c2"]);
   });
 });
