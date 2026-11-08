@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readWorkspaceEntry, truncateLines, type WorkspaceRoot } from "./workspaceFiles";
@@ -124,6 +124,49 @@ describe("readWorkspaceEntry in one folder", () => {
 
   test("refuses everything when no folder is open", async () => {
     expect(await readWorkspaceEntry([], "src/main.ts")).toEqual({ status: "outsideWorkspace", kind: "file" });
+  });
+});
+
+describe("readWorkspaceEntry while the path changes", () => {
+  // [>]: The swap runs where a concurrent rename would land: after the boundary check, before the open.
+  test("refuses a file swapped for a symlink to an outside file after the check", async () => {
+    await writeFile(join(app.path, "swapped.txt"), "inside\n");
+    const swap = async () => {
+      await unlink(join(app.path, "swapped.txt"));
+      await symlink(join(base, "outside.txt"), join(app.path, "swapped.txt"));
+    };
+    expect(await readWorkspaceEntry([app], "swapped.txt", { beforeOpen: swap })).toEqual({
+      status: "outsideWorkspace",
+      kind: "file",
+    });
+  });
+
+  test("refuses a file whose parent folder is swapped for a symlink to an outside folder after the check", async () => {
+    const outsideDir = join(base, "outside-dir");
+    await mkdir(outsideDir);
+    await writeFile(join(outsideDir, "x.txt"), "secret\n");
+    await mkdir(join(app.path, "moved"));
+    await writeFile(join(app.path, "moved", "x.txt"), "inside\n");
+    const swap = async () => {
+      await rename(join(app.path, "moved"), join(base, "moved-away"));
+      await symlink(outsideDir, join(app.path, "moved"));
+    };
+    expect(await readWorkspaceEntry([app], "moved/x.txt", { beforeOpen: swap })).toEqual({
+      status: "outsideWorkspace",
+      kind: "file",
+    });
+  });
+
+  test("refuses a folder swapped for a symlink to an outside folder after the check", async () => {
+    await mkdir(join(app.path, "listed"));
+    const swap = async () => {
+      await rename(join(app.path, "listed"), join(base, "listed-away"));
+      await symlink(base, join(app.path, "listed"));
+    };
+    expect(await readWorkspaceEntry([app], "listed/", { beforeOpen: swap })).toEqual({
+      status: "outsideWorkspace",
+      kind: "folder",
+    });
   });
 });
 

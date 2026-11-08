@@ -4,8 +4,8 @@
  * listings, and line truncation. Mentions use it; `read_file` and `list_files` (#6) are meant to.
  * Plain `node:fs`: v1 runs on local macOS folders only, and real files keep the boundary rules testable.
  */
-import type { Dirent } from "node:fs";
-import { open, readdir, realpath, stat } from "node:fs/promises";
+import { constants, type Dirent, type Stats } from "node:fs";
+import { type FileHandle, open, readdir, realpath, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 
 /** A workspace folder: its name in a multi-root workspace and its absolute path. */
@@ -26,6 +26,9 @@ export type WorkspaceEntry =
   | { status: Exclude<AccessFailure, "unreadable">; kind: EntryKind }
   | { status: "unreadable"; kind: EntryKind; cause: string };
 
+/** Test seam: `beforeOpen` runs after the boundary check, where a concurrent rename could swap the path. */
+export type RaceSeam = { beforeOpen?: () => Promise<void> };
+
 const MAX_FILE_BYTES = 1024 * 1024;
 const BINARY_PROBE_BYTES = 8 * 1024;
 const MISSING_CODES = new Set(["ENOENT", "ENOTDIR"]);
@@ -35,21 +38,54 @@ const MISSING_CODES = new Set(["ENOENT", "ENOTDIR"]);
  * any other relative path resolves against each root in turn, the first that holds it winning. Never rejects. The kind of
  * a path that could not be inspected is a guess: `folder` when it ends with `/`.
  */
-export async function readWorkspaceEntry(roots: WorkspaceRoot[], path: string): Promise<WorkspaceEntry> {
+export async function readWorkspaceEntry(
+  roots: WorkspaceRoot[],
+  path: string,
+  seam: RaceSeam = {},
+): Promise<WorkspaceEntry> {
   const guessedKind: EntryKind = path.endsWith("/") ? "folder" : "file";
   try {
     const located = await locate(roots, path);
     if (located.status !== "ok") return { status: located.status, kind: guessedKind };
-    const info = await stat(located.realPath);
-    if (info.isDirectory()) return { status: "ok", kind: "folder", entries: await listFolder(located.realPath) };
     // [!]: Opening a FIFO or device could block forever or read without end.
-    if (!info.isFile()) return { status: "unreadable", kind: "file", cause: "not a file or folder" };
-    return await readFile(located.realPath);
+    if (!isFileOrFolder(await stat(located.realPath))) return notFileOrFolder;
+    await seam.beforeOpen?.();
+    // [>]: Non-blocking, so a FIFO swapped in after the `stat` cannot hang the open.
+    const handle = await open(located.realPath, constants.O_RDONLY | constants.O_NONBLOCK);
+    try {
+      const opened = await handle.stat();
+      if (!(await isInsideFile(located.realRoots, located.realPath, opened))) {
+        return { status: "outsideWorkspace", kind: guessedKind };
+      }
+      if (opened.isDirectory()) return { status: "ok", kind: "folder", entries: await listFolder(located.realPath) };
+      if (!opened.isFile()) return notFileOrFolder;
+      return await readFile(handle);
+    } finally {
+      await handle.close();
+    }
   } catch (error) {
     // [>]: Deleted between the boundary check and the read.
     if (MISSING_CODES.has(errorCode(error) ?? "")) return { status: "missing", kind: guessedKind };
     return { status: "unreadable", kind: guessedKind, cause: errorCode(error) ?? String(error) };
   }
+}
+
+const notFileOrFolder: WorkspaceEntry = { status: "unreadable", kind: "file", cause: "not a file or folder" };
+
+function isFileOrFolder(info: Stats): boolean {
+  return info.isFile() || info.isDirectory();
+}
+
+/**
+ * True when the handle described by `opened` is the file at `path`, symlinks resolved again, inside a root. The open
+ * goes by name, so any component may have been swapped for a symlink since the boundary check: only the same
+ * device and inode as a path still inside proves the handle holds workspace bytes.
+ */
+async function isInsideFile(realRoots: string[], path: string, opened: Stats): Promise<boolean> {
+  const again = await realpath(path);
+  if (!realRoots.some((root) => isInside(root, again))) return false;
+  const named = await stat(again);
+  return named.dev === opened.dev && named.ino === opened.ino;
 }
 
 /** `text` cut to its first `max` lines. `lines`: lines kept; a final newline ends the last line, not a new one. */
@@ -67,21 +103,23 @@ export function truncateLines(text: string, max: number): { text: string; lines:
 async function locate(
   roots: WorkspaceRoot[],
   path: string,
-): Promise<{ status: "ok"; realPath: string } | { status: "missing" | "outsideWorkspace" }> {
+): Promise<{ status: "ok"; realPath: string; realRoots: string[] } | { status: "missing" | "outsideWorkspace" }> {
   const candidates = candidatePaths(roots, path).filter((candidate) =>
     roots.some((root) => isInside(resolve(root.path), candidate)),
   );
   if (candidates.length === 0) return { status: "outsideWorkspace" };
 
-  const realRoots = await Promise.all(roots.map((root) => realpath(root.path).catch(() => undefined)));
+  // [>]: A root that cannot be resolved (deleted, unmounted) holds nothing readable: it is left out, not an error.
+  const resolved = await Promise.all(roots.map((root) => realpath(root.path).catch(() => undefined)));
+  const realRoots = resolved.filter((root) => root !== undefined);
   for (const candidate of candidates) {
     const realPath = await realpath(candidate).catch((error: unknown) => {
       if (MISSING_CODES.has(errorCode(error) ?? "")) return undefined;
       throw error;
     });
     if (realPath === undefined) continue;
-    const inside = realRoots.some((root) => root !== undefined && isInside(root, realPath));
-    return inside ? { status: "ok", realPath } : { status: "outsideWorkspace" };
+    const inside = realRoots.some((root) => isInside(root, realPath));
+    return inside ? { status: "ok", realPath, realRoots } : { status: "outsideWorkspace" };
   }
   return { status: "missing" };
 }
@@ -98,26 +136,25 @@ function isInside(root: string, path: string): boolean {
   return rest === "" || (rest !== ".." && !rest.startsWith("../") && !isAbsolute(rest));
 }
 
-async function readFile(realPath: string): Promise<WorkspaceEntry> {
-  const handle = await open(realPath, "r");
-  try {
-    // [>]: Read one byte past the cap rather than trust `stat`: the file may grow after it.
-    const buffer = Buffer.alloc(MAX_FILE_BYTES + 1);
-    let size = 0;
-    while (size < buffer.length) {
-      const { bytesRead } = await handle.read(buffer, size, buffer.length - size, size);
-      if (bytesRead === 0) break;
-      size += bytesRead;
-    }
-    if (size > MAX_FILE_BYTES) return { status: "tooLarge", kind: "file" };
-    const bytes = buffer.subarray(0, size);
-    if (bytes.subarray(0, BINARY_PROBE_BYTES).includes(0)) return { status: "binary", kind: "file" };
-    return { status: "ok", kind: "file", text: new TextDecoder().decode(bytes) };
-  } finally {
-    await handle.close();
+async function readFile(handle: FileHandle): Promise<WorkspaceEntry> {
+  // [>]: Read one byte past the cap rather than trust `stat`: the file may grow after it.
+  const buffer = Buffer.alloc(MAX_FILE_BYTES + 1);
+  let size = 0;
+  while (size < buffer.length) {
+    const { bytesRead } = await handle.read(buffer, size, buffer.length - size, size);
+    if (bytesRead === 0) break;
+    size += bytesRead;
   }
+  if (size > MAX_FILE_BYTES) return { status: "tooLarge", kind: "file" };
+  const bytes = buffer.subarray(0, size);
+  if (bytes.subarray(0, BINARY_PROBE_BYTES).includes(0)) return { status: "binary", kind: "file" };
+  return { status: "ok", kind: "file", text: new TextDecoder().decode(bytes) };
 }
 
+/**
+ * Children of the folder at `realPath`, checked by the caller through its open handle. Node lists by name only, so
+ * a swap between that check and `readdir` could list another folder; it leaks names, never file contents.
+ */
 async function listFolder(realPath: string): Promise<string[]> {
   const children = await readdir(realPath, { withFileTypes: true });
   const listed = await Promise.all(
