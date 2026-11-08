@@ -175,7 +175,8 @@ The code so far covers the extension skeleton and a streaming chat with a provid
   call order, so a read sees every write and delete asked before it. The workspace memento holds only the last
   provider and model choice and the id of the conversation shown. The list is derived from the directory, newest
   first, conversations without entries left out; 50 conversations are kept: a save past the limit queues a prune
-  with the navigation (below), which deletes the oldest by update time, never the one shown when it runs.
+  with the navigation (below), which deletes the oldest by update time, oldest first, never the one shown when it
+  runs.
 - The record is versioned (`version: 1`) and holds the displayed entries, each user entry with the text the model
   received (`modelText`), so a reopened conversation resends exactly what was sent and never reads its mentions
   again. It holds no API key and nothing else of `ProviderAccess`; a failed reply's error keeps the provider's base
@@ -188,11 +189,15 @@ The code so far covers the extension skeleton and a streaming chat with a provid
   in, also after New chat or opening another one, and a deleted conversation is never written again. A conversation
   without entries is never written.
 - Navigation runs one operation at a time, in request order: restore, New chat (and `/new`, #11, through the same
-  `newChat` method), open, delete, and prune. Each stops the reply in flight at once (Stop is immediate) and waits
-  until it settles, its last save handed to the store, so a later read sees that save. The conversation shown is
+  `newChat` method), open, delete, and prune. The operations that change the conversation shown (New chat, open,
+  deleting the one shown) stop the reply in flight at request time and wait until it settles, its last save handed
+  to the store, so a later read sees that save. Restore stops nothing: no reply exists at activation. Deleting
+  another row and pruning leave the reply running; a reply's own save triggers the prune. The conversation shown is
   therefore the result of the last request, never one deleted or pruned before it: an open queued after a delete or
-  prune of its id reads it as missing and says so. Each user request clears the open error it supersedes; its own
-  failure is shown. A row is dropped only once its delete has succeeded. Deleting the conversation shown shows a new
+  prune of its id reads it as missing and says so. Each user request clears the open or not-found error it
+  supersedes; its own failure is shown. A listing error is cleared only by the next listing that succeeds. Stop ends
+  a reply at once even when a step it waits on cannot be aborted (such as a CA file read on a FIFO): the reply is
+  stopped and saved, and late reply text or outcome is dropped. A row is dropped only once its delete has succeeded. Deleting the conversation shown shows a new
   one first. `send` is not navigation: its saves go straight to the store. Accepted cost: a request waits behind a
   slow disk operation already queued. Reopening restores the entries only; it does not switch the provider or
   model. History works without a provider: past conversations can be read, reopened, and deleted; only the
