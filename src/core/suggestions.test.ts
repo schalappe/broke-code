@@ -38,6 +38,11 @@ describe("findMentionToken", () => {
     expect(findMentionToken("a ` lone backtick @sse", 22)).toEqual({ start: 18, query: "sse" });
   });
 
+  test("reads code with picked paths set aside, so a backtick inside a picked path opens no code span", () => {
+    expect(findMentionToken("@a`b.ts @q `", 10)).toBeUndefined();
+    expect(findMentionToken("@a`b.ts @q `", 10, ["a`b.ts"])).toEqual({ start: 8, query: "q" });
+  });
+
   test("ignores a caret after whitespace or with no @ token before it", () => {
     expect(findMentionToken("@sse ", 5)).toBeUndefined();
     expect(findMentionToken("plain text", 10)).toBeUndefined();

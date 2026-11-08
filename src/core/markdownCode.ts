@@ -7,8 +7,45 @@
 /** Stands in for code characters; not whitespace, so a token cannot start right after masked code. */
 export const MASK = "\0";
 
+/** Stands in for a picked `@<path>` token outside code: no whitespace, no backtick, no `@`. */
+export const PICKED = "\u0001";
+
+/** A picked path standing as a whole `@<path>` token outside code. `index`: where its `@` is. */
+export type PickedMention = { path: string; index: number };
+
+/**
+ * `text` with fenced blocks and inline code spans masked, lengths and newlines kept. Each `picked` path (chosen in
+ * the menu, so it may hold spaces or backticks) standing as a whole `@<path>` token is set aside first, so its
+ * backticks pair with nothing. `masked`: those tokens outside code filled with `PICKED`, so no typed token is read
+ * in them. `picked`: those tokens, in no set order.
+ */
+export function maskMessage(text: string, picked: readonly string[]): { masked: string; picked: PickedMention[] } {
+  const found: PickedMention[] = [];
+  let placed = text;
+  // [>]: Longest first, so a picked `a b.ts` wins over a picked `a` at the same `@`.
+  for (const path of picked.filter((path) => path !== "").sort((a, b) => b.length - a.length)) {
+    const token = `@${path}`;
+    for (let index = placed.indexOf(token); index !== -1; index = placed.indexOf(token, index + token.length)) {
+      if (!standsAlone(placed, index, token.length)) continue;
+      found.push({ path, index });
+      placed = placed.slice(0, index) + PICKED.repeat(token.length) + placed.slice(index + token.length);
+    }
+  }
+  const masked = maskCode(placed);
+  return { masked, picked: found.filter((mention) => masked.charAt(mention.index) !== MASK) };
+}
+
+/**
+ * True when the `length` characters at `index` stand as a whole token: after the start or whitespace, then trailing
+ * `.,;:!?)` at most before whitespace or the end.
+ */
+function standsAlone(text: string, index: number, length: number): boolean {
+  const before = text.charAt(index - 1);
+  return (before === "" || /\s/.test(before)) && /^[.,;:!?)]*(\s|$)/.test(text.slice(index + length));
+}
+
 /** `text` with fenced blocks and inline code spans masked, lengths and newlines kept. */
-export function maskCode(text: string): string {
+function maskCode(text: string): string {
   return maskCodeSpans(maskFences(text));
 }
 

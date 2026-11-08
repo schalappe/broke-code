@@ -289,7 +289,7 @@ function Composer({ state }: { state: ChatState }) {
   const ready = state.model !== undefined;
   const input = useRef<HTMLTextAreaElement>(null);
 
-  const found = findMentionToken(text, caret);
+  const found = findMentionToken(text, caret, picked);
   const token = found && found.query.length <= MAX_QUERY_LENGTH ? found : undefined;
   const query = token?.query;
   const closed = !focused || !token || (dismissed?.start === token.start && dismissed.query === token.query);
