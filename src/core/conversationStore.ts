@@ -11,19 +11,8 @@ import {
   serializeConversation,
   summarize,
 } from "./conversation";
+import type { ConversationFiles } from "./conversationFiles";
 import { SerialQueue } from "./serialQueue";
-
-/** Flat file access in the storage directory. Names carry no path separator. */
-export type ConversationFiles = {
-  /** Names of the files in the directory; empty when it does not exist yet. */
-  names(): Promise<string[]>;
-  /** Text of `name`; `undefined` when it does not exist. */
-  read(name: string): Promise<string | undefined>;
-  /** Replace `name` whole, atomically: a crash leaves the old text or the new, never a mix. */
-  write(name: string, text: string): Promise<void>;
-  /** Delete `name`; no error when it does not exist. */
-  remove(name: string): Promise<void>;
-};
 
 const FILE_PATTERN = /^(.+)\.json$/;
 

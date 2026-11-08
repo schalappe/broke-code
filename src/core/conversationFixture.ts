@@ -2,7 +2,7 @@
  * @module conversationFixture
  * In-memory `ConversationFiles` for tests: a map of file name to text, with hooks to fail or hold a write.
  */
-import type { ConversationFiles } from "./conversationStore";
+import type { ConversationFiles } from "./conversationFiles";
 
 export type MemoryFiles = ConversationFiles & {
   readonly files: Map<string, string>;
