@@ -18,6 +18,17 @@ describe("certificateErrorCode", () => {
     "CERT_UNTRUSTED",
     "HOSTNAME_MISMATCH",
     "ERR_TLS_CERT_ALTNAME_INVALID",
+    "INVALID_PURPOSE",
+    "PATH_LENGTH_EXCEEDED",
+    "CERT_REJECTED",
+    "CERT_CHAIN_TOO_LONG",
+    "UNABLE_TO_DECRYPT_CERT_SIGNATURE",
+    "UNABLE_TO_DECODE_ISSUER_PUBLIC_KEY",
+    "ERROR_IN_CERT_NOT_BEFORE_FIELD",
+    "ERROR_IN_CERT_NOT_AFTER_FIELD",
+    "KEYUSAGE_NO_CERTSIGN",
+    "INVALID_EXTENSION",
+    "UNHANDLED_CRITICAL_EXTENSION",
   ];
 
   test.each(certificateCodes)("reads %s on the error itself (node:https, Bun)", (code) => {

@@ -84,19 +84,34 @@ export function unexpired(pems: readonly string[], now: number): string[] {
 
 /** OpenSSL and Node codes of a server certificate the client does not trust. Anything else stays `unreachable`. */
 const CERTIFICATE_CODES = new Set([
+  "CERT_CHAIN_TOO_LONG",
   "CERT_HAS_EXPIRED",
   "CERT_NOT_YET_VALID",
+  "CERT_REJECTED",
   "CERT_REVOKED",
   "CERT_SIGNATURE_FAILURE",
   "CERT_UNTRUSTED",
+  "CRL_HAS_EXPIRED",
+  "CRL_NOT_YET_VALID",
+  "CRL_SIGNATURE_FAILURE",
   "DEPTH_ZERO_SELF_SIGNED_CERT",
   "ERR_TLS_CERT_ALTNAME_INVALID",
+  "ERROR_IN_CERT_NOT_AFTER_FIELD",
+  "ERROR_IN_CERT_NOT_BEFORE_FIELD",
   "HOSTNAME_MISMATCH",
   "INVALID_CA",
+  "INVALID_EXTENSION",
+  "INVALID_PURPOSE",
+  "KEYUSAGE_NO_CERTSIGN",
+  "PATH_LENGTH_EXCEEDED",
   "SELF_SIGNED_CERT_IN_CHAIN",
+  "UNABLE_TO_DECODE_ISSUER_PUBLIC_KEY",
+  "UNABLE_TO_DECRYPT_CERT_SIGNATURE",
+  "UNABLE_TO_GET_CRL",
   "UNABLE_TO_GET_ISSUER_CERT",
   "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
   "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "UNHANDLED_CRITICAL_EXTENSION",
 ]);
 
 /** Errors followed along `cause`. Real chains are one or two deep (`fetch failed` -> socket error). */
