@@ -49,6 +49,13 @@ const server = Bun.serve({
     }
     requests.set(prefix, [...(requests.get(prefix) ?? []), await request.json()]);
     if (prefix === "fails") return new Response("model crashed", { status: 500 });
+    if (prefix === "late-flush") {
+      // [>]: Ends inside a closing `</think>` tag, then stays open: Stop makes the splitter flush the held `</thi`.
+      const body = new ReadableStream<Uint8Array>({
+        start: (controller) => controller.enqueue(chunk("<think>Plan.</thi")),
+      });
+      return new Response(body, { headers: { "content-type": "text/event-stream" } });
+    }
     const whole =
       prefix === "unclosed"
         ? reasoningOnly
@@ -1438,5 +1445,24 @@ describe("ChatController conversations", () => {
     } finally {
       logged.mockRestore();
     }
+  });
+
+  test("Stop drops the text the reasoning splitter flushes late: panel and record keep the reply as it stood", async () => {
+    const ws = workspace();
+    const provider: Provider = { name: "Late", baseUrl: `http://localhost:${server.port}/late-flush/v1` };
+    const { controller, state } = await load(ws, { provider });
+    const sent = controller.send("Hello");
+    const id = state().conversationId;
+    await until(state, (s) => {
+      const last = s.entries.at(-1);
+      return last?.role === "assistant" && last.reasoning === "Plan.";
+    });
+    controller.stop();
+    await sent;
+    await eventually(() => savedReply(ws, id)?.status === "stopped", "the stopped save");
+    await Bun.sleep(30);
+    const stopped = { role: "assistant" as const, reasoning: "Plan.", content: "", status: "stopped" as const };
+    expect(state().entries.at(-1)).toEqual(stopped);
+    expect(savedReply(ws, id)).toEqual(stopped);
   });
 });

@@ -58,8 +58,8 @@ export class ChatController {
   private conversation: Conversation;
   private state: ChatState;
   /**
-   * In-flight reply: its abort handle, the provider it streams from, and `settled`, which resolves once the stream
-   * has returned and its last save has been handed to the store.
+   * In-flight reply: its abort handle, the provider it streams from, and `settled`, which resolves once the reply has
+   * ended and its last save has been handed to the store. After Stop it does not wait for `streamChat` to return.
    */
   private reply: { abort: AbortController; provider: Provider; settled: Promise<void> } | undefined;
   /** Bumped per listing request; stale listings dropped. */
