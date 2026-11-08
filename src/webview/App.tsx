@@ -162,6 +162,7 @@ function Conversation({ entries }: { entries: ChatEntry[] }) {
           </div>
         ) : (
           <div key={index} className="message assistant">
+            {entry.reasoning !== "" && <Reasoning key="reasoning" entry={entry} />}
             {entry.content !== "" && <Markdown>{entry.content}</Markdown>}
             {entry.status === "waiting" && (
               <p className="loading" role="status">
@@ -175,6 +176,28 @@ function Conversation({ entries }: { entries: ChatEntry[] }) {
       )}
       <div ref={end} />
     </section>
+  );
+}
+
+/**
+ * Reasoning block, collapsed until clicked. Uncontrolled `<details>` with a stable key: no `open` prop, so the
+ * state the user chose survives every re-render while the answer streams. Plain text, never Markdown.
+ */
+function Reasoning({ entry }: { entry: ChatEntry & { role: "assistant" } }) {
+  const thinking = (entry.status === "waiting" || entry.status === "streaming") && entry.content === "";
+  return (
+    <details className="reasoning">
+      <summary>
+        {thinking ? (
+          <span className="loading" role="status">
+            {l10n.t("Thinking…")}
+          </span>
+        ) : (
+          l10n.t("Reasoning")
+        )}
+      </summary>
+      <div className="reasoning-text">{entry.reasoning.trim()}</div>
+    </details>
   );
 }
 

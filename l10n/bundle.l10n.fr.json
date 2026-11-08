@@ -12,6 +12,8 @@
   "Send a message to start.": "Envoyez un message pour commencer.",
   "Waiting for the reply…": "En attente de la réponse…",
   "Stopped": "Arrêtée",
+  "Thinking…": "Réflexion…",
+  "Reasoning": "Raisonnement",
   "Ask anything. Enter to send, Shift+Enter for a new line.": "Posez votre question. Entrée pour envoyer, Maj+Entrée pour aller à la ligne.",
   "Choose a model to start.": "Choisissez un modèle pour commencer.",
   "Message": "Message",
