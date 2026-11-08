@@ -1,0 +1,432 @@
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { buildChatRequest, listModels, MODEL_LIST_MAX_BYTES, REPLY_MAX_LENGTH, streamChat, type ProviderAccess } from "./client";
+
+type Handler = (request: Request) => Response | Promise<Response>;
+
+// One local server; each test routes by its own path prefix.
+const routes = new Map<string, Handler>();
+// [&]: Bun invalidates a Request after its response is sent -> snapshot what tests inspect.
+type Received = { path: string; headers: Headers; body: string };
+const received = new Map<string, Received>();
+let server: ReturnType<typeof Bun.serve>;
+
+beforeAll(() => {
+  server = Bun.serve({
+    port: 0,
+    async fetch(request) {
+      const path = new URL(request.url).pathname;
+      const prefix = path.split("/")[1] ?? "";
+      received.set(prefix, { path, headers: new Headers(request.headers), body: await request.text() });
+      const handler = routes.get(prefix);
+      return handler ? handler(request) : new Response("no route", { status: 599 });
+    },
+  });
+});
+
+afterAll(() => server.stop(true));
+
+function routed(prefix: string, handler: Handler, apiKey?: string): ProviderAccess {
+  routes.set(prefix, handler);
+  return { provider: { name: `P-${prefix}`, baseUrl: `http://localhost:${server.port}/${prefix}/v1` }, apiKey };
+}
+
+// Port 1 on loopback: nothing listens -> connection refused.
+const refused: ProviderAccess = { provider: { name: "Down", baseUrl: "http://127.0.0.1:1/v1" }, apiKey: undefined };
+
+function sse(chunks: string[]): Response {
+  const encoder = new TextEncoder();
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+      controller.close();
+    },
+  });
+  return new Response(body, { headers: { "content-type": "text/event-stream" } });
+}
+
+/** Raw TCP server: writes `head` + one chunk of a chunked body, then closes without the final chunk. */
+function truncatedServer(head: string, chunk: string) {
+  return Bun.listen({
+    hostname: "127.0.0.1",
+    port: 0,
+    socket: {
+      data(socket) {
+        socket.write(`${head}\r\nTransfer-Encoding: chunked\r\n\r\n${Buffer.byteLength(chunk).toString(16)}\r\n${chunk}\r\n`);
+        setTimeout(() => socket.end(), 20);
+      },
+    },
+  });
+}
+
+/** Body that never ends: `first`, then `filler` forever. Proves caps are enforced while reading, not after. */
+function endless(first: string, filler: string, init?: ResponseInit): Response {
+  const encoder = new TextEncoder();
+  const head = encoder.encode(first);
+  const rest = encoder.encode(filler);
+  let sentHead = false;
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      controller.enqueue(sentHead ? rest : head);
+      sentHead = true;
+    },
+  });
+  return new Response(body, init);
+}
+
+function event(payload: unknown): string {
+  return `data: ${JSON.stringify(payload)}\n\n`;
+}
+
+function delta(content: string, finishReason: string | null = null): string {
+  return `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content }, finish_reason: finishReason }] })}\n\n`;
+}
+
+describe("buildChatRequest", () => {
+  const access: ProviderAccess = { provider: { name: "Ollama", baseUrl: "http://localhost:11434/v1" }, apiKey: undefined };
+  const messages = [{ role: "user" as const, content: "Hi" }];
+
+  test("posts to /chat/completions with stream true, the model, the messages, and no tools key", () => {
+    const request = buildChatRequest(access, "qwen3.8:27b", messages);
+    expect(request.url).toBe("http://localhost:11434/v1/chat/completions");
+    expect(request.init.method).toBe("POST");
+    const body = JSON.parse(String(request.init.body));
+    expect(body).toEqual({ model: "qwen3.8:27b", messages: [{ role: "user", content: "Hi" }], stream: true });
+    expect("tools" in body).toBe(false);
+  });
+
+  test("sends no Authorization header without a key, and a bearer header with one", () => {
+    const withoutKey = new Headers(buildChatRequest(access, "m", messages).init.headers);
+    expect(withoutKey.has("authorization")).toBe(false);
+    const withEmptyKey = new Headers(buildChatRequest({ ...access, apiKey: "" }, "m", messages).init.headers);
+    expect(withEmptyKey.has("authorization")).toBe(false);
+    const withKey = new Headers(buildChatRequest({ ...access, apiKey: "sk-1" }, "m", messages).init.headers);
+    expect(withKey.get("authorization")).toBe("Bearer sk-1");
+  });
+});
+
+describe("listModels", () => {
+  test("returns the model ids of GET /models", async () => {
+    const access = routed("models-ok", () =>
+      Response.json({ object: "list", data: [{ id: "qwen3.8:27b" }, { id: "gemma4:26b-a4b-it-qat" }] }),
+    );
+    expect(await listModels(access)).toEqual({ ok: true, models: ["qwen3.8:27b", "gemma4:26b-a4b-it-qat"] });
+    expect(received.get("models-ok")!.path).toBe("/models-ok/v1/models");
+    expect(received.get("models-ok")!.headers.has("authorization")).toBe(false);
+  });
+
+  test("sends the stored key as a bearer token", async () => {
+    const access = routed("models-key", () => Response.json({ data: [] }), "sk-secret");
+    await listModels(access);
+    expect(received.get("models-key")!.headers.get("authorization")).toBe("Bearer sk-secret");
+  });
+
+  test("classifies connection refused as unreachable, with the base URL and the cause", async () => {
+    const result = await listModels(refused);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatchObject({ kind: "unreachable", provider: "Down", baseUrl: "http://127.0.0.1:1/v1" });
+    if (result.error.kind === "unreachable") expect(result.error.cause.length).toBeGreaterThan(0);
+  });
+
+  test("classifies 401 and 403 as an invalid key", async () => {
+    const unauthorized = routed("models-401", () => new Response("nope", { status: 401 }));
+    expect(await listModels(unauthorized)).toEqual({
+      ok: false,
+      error: { kind: "invalidKey", provider: "P-models-401", status: 401 },
+    });
+    const forbidden = routed("models-403", () => new Response("nope", { status: 403 }));
+    expect(await listModels(forbidden)).toEqual({
+      ok: false,
+      error: { kind: "invalidKey", provider: "P-models-403", status: 403 },
+    });
+  });
+
+  test("classifies a 500 with an OpenAI error body as rejected, with error.message", async () => {
+    const access = routed("models-500json", () =>
+      Response.json({ error: { message: "model 'nope' not found", type: "not_found_error" } }, { status: 500 }),
+    );
+    expect(await listModels(access)).toEqual({
+      ok: false,
+      error: { kind: "rejected", provider: "P-models-500json", status: 500, detail: "model 'nope' not found" },
+    });
+  });
+
+  test("classifies a 500 with a text body as rejected, with the body truncated", async () => {
+    const access = routed("models-500text", () => new Response(`Internal error ${"x".repeat(2000)}`, { status: 500 }));
+    const result = await listModels(access);
+    expect(result.ok).toBe(false);
+    if (result.ok || result.error.kind !== "rejected") throw new Error("expected rejected");
+    expect(result.error.status).toBe(500);
+    expect(result.error.detail.startsWith("Internal error xxx")).toBe(true);
+    expect(result.error.detail.length).toBeLessThanOrEqual(501);
+    expect(result.error.detail.endsWith("…")).toBe(true);
+  });
+
+  test("reports a model list whose body download fails as cut off with the cause, not as an invalid response", async () => {
+    const listener = truncatedServer("HTTP/1.1 200 OK\r\nContent-Type: application/json", '{"data":[{"id":"qw');
+    try {
+      const result = await listModels({ provider: { name: "Half", baseUrl: `http://127.0.0.1:${listener.port}/v1` }, apiKey: undefined });
+      if (result.ok || result.error.kind !== "cutOff") throw new Error(`expected cutOff, got ${JSON.stringify(result)}`);
+      expect(result.error).toMatchObject({ provider: "Half", reason: "listDropped" });
+      expect(result.error.cause?.length).toBeGreaterThan(0);
+    } finally {
+      listener.stop(true);
+    }
+  });
+
+  test("keeps the HTTP classification when an error body cannot be read, and says so with the cause", async () => {
+    const rejected = truncatedServer("HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain", "Internal err");
+    const unauthorized = truncatedServer("HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain", "Unauth");
+    try {
+      const result = await listModels({ provider: { name: "Half", baseUrl: `http://127.0.0.1:${rejected.port}/v1` }, apiKey: undefined });
+      if (result.ok || result.error.kind !== "rejected") throw new Error(`expected rejected, got ${JSON.stringify(result)}`);
+      expect(result.error).toMatchObject({ provider: "Half", status: 500, detail: "" });
+      expect(result.error.bodyReadError?.length).toBeGreaterThan(0);
+
+      expect(await listModels({ provider: { name: "Key", baseUrl: `http://127.0.0.1:${unauthorized.port}/v1` }, apiKey: "k" })).toEqual({
+        ok: false,
+        error: { kind: "invalidKey", provider: "Key", status: 401 },
+      });
+    } finally {
+      rejected.stop(true);
+      unauthorized.stop(true);
+    }
+  });
+
+  test("reports a model list with an empty id as an invalid response", async () => {
+    const access = routed("models-empty-id", () => Response.json({ data: [{ id: "qwen3.8:27b" }, { id: "" }] }));
+    expect(await listModels(access)).toMatchObject({ ok: false, error: { kind: "invalidResponse", provider: "P-models-empty-id" } });
+  });
+
+  test("does not follow a redirect, and reports it with its target", async () => {
+    const target = routed("models-redirect-target", () => Response.json({ data: [{ id: "m" }] }));
+    received.delete("models-redirect-target");
+    const access = routed("models-redirect", () => Response.redirect(`${target.provider.baseUrl}/models`, 302), "sk-secret");
+    expect(await listModels(access)).toEqual({
+      ok: false,
+      error: { kind: "redirected", provider: "P-models-redirect", status: 302, location: `${target.provider.baseUrl}/models` },
+    });
+    expect(received.has("models-redirect-target")).toBe(false);
+  });
+
+  test("cancels a model list larger than the cap and reports it as too large", async () => {
+    const access = routed("models-endless", () => endless('{"data":[', '{"id":"m"},'.repeat(10_000)));
+    expect(await listModels(access)).toEqual({ ok: false, error: { kind: "cutOff", provider: "P-models-endless", reason: "listTooLarge" } });
+    expect(MODEL_LIST_MAX_BYTES).toBeGreaterThan(1024 * 1024);
+  });
+
+  test("reads only the start of an endless error body, and keeps the HTTP classification", async () => {
+    const access = routed("models-500-endless", () => endless("Internal error ", "x".repeat(64 * 1024), { status: 500 }));
+    const result = await listModels(access);
+    if (result.ok || result.error.kind !== "rejected") throw new Error(`expected rejected, got ${JSON.stringify(result)}`);
+    expect(result.error.status).toBe(500);
+    expect(result.error.detail.startsWith("Internal error xxx")).toBe(true);
+  });
+
+  test("reports a 2xx body that is not a model list as an invalid response", async () => {
+    const access = routed("models-html", () => new Response("<html>Ollama is running</html>", { status: 200 }));
+    const result = await listModels(access);
+    expect(result).toMatchObject({ ok: false, error: { kind: "invalidResponse", provider: "P-models-html" } });
+  });
+});
+
+describe("streamChat", () => {
+  const messages = [{ role: "user" as const, content: "Hi" }];
+
+  async function run(access: ProviderAccess, signal?: AbortSignal) {
+    const parts: string[] = [];
+    const outcome = await streamChat(access, {
+      model: "m",
+      messages,
+      signal: signal ?? new AbortController().signal,
+      onContent: (text) => parts.push(text),
+    });
+    return { outcome, text: parts.join("") };
+  }
+
+  test("streams delta.content until [DONE] and ignores reasoning", async () => {
+    const access = routed("chat-ok", () =>
+      sse([
+        `data: ${JSON.stringify({ choices: [{ delta: { role: "assistant", content: "", reasoning: "thinking" } }] })}\n\n`,
+        delta("Hel"),
+        delta("lo **world**"),
+        delta("", "stop"),
+        "data: [DONE]\n\n",
+      ]),
+    );
+    expect(await run(access)).toEqual({ outcome: { status: "done" }, text: "Hello **world**" });
+    const body = JSON.parse(received.get("chat-ok")!.body);
+    expect(body.stream).toBe(true);
+    expect("tools" in body).toBe(false);
+  });
+
+  test("accepts a stream that ends after a finish_reason without [DONE]", async () => {
+    const access = routed("chat-finish", () => sse([delta("Hi"), delta("", "stop")]));
+    expect(await run(access)).toEqual({ outcome: { status: "done" }, text: "Hi" });
+  });
+
+  test("classifies a stream that ends before completion as cut off, keeping the partial text", async () => {
+    const access = routed("chat-eof", () => sse([delta("Partial ")]));
+    const { outcome, text } = await run(access);
+    expect(text).toBe("Partial ");
+    expect(outcome).toEqual({ status: "failed", error: { kind: "cutOff", provider: "P-chat-eof", reason: "ended" } });
+  });
+
+  test("classifies a malformed chunk mid-reply as cut off", async () => {
+    const access = routed("chat-malformed", () => sse([delta("Partial "), "data: {not json\n\n", delta("never")]));
+    const { outcome, text } = await run(access);
+    expect(text).toBe("Partial ");
+    expect(outcome).toMatchObject({ status: "failed", error: { kind: "cutOff", reason: "malformed" } });
+  });
+
+  test("classifies an error event mid-reply as cut off, with the provider's message", async () => {
+    const access = routed("chat-error-event", () =>
+      sse([delta("Partial "), `data: ${JSON.stringify({ error: { message: "out of memory" } })}\n\n`]),
+    );
+    const { outcome } = await run(access);
+    expect(outcome).toEqual({
+      status: "failed",
+      error: { kind: "cutOff", provider: "P-chat-error-event", reason: "providerError", cause: "out of memory" },
+    });
+  });
+
+  test("classifies a dropped connection mid-reply as cut off", async () => {
+    const listener = truncatedServer("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream", delta("Partial "));
+    try {
+      const access: ProviderAccess = {
+        provider: { name: "Dropper", baseUrl: `http://127.0.0.1:${listener.port}/v1` },
+        apiKey: undefined,
+      };
+      const { outcome, text } = await run(access);
+      expect(text).toBe("Partial ");
+      expect(outcome).toMatchObject({ status: "failed", error: { kind: "cutOff", provider: "Dropper", reason: "dropped" } });
+    } finally {
+      listener.stop(true);
+    }
+  });
+
+  test("classifies a delta.content of the wrong type as a malformed chunk, not success", async () => {
+    const access = routed("chat-content-number", () =>
+      sse([delta("Partial "), event({ choices: [{ delta: { content: 42 } }] }), "data: [DONE]\n\n"]),
+    );
+    const { outcome, text } = await run(access);
+    expect(text).toBe("Partial ");
+    expect(outcome).toMatchObject({ status: "failed", error: { kind: "cutOff", reason: "malformed" } });
+  });
+
+  test("classifies wrong types in choices, delta, or finish_reason as malformed", async () => {
+    const malformed = [
+      { choices: "nope" },
+      { choices: [42] },
+      { choices: [{ delta: "text" }] },
+      { choices: [{ delta: {}, finish_reason: 1 }] },
+    ];
+    for (const [index, payload] of malformed.entries()) {
+      const access = routed(`chat-malformed-${index}`, () => sse([event(payload), "data: [DONE]\n\n"]));
+      expect((await run(access)).outcome).toMatchObject({ status: "failed", error: { kind: "cutOff", reason: "malformed" } });
+    }
+  });
+
+  test("accepts null content, reasoning-only, role-only, usage-only, and empty-choices chunks", async () => {
+    const access = routed("chat-metadata", () =>
+      sse([
+        event({ choices: [{ delta: { role: "assistant" } }] }),
+        event({ choices: [{ delta: { content: null, reasoning: "hmm" } }] }),
+        event({ choices: [{ index: 0, delta: { content: "Hi" }, finish_reason: null }] }),
+        event({ choices: [{ delta: {}, finish_reason: "stop" }] }),
+        event({ choices: [], usage: { prompt_tokens: 3, completion_tokens: 1 } }),
+        event({ id: "chatcmpl-1", object: "chat.completion.chunk", error: null }),
+        "data: [DONE]\n\n",
+      ]),
+    );
+    expect(await run(access)).toEqual({ outcome: { status: "done" }, text: "Hi" });
+  });
+
+  test("reports stop as stopped even when [DONE] is already buffered behind the content", async () => {
+    const controller = new AbortController();
+    const access = routed("chat-stop-done", () => sse([delta("partial") + "data: [DONE]\n\n"]));
+    const outcome = await streamChat(access, {
+      model: "m",
+      messages,
+      signal: controller.signal,
+      // Stop lands after this content is handled, while [DONE] waits in the same buffer.
+      onContent: () => queueMicrotask(() => controller.abort()),
+    });
+    expect(outcome).toEqual({ status: "stopped" });
+  });
+
+  test("reports stop as stopped, not cut off, and keeps the partial text", async () => {
+    const controller = new AbortController();
+    const access = routed("chat-stop", () => {
+      const encoder = new TextEncoder();
+      const body = new ReadableStream<Uint8Array>({
+        start(stream) {
+          stream.enqueue(encoder.encode(delta("Partial ")));
+        },
+      });
+      return new Response(body, { headers: { "content-type": "text/event-stream" } });
+    });
+    const parts: string[] = [];
+    const outcome = await streamChat(access, {
+      model: "m",
+      messages,
+      signal: controller.signal,
+      onContent: (text) => {
+        parts.push(text);
+        controller.abort();
+      },
+    });
+    expect(outcome).toEqual({ status: "stopped" });
+    expect(parts.join("")).toBe("Partial ");
+  });
+
+  test("reports stop before the response arrives as stopped", async () => {
+    const controller = new AbortController();
+    const access = routed("chat-stop-early", async () => {
+      await Bun.sleep(5000);
+      return sse([delta("late")]);
+    });
+    setTimeout(() => controller.abort(), 20);
+    expect(await run(access, controller.signal)).toEqual({ outcome: { status: "stopped" }, text: "" });
+  });
+
+  test("does not follow a redirect, so the conversation is never resent elsewhere", async () => {
+    const target = routed("chat-redirect-target", () => sse([delta("Hi", "stop")]));
+    received.delete("chat-redirect-target");
+    const access = routed("chat-redirect", () => Response.redirect(`${target.provider.baseUrl}/chat/completions`, 307));
+    expect((await run(access)).outcome).toMatchObject({ status: "failed", error: { kind: "redirected", status: 307 } });
+    expect(received.has("chat-redirect-target")).toBe(false);
+  });
+
+  test("cancels a stream whose line never ends and reports it as too large", async () => {
+    const access = routed("chat-endless-line", () => endless(delta("Partial ") + "data: ", "x".repeat(64 * 1024)));
+    const { outcome, text } = await run(access);
+    expect(text).toBe("Partial ");
+    expect(outcome).toEqual({ status: "failed", error: { kind: "cutOff", provider: "P-chat-endless-line", reason: "tooLarge" } });
+  });
+
+  test("stops a reply longer than the cap, keeping the text received under it", async () => {
+    const piece = "x".repeat(512 * 1024);
+    const access = routed("chat-endless-reply", () => endless("", delta(piece)));
+    const { outcome, text } = await run(access);
+    expect(outcome).toEqual({ status: "failed", error: { kind: "cutOff", provider: "P-chat-endless-reply", reason: "tooLarge" } });
+    expect(text.length).toBeLessThanOrEqual(REPLY_MAX_LENGTH);
+    expect(text.length).toBeGreaterThan(REPLY_MAX_LENGTH - piece.length);
+  });
+
+  test("classifies connection refused, 401, and a 500 the same way as model listing", async () => {
+    expect((await run(refused)).outcome).toMatchObject({ status: "failed", error: { kind: "unreachable" } });
+    const unauthorized = routed("chat-401", () => new Response("", { status: 401 }));
+    expect((await run(unauthorized)).outcome).toEqual({
+      status: "failed",
+      error: { kind: "invalidKey", provider: "P-chat-401", status: 401 },
+    });
+    const rejected = routed("chat-404", () =>
+      Response.json({ error: { message: "model 'nope' not found" } }, { status: 404 }),
+    );
+    expect((await run(rejected)).outcome).toEqual({
+      status: "failed",
+      error: { kind: "rejected", provider: "P-chat-404", status: 404, detail: "model 'nope' not found" },
+    });
+  });
+});

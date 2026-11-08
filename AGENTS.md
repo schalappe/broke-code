@@ -10,14 +10,28 @@ tool call in the text of its reply, and the extension parses and runs the call. 
 covers the agent loop over the reply text, skills, and slash commands, in a minimal chat panel styled after
 twinny.
 
-The repository holds no code yet. Read `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the
-decisions behind the design, starting with `docs/adr/0001-body-tool-calls.md`.
+The code so far covers the extension skeleton and a streaming chat with a provider, with no tools yet. Read
+`GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the decisions behind the design, starting with
+`docs/adr/0001-body-tool-calls.md`.
 
 ## Structure
 
 - `GLOSSARY.md`: the domain terms (body tool call, harness, agent turn, provider, skill, slash command,
   mention). Code and docs use these names.
 - `docs/adr/`: architecture decision records.
+- `src/core/`: modules that import nothing from `vscode`: settings parsing, the provider HTTP client, the SSE
+  reader, the typed provider errors, the chat controller (conversation state, streaming, Stop), the dialog
+  queue, and the host-webview message protocol. Unit tests sit next to them as `*.test.ts`, because
+  `bun test` cannot load `vscode`.
+- `src/extension/`: the extension host glue (activation, webview view, API keys in `SecretStorage`).
+- `src/webview/`: the React chat panel and its CSS.
+- `src/l10n.test.ts`: checks that every `l10n.t` message has a French translation and that the
+  `package.nls*.json` files match.
+- `l10n/bundle.l10n.fr.json`, `package.nls.json`, `package.nls.fr.json`: French strings for the host and
+  webview, and the English and French manifest strings. English messages are the keys of `l10n.t`.
+- `scripts/build.ts`: `bun run build` writes the host bundle (`dist/extension.js`, CommonJS) and the webview
+  bundle (`dist/webview/`).
+- `.github/workflows/ci.yml`: type check, unit tests, and build on macOS.
 - `LICENSE`: MIT.
 
 ## Stack
@@ -38,8 +52,11 @@ decisions behind the design, starting with `docs/adr/0001-body-tool-calls.md`.
 - broke-code speaks one contract: streaming `POST /v1/chat/completions` and `GET /v1/models`. It covers the
   internal service and Ollama.
 - Never send `tools` or read `tool_calls`, even to a provider that supports them. See ADR 0001.
-- Providers (name and base URL) live in the VS Code settings. Each API key lives in `SecretStorage`, never in
-  `settings.json`.
+- Providers (name and base URL) live in the VS Code user settings only (`application` scope). A workspace
+  `settings.json` must not override them, because keys are stored by provider name and a repository could
+  otherwise point that name at its own URL. Each API key lives in `SecretStorage`, never in `settings.json`.
+- Requests never follow HTTP redirects; a redirect is reported as an error. Provider response bodies are read
+  under size caps that cancel the download when exceeded.
 - The API does not report a model's context size. A settings table maps model names to sizes, and unknown
   models default to 32k. When the user picks an unknown model, the chat shows a link to set its size.
 - TLS goes through the OS certificate store, which the VS Code extension host already applies to `fetch`.
@@ -91,7 +108,10 @@ decisions behind the design, starting with `docs/adr/0001-body-tool-calls.md`.
 
 ## Verification
 
-- Unit tests and the type check run in CI on every pull request and on `develop` and `main`.
+- `bun run typecheck`, `bun test`, and `bun run build` run in CI on every pull request and on `develop` and
+  `main`.
+- To try the extension, run `bun run build`, then `codium --extensionDevelopmentPath=<repository path>`
+  (VSCodium is the maintainer's editor). Rebuild and reload the window after each change.
 - `bun run eval` (to be created) plays fixed scenarios against a local Ollama with `qwen3.8:27b` and
   `gemma4:26b-a4b-it-qat`: read then answer, edit a line, create a file containing quotes and tags, run a
   command, load a skill. A scenario passes when it succeeds at least 9 times out of 10 on each model. The eval
