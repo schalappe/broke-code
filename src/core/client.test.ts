@@ -835,7 +835,86 @@ describe("timeouts", () => {
     }
   });
 
+  /** Raw TCP server: headers after `headersAfter` ms, then each of `pieces` `every` ms apart, then the end. */
+  function slowServer(headersAfter: number, every: number, pieces: string[]) {
+    return Bun.listen({
+      hostname: "127.0.0.1",
+      port: 0,
+      socket: {
+        async data(socket) {
+          await Bun.sleep(headersAfter);
+          socket.write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n");
+          for (const piece of pieces) {
+            await Bun.sleep(every);
+            socket.write(chunk(piece));
+          }
+          socket.write("0\r\n\r\n");
+        },
+      },
+    });
+  }
+
+  test("lets a slow but steady provider take longer than the timeout in total, and leaves no timer behind", async () => {
+    // [>]: Headers and each piece come within the timeout of the previous byte; the whole takes over three timeouts.
+    const listener = slowServer(140, 120, ['{"data":', '[{"id":', '"m"}', "]}"]);
+    try {
+      const fired = await timersFiredAfter(200, async () => {
+        expect(await listModels(at(listener.port, "Slow"), { timeoutMs: 200 })).toEqual({ ok: true, models: ["m"] });
+      });
+      expect(fired).toBe(0);
+    } finally {
+      listener.stop(true);
+    }
+  });
+
+  test("leaves no timer behind after a refused connection or a Stop", async () => {
+    expect(await timersFiredAfter(43, () => listModels(refused, { timeoutMs: 43 }))).toBe(0);
+
+    const listener = silentServer(`HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n${chunk(delta("Partial "))}`);
+    try {
+      const controller = new AbortController();
+      const fired = await timersFiredAfter(44, async () => {
+        const outcome = await streamChat(at(listener.port, "Stopped"), {
+          model: "m",
+          messages: [{ role: "user", content: "Hi" }],
+          signal: controller.signal,
+          onContent: () => controller.abort(),
+          onReasoning: () => {},
+          network: { timeoutMs: 44 },
+        });
+        expect(outcome).toEqual({ status: "stopped" });
+      });
+      expect(fired).toBe(0);
+    } finally {
+      listener.stop(true);
+    }
+  });
+
   function chunk(text: string): string {
     return `${Buffer.byteLength(text).toString(16)}\r\n${text}\r\n`;
   }
+});
+
+describe("bodies left unread", () => {
+  /** Endless body whose `ended` resolves when the client stops downloading it. */
+  function watchedEndless() {
+    let cancelled!: () => void;
+    const ended = new Promise<string>((resolve) => (cancelled = () => resolve("ended")));
+    const body = new ReadableStream<Uint8Array>({
+      pull: (stream) => stream.enqueue(new Uint8Array(64 * 1024)),
+      cancel: () => cancelled(),
+    });
+    return { body, ended: Promise.race([ended, Bun.sleep(2000).then(() => "still downloading")]) };
+  }
+
+  test.each([
+    ["401", 401, {}, "invalidKey"],
+    ["302", 302, { location: "https://elsewhere/v1" }, "redirected"],
+    ["zstd", 200, { "content-encoding": "zstd" }, "invalidResponse"],
+  ] as const)("stops downloading the body of a %s it does not read", async (name, status, headers, kind) => {
+    const { body, ended } = watchedEndless();
+    const access = routed(`unread-${name}`, () => new Response(body, { status, headers }));
+    expect(await listModels(access)).toMatchObject({ ok: false, error: { kind } });
+    expect(await ended).toBe("ended");
+  });
 });
