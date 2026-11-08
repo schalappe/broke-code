@@ -33,4 +33,15 @@ for (const result of await Promise.all(builds)) {
   if (!result.success) failed = true;
   for (const output of result.outputs) console.log(output.path);
 }
+
+// [!]: VS Code gives its proxy and OS-certificate patch only to `require("http")` and `require("https")`; the
+// `node:` form loads the bare module and would silently drop both for provider requests.
+if (!failed) {
+  const host = await Bun.file("dist/extension.js").text();
+  const unpatched = host.match(/require\("node:https?"\)/g);
+  if (unpatched) {
+    console.error(`dist/extension.js loads ${[...new Set(unpatched)].join(", ")}: import "http" and "https" without "node:".`);
+    failed = true;
+  }
+}
 if (failed) process.exit(1);

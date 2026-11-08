@@ -68,6 +68,10 @@
               "baseUrl": {
                 "type": "string",
                 "description": "%config.providers.baseUrl.description%"
+              },
+              "caFile": {
+                "type": "string",
+                "markdownDescription": "%config.providers.caFile.description%"
               }
             }
           }

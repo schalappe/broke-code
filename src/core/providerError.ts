@@ -19,9 +19,27 @@ export type CutOffReason =
   /** Provider sent `{ error }` event mid-stream. */
   | "providerError";
 
+/** Why a provider's CA file was refused. Checked when the provider is used, before any request. */
+export type CaFileProblem =
+  /** Neither absolute nor `~/…`: there is no folder it could be relative to. */
+  | "relative"
+  /** File could not be read; `cause` = runtime error text. */
+  | "unreadable"
+  /** No `CERTIFICATE` PEM block, or one that does not parse; `cause` says which. */
+  | "notPem";
+
 export type ProviderError =
-  /** No response: DNS, connection refused, timeout, TLS. `cause` = runtime error text. */
+  /** No response: DNS, connection refused, timeout, TLS other than certificate trust. `cause` = runtime error text. */
   | { kind: "unreachable"; provider: string; baseUrl: string; cause: string }
+  /** Server certificate not trusted: unknown issuer, self-signed, expired, hostname mismatch. `code` = OpenSSL or Node code. */
+  | { kind: "certificate"; provider: string; baseUrl: string; code: string }
+  /** CA file setting unusable; no request was sent. */
+  | { kind: "caFileInvalid"; provider: string; path: string; reason: CaFileProblem; cause?: string }
+  /**
+   * OS certificate store could not be read while combining it with the provider's CA file; no request was sent,
+   * because trusting the CA file alone would drop the certificates the system trusts.
+   */
+  | { kind: "systemCertificatesUnreadable"; provider: string; cause: string }
   /**
    * HTTP 3xx. Redirects never followed: a 307/308 would resend the conversation, and any redirect would send a request
    * to an address the user never configured. `location` = raw `Location` header, truncated; may be empty.

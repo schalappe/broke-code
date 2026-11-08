@@ -19,4 +19,34 @@ describe("describeProviderError", () => {
     const text = describeProviderError({ kind: "rejected", provider: "Ollama", status: 404, detail: "model 'nope' not found" });
     expect(text).toEqual({ message: "Ollama rejected the request (HTTP 404).", detail: "model 'nope' not found" });
   });
+
+  test("names the provider and the failure of an untrusted certificate, and points to the CA file setting", () => {
+    const text = describeProviderError({ kind: "certificate", provider: "Corp", baseUrl: "https://llm.corp/v1", code: "DEPTH_ZERO_SELF_SIGNED_CERT" });
+    expect(text).toEqual({
+      message:
+        "Corp presented a certificate that is not trusted (DEPTH_ZERO_SELF_SIGNED_CERT). If it uses a corporate or self-signed certificate, set its CA file in the provider settings.",
+      detail: "https://llm.corp/v1",
+    });
+  });
+
+  test("names the path of an unusable CA file, with the reason in the detail", () => {
+    expect(describeProviderError({ kind: "caFileInvalid", provider: "Corp", path: "/x.pem", reason: "unreadable", cause: "ENOENT" })).toEqual({
+      message: "The CA file of Corp could not be read: /x.pem",
+      detail: "ENOENT",
+    });
+    expect(describeProviderError({ kind: "caFileInvalid", provider: "Corp", path: "/x.pem", reason: "notPem", cause: "no block" })).toEqual({
+      message: "The CA file of Corp is not a PEM certificate: /x.pem",
+      detail: "no block",
+    });
+    expect(describeProviderError({ kind: "caFileInvalid", provider: "Corp", path: "x.pem", reason: "relative" })).toEqual({
+      message: "The CA file of Corp must be an absolute path or start with ~/: x.pem",
+    });
+  });
+
+  test("says the system certificates could not be read, with the cause", () => {
+    expect(describeProviderError({ kind: "systemCertificatesUnreadable", provider: "Corp", cause: "spawn failed" })).toEqual({
+      message: "The system certificates could not be read, so the CA file of Corp was not used.",
+      detail: "spawn failed",
+    });
+  });
 });

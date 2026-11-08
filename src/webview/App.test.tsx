@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
+import type { ProviderError } from "../core/providerError";
 import type { ChatEntry, ChatState } from "../core/protocol";
 
 // [&]: `vscodeApi` calls the webview global on import -> stub it before App loads.
@@ -67,5 +68,27 @@ describe("reasoning block", () => {
     expect(html).toContain("**plan** &lt;b&gt;x&lt;/b&gt;");
     expect(html).toContain("<strong>Answer</strong>");
     expect(html).not.toContain("<strong>plan</strong>");
+  });
+});
+
+describe("error actions", () => {
+  /** Panel markup for a model listing that failed with `error`. */
+  function failedListing(error: ProviderError): string {
+    const state: ChatState = { providers: ["P"], skipped: [], provider: "P", models: { status: "failed", error }, model: undefined, entries: [] };
+    return renderToStaticMarkup(<App state={state} />);
+  }
+
+  test("offers the provider settings for a certificate error and an unusable CA file", () => {
+    const errors: ProviderError[] = [
+      { kind: "certificate", provider: "P", baseUrl: "https://p/v1", code: "CERT_HAS_EXPIRED" },
+      { kind: "caFileInvalid", provider: "P", path: "/x.pem", reason: "notPem", cause: "no block" },
+    ];
+    for (const error of errors) expect(failedListing(error)).toContain(">Open provider settings<");
+  });
+
+  test("does not offer the provider settings for an unreachable provider", () => {
+    expect(failedListing({ kind: "unreachable", provider: "P", baseUrl: "http://p/v1", cause: "ECONNREFUSED" })).not.toContain(
+      "Open provider settings",
+    );
   });
 });
