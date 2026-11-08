@@ -43,6 +43,7 @@ const server = Bun.serve({
       return Response.json({ data: [{ id: "m" }] });
     }
     requests.set(prefix, [...(requests.get(prefix) ?? []), await request.json()]);
+    if (prefix === "fails") return new Response("model crashed", { status: 500 });
     const whole =
       prefix === "unclosed"
         ? reasoningOnly
@@ -451,7 +452,7 @@ describe("ChatController mentions", () => {
     const { reader, release } = pendingReader();
     const { controller, state } = await ready(ollama, reader);
     const dropped = controller.send("read @slow.ts");
-    controller.newChat();
+    await controller.newChat();
     const next = controller.send("Hi");
     await until(state, (s) => s.entries.at(-1)?.content === "Partial ");
     release();
@@ -660,7 +661,7 @@ describe("ChatController conversations", () => {
     const { controller, state } = await load(ws, { provider: reasoningProvider });
     await controller.send("First");
     const firstId = state().conversationId;
-    controller.newChat();
+    await controller.newChat();
 
     expect(state().conversationId).not.toBe(firstId);
     expect(state().entries).toEqual([]);
@@ -687,7 +688,7 @@ describe("ChatController conversations", () => {
     const one = controller.send("One");
     const oneId = state().conversationId;
     await until(state, (s) => s.entries.at(-1)?.content === "Partial ");
-    controller.newChat();
+    await controller.newChat();
     await one;
     await eventually(() => savedReply(ws, oneId)?.status === "stopped", "one stopped");
     expect(raw(ws, oneId)?.entries[1]).toMatchObject({ content: "Partial " });
@@ -707,7 +708,7 @@ describe("ChatController conversations", () => {
     const { controller, state } = await load(ws, { provider: reasoningProvider });
     await controller.send("Keep");
     const keepId = state().conversationId;
-    controller.newChat();
+    await controller.newChat();
     await controller.send("Drop");
     const dropId = state().conversationId;
     await eventually(() => state().conversations.length === 2, "two listed");
@@ -828,7 +829,7 @@ describe("ChatController conversations", () => {
     await controller.restore();
     await until(state, (s) => s.model === "m");
     await controller.send("Hi");
-    controller.newChat();
+    await controller.newChat();
     await Bun.sleep(20);
     expect(state()).toMatchObject({ entries: [], conversations: [], storageProblem: undefined });
   });
@@ -861,7 +862,7 @@ describe("ChatController conversations", () => {
     expect(state()).toMatchObject({ conversationId: id, storageProblem: { kind: "notFound" } });
     expect(state().entries).toHaveLength(2);
 
-    controller.newChat();
+    await controller.newChat();
     expect(state().storageProblem).toBeUndefined();
   });
 
@@ -960,7 +961,7 @@ describe("ChatController conversations", () => {
     const sent = controller.send("First");
     const id = state().conversationId;
     await until(state, (s) => s.entries.at(-1)?.content === "Partial ");
-    controller.newChat();
+    await controller.newChat();
     await controller.openConversation(id);
     await sent;
     expect(state()).toMatchObject({ conversationId: id, entries: [{ content: "First" }, { content: "Partial " }] });
@@ -976,7 +977,7 @@ describe("ChatController conversations", () => {
     const id = state().conversationId;
     await until(state, (s) => s.entries.at(-1)?.content === "Partial ");
     writes.hold();
-    controller.newChat();
+    await controller.newChat();
     await sent;
     const opening = controller.openConversation(id);
     writes.release();
@@ -1002,7 +1003,7 @@ describe("ChatController conversations", () => {
   const filesOf = (...records: ConversationRecord[]) =>
     memoryFiles(Object.fromEntries(records.map((record) => [`${record.id}.json`, JSON.stringify(record)])));
 
-  test("a delete while the conversation is being opened wins: it is never shown", async () => {
+  test("a delete asked while the conversation is being opened wins: it is not shown in the end", async () => {
     const record = savedRecord("keep history");
     const ws = workspace(filesOf(record));
     const reads = held(ws.files, "read");
@@ -1011,9 +1012,7 @@ describe("ChatController conversations", () => {
     const opening = controller.openConversation(record.id);
     const deleting = controller.deleteConversation(record.id);
     reads.release();
-    await opening;
-    expect(state().conversationId).not.toBe(record.id);
-    await deleting;
+    await Promise.all([opening, deleting]);
     expect(state().conversationId).not.toBe(record.id);
     expect(state()).toMatchObject({ conversations: [], storageProblem: undefined });
     expect(ws.files.files.size).toBe(0);
@@ -1026,11 +1025,16 @@ describe("ChatController conversations", () => {
     const read = ws.files.read;
     let failRead: ((error: Error) => void) | undefined;
     ws.files.read = () => new Promise((_, reject) => (failRead = reject));
-    const failing = controller.openConversation(first.id);
-    controller.newChat();
-    await eventually(() => failRead !== undefined, "the read");
-    failRead!(new Error("old read failed"));
-    await failing;
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const failing = controller.openConversation(first.id);
+      const newChat = controller.newChat();
+      await eventually(() => failRead !== undefined, "the read");
+      failRead!(new Error("old read failed"));
+      await Promise.all([failing, newChat]);
+    } finally {
+      logged.mockRestore();
+    }
     expect(state()).toMatchObject({ entries: [], storageProblem: undefined });
 
     let finishRead: (() => void) | undefined;
@@ -1071,8 +1075,9 @@ describe("ChatController conversations", () => {
     removes.hold();
     const deleting = controller.deleteConversation(id);
     await sent;
+    await until(state, (s) => s.conversationId !== id);
     expect(state()).toMatchObject({ entries: [] });
-    expect(state().conversationId).not.toBe(id);
+    expect(state().conversations.map((summary) => summary.id)).toEqual([id]);
     removes.release();
     await deleting;
     expect(ws.files.files.size).toBe(0);
@@ -1109,5 +1114,179 @@ describe("ChatController conversations", () => {
     await controller.openConversation(gone.id);
     expect(state().conversations.map((summary) => summary.id)).toEqual([other.id]);
     expect(state().storageProblem).toEqual({ kind: "notFound" });
+  });
+
+  /** Files whose `count`-th read waits for the returned gate: resolve to read on, reject to fail it. */
+  function holdRead(files: MemoryFiles, count: number) {
+    const read = files.read;
+    let reads = 0;
+    let started = false;
+    let resolveGate: () => void = () => {};
+    let rejectGate: (error: Error) => void = () => {};
+    const gate = new Promise<void>((resolve, reject) => {
+      resolveGate = resolve;
+      rejectGate = reject;
+    });
+    files.read = async (name) => {
+      reads += 1;
+      if (reads === count) {
+        started = true;
+        await gate;
+      }
+      return read(name);
+    };
+    return { started: () => started, release: () => resolveGate(), fail: (error: Error) => rejectGate(error) };
+  }
+
+  /** Controller on `ws` with `current` as the conversation to reopen, not yet restored. */
+  async function unrestored(ws: Workspace, current: string) {
+    await ws.memento.update("brokeCode.currentConversation", current);
+    const controller = new ChatController(
+      { get: async () => undefined },
+      ws.memento,
+      () => {},
+      noMentions,
+      new ConversationStore(ws.files),
+    );
+    return { controller, state: () => controller.snapshot };
+  }
+
+  test("a restore whose read waits never shows a conversation deleted meanwhile", async () => {
+    const record = savedRecord("deleted at startup");
+    const ws = workspace(filesOf(record));
+    const read = holdRead(ws.files, 2);
+    const { controller, state } = await unrestored(ws, record.id);
+    const restoring = controller.restore();
+    await eventually(read.started, "the restore's read");
+    const deleting = controller.deleteConversation(record.id);
+    read.release();
+    await Promise.all([restoring, deleting]);
+    expect(state().conversationId).not.toBe(record.id);
+    expect(state()).toMatchObject({ entries: [], conversations: [] });
+    expect(ws.files.files.size).toBe(0);
+  });
+
+  test("a restore read that fails after New chat shows no open error", async () => {
+    const record = savedRecord("startup");
+    const ws = workspace(filesOf(record));
+    const read = holdRead(ws.files, 2);
+    const { controller, state } = await unrestored(ws, record.id);
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const restoring = controller.restore();
+      await eventually(read.started, "the restore's read");
+      const newChat = controller.newChat();
+      read.fail(new Error("EACCES: delayed read"));
+      await Promise.all([restoring, newChat]);
+    } finally {
+      logged.mockRestore();
+    }
+    expect(state()).toMatchObject({ entries: [], storageProblem: undefined });
+  });
+
+  test("an open read that fails after its conversation is deleted shows no open error", async () => {
+    const record = savedRecord("deleted while opening");
+    const ws = workspace(filesOf(record));
+    const { controller, state } = await load(ws);
+    const read = holdRead(ws.files, 1);
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const opening = controller.openConversation(record.id);
+      await eventually(read.started, "the open's read");
+      const deleting = controller.deleteConversation(record.id);
+      read.fail(new Error("EACCES: delayed read"));
+      await Promise.all([opening, deleting]);
+    } finally {
+      logged.mockRestore();
+    }
+    expect(ws.files.files.size).toBe(0);
+    expect(state()).toMatchObject({ conversations: [], storageProblem: undefined });
+  });
+
+  test("two opens of the oldest and a save past the limit: the conversation shown is never one pruned", async () => {
+    const seeded = Array.from({ length: 50 }, (_, index) => savedRecord(`c${index}`, index + 1));
+    const oldest = seeded[0]!;
+    const ws = workspace(filesOf(...seeded));
+    const { controller, state } = await load(ws, { provider: reasoningProvider, now: () => 1000 });
+    const read = holdRead(ws.files, 1);
+    const first = controller.openConversation(oldest.id);
+    await eventually(read.started, "the first open's read");
+    const sent = controller.send("Newest");
+    const second = controller.openConversation(oldest.id);
+    read.release();
+    await Promise.all([first, sent, second]);
+    await eventually(() => ws.files.files.size === 50, "the prune");
+    expect(state().conversationId).toBe(oldest.id);
+    expect(ws.files.files.has(`${oldest.id}.json`)).toBe(true);
+    await controller.send("Still saved");
+    await eventually(() => raw(ws, oldest.id)?.entries.length === 3, "the next save");
+  });
+
+  test("a row clicked while its delete waits stays listed and reopenable when the delete fails", async () => {
+    const record = savedRecord("survivor");
+    const ws = workspace(filesOf(record));
+    const { controller, state } = await load(ws);
+    let failRemove: (error: Error) => void = () => {};
+    let removing = false;
+    ws.files.remove = () =>
+      new Promise((_, reject) => {
+        removing = true;
+        failRemove = reject;
+      });
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const deleting = controller.deleteConversation(record.id);
+      await eventually(() => removing, "the delete");
+      const opening = controller.openConversation(record.id);
+      failRemove(new Error("EACCES: permission denied"));
+      await Promise.all([deleting, opening]);
+    } finally {
+      logged.mockRestore();
+    }
+    expect(state().conversations.map((summary) => summary.id)).toEqual([record.id]);
+    await controller.openConversation(record.id);
+    expect(state()).toMatchObject({ conversationId: record.id, entries: [{ content: "survivor" }] });
+  });
+
+  test("waits for the save of the composed mention text before the request, and Stop ends that wait", async () => {
+    const ws = workspace();
+    const write = ws.files.write;
+    let writes = 0;
+    let holding = false;
+    ws.files.write = async (name, text) => {
+      writes += 1;
+      if (writes === 2) {
+        holding = true;
+        await new Promise(() => {});
+      }
+      return write(name, text);
+    };
+    const reader: MentionReader = {
+      read: async (path) => ({ path, kind: "file", status: "attached", lines: 1, content: "x\n", omitted: 0 }),
+    };
+    const provider: Provider = { name: "Composed", baseUrl: `http://localhost:${server.port}/composed-save/v1` };
+    const { controller, state } = await load(ws, { provider, mentions: reader });
+    const sent = controller.send("read @a.ts");
+    await eventually(() => holding, "the composed save");
+    await Bun.sleep(30);
+    expect(requests.get("composed-save")).toBeUndefined();
+    controller.stop();
+    await sent;
+    expect(state().entries.at(-1)).toMatchObject({ status: "stopped" });
+    expect(requests.get("composed-save")).toBeUndefined();
+  });
+
+  test("a provider failure is shown, saved with the reply, and still there after a reload", async () => {
+    const ws = workspace();
+    const provider: Provider = { name: "Fails", baseUrl: `http://localhost:${server.port}/fails/v1` };
+    const { controller, state } = await load(ws, { provider });
+    await controller.send("Hi");
+    const id = state().conversationId;
+    const failed = { status: "failed", error: { kind: "rejected", provider: "Fails", status: 500 } };
+    expect(state().entries.at(-1)).toMatchObject(failed);
+    await eventually(() => savedReply(ws, id)?.status === "failed", "the failed save");
+    expect(savedReply(ws, id)).toMatchObject(failed);
+    const reloaded = await load(ws, { provider });
+    expect(reloaded.state().entries.at(-1)).toMatchObject(failed);
   });
 });

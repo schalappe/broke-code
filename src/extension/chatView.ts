@@ -90,8 +90,7 @@ export class ChatView implements vscode.WebviewViewProvider {
         controller.stop();
         return;
       case "newChat":
-        controller.newChat();
-        return;
+        return void controller.newChat();
       case "openConversation":
         return void controller.openConversation(message.id);
       case "deleteConversation":

@@ -19,6 +19,7 @@ import type { ConversationStore } from "./conversationStore";
 import { composeUserMessage, findMentions, type MentionReader, type MentionResult, type ReadMention } from "./mentions";
 import { type ChatEntry, type ChatState, isReplying, type ReplyStatus, type StorageProblem } from "./protocol";
 import type { ParsedProviders, Provider } from "./providers";
+import { SerialQueue } from "./serialQueue";
 
 /** API key lookup. `undefined` = no key; must not reject. */
 export type KeyStore = { get(provider: string): Promise<string | undefined> };
@@ -56,24 +57,20 @@ export class ChatController {
   private providers: Provider[] = [];
   private conversation: Conversation;
   private state: ChatState;
-  /** In-flight reply: its abort handle and the provider it streams from. */
-  private reply: { abort: AbortController; provider: Provider } | undefined;
+  /**
+   * In-flight reply: its abort handle, the provider it streams from, and `settled`, which resolves once the stream
+   * has returned and its last save has been handed to the store.
+   */
+  private reply: { abort: AbortController; provider: Provider; settled: Promise<void> } | undefined;
   /** Bumped per listing request; stale listings dropped. */
   private listingId = 0;
   /**
-   * Bumped by each switch of the conversation shown and each open asked: a restore or open whose read settles after
-   * another navigation is dropped, its entries and its error alike.
+   * Navigation (restore, New chat, open, delete, pruning) runs one operation at a time, in request order, so the
+   * conversation shown is always the result of the last request and never one deleted or pruned before it. Each
+   * operation stops the reply in flight and waits for it to settle; the store queue then orders every later read
+   * after that reply's last save. A request waits behind a slow disk operation already queued.
    */
-  private switchId = 0;
-  /**
-   * Conversations whose reply has not settled yet. Reopening one shows the object itself: its last save is still to
-   * come, so the file is older than it.
-   */
-  private readonly settling = new Map<string, Conversation>();
-  /** Ids deleted, or being deleted, in this session. An open of one is dropped, so a deleted one is never shown. */
-  private readonly gone = new Set<string>();
-  /** Id of the conversation an open is reading. Pruning spares it, since it is about to be shown. */
-  private opening: string | undefined;
+  private readonly navigation = new SerialQueue();
   /**
    * Model-facing text of each user entry: typed text plus mention blocks, composed once at send time and resent
    * verbatim on later turns, also after a reload: it is saved beside the entry. Kept out of `ChatState`, which is
@@ -112,8 +109,12 @@ export class ChatController {
    * Window load: list the saved conversations and show the one shown last, if it can still be read; else keep a
    * new one. In-flight replies in it come back stopped (see `parseConversation`).
    */
-  async restore(): Promise<void> {
-    const switchId = this.switchId;
+  restore(): Promise<void> {
+    return this.navigate(() => this.restoreNow());
+  }
+
+  private async restoreNow(): Promise<void> {
+    if (this.state.storageProblem?.kind === "listFailed") this.state.storageProblem = undefined;
     try {
       const { conversations, unreadable } = await this.store.list();
       const known = new Set(this.state.conversations.map((summary) => summary.id));
@@ -129,8 +130,9 @@ export class ChatController {
       this.report({ kind: "listFailed", cause: String(error) }, "could not list saved conversations", error);
     }
 
+    // [>]: `send` is not navigation: a message sent before the read settles keeps its conversation in front.
     const id = this.workspaceState.get<unknown>(CURRENT_CONVERSATION_KEY);
-    const untouched = () => switchId === this.switchId && this.conversation.entries.length === 0;
+    const untouched = () => this.conversation.entries.length === 0;
     if (isConversationId(id) && untouched()) {
       let record: ConversationRecord | undefined;
       try {
@@ -141,7 +143,7 @@ export class ChatController {
       }
       if (record && untouched()) return this.show(this.fromRecord(record));
     }
-    if (switchId === this.switchId) this.rememberConversation();
+    this.rememberConversation();
     this.emit();
   }
 
@@ -253,58 +255,65 @@ export class ChatController {
     // published again once the mentions are known.
     conversation.entries.push(user, reply);
     const abort = new AbortController();
-    this.reply = { abort, provider };
-    this.settling.set(conversation.id, conversation);
+    let markSettled: () => void = () => {};
+    const settled = new Promise<void>((resolve) => {
+      markSettled = resolve;
+    });
+    this.reply = { abort, provider, settled };
     this.emit();
-    /** Last status and save of the reply; it has settled after this. */
+    /** Last status of the reply, and its last save handed to the store. */
     const settle = (status: ReplyStatus) => {
-      if (this.reply?.abort === abort) this.reply = undefined;
       reply.status = status;
       this.emit();
       void this.save(conversation);
-      this.settling.delete(conversation.id);
     };
 
-    // [>]: The message is on disk before the request goes, so a crash keeps it. A failed save is shown and the reply
-    // still goes. Stop ends the wait at once, even if a read, the key lookup, or the save never settles.
-    const prepared = await unlessAborted(
-      Promise.all([this.readMentions(content, picked), this.accessOf(provider), this.save(conversation)]),
-      abort.signal,
-    );
-    if (!prepared) return settle("stopped");
-    const [mentions, access] = prepared;
-    user.mentions = mentions.map(toResult);
-    const composed = composeUserMessage(content, mentions);
-    this.modelText.set(user, composed);
-    history.push({ role: "user", content: composed });
-    if (mentions.length > 0) {
-      this.emit();
-      const saved = await unlessAborted(
-        this.save(conversation).then(() => true),
+    try {
+      // [>]: The message is on disk before the request goes, so a crash keeps it. A failed save is shown and the
+      // reply still goes. Stop ends the wait at once, even if a read, the key lookup, or the save never settles.
+      const prepared = await unlessAborted(
+        Promise.all([this.readMentions(content, picked), this.accessOf(provider), this.save(conversation)]),
         abort.signal,
       );
-      if (!saved) return settle("stopped");
-    }
+      if (!prepared) return settle("stopped");
+      const [mentions, access] = prepared;
+      user.mentions = mentions.map(toResult);
+      const composed = composeUserMessage(content, mentions);
+      this.modelText.set(user, composed);
+      history.push({ role: "user", content: composed });
+      if (mentions.length > 0) {
+        this.emit();
+        const saved = await unlessAborted(
+          this.save(conversation).then(() => true),
+          abort.signal,
+        );
+        if (!saved) return settle("stopped");
+      }
 
-    const outcome = await streamChat(access, {
-      model,
-      messages: history,
-      signal: abort.signal,
-      onContent: (delta) => {
-        reply.content += delta;
-        reply.status = "streaming";
-        this.emit();
-        this.saveSoon(conversation);
-      },
-      onReasoning: (delta) => {
-        reply.reasoning += delta;
-        reply.status = "streaming";
-        this.emit();
-        this.saveSoon(conversation);
-      },
-    });
-    if (outcome.status === "failed") reply.error = outcome.error;
-    settle(outcome.status);
+      const outcome = await streamChat(access, {
+        model,
+        messages: history,
+        signal: abort.signal,
+        onContent: (delta) => {
+          reply.content += delta;
+          reply.status = "streaming";
+          this.emit();
+          this.saveSoon(conversation);
+        },
+        onReasoning: (delta) => {
+          reply.reasoning += delta;
+          reply.status = "streaming";
+          this.emit();
+          this.saveSoon(conversation);
+        },
+      });
+      if (outcome.status === "failed") reply.error = outcome.error;
+      settle(outcome.status);
+    } finally {
+      // [>]: Also on an unexpected throw, so navigation waiting for this reply never hangs.
+      if (this.reply?.abort === abort) this.reply = undefined;
+      markSettled();
+    }
   }
 
   stop(): void {
@@ -312,50 +321,80 @@ export class ChatController {
   }
 
   /**
-   * Show a new, empty conversation; the one shown stays listed if it has entries. A reply in flight is stopped and
-   * saved in its own record. The one method behind the New chat button and `/new`.
+   * Show a new, empty conversation; the one shown stays listed if it has entries. A reply in flight is stopped at
+   * once and saved in its own record. The one method behind the New chat button and `/new`.
    */
-  newChat(): void {
+  newChat(): Promise<void> {
     this.stop();
-    this.show(this.freshConversation());
+    return this.navigate(async () => {
+      await this.settleReply();
+      this.show(this.freshConversation());
+    });
   }
 
   /**
-   * Show saved conversation `id`, stopping a reply in flight first. Missing, unreadable, or deleted -> `notFound`.
-   * Dropped if another navigation comes before its read settles, or if `id` is deleted meanwhile.
+   * Show saved conversation `id`, stopping a reply in flight first. Missing, invalid, or deleted by an earlier
+   * request -> `notFound`, and its row is dropped; a read that fails -> `openFailed`.
    */
-  async openConversation(id: string): Promise<void> {
-    if (id === this.conversation.id) return;
-    this.stop();
-    const switchId = ++this.switchId;
-    const live = this.settling.get(id);
-    if (this.gone.has(id)) return this.notFound(id);
-    if (live) return this.show(live);
-
-    this.opening = id;
-    let record: ConversationRecord | undefined;
-    try {
-      record = await this.store.load(id);
-    } catch (error) {
-      if (switchId !== this.switchId) return;
-      return this.report({ kind: "openFailed", cause: String(error) }, "could not open a conversation", error);
-    } finally {
-      if (this.opening === id) this.opening = undefined;
-    }
-    if (switchId !== this.switchId || this.gone.has(id)) return;
-    if (!record) return this.notFound(id);
-    // [>]: A send may have started while the file was read; stop it too, it is saved in its own record.
-    this.stop();
-    this.show(this.fromRecord(record));
+  openConversation(id: string): Promise<void> {
+    if (id !== this.conversation.id) this.stop();
+    return this.navigate(async () => {
+      if (id === this.conversation.id) return;
+      await this.settleReply();
+      let record: ConversationRecord | undefined;
+      try {
+        record = await this.store.load(id);
+      } catch (error) {
+        return this.report({ kind: "openFailed", cause: String(error) }, "could not open a conversation", error);
+      }
+      if (!record) return this.notFound(id);
+      // [>]: A send may have started while the file was read; stop it too, it is saved in its own record.
+      await this.settleReply();
+      this.show(this.fromRecord(record));
+    });
   }
 
   /**
-   * Delete saved conversation `id` from disk and list. The one shown -> its reply stopped and a new one shown at
-   * once, so no conversation being deleted is ever shown. If the delete fails, it stays listed and is reported.
+   * Delete saved conversation `id` from disk, then from the list. The one shown -> its reply stopped and a new one
+   * shown first. A failed delete keeps the row and is reported.
    */
-  async deleteConversation(id: string): Promise<void> {
-    if (id === this.conversation.id) this.newChat();
-    await this.remove(id);
+  deleteConversation(id: string): Promise<void> {
+    if (id === this.conversation.id) this.stop();
+    return this.navigate(async () => {
+      if (id === this.conversation.id) {
+        await this.settleReply();
+        this.show(this.freshConversation());
+      }
+      await this.remove(id);
+    });
+  }
+
+  /**
+   * Run `operation` after every navigation asked before it. A user request first clears the open error it
+   * supersedes; its own failure is reported by itself.
+   */
+  private navigate(operation: () => Promise<void>, clearsOpenError = true): Promise<void> {
+    return this.navigation.run(async () => {
+      const problem = this.state.storageProblem?.kind;
+      if (clearsOpenError && (problem === "notFound" || problem === "openFailed")) {
+        this.state.storageProblem = undefined;
+        this.emit();
+      }
+      await operation();
+    });
+  }
+
+  /** Stop the reply in flight, if any, and wait until its last save is handed to the store. */
+  private async settleReply(): Promise<void> {
+    const reply = this.reply;
+    if (!reply) return;
+    reply.abort.abort();
+    await reply.settled;
+  }
+
+  /** Delete the conversations past the 50 kept, oldest first, sparing the one shown when this runs. */
+  private async prune(): Promise<void> {
+    for (const id of conversationsOverLimit(this.state.conversations, [this.conversation.id])) await this.remove(id);
   }
 
   /** Each mention of `text`, read in parallel. A reader that rejects despite its contract yields `unreadable`. */
@@ -388,7 +427,7 @@ export class ChatController {
   /** `id` cannot be shown: drop its row and say so. */
   private notFound(id: string): void {
     this.setConversations(this.state.conversations.filter((summary) => summary.id !== id));
-    this.report({ kind: "notFound" }, "saved conversation not found, unreadable, or deleted", id);
+    this.report({ kind: "notFound" }, "saved conversation missing, invalid, or deleted", id);
   }
 
   private toRecord(conversation: Conversation): ConversationRecord {
@@ -408,17 +447,11 @@ export class ChatController {
     };
   }
 
-  /**
-   * Put `conversation` in front, as the one shown and reopened at the next window load. A failed open is over once
-   * another conversation shows.
-   */
+  /** Put `conversation` in front, as the one shown and reopened at the next window load. Navigation only. */
   private show(conversation: Conversation): void {
-    this.switchId += 1;
     this.conversation = conversation;
     this.state.conversationId = conversation.id;
     this.state.entries = conversation.entries;
-    const problem = this.state.storageProblem?.kind;
-    if (problem === "notFound" || problem === "openFailed") this.state.storageProblem = undefined;
     this.rememberConversation();
     this.emit();
   }
@@ -430,9 +463,9 @@ export class ChatController {
   }
 
   /**
-   * Save `conversation` now, replacing a pending throttled save. Then list it and delete those past the 50 kept,
-   * sparing the one shown and the one being opened. Not written: no entries, no storage directory, or deleted
-   * meanwhile (the store drops it). Settles once the write has; never rejects, a failure is reported.
+   * Save `conversation` now, replacing a pending throttled save. Then list it, and past 50 kept queue a prune behind
+   * the navigation asked so far. Not written: no entries, no storage directory, or deleted meanwhile (the store
+   * drops it). Settles once the write has; never rejects, a failure is reported.
    */
   private save(conversation: Conversation): Promise<void> {
     clearTimeout(conversation.saveTimer);
@@ -445,21 +478,20 @@ export class ChatController {
         if (this.state.storageProblem?.kind === "saveFailed") this.state.storageProblem = undefined;
         const others = this.state.conversations.filter((summary) => summary.id !== record.id);
         this.setConversations([summarize(record), ...others]);
-        const keep = [this.conversation.id, ...(this.opening ? [this.opening] : [])];
-        for (const id of conversationsOverLimit(this.state.conversations, keep)) void this.remove(id);
+        if (conversationsOverLimit(this.state.conversations, [this.conversation.id]).length > 0) {
+          void this.navigate(() => this.prune(), false);
+        }
       },
       (error: unknown) =>
         this.report({ kind: "saveFailed", cause: String(error) }, "could not save the conversation", error),
     );
   }
 
-  /** Delete `id` from disk, then from the list. A failed delete is reported, and `id` can be opened again. */
+  /** Delete `id` from disk, then from the list. A failed delete keeps the row and is reported. */
   private async remove(id: string): Promise<void> {
-    this.gone.add(id);
     try {
       await this.store.remove(id);
     } catch (error) {
-      this.gone.delete(id);
       return this.report({ kind: "deleteFailed", cause: String(error) }, "could not delete a conversation", error);
     }
     if (this.state.storageProblem?.kind === "deleteFailed") this.state.storageProblem = undefined;
