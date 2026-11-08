@@ -161,8 +161,8 @@ The code so far covers the extension skeleton and a streaming chat with a provid
   upload. The tag reserves that version for that commit. Then it publishes to Open VSX, to the Visual Studio
   Marketplace, and last creates a GitHub Release that carries the `.vsix`. A failed run keeps its tag; finish
   it by re-running that run, which reuses the tag's version, skips a registry that already has it, and
-  completes the Release. The next merge moves to the next version. The run fails before any upload if the computed tag already
-  exists on another commit.
+  completes the Release. The next merge moves to the next version. The run fails before any upload if the
+  computed tag already exists on another commit.
 - The git tag is the only source of the version. CI writes the version into the package at build time and
   never commits to `main`, so `package.json` keeps `0.0.0`.
 - Only `main` publishes, through the GitHub environment `release`, whose branch policy allows `main` only.
