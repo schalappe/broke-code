@@ -71,7 +71,10 @@ function releaseVersion(): string | null {
 
   const lastTag = firstLine(git("tag", "--list", "v[0-9]*", "--merged", "HEAD", "--sort=-v:refname"));
   const log = git("log", "--no-merges", "--format=%B%x00", lastTag ? `${lastTag}..HEAD` : "HEAD");
-  const messages = log.split("\0").map((message) => message.trim()).filter(Boolean);
+  const messages = log
+    .split("\0")
+    .map((message) => message.trim())
+    .filter(Boolean);
   const version = nextVersion(lastTag, messages);
   if (version === null) {
     console.error(`No feat, fix, or breaking change since ${lastTag ?? "the first commit"}: no release is due.`);

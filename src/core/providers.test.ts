@@ -41,7 +41,11 @@ describe("parseProviders", () => {
   });
 
   test("skips an entry without a usable name", () => {
-    const result = parseProviders([{ baseUrl: "http://localhost:11434/v1" }, { name: "  ", baseUrl: "http://a/v1" }, "Ollama"]);
+    const result = parseProviders([
+      { baseUrl: "http://localhost:11434/v1" },
+      { name: "  ", baseUrl: "http://a/v1" },
+      "Ollama",
+    ]);
     expect(result.providers).toEqual([]);
     expect(result.skipped).toEqual([
       { position: 1, reason: "missingName" },

@@ -4,8 +4,8 @@
  * Conversation lives in memory for window (extension host) lifetime; survives view being hidden (persistence: #12).
  * vscode-free: host passes key store and workspace memento through ports below.
  */
-import { listModels, streamChat, type ChatMessage, type ProviderAccess } from "./client";
-import { isReplying, type ChatEntry, type ChatState } from "./protocol";
+import { type ChatMessage, listModels, type ProviderAccess, streamChat } from "./client";
+import { type ChatEntry, type ChatState, isReplying } from "./protocol";
 import type { ParsedProviders, Provider } from "./providers";
 
 /** API key lookup. `undefined` = no key; must not reject. */
@@ -52,7 +52,10 @@ export class ChatController {
    */
   setProviders(parsed: ParsedProviders): void {
     const replyProvider = this.reply?.provider;
-    if (replyProvider && !parsed.providers.some((p) => p.name === replyProvider.name && p.baseUrl === replyProvider.baseUrl)) {
+    if (
+      replyProvider &&
+      !parsed.providers.some((p) => p.name === replyProvider.name && p.baseUrl === replyProvider.baseUrl)
+    ) {
       this.stop();
     }
     const previous = this.currentProvider();
@@ -85,7 +88,8 @@ export class ChatController {
   }
 
   selectModel(model: string): void {
-    if (isReplying(this.state) || this.state.models.status !== "loaded" || !this.state.models.models.includes(model)) return;
+    if (isReplying(this.state) || this.state.models.status !== "loaded" || !this.state.models.models.includes(model))
+      return;
     this.state.model = model;
     this.remember();
     this.emit();
@@ -118,7 +122,8 @@ export class ChatController {
     this.state.models = { status: "loaded", models: listing.models };
     const remembered = this.workspaceState.get<LastChoice>(LAST_CHOICE_KEY);
     const preferred = [this.state.model, remembered?.provider === provider.name ? remembered.model : undefined];
-    this.state.model = preferred.find((model) => model !== undefined && listing.models.includes(model)) ?? listing.models[0];
+    this.state.model =
+      preferred.find((model) => model !== undefined && listing.models.includes(model)) ?? listing.models[0];
     this.remember();
     this.emit();
   }
@@ -132,7 +137,12 @@ export class ChatController {
 
     const history = toHistory(this.state.entries);
     history.push({ role: "user", content });
-    const reply: ChatEntry & { role: "assistant" } = { role: "assistant", reasoning: "", content: "", status: "waiting" };
+    const reply: ChatEntry & { role: "assistant" } = {
+      role: "assistant",
+      reasoning: "",
+      content: "",
+      status: "waiting",
+    };
     this.state.entries.push({ role: "user", content }, reply);
     this.emit();
 

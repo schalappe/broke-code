@@ -39,7 +39,8 @@ const server = Bun.serve({
     }
     requests.set(prefix, [...(requests.get(prefix) ?? []), await request.json()]);
     const whole = prefix === "unclosed" ? reasoningOnly : shapes[prefix.replace(/^shape-/, "")];
-    if (whole) return new Response(whole.join("") + "data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
+    if (whole)
+      return new Response(`${whole.join("")}data: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
     if (prefix === "vllm") {
       const body = new ReadableStream<Uint8Array>({
         start(controller) {
@@ -72,7 +73,7 @@ const ollama: Provider = { name: "Ollama", baseUrl: `http://localhost:${server.p
 function memoryStore(): ChoiceStore {
   const values = new Map<string, unknown>();
   return {
-    get: <T,>(key: string) => values.get(key) as T | undefined,
+    get: <T>(key: string) => values.get(key) as T | undefined,
     update: async (key, value) => void values.set(key, value),
   };
 }
@@ -107,12 +108,20 @@ describe("ChatController settings change during a reply", () => {
     controller.setProviders({ providers: [], skipped: [] });
     await sent;
     expect(controller.snapshot.providers).toEqual([]);
-    expect(controller.snapshot.entries.at(-1)).toEqual({ role: "assistant", reasoning: "", content: "Partial ", status: "stopped" });
+    expect(controller.snapshot.entries.at(-1)).toEqual({
+      role: "assistant",
+      reasoning: "",
+      content: "Partial ",
+      status: "stopped",
+    });
   });
 
   test("changing the active provider's base URL stops the reply", async () => {
     const { controller, sent } = await replying();
-    controller.setProviders({ providers: [{ name: "Ollama", baseUrl: `http://localhost:${server.port}/b/v1` }], skipped: [] });
+    controller.setProviders({
+      providers: [{ name: "Ollama", baseUrl: `http://localhost:${server.port}/b/v1` }],
+      skipped: [],
+    });
     await sent;
     expect(controller.snapshot.entries.at(-1)).toMatchObject({ content: "Partial ", status: "stopped" });
   });
@@ -122,7 +131,12 @@ describe("ChatController settings change during a reply", () => {
     controller.setProviders({ providers: [ollama, { name: "Other", baseUrl: "http://127.0.0.1:1/v1" }], skipped: [] });
     finishReply();
     await sent;
-    expect(controller.snapshot.entries.at(-1)).toEqual({ role: "assistant", reasoning: "", content: "Partial end", status: "done" });
+    expect(controller.snapshot.entries.at(-1)).toEqual({
+      role: "assistant",
+      reasoning: "",
+      content: "Partial end",
+      status: "done",
+    });
   });
 });
 
@@ -173,7 +187,12 @@ describe("ChatController reasoning", () => {
       const prefix = `shape-${shape}`;
       const { controller } = await ready({ name: "Shape", baseUrl: `http://localhost:${server.port}/${prefix}/v1` });
       await controller.send("Hi");
-      expect(controller.snapshot.entries.at(-1)).toEqual({ role: "assistant", reasoning: "Plan.", content: "Answer", status: "done" });
+      expect(controller.snapshot.entries.at(-1)).toEqual({
+        role: "assistant",
+        reasoning: "Plan.",
+        content: "Answer",
+        status: "done",
+      });
 
       await controller.send("And then?");
       expect(requests.get(prefix)?.[1]).toMatchObject({
@@ -194,7 +213,10 @@ describe("ChatController reasoning", () => {
       if (last?.role === "assistant") published.push(structuredClone(last));
     });
     const state = () => controller.snapshot;
-    controller.setProviders({ providers: [{ name: "vLLM", baseUrl: `http://localhost:${server.port}/vllm/v1` }], skipped: [] });
+    controller.setProviders({
+      providers: [{ name: "vLLM", baseUrl: `http://localhost:${server.port}/vllm/v1` }],
+      skipped: [],
+    });
     await until(state, (s) => s.model === "m");
 
     const sent = controller.send("Hi");
@@ -203,7 +225,12 @@ describe("ChatController reasoning", () => {
     releaseVllm();
     await sent;
     // Every state the panel saw: the opening chunk changes nothing, the first reasoning piece ends `waiting`.
-    const reply = (status: string, reasoning: string, content: string) => ({ role: "assistant", reasoning, content, status });
+    const reply = (status: string, reasoning: string, content: string) => ({
+      role: "assistant",
+      reasoning,
+      content,
+      status,
+    });
     expect(published).toEqual([
       reply("waiting", "", ""),
       reply("streaming", "The user greets me.", ""),
@@ -229,7 +256,12 @@ describe("ChatController reasoning", () => {
   test("keeps a reply with reasoning and no answer in the conversation, and leaves it out of the history", async () => {
     const { controller } = await ready({ name: "Unclosed", baseUrl: `http://localhost:${server.port}/unclosed/v1` });
     await controller.send("Hi");
-    expect(controller.snapshot.entries.at(-1)).toEqual({ role: "assistant", reasoning: "Plan, never closed", content: "", status: "done" });
+    expect(controller.snapshot.entries.at(-1)).toEqual({
+      role: "assistant",
+      reasoning: "Plan, never closed",
+      content: "",
+      status: "done",
+    });
 
     await controller.send("Again");
     expect(controller.snapshot.entries).toHaveLength(4);

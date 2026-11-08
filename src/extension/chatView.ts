@@ -3,9 +3,9 @@
  * Sidebar webview view: serves chat HTML, relays state to webview and actions to controller.
  */
 import * as vscode from "vscode";
+import type { ChatController } from "../core/chatController";
 import type { ChatState, HostMessage, WebviewMessage } from "../core/protocol";
 import { renderWebviewHtml } from "../core/webviewHtml";
-import type { ChatController } from "../core/chatController";
 
 export const CHAT_VIEW_ID = "brokeCode.chat";
 
@@ -61,20 +61,26 @@ export class ChatView implements vscode.WebviewViewProvider {
         this.post({ type: "init", l10n: vscode.l10n.bundle, state: controller.snapshot });
         return;
       case "selectProvider":
-        return controller.selectProvider(message.provider);
+        controller.selectProvider(message.provider);
+        return;
       case "selectModel":
-        return controller.selectModel(message.model);
+        controller.selectModel(message.model);
+        return;
       case "retryModels":
         return void controller.loadModels();
       case "send":
         return void controller.send(message.text);
       case "stop":
-        return controller.stop();
+        controller.stop();
+        return;
       case "newChat":
-        return controller.newChat();
+        controller.newChat();
+        return;
       case "setApiKey":
         return void this.actions.setApiKey(message.provider).catch((error: unknown) => {
-          void vscode.window.showErrorMessage(vscode.l10n.t("Could not save the API key for {0}: {1}", message.provider, String(error)));
+          void vscode.window.showErrorMessage(
+            vscode.l10n.t("Could not save the API key for {0}: {1}", message.provider, String(error)),
+          );
         });
       case "openSettings":
         return void vscode.commands.executeCommand("workbench.action.openSettings", "brokeCode.providers");

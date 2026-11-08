@@ -94,12 +94,15 @@ describe("unexpired", () => {
     const { valid, expired } = fixture;
     expect(unexpired([expired.cert, valid.cert], Date.now())).toEqual([valid.cert]);
     // [>]: `expired` ran from 2020-01-01 to 2020-01-02.
-    expect(unexpired([expired.cert, valid.cert], Date.parse("2020-01-01T12:00:00Z"))).toEqual([expired.cert, valid.cert]);
+    expect(unexpired([expired.cert, valid.cert], Date.parse("2020-01-01T12:00:00Z"))).toEqual([
+      expired.cert,
+      valid.cert,
+    ]);
   });
 
   test("drops an entry that does not parse", () => {
-    expect(unexpired(["-----BEGIN CERTIFICATE-----\nnot base64\n-----END CERTIFICATE-----", fixture.valid.cert], Date.now())).toEqual([
-      fixture.valid.cert,
-    ]);
+    expect(
+      unexpired(["-----BEGIN CERTIFICATE-----\nnot base64\n-----END CERTIFICATE-----", fixture.valid.cert], Date.now()),
+    ).toEqual([fixture.valid.cert]);
   });
 });

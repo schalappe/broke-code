@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { ProviderError } from "../core/providerError";
 import type { ChatEntry, ChatState } from "../core/protocol";
+import type { ProviderError } from "../core/providerError";
 
 // [&]: `vscodeApi` calls the webview global on import -> stub it before App loads.
-(globalThis as { acquireVsCodeApi?: () => { postMessage(message: unknown): void } }).acquireVsCodeApi = () => ({ postMessage() {} });
+(globalThis as { acquireVsCodeApi?: () => { postMessage(message: unknown): void } }).acquireVsCodeApi = () => ({
+  postMessage() {},
+});
 const { App } = await import("./App");
 
 type Reply = ChatEntry & { role: "assistant" };
@@ -74,7 +76,14 @@ describe("reasoning block", () => {
 describe("error actions", () => {
   /** Panel markup for a model listing that failed with `error`. */
   function failedListing(error: ProviderError): string {
-    const state: ChatState = { providers: ["P"], skipped: [], provider: "P", models: { status: "failed", error }, model: undefined, entries: [] };
+    const state: ChatState = {
+      providers: ["P"],
+      skipped: [],
+      provider: "P",
+      models: { status: "failed", error },
+      model: undefined,
+      entries: [],
+    };
     return renderToStaticMarkup(<App state={state} />);
   }
 
@@ -87,8 +96,8 @@ describe("error actions", () => {
   });
 
   test("does not offer the provider settings for an unreachable provider", () => {
-    expect(failedListing({ kind: "unreachable", provider: "P", baseUrl: "http://p/v1", cause: "ECONNREFUSED" })).not.toContain(
-      "Open provider settings",
-    );
+    expect(
+      failedListing({ kind: "unreachable", provider: "P", baseUrl: "http://p/v1", cause: "ECONNREFUSED" }),
+    ).not.toContain("Open provider settings");
   });
 });

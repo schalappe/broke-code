@@ -27,7 +27,9 @@ describe("nextVersion", () => {
     expect(nextVersion("v0.2.3", ["fix(client)!: reject redirects"])).toBe("0.3.0");
     expect(nextVersion("v0.2.3", ["refactor!: rename the protocol messages"])).toBe("0.3.0");
     expect(
-      nextVersion("v0.2.3", ["fix: rename setting\n\nLonger text.\n\nBREAKING CHANGE: brokeCode.models is now brokeCode.contextSizes"]),
+      nextVersion("v0.2.3", [
+        "fix: rename setting\n\nLonger text.\n\nBREAKING CHANGE: brokeCode.models is now brokeCode.contextSizes",
+      ]),
     ).toBe("0.3.0");
   });
 
@@ -36,7 +38,7 @@ describe("nextVersion", () => {
   });
 
   test("a range with no feat, fix, or breaking change releases nothing", () => {
-    expect(nextVersion("v0.2.3", ["docs: readme", "chore: bump bun", "Revert \"feat: x\""])).toBeNull();
+    expect(nextVersion("v0.2.3", ["docs: readme", "chore: bump bun", 'Revert "feat: x"'])).toBeNull();
     expect(nextVersion(null, ["docs: readme"])).toBeNull();
     expect(nextVersion("v0.2.3", [])).toBeNull();
   });

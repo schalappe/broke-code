@@ -28,7 +28,10 @@ export async function providerTrust(provider: Provider): Promise<Trust> {
   if (caFile === undefined) return { ok: true, ca: undefined };
   const refused = (reason: "relative" | "unreadable" | "notPem", cause?: string): Trust => ({
     ok: false,
-    error: cause === undefined ? { kind: "caFileInvalid", provider: name, path: caFile, reason } : { kind: "caFileInvalid", provider: name, path: caFile, reason, cause },
+    error:
+      cause === undefined
+        ? { kind: "caFileInvalid", provider: name, path: caFile, reason }
+        : { kind: "caFileInvalid", provider: name, path: caFile, reason, cause },
   });
   if (!isAbsolute(caFile)) return refused("relative");
 

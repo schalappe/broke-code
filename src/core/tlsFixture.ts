@@ -71,7 +71,23 @@ export function createTlsFixture(): TlsFixture {
 }
 
 function selfSign(path: (name: string) => string, name: string, subject: string, extension: string): KeyPair {
-  openssl(["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", path(`${name}.key`), "-out", path(`${name}.pem`), "-days", "2", "-subj", subject, "-addext", extension]);
+  openssl([
+    "req",
+    "-x509",
+    "-newkey",
+    "rsa:2048",
+    "-nodes",
+    "-keyout",
+    path(`${name}.key`),
+    "-out",
+    path(`${name}.pem`),
+    "-days",
+    "2",
+    "-subj",
+    subject,
+    "-addext",
+    extension,
+  ]);
   return read(path, name);
 }
 
@@ -83,10 +99,35 @@ function signed(
   start: string,
   end: string,
 ): KeyPair {
-  openssl(["req", "-new", "-newkey", "rsa:2048", "-nodes", "-keyout", path(`${name}.key`), "-out", path(`${name}.csr`), "-subj", subject]);
   openssl([
-    "ca", "-batch", "-config", path("ca.cnf"), "-extensions", extensions, "-notext",
-    "-startdate", start, "-enddate", end, "-in", path(`${name}.csr`), "-out", path(`${name}.pem`),
+    "req",
+    "-new",
+    "-newkey",
+    "rsa:2048",
+    "-nodes",
+    "-keyout",
+    path(`${name}.key`),
+    "-out",
+    path(`${name}.csr`),
+    "-subj",
+    subject,
+  ]);
+  openssl([
+    "ca",
+    "-batch",
+    "-config",
+    path("ca.cnf"),
+    "-extensions",
+    extensions,
+    "-notext",
+    "-startdate",
+    start,
+    "-enddate",
+    end,
+    "-in",
+    path(`${name}.csr`),
+    "-out",
+    path(`${name}.pem`),
   ]);
   return read(path, name);
 }
@@ -101,7 +142,8 @@ const OPENSSL = "/usr/bin/openssl";
 
 function openssl(args: string[]): void {
   const result = Bun.spawnSync([OPENSSL, ...args], { stdout: "pipe", stderr: "pipe" });
-  if (result.exitCode !== 0) throw new Error(`openssl ${args[0]} failed (${result.exitCode}): ${result.stderr.toString()}`);
+  if (result.exitCode !== 0)
+    throw new Error(`openssl ${args[0]} failed (${result.exitCode}): ${result.stderr.toString()}`);
 }
 
 /** `YYYYMMDDHHMMSSZ`, the date form `openssl ca -startdate` accepts everywhere. */
