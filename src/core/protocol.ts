@@ -65,8 +65,6 @@ export function isReplying(state: ChatState): boolean {
 export const MAX_QUERY_LENGTH = 1024;
 /** Longest picked mention path accepted. */
 export const MAX_MENTION_PATH_LENGTH = 4096;
-/** Most picked mentions accepted in one `send`. */
-export const MAX_PICKED_MENTIONS = 100;
 
 /** Validate a webview message's shape at the host boundary. Unknown or out of bounds -> `undefined`. */
 export function parseWebviewMessage(raw: unknown): WebviewMessage | undefined {
@@ -106,8 +104,12 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | undefined {
   }
 }
 
+/**
+ * No count cap: `findMentions` keeps only picked paths standing as whole tokens in the text, so the text's length
+ * bounds the work, and a cap would silently turn the paths past it into bogus typed tokens.
+ */
 function pathList(value: unknown): string[] | undefined {
-  if (!Array.isArray(value) || value.length > MAX_PICKED_MENTIONS) return undefined;
+  if (!Array.isArray(value)) return undefined;
   const valid = value.every(
     (path) => typeof path === "string" && path !== "" && path.length <= MAX_MENTION_PATH_LENGTH,
   );

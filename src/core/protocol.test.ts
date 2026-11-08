@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { MAX_MENTION_PATH_LENGTH, MAX_PICKED_MENTIONS, MAX_QUERY_LENGTH, parseWebviewMessage } from "./protocol";
+import { MAX_MENTION_PATH_LENGTH, MAX_QUERY_LENGTH, parseWebviewMessage } from "./protocol";
 
 describe("parseWebviewMessage", () => {
   test("accepts the messages without fields and those with a string field", () => {
@@ -29,14 +29,18 @@ describe("parseWebviewMessage", () => {
     });
   });
 
-  test("rejects a send whose mentions are missing, not strings, empty, too long, or too many", () => {
+  test("accepts any number of picked mentions, since the text bounds which ones count", () => {
+    const picked = Array.from({ length: 101 }, (_, index) => `my file ${index}.ts`);
+    expect(parseWebviewMessage({ type: "send", text: "hi", mentions: picked })).toMatchObject({ mentions: picked });
+  });
+
+  test("rejects a send whose mentions are missing, not strings, empty, or too long", () => {
     const send = (mentions: unknown) => parseWebviewMessage({ type: "send", text: "hi", mentions });
     expect(send(undefined)).toBeUndefined();
     expect(send("a.ts")).toBeUndefined();
     expect(send([1])).toBeUndefined();
     expect(send([""])).toBeUndefined();
     expect(send(["a".repeat(MAX_MENTION_PATH_LENGTH + 1)])).toBeUndefined();
-    expect(send(Array.from({ length: MAX_PICKED_MENTIONS + 1 }, (_, index) => `f${index}`))).toBeUndefined();
     expect(send(["a".repeat(MAX_MENTION_PATH_LENGTH)])).toBeDefined();
   });
 

@@ -6,7 +6,6 @@ import {
   type ChatState,
   type HostMessage,
   isReplying,
-  MAX_PICKED_MENTIONS,
   MAX_QUERY_LENGTH,
 } from "../core/protocol";
 import type { ProviderError } from "../core/providerError";
@@ -342,7 +341,7 @@ function Composer({ state }: { state: ChatState }) {
 
   const send = () => {
     if (!ready || replying || text.trim() === "") return;
-    const mentions = picked.filter((path) => text.includes(`@${path}`)).slice(0, MAX_PICKED_MENTIONS);
+    const mentions = picked.filter((path) => text.includes(`@${path}`));
     post({ type: "send", text, mentions });
     setText("");
     setCaret(0);
