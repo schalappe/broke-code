@@ -69,4 +69,5 @@ jobs:
       - name: Tag and create the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: gh release create "v$VERSION" "broke-code-$VERSION.vsix" --target "$GITHUB_SHA" --title "v$VERSION" --generate-notes
