@@ -32,7 +32,8 @@ export type RaceSeam = { beforeOpen?: () => Promise<void> };
 const MAX_FILE_BYTES = 1024 * 1024;
 const BINARY_PROBE_BYTES = 8 * 1024;
 const MISSING_CODES = new Set(["ENOENT", "ENOTDIR"]);
-const BROKEN_LINK_CODES = new Set(["ENOENT", "ENOTDIR", "ELOOP"]);
+/** A link whose target is gone, loops, or sits behind a folder we may not search: its kind cannot be known. */
+const UNRESOLVED_LINK_CODES = new Set(["ENOENT", "ENOTDIR", "ELOOP", "EACCES", "EPERM"]);
 
 /**
  * Read `path` inside `roots`. With several roots, a path starting with a root's name and `/` resolves against that
@@ -174,11 +175,11 @@ async function listFolder(realPath: string): Promise<string[]> {
     .map((child) => (child.folder ? `${child.name}/` : child.name));
 }
 
-/** True for a symlink whose target is a folder; a broken or looping link is not. */
+/** True for a symlink whose target is a folder; a link whose target cannot be checked is listed as a plain name. */
 async function isFolderLink(folder: string, child: Dirent): Promise<boolean> {
   if (!child.isSymbolicLink()) return false;
   const target = await stat(join(folder, child.name)).catch((error: unknown) => {
-    if (BROKEN_LINK_CODES.has(errorCode(error) ?? "")) return undefined;
+    if (UNRESOLVED_LINK_CODES.has(errorCode(error) ?? "")) return undefined;
     throw error;
   });
   return target?.isDirectory() ?? false;

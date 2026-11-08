@@ -64,6 +64,25 @@ describe("readWorkspaceEntry in one folder", () => {
     });
   });
 
+  test("lists a symlink whose target cannot be checked as a plain name, the rest of the listing intact", async () => {
+    const sealed = join(base, "sealed");
+    await mkdir(join(sealed, "inner"), { recursive: true });
+    const links = join(app.path, "sealed-links");
+    await mkdir(links);
+    await symlink(join(sealed, "inner"), join(links, "forbidden"));
+    await writeFile(join(links, "plain.txt"), "plain\n");
+    await chmod(sealed, 0o000);
+    try {
+      expect(await readWorkspaceEntry([app], "sealed-links/")).toEqual({
+        status: "ok",
+        kind: "folder",
+        entries: ["forbidden", "plain.txt"],
+      });
+    } finally {
+      await chmod(sealed, 0o700);
+    }
+  });
+
   test("refuses a path that leaves the folder, existing or not", async () => {
     for (const path of ["../outside.txt", "../nothing.txt", "src/../../outside.txt", join(base, "outside.txt")]) {
       expect(await readWorkspaceEntry([app], path)).toEqual({ status: "outsideWorkspace", kind: "file" });
