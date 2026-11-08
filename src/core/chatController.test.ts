@@ -2,6 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { ChatController, type ChoiceStore } from "./chatController";
 import type { ChatState } from "./protocol";
 import type { Provider } from "./providers";
+import { vllmOpening, vllmReasoningRest } from "./vllmFixture";
 
 const encoder = new TextEncoder();
 const chunk = (content: string) => encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`);
@@ -21,8 +22,10 @@ const reasoningOnly = [event({ content: "<think>Plan, never closed" })];
 const requests = new Map<string, unknown[]>();
 
 // Provider that lists one model. Path `/a/` and `/b/` stream "Partial ", then finish only when `finishReply` is
-// called; `/shape-<name>/` streams that shape whole; `/unclosed/` streams `reasoningOnly`.
+// called; `/shape-<name>/` streams that shape whole; `/unclosed/` streams `reasoningOnly`; `/vllm/` sends the vLLM
+// opening chunk, then the rest of its reasoning reply only when `releaseVllm` is called.
 let finishReply: () => void = () => {};
+let releaseVllm: () => void = () => {};
 const server = Bun.serve({
   port: 0,
   async fetch(request) {
@@ -32,6 +35,18 @@ const server = Bun.serve({
     requests.set(prefix, [...(requests.get(prefix) ?? []), await request.json()]);
     const whole = prefix === "unclosed" ? reasoningOnly : shapes[prefix.replace(/^shape-/, "")];
     if (whole) return new Response(whole.join("") + "data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
+    if (prefix === "vllm") {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(vllmOpening));
+          releaseVllm = () => {
+            for (const event of vllmReasoningRest) controller.enqueue(encoder.encode(event));
+            controller.close();
+          };
+        },
+      });
+      return new Response(body, { headers: { "content-type": "text/event-stream" } });
+    }
     const body = new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(chunk("Partial "));
@@ -125,6 +140,45 @@ describe("ChatController reasoning", () => {
       expect(JSON.stringify(requests.get(prefix)?.[1])).not.toContain("Plan.");
     });
   }
+
+  test("keeps a vLLM reply waiting after its opening chunk, then holds reasoning and answer apart", async () => {
+    const published: unknown[] = [];
+    const controller = new ChatController({ get: async () => undefined }, memoryStore(), (s) => {
+      const last = s.entries.at(-1);
+      if (last?.role === "assistant") published.push(structuredClone(last));
+    });
+    const state = () => controller.snapshot;
+    controller.setProviders({ providers: [{ name: "vLLM", baseUrl: `http://localhost:${server.port}/vllm/v1` }], skipped: [] });
+    await until(state, (s) => s.model === "m");
+
+    const sent = controller.send("Hi");
+    await until(state, () => requests.get("vllm")?.length === 1);
+    expect(state().entries.at(-1)).toEqual({ role: "assistant", reasoning: "", content: "", status: "waiting" });
+    releaseVllm();
+    await sent;
+    // Every state the panel saw: the opening chunk changes nothing, the first reasoning piece ends `waiting`.
+    const reply = (status: string, reasoning: string, content: string) => ({ role: "assistant", reasoning, content, status });
+    expect(published).toEqual([
+      reply("waiting", "", ""),
+      reply("streaming", "The user greets me.", ""),
+      reply("streaming", "The user greets me. Reply politely.", ""),
+      reply("streaming", "The user greets me. Reply politely.", "Hello!"),
+      reply("streaming", "The user greets me. Reply politely.", "Hello! How can I help?"),
+      reply("done", "The user greets me. Reply politely.", "Hello! How can I help?"),
+    ]);
+
+    const next = controller.send("And then?");
+    await until(state, () => requests.get("vllm")?.length === 2);
+    expect(requests.get("vllm")?.[1]).toMatchObject({
+      messages: [
+        { role: "user", content: "Hi" },
+        { role: "assistant", content: "Hello! How can I help?" },
+        { role: "user", content: "And then?" },
+      ],
+    });
+    releaseVllm();
+    await next;
+  });
 
   test("keeps a reply with reasoning and no answer in the conversation, and leaves it out of the history", async () => {
     const { controller } = await ready({ name: "Unclosed", baseUrl: `http://localhost:${server.port}/unclosed/v1` });

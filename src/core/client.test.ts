@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { buildChatRequest, listModels, MODEL_LIST_MAX_BYTES, REPLY_MAX_LENGTH, streamChat, type ProviderAccess } from "./client";
+import { vllmOpening, vllmPlainStream, vllmReasoningRest } from "./vllmFixture";
 
 type Handler = (request: Request) => Response | Promise<Response>;
 
@@ -375,6 +376,37 @@ describe("streamChat", () => {
       sse([reasoningDelta("First. "), delta("<think>Second.</think>Answer"), delta("", "stop")]),
     );
     expect(await run(access)).toEqual({ outcome: { status: "done" }, reasoning: "First. Second.", text: "Answer" });
+  });
+
+  /** Each callback's pieces, in order, for a stream of `events`. */
+  async function pieces(prefix: string, events: string[]) {
+    const access = routed(prefix, () => sse(events));
+    const reasoning: string[] = [];
+    const answer: string[] = [];
+    const outcome = await streamChat(access, {
+      model: "m",
+      messages,
+      signal: new AbortController().signal,
+      onContent: (text) => answer.push(text),
+      onReasoning: (text) => reasoning.push(text),
+    });
+    return { outcome, reasoning, answer };
+  }
+
+  test("replays a vLLM reasoning stream: reasoning_content without content, extra keys, usage details", async () => {
+    expect(await pieces("chat-vllm-reasoning", [vllmOpening, ...vllmReasoningRest])).toEqual({
+      outcome: { status: "done" },
+      reasoning: ["The user greets me.", " Reply politely."],
+      answer: ["Hello!", " How can I help?"],
+    });
+  });
+
+  test("replays a vLLM stream without reasoning: onReasoning never called, whole answer kept", async () => {
+    expect(await pieces("chat-vllm-plain", vllmPlainStream)).toEqual({
+      outcome: { status: "done" },
+      reasoning: [],
+      answer: ["Hello!", " How can I help?"],
+    });
   });
 
   test("accepts a stream that ends after a finish_reason without [DONE]", async () => {
