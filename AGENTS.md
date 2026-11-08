@@ -121,3 +121,18 @@ decisions behind the design, starting with `docs/adr/0001-body-tool-calls.md`.
   context summarization, `/clear`, `/help`, and publishing from `develop`.
 - Do not copy code from swarm-lab (`joe-el-khoury/swarm-lab`). Its license forbids copying and forks. twinny
   is MIT, so credit it in the README when reusing its code or styles.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues for `schalappe/broke-code`, managed with `gh`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The default labels `needs-triage`, `needs-info`, `ready-for-agent`, and `wontfix`. See
+`docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single context: `GLOSSARY.md` and `docs/adr/` at the root. See `docs/agents/domain.md`.
