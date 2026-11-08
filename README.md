@@ -12,7 +12,7 @@ the model's reasoning collapsed above its answer. The agent loop, skills, and sl
 ## Requirements
 
 - macOS. Version 1 supports macOS only; Windows and Linux are planned for version 2.
-- VS Code 1.100 or later, or a compatible editor such as VSCodium.
+- VS Code 1.101 or later, or a compatible editor such as VSCodium.
 - An LLM service with an OpenAI-compatible API: streaming `POST /v1/chat/completions` and `GET /v1/models`.
   Ollama works.
 
@@ -30,6 +30,20 @@ A provider is an LLM service broke-code talks to. List your providers in your **
 
 broke-code appends `/models` and `/chat/completions` to the base URL. It reads this list from user settings
 only: a workspace `settings.json` cannot override it, so a repository cannot send your key to another URL.
+
+## Corporate or self-signed certificates
+
+broke-code trusts the certificates your system trusts. If a provider uses a certificate signed by a corporate
+or self-signed authority that is not in the macOS Keychain, the chat reports a certificate error naming the
+provider. Add a `caFile` to that provider: an absolute or `~/` path to a PEM file holding the authority's
+certificate (one file can hold several).
+
+```json
+{ "name": "Work", "baseUrl": "https://llm.example.com/v1", "caFile": "~/certs/company-ca.pem" }
+```
+
+The file adds to the system certificates for that provider only; it never replaces them. Certificate
+verification cannot be turned off.
 
 ## Set an API key
 

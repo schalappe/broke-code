@@ -76,8 +76,9 @@ The code so far covers the extension skeleton and a streaming chat with a provid
   `tls.getCACertificates("default")` (bundled roots and `NODE_EXTRA_CA_CERTS`), `tls.getCACertificates("system")`
   (the OS store, expired certificates dropped), and every certificate of the file together. A provider with a CA
   file always trusts the OS store, whatever VS Code's `http.systemCertificates` setting says. The file is read and
-  checked with `X509Certificate` on every request, because Node ignores an invalid `ca` silently. A relative path, an unreadable file, or a file without a
-  valid PEM certificate is reported naming the path, and no request is sent.
+  checked with `X509Certificate` on every request, because Node ignores an invalid `ca` silently. A relative
+  path, an unreadable file, or a file without a valid PEM certificate is reported naming the path, and no
+  request is sent.
 - Never disable certificate verification. Report a certificate failure (unknown issuer, self-signed, expired,
   hostname mismatch) as a certificate error with its code, never as a generic network error. Connection refused,
   DNS failures, and timeouts stay `unreachable`.
