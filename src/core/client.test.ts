@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { brotliCompressSync, deflateSync, gzipSync } from "node:zlib";
 import { buildChatRequest, listModels, MODEL_LIST_MAX_BYTES, REPLY_MAX_LENGTH, streamChat, type ProviderAccess } from "./client";
 import { vllmOpening, vllmPlainStream, vllmReasoningRest } from "./vllmFixture";
 
@@ -590,6 +591,121 @@ describe("streamChat", () => {
     expect((await run(rejected)).outcome).toEqual({
       status: "failed",
       error: { kind: "rejected", provider: "P-chat-404", status: 404, detail: "model 'nope' not found" },
+    });
+  });
+});
+
+describe("compressed responses", () => {
+  const modelList = '{"data":[{"id":"m"}]}';
+  const reply = [event({ choices: [{ delta: { content: "Hel" } }] }), event({ choices: [{ delta: { content: "lo" } }] }), "data: [DONE]\n\n"].join("");
+
+  function encoded(body: Uint8Array, encoding: string, init?: ResponseInit): Response {
+    return new Response(new Uint8Array(body), { ...init, headers: { ...init?.headers, "content-encoding": encoding } });
+  }
+
+  async function chat(access: ProviderAccess) {
+    const parts: string[] = [];
+    const outcome = await streamChat(access, {
+      model: "m",
+      messages: [{ role: "user", content: "Hi" }],
+      signal: new AbortController().signal,
+      onContent: (text) => parts.push(text),
+      onReasoning: () => {},
+    });
+    return { outcome, text: parts.join("") };
+  }
+
+  test("asks for gzip, deflate, and br", async () => {
+    const access = routed("enc-accept", () => Response.json({ data: [] }));
+    await listModels(access);
+    expect(received.get("enc-accept")?.headers.get("accept-encoding")).toBe("gzip, deflate, br");
+  });
+
+  test("decodes a gzip model list", async () => {
+    const access = routed("enc-gzip-models", () => encoded(gzipSync(modelList), "gzip"));
+    expect(await listModels(access)).toEqual({ ok: true, models: ["m"] });
+  });
+
+  test("decodes a gzip reply stream", async () => {
+    const access = routed("enc-gzip-chat", () => encoded(gzipSync(reply), "gzip", { headers: { "content-type": "text/event-stream" } }));
+    expect(await chat(access)).toEqual({ outcome: { status: "done" }, text: "Hello" });
+  });
+
+  test("decodes br and deflate", async () => {
+    const br = routed("enc-br", () => encoded(brotliCompressSync(modelList), "br"));
+    expect(await listModels(br)).toEqual({ ok: true, models: ["m"] });
+    const deflate = routed("enc-deflate", () => encoded(deflateSync(reply), "deflate"));
+    expect(await chat(deflate)).toEqual({ outcome: { status: "done" }, text: "Hello" });
+  });
+
+  test("decodes a compressed error body", async () => {
+    const access = routed("enc-500", () => encoded(gzipSync('{"error":{"message":"overloaded"}}'), "gzip", { status: 500 }));
+    expect(await listModels(access)).toEqual({
+      ok: false,
+      error: { kind: "rejected", provider: "P-enc-500", status: 500, detail: "overloaded" },
+    });
+  });
+
+  test("applies the size cap to decoded bytes, so a small compressed body cannot expand past it", async () => {
+    const bomb = gzipSync(`{"data":[${'{"id":"m"},'.repeat(MODEL_LIST_MAX_BYTES / 10)}{"id":"m"}]}`);
+    expect(bomb.byteLength).toBeLessThan(MODEL_LIST_MAX_BYTES / 100);
+    const access = routed("enc-bomb", () => encoded(bomb, "gzip"));
+    expect(await listModels(access)).toEqual({ ok: false, error: { kind: "cutOff", provider: "P-enc-bomb", reason: "listTooLarge" } });
+  });
+
+  test("ends the download of an endless compressed model list once its decoded size passes the cap", async () => {
+    let cancelled!: () => void;
+    const downloadEnded = new Promise<void>((resolve) => (cancelled = resolve));
+    const head = gzipSync('{"data":[');
+    const filler = gzipSync('{"id":"m"},'.repeat(10_000));
+    let sentHead = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull(stream) {
+        stream.enqueue(new Uint8Array(sentHead ? filler : head));
+        sentHead = true;
+      },
+      cancel: () => cancelled(),
+    });
+    const access = routed("enc-endless", () => new Response(body, { headers: { "content-encoding": "gzip" } }));
+    expect(await listModels(access)).toEqual({ ok: false, error: { kind: "cutOff", provider: "P-enc-endless", reason: "listTooLarge" } });
+    expect(await Promise.race([downloadEnded.then(() => "ended"), Bun.sleep(2000).then(() => "still downloading")])).toBe("ended");
+  });
+
+  test("reports a body that does not decode as cut off, with the decoder's cause", async () => {
+    const access = routed("enc-corrupt", () => encoded(new TextEncoder().encode(modelList), "gzip"));
+    const result = await listModels(access);
+    expect(result).toMatchObject({ ok: false, error: { kind: "cutOff", reason: "listDropped" } });
+  });
+
+  test("stops a compressed endless stream and ends its download", async () => {
+    const controller = new AbortController();
+    let cancelled!: () => void;
+    const downloadEnded = new Promise<void>((resolve) => (cancelled = resolve));
+    // [>]: Concatenated gzip members: each chunk decodes on its own, like a server flushing per event.
+    const piece = gzipSync(event({ choices: [{ delta: { content: "x" } }] }));
+    const body = new ReadableStream<Uint8Array>({ pull: (stream) => stream.enqueue(new Uint8Array(piece)), cancel: () => cancelled() });
+    const access = routed("enc-stop", () => new Response(body, { headers: { "content-type": "text/event-stream", "content-encoding": "gzip" } }));
+    const outcome = await streamChat(access, {
+      model: "m",
+      messages: [{ role: "user", content: "Hi" }],
+      signal: controller.signal,
+      onContent: () => controller.abort(),
+      onReasoning: () => {},
+    });
+    expect(outcome).toEqual({ status: "stopped" });
+    expect(await Promise.race([downloadEnded.then(() => "ended"), Bun.sleep(2000).then(() => "still downloading")])).toBe("ended");
+  });
+
+  test("reports an unknown encoding as an invalid response naming it, for listing and chat", async () => {
+    const listing = routed("enc-zstd", () => encoded(new TextEncoder().encode(modelList), "zstd"));
+    expect(await listModels(listing)).toEqual({
+      ok: false,
+      error: { kind: "invalidResponse", provider: "P-enc-zstd", detail: "", encoding: "zstd" },
+    });
+    const chatting = routed("enc-zstd-chat", () => encoded(new TextEncoder().encode(reply), "zstd"));
+    expect(await chat(chatting)).toEqual({
+      outcome: { status: "failed", error: { kind: "invalidResponse", provider: "P-enc-zstd-chat", detail: "", encoding: "zstd" } },
+      text: "",
     });
   });
 });

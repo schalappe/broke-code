@@ -43,6 +43,11 @@ export function describeProviderError(error: ProviderError): ErrorText {
     case "cutOff":
       return { message: cutOffMessage(error), ...(error.cause ? { detail: error.cause } : {}) };
     case "invalidResponse":
+      if (error.encoding !== undefined) {
+        return {
+          message: l10n.t("{0} answered with a compression that broke-code cannot read (Content-Encoding: {1}).", error.provider, error.encoding),
+        };
+      }
       return {
         message: l10n.t(
           "{0} did not answer with a model list. Check that its base URL is the API root, such as http://localhost:11434/v1.",

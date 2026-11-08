@@ -65,7 +65,8 @@ The code so far covers the extension skeleton and a streaming chat with a provid
   `settings.json` must not override them, because keys are stored by provider name and a repository could
   otherwise point that name at its own URL. Each API key lives in `SecretStorage`, never in `settings.json`.
 - Requests never follow HTTP redirects; a redirect is reported as an error. Provider response bodies are read
-  under size caps that cancel the download when exceeded.
+  under size caps that cancel the download when exceeded. Responses may be compressed with gzip, deflate, or br;
+  the caps count decoded bytes, and any other `Content-Encoding` is reported as an error.
 - The API does not report a model's context size. A settings table maps model names to sizes, and unknown
   models default to 32k. When the user picks an unknown model, the chat shows a link to set its size.
 - Every provider request goes through Node's `http`/`https` modules. VS Code patches them in place in the

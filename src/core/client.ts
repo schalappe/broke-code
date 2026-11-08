@@ -8,7 +8,8 @@
 // [>]: VS Code patches these builtins in place (proxy, OS certificates), so the `node:` form carries the patch too.
 import * as http from "node:http";
 import * as https from "node:https";
-import { Readable } from "node:stream";
+import { pipeline, Readable } from "node:stream";
+import * as zlib from "node:zlib";
 import type { Provider } from "./providers";
 import type { CutOffReason, ProviderError } from "./providerError";
 import { readSseData, SseEventTooLargeError } from "./sse";
@@ -220,8 +221,25 @@ function partialSuffix(text: string, tag: string): number {
   return 0;
 }
 
-/** Response as the client needs it: status, redirect target, and the body, read under its caps by the caller. */
-type ProviderResponse = { status: number; location: string | undefined; body: ReadableStream<Uint8Array> };
+/**
+ * Response as the client needs it: status, redirect target, and the decoded body, read under its caps by the caller.
+ * `unsupportedEncoding` set when the body uses a `Content-Encoding` the client cannot decode; `body` is then raw.
+ */
+type ProviderResponse = {
+  status: number;
+  location: string | undefined;
+  body: ReadableStream<Uint8Array>;
+  unsupportedEncoding?: string;
+};
+
+/** `Accept-Encoding` sent with every request, as Node `fetch` did; one decoder per value. */
+const ACCEPT_ENCODING = "gzip, deflate, br";
+const DECODERS: Record<string, () => zlib.Zlib & NodeJS.ReadWriteStream> = {
+  gzip: zlib.createGunzip,
+  "x-gzip": zlib.createGunzip,
+  deflate: zlib.createInflate,
+  br: zlib.createBrotliDecompress,
+};
 
 type Sent = { ok: true; response: ProviderResponse } | { ok: false; error: ProviderError };
 
@@ -243,19 +261,20 @@ async function send(access: ProviderAccess, request: HttpRequest, signal?: Abort
     return { ok: false, error: { kind: "unreachable", provider: name, baseUrl, cause: describeError(error) } };
   }
   const { status } = response;
-  if (status >= 200 && status < 300) return { ok: true, response };
-
   const redirected = status >= 300 && status < 400;
   if (redirected || status === 401 || status === 403) {
     // [>]: Neither message shows the body -> release it unread.
-    response.body.cancel().catch(() => {
-      // [>]: Body already closed or errored; nothing left to release.
-    });
+    release(response.body);
     if (redirected) {
       return { ok: false, error: { kind: "redirected", provider: name, status, location: truncate(response.location ?? "") } };
     }
     return { ok: false, error: { kind: "invalidKey", provider: name, status } };
   }
+  if (response.unsupportedEncoding !== undefined) {
+    release(response.body);
+    return { ok: false, error: { kind: "invalidResponse", provider: name, detail: "", encoding: response.unsupportedEncoding } };
+  }
+  if (status >= 200 && status < 300) return { ok: true, response };
   const read = await readText(response.body, ERROR_BODY_MAX_BYTES);
   if (!read.ok) return { ok: false, error: { kind: "rejected", provider: name, status, detail: "", bodyReadError: read.cause } };
   return { ok: false, error: { kind: "rejected", provider: name, status, detail: errorDetail(read.text) } };
@@ -268,16 +287,27 @@ async function send(access: ProviderAccess, request: HttpRequest, signal?: Abort
  */
 function transmit(request: HttpRequest, ca: string[] | undefined, signal: AbortSignal | undefined): Promise<ProviderResponse> {
   const transport = new URL(request.url).protocol === "https:" ? https : http;
-  const headers = request.body === undefined ? request.headers : { ...request.headers, "Content-Length": String(Buffer.byteLength(request.body)) };
+  const headers = {
+    ...request.headers,
+    "Accept-Encoding": ACCEPT_ENCODING,
+    ...(request.body === undefined ? {} : { "Content-Length": String(Buffer.byteLength(request.body)) }),
+  };
   return new Promise((resolve, reject) => {
     const outgoing = transport.request(
       request.url,
       { method: request.method, headers, ...(ca ? { ca } : {}), ...(signal ? { signal } : {}) },
       (incoming) => {
-        const location = incoming.headers.location;
-        // [&]: `toWeb` cancel destroys the response socket, so a cap or Stop ends the download.
-        const body = Readable.toWeb(incoming) as unknown as ReadableStream<Uint8Array>;
-        resolve({ status: incoming.statusCode ?? 0, location, body });
+        const response = { status: incoming.statusCode ?? 0, location: incoming.headers.location };
+        const encoding = incoming.headers["content-encoding"]?.trim().toLowerCase() || "identity";
+        const decoder = DECODERS[encoding];
+        if (encoding !== "identity" && decoder === undefined) {
+          resolve({ ...response, body: webStream(incoming), unsupportedEncoding: encoding });
+          return;
+        }
+        // [&]: `pipeline` destroys both streams when either fails or the decoded side is cancelled, so a cap
+        // (counted on decoded bytes) or a Stop ends the download too.
+        const decoded = decoder === undefined ? incoming : pipeline(incoming, decoder(), noop);
+        resolve({ ...response, body: webStream(decoded) });
       },
     );
     outgoing.setTimeout(IDLE_TIMEOUT_MS, () => {
@@ -288,6 +318,18 @@ function transmit(request: HttpRequest, ca: string[] | undefined, signal: AbortS
     outgoing.end(request.body);
   });
 }
+
+/** `toWeb` cancel destroys the Node stream, so cancelling the body ends the download. */
+function webStream(stream: Readable | NodeJS.ReadableStream): ReadableStream<Uint8Array> {
+  return Readable.toWeb(stream as Readable) as unknown as ReadableStream<Uint8Array>;
+}
+
+function release(body: ReadableStream<Uint8Array>): void {
+  body.cancel().catch(noop);
+}
+
+/** [>]: Errors already reach the caller through the stream it reads; this callback has nothing left to do. */
+function noop(): void {}
 
 type TextRead = { ok: true; text: string; complete: boolean } | { ok: false; cause: string };
 

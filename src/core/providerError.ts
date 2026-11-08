@@ -49,5 +49,9 @@ export type ProviderError =
   | { kind: "rejected"; provider: string; status: number; detail: string; bodyReadError?: string }
   /** Body broke after 2xx: reply stream, or model list download (`list*`). Partial reply text kept by caller. */
   | { kind: "cutOff"; provider: string; reason: CutOffReason; cause?: string }
-  /** 2xx model listing whose body is not `{ data: [{ id }] }` with non-empty string ids. Usually wrong base URL. */
-  | { kind: "invalidResponse"; provider: string; detail: string };
+  /**
+   * 2xx model listing whose body is not `{ data: [{ id }] }` with non-empty string ids. Usually wrong base URL.
+   * `encoding` set instead (any request, `detail` empty) when the body uses a `Content-Encoding` other than
+   * gzip, deflate, or br.
+   */
+  | { kind: "invalidResponse"; provider: string; detail: string; encoding?: string };

@@ -42,4 +42,10 @@ describe("describeProviderError", () => {
       message: "The CA file of Corp must be an absolute path or start with ~/: x.pem",
     });
   });
+
+  test("names an unsupported compression instead of a wrong base URL, in listing and chat alike", () => {
+    expect(describeProviderError({ kind: "invalidResponse", provider: "Corp", detail: "", encoding: "zstd" })).toEqual({
+      message: "Corp answered with a compression that broke-code cannot read (Content-Encoding: zstd).",
+    });
+  });
 });
