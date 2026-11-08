@@ -82,6 +82,11 @@ function isFileOrFolder(info: Stats): boolean {
  * True when the handle described by `opened` is the file at `path`, symlinks resolved again, inside a root. The open
  * goes by name, so any component may have been swapped for a symlink since the boundary check: only the same
  * device and inode as a path still inside proves the handle holds workspace bytes.
+ *
+ * [!]: This refuses a committed symlink out (a malicious repository) and a swap made before the open, but not a writer
+ * that swaps again between the `realpath` and the `stat`: each check goes by name, and Node offers no check by handle.
+ * Accepted: a process that can swap workspace files during a read already runs with the user's rights and can read
+ * the outside file itself.
  */
 async function isInsideFile(realRoots: string[], path: string, opened: Stats): Promise<boolean> {
   const again = await realpath(path);
