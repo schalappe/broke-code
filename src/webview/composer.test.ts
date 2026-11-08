@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { MAX_QUERY_LENGTH } from "../core/protocol";
 import type { Suggestion } from "../core/suggestions";
-import { composerKeyAction, type MenuAnswer, menuView, pickedInText } from "./composer";
+import { composerKeyAction, type MenuAnswer, menuToken, menuView, openMenuToken, pickedInText } from "./composer";
 
 const file = (path: string): Suggestion => ({ path, kind: "file" });
 
@@ -93,5 +94,35 @@ describe("pickedInText", () => {
       "src/",
     ]);
     expect(pickedInText(["gone.ts"], "the mention was deleted, gone.ts stays as a word")).toEqual([]);
+  });
+});
+
+describe("menuToken", () => {
+  test("is the @ token at the caret, read with the picked paths set aside", () => {
+    expect(menuToken("see @sr", 7, [])).toEqual({ start: 4, query: "sr" });
+    expect(menuToken("@a`b.ts @q `", 10, ["a`b.ts"])).toEqual({ start: 8, query: "q" });
+    expect(menuToken("plain word", 10, [])).toBeUndefined();
+  });
+
+  test("takes a query up to MAX_QUERY_LENGTH characters, and none past it", () => {
+    const atLimit = `@${"a".repeat(MAX_QUERY_LENGTH)}`;
+    expect(menuToken(atLimit, atLimit.length, [])).toEqual({ start: 0, query: "a".repeat(MAX_QUERY_LENGTH) });
+    expect(menuToken(`${atLimit}a`, atLimit.length + 1, [])).toBeUndefined();
+  });
+});
+
+describe("openMenuToken", () => {
+  const token = { start: 4, query: "sr" };
+
+  test("opens the menu of the token while the message box has focus", () => {
+    expect(openMenuToken(token, true, undefined)).toEqual(token);
+    expect(openMenuToken(token, false, undefined)).toBeUndefined();
+    expect(openMenuToken(undefined, true, undefined)).toBeUndefined();
+  });
+
+  test("keeps closed the token dismissed with Escape, and opens one at another place or with another query", () => {
+    expect(openMenuToken(token, true, { start: 4, query: "sr" })).toBeUndefined();
+    expect(openMenuToken(token, true, { start: 9, query: "sr" })).toEqual(token);
+    expect(openMenuToken(token, true, { start: 4, query: "s" })).toEqual(token);
   });
 });

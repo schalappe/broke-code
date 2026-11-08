@@ -1,10 +1,10 @@
 import * as l10n from "@vscode/l10n";
 import { type KeyboardEvent, useEffect, useLayoutEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
-import { type ChatEntry, type ChatState, type HostMessage, isReplying, MAX_QUERY_LENGTH } from "../core/protocol";
+import { type ChatEntry, type ChatState, type HostMessage, isReplying } from "../core/protocol";
 import type { ProviderError } from "../core/providerError";
-import { findMentionToken, type MentionToken, type Suggestion } from "../core/suggestions";
-import { composerKeyAction, type MenuAnswer, menuView, pickedInText } from "./composer";
+import type { MentionToken, Suggestion } from "../core/suggestions";
+import { composerKeyAction, type MenuAnswer, menuToken, menuView, openMenuToken, pickedInText } from "./composer";
 import { moveHighlight, optionId, SuggestionMenu } from "./SuggestionMenu";
 import { describeMention, describeProviderError, describeSkippedProvider } from "./text";
 import { post } from "./vscodeApi";
@@ -289,11 +289,10 @@ function Composer({ state }: { state: ChatState }) {
   const ready = state.model !== undefined;
   const input = useRef<HTMLTextAreaElement>(null);
 
-  const found = findMentionToken(text, caret, picked);
-  const token = found && found.query.length <= MAX_QUERY_LENGTH ? found : undefined;
+  const token = menuToken(text, caret, picked);
   const query = token?.query;
-  const closed = !focused || !token || (dismissed?.start === token.start && dismissed.query === token.query);
-  const menu = closed ? undefined : menuView(answer, token.query);
+  const open = openMenuToken(token, focused, dismissed);
+  const menu = open && menuView(answer, open.query);
 
   useEffect(() => {
     if (!replying) input.current?.focus();

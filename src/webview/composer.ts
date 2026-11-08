@@ -1,12 +1,38 @@
 /**
  * @module composer
- * Decisions of the message box, kept out of React so tests need no DOM: which menu rows to show, what a key does,
- * which picked paths to send.
+ * Decisions of the message box, kept out of React so tests need no DOM: which token opens the menu, which menu rows to
+ * show, what a key does, which picked paths to send.
  */
-import { filterSuggestions, MAX_SUGGESTIONS, type Suggestion } from "../core/suggestions";
+import { MAX_QUERY_LENGTH } from "../core/protocol";
+import {
+  filterSuggestions,
+  findMentionToken,
+  MAX_SUGGESTIONS,
+  type MentionToken,
+  type Suggestion,
+} from "../core/suggestions";
 
 /** Host answer to a file query, with the query it answers. `failed`: the workspace files could not be listed. */
 export type MenuAnswer = { query: string; items: Suggestion[]; capped: boolean; failed: boolean };
+
+/** The `@` token at the caret that may query the host; none when its query is longer than the host accepts. */
+export function menuToken(text: string, caret: number, picked: readonly string[]): MentionToken | undefined {
+  const found = findMentionToken(text, caret, picked);
+  return found && found.query.length <= MAX_QUERY_LENGTH ? found : undefined;
+}
+
+/**
+ * `token` when its menu shows: the message box has focus and `token` is not the one closed with Escape. Typing on
+ * changes the query and reopens the menu; a token with the same query at another place is another token.
+ */
+export function openMenuToken(
+  token: MentionToken | undefined,
+  focused: boolean,
+  dismissed: MentionToken | undefined,
+): MentionToken | undefined {
+  if (!focused || !token) return undefined;
+  return dismissed?.start === token.start && dismissed.query === token.query ? undefined : token;
+}
 
 /** What the menu shows. */
 export type MenuView = { items: Suggestion[]; capped: boolean; failed: boolean };
