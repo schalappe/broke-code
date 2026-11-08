@@ -21,30 +21,18 @@ import { post } from "./vscodeApi";
 export function App({ state, language }: { state: ChatState; language: string }) {
   const configured = state.providers.length > 0;
   const [historyOpen, setHistoryOpen] = useState(false);
-  const showHistory = configured && historyOpen;
   return (
     <main className="panel">
-      {configured ? (
-        <Header state={state} historyOpen={showHistory} toggleHistory={() => setHistoryOpen(!historyOpen)} />
-      ) : (
-        <EmptyState />
-      )}
+      {/* Saved conversations are local: History works without a provider; only the composer needs one. */}
+      <Header state={state} historyOpen={historyOpen} toggleHistory={() => setHistoryOpen(!historyOpen)} />
+      {!configured && <EmptyState />}
       <Warnings state={state} />
       {state.storageProblem && <TextBlock text={describeStorageProblem(state.storageProblem)} />}
       {state.models.status === "failed" && (
         <ErrorBlock error={state.models.error} retry={() => post({ type: "retryModels" })} />
       )}
-      {showHistory ? (
-        <ConversationList
-          conversations={state.conversations}
-          currentId={state.conversationId}
-          language={language}
-          onOpen={(id) => {
-            setHistoryOpen(false);
-            if (id !== state.conversationId) post({ type: "openConversation", id });
-          }}
-          onDelete={(id) => post({ type: "deleteConversation", id })}
-        />
+      {historyOpen ? (
+        <HistoryPanel state={state} language={language} close={() => setHistoryOpen(false)} />
       ) : (
         // Without providers, an earlier conversation stays readable and a reply in flight keeps its Stop.
         (configured || state.entries.length > 0) && (
@@ -70,7 +58,8 @@ function EmptyState() {
 
 const HISTORY_ID = "history";
 
-function Header({
+/** Provider and model pickers (with a provider configured), New chat, and the History toggle. */
+export function Header({
   state,
   historyOpen,
   toggleHistory,
@@ -79,10 +68,38 @@ function Header({
   historyOpen: boolean;
   toggleHistory: () => void;
 }) {
+  return (
+    <header className="header">
+      {state.providers.length > 0 && <Pickers state={state} />}
+      <button
+        type="button"
+        className="secondary"
+        disabled={state.entries.length === 0}
+        onClick={() => {
+          if (historyOpen) toggleHistory();
+          post({ type: "newChat" });
+        }}
+      >
+        {l10n.t("New chat")}
+      </button>
+      <button
+        type="button"
+        className="secondary"
+        aria-expanded={historyOpen}
+        aria-controls={historyOpen ? HISTORY_ID : undefined}
+        onClick={toggleHistory}
+      >
+        {l10n.t("History")}
+      </button>
+    </header>
+  );
+}
+
+function Pickers({ state }: { state: ChatState }) {
   const replying = isReplying(state);
   const { models } = state;
   return (
-    <header className="header">
+    <>
       <select
         aria-label={l10n.t("Provider")}
         value={state.provider ?? ""}
@@ -111,27 +128,7 @@ function Header({
           <option value="">{modelPlaceholder(state)}</option>
         )}
       </select>
-      <button
-        type="button"
-        className="secondary"
-        disabled={state.entries.length === 0}
-        onClick={() => {
-          if (historyOpen) toggleHistory();
-          post({ type: "newChat" });
-        }}
-      >
-        {l10n.t("New chat")}
-      </button>
-      <button
-        type="button"
-        className="secondary"
-        aria-expanded={historyOpen}
-        aria-controls={historyOpen ? HISTORY_ID : undefined}
-        onClick={toggleHistory}
-      >
-        {l10n.t("History")}
-      </button>
-    </header>
+    </>
   );
 }
 
@@ -191,6 +188,22 @@ function ErrorBlock({ error, retry }: { error: ProviderError; retry?: () => void
         )}
       </div>
     </TextBlock>
+  );
+}
+
+/** History list wired to the host: a pick closes it and opens another conversation; Delete deletes. */
+export function HistoryPanel({ state, language, close }: { state: ChatState; language: string; close: () => void }) {
+  return (
+    <ConversationList
+      conversations={state.conversations}
+      currentId={state.conversationId}
+      language={language}
+      onOpen={(id) => {
+        close();
+        if (id !== state.conversationId) post({ type: "openConversation", id });
+      }}
+      onDelete={(id) => post({ type: "deleteConversation", id })}
+    />
   );
 }
 
