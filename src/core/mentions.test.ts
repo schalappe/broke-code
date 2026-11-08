@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { composeUserMessage, findMentions, formatMention, type ReadMention, readMention } from "./mentions";
@@ -223,5 +223,23 @@ describe("readMention", () => {
       omitted: 0,
     });
     expect(await readMention([root], "gone/")).toMatchObject({ kind: "folder", status: "missing", content: "" });
+  });
+
+  test("keeps the cause of a path it may not read, so the model notice names it", async () => {
+    await writeFile(join(root.path, "locked.txt"), "x");
+    await chmod(join(root.path, "locked.txt"), 0o000);
+    const mention = await readMention([root], "locked.txt");
+    await chmod(join(root.path, "locked.txt"), 0o600);
+    expect(mention).toEqual({
+      path: "locked.txt",
+      kind: "file",
+      status: "unreadable",
+      content: "",
+      omitted: 0,
+      cause: "EACCES",
+    });
+    expect(formatMention(mention)).toBe(
+      "@locked.txt (file, unreadable)\nNot attached: the path could not be read (EACCES).",
+    );
   });
 });
