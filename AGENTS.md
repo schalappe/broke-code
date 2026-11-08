@@ -21,17 +21,21 @@ The code so far covers the extension skeleton and a streaming chat with a provid
 - `docs/adr/`: architecture decision records.
 - `src/core/`: modules that import nothing from `vscode`: settings parsing, the API key shape check, the provider
   HTTP client, the CA trust and certificate error classification (`tls.ts`), the SSE reader, the typed provider
-  errors, the chat controller (conversation state, streaming, Stop), the dialog queue, the host-webview message
+  errors, the chat controller (conversation state, streaming, Stop, saving, reopen, delete), the conversation record
+  (`conversation.ts`: version 1, its validation on load, title, id) and its store (`conversationStore.ts`: one file
+  per conversation behind a file port, writes in call order), the dialog queue, the host-webview message
   protocol and its validation, workspace file access (`workspaceFiles.ts`: the inside-workspace check, capped reads,
   one-level listings, line truncation, with `node:fs`), mentions (`mentions.ts`: token detection, picked and typed
   mentions merged, reading, and the text the model receives), where a message holds Markdown code
   (`markdownCode.ts`), the mention menu logic (`suggestions.ts`: the `@` token at the caret, index entries,
   filtering, the index exclusions), and the menu's file index (`fileIndex.ts`: one scan shared until a file
-  changes, behind a scan port). `markdownCode.ts` and `suggestions.ts` import nothing from `node:`, since the
-  webview loads them. Unit tests sit next to them as `*.test.ts`, because `bun test` cannot load `vscode`. `tlsFixture.ts`
+  changes, behind a scan port). `markdownCode.ts`, `suggestions.ts`, and `conversation.ts` import nothing from
+  `node:`, since the webview loads them. Unit tests sit next to them as `*.test.ts`, because `bun test` cannot load `vscode`. `tlsFixture.ts`
   generates test certificates with `/usr/bin/openssl` at test time; no private key is committed.
-- `src/extension/`: the extension host glue (activation, webview view, API keys in `SecretStorage`, and the
-  file index's `findFiles` scan and watcher in `fileIndex.ts`).
+  `conversationFixture.ts` is the in-memory conversation file port for tests.
+- `src/extension/`: the extension host glue (activation, webview view, API keys in `SecretStorage`, the
+  file index's `findFiles` scan and watcher in `fileIndex.ts`, and the conversation files on `workspace.fs` in
+  `conversationFiles.ts`).
 - `src/webview/`: the React chat panel and its CSS. `SuggestionMenu.tsx` is the autocomplete list the `@` menu
   uses and the `/` menu (#11) is meant to reuse.
 - `src/l10n.test.ts`: checks that every `l10n.t` message has a French translation and that the
@@ -162,7 +166,24 @@ The code so far covers the extension skeleton and a streaming chat with a provid
   workspace only, which the mention resolver accepts. A file watcher marks the index stale on create and delete
   outside the excluded folders, and so does a workspace folder or `files.exclude` change; the next query rebuilds it, and queries
   during a build share it. At 5,000 files the menu's last line says the index is limited.
-- Conversations are saved per workspace.
+- Conversations are saved per workspace, as one JSON file per conversation in the extension's per-workspace storage
+  directory (`ExtensionContext.storageUri`), never in the memento: the memento serializes every key on each update
+  and VS Code warns from about 500 KB. A write goes to a uniquely named temporary file, then a rename over the final
+  one; writes run one at a time in call order. The workspace memento holds only the last provider and model choice
+  and the id of the conversation shown. The list is derived from the directory, newest first; 50 conversations are
+  kept, and a save deletes the oldest beyond them by update time, never the one shown.
+- The record is versioned (`version: 1`) and holds the displayed entries, each user entry with the text the model
+  received (`modelText`), so a reopened conversation resends exactly what was sent and never reads its mentions
+  again. It holds no API key or provider address. A file that fails validation or has an unknown version is logged
+  and skipped. On load, a reply still `waiting` or `streaming` becomes `stopped`.
+- A conversation is saved when a message is sent, before the reply starts, then at most every 500 ms while the reply
+  streams, and when the reply ends (done, stopped, failed, or cut off). A reply's saves go to the record it was sent
+  in, also after New chat or opening another one, and a deleted conversation is never written again. A conversation
+  without entries is never written.
+- New chat (and `/new`, #11, through the same `newChat` method), opening, and deleting during a reply stop it first.
+  Reopening restores the entries only; it does not switch the provider or model. Without a folder or workspace open,
+  there is no storage directory: the conversation stays in memory and the list is empty. A failed save, delete,
+  listing, or open is logged and shown in the panel.
 
 ### Skills and slash commands
 
