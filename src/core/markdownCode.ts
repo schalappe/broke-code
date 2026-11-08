@@ -17,7 +17,8 @@ export type PickedMention = { path: string; index: number };
  * `text` with fenced blocks and inline code spans masked, lengths and newlines kept. Each `picked` path (chosen in
  * the menu, so it may hold spaces or backticks) standing as a whole `@<path>` token is set aside first, so its
  * backticks pair with nothing. `masked`: those tokens outside code filled with `PICKED`, so no typed token is read
- * in them. `picked`: those tokens, in no set order.
+ * in them, and code masked where either reading, with or without picked paths set aside, finds it. `picked`: those
+ * tokens, in no set order.
  */
 export function maskMessage(text: string, picked: readonly string[]): { masked: string; picked: PickedMention[] } {
   const found: PickedMention[] = [];
@@ -31,8 +32,16 @@ export function maskMessage(text: string, picked: readonly string[]): { masked: 
       placed = placed.slice(0, index) + PICKED.repeat(token.length) + placed.slice(index + token.length);
     }
   }
-  const masked = maskCode(placed);
-  return { masked, picked: found.filter((mention) => masked.charAt(mention.index) !== MASK) };
+  const asidePicked = maskCode(placed);
+  // [>]: A backtick in a picked path makes the text read two ways: as typed, its backtick may close real code; set
+  // aside, real code may lose its closing backtick. The user chose a picked path, so it follows the set-aside
+  // reading; a typed token counts only outside code in both, so text that may be code is never attached.
+  const asTyped = maskCode(text);
+  const masked = asidePicked
+    .split("")
+    .map((char, index) => (asTyped[index] === MASK ? MASK : char))
+    .join("");
+  return { masked, picked: found.filter((mention) => asidePicked.charAt(mention.index) !== MASK) };
 }
 
 /**

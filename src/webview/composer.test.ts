@@ -100,7 +100,7 @@ describe("pickedInText", () => {
 describe("menuToken", () => {
   test("is the @ token at the caret, read with the picked paths set aside", () => {
     expect(menuToken("see @sr", 7, [])).toEqual({ start: 4, query: "sr" });
-    expect(menuToken("@a`b.ts @q `", 10, ["a`b.ts"])).toEqual({ start: 8, query: "q" });
+    expect(menuToken("@a`b.ts @q", 10, ["a`b.ts"])).toEqual({ start: 8, query: "q" });
     expect(menuToken("plain word", 10, [])).toBeUndefined();
   });
 

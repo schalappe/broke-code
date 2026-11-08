@@ -151,7 +151,9 @@ The code so far covers the extension skeleton and a streaming chat with a provid
   ignoring case, shorter paths first, then in code order. Arrow keys move and wrap, Enter or Tab picks, a click
   picks, Escape closes; while the menu shows rows, Enter never sends. A pick replaces the token with `@<path> ` and
   records the path. At send, a picked path counts while its `@<path>` still stands as a whole token in the text, and
-  its text is not parsed again, so a path with spaces or backticks is one mention. Answers carry the query id; the
+  its text is not parsed again, so a path with spaces or backticks is one mention. A backtick in a picked path can
+  make the text read two ways; a picked path follows the reading with picked paths set aside, and a typed token
+  counts, and opens the menu, only when it is outside code in both. Answers carry the query id; the
   webview drops stale ones. While the answer to a new query is pending, the menu shows only the earlier rows that
   match it, never a row for an older query. When the files cannot be listed, the menu says so instead of "No match".
 - The file index is built on the first menu query with `findFiles("**/*", "**/{node_modules,.git,dist,out,build}/**",

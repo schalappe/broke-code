@@ -96,6 +96,15 @@ describe("findMentions with picked paths", () => {
     expect(findMentions("@a` b.ts @c` d.ts", ["a` b.ts", "c` d.ts"])).toEqual(["a` b.ts", "c` d.ts"]);
   });
 
+  test("attaches a typed token only when it is outside code in both readings, with and without picked paths", () => {
+    // A picked path ending in a backtick takes the closing backtick of real code: `@secret.ts` may be code.
+    expect(findMentions("run `cat @secret.ts @a` now @y.ts", ["a`"])).toEqual(["a`", "y.ts"]);
+    expect(findMentions("run `cat @a` then @x.ts", ["a`"])).toEqual(["a`", "x.ts"]);
+    // The other way: the picked path's backtick pairs with real code only in the raw reading.
+    expect(findMentions("@a`b.ts then @y.ts and `code`", ["a`b.ts"])).toEqual(["a`b.ts"]);
+    expect(findMentions("run `cat @secret.ts` now @y.ts")).toEqual(["y.ts"]);
+  });
+
   test("drops a picked path standing as a whole token inside a real inline code span", () => {
     expect(findMentions("run `cat @my file.ts now` and @y.ts", ["my file.ts"])).toEqual(["y.ts"]);
   });
