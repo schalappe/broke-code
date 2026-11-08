@@ -23,8 +23,10 @@ decisions behind the design, starting with `docs/adr/0001-body-tool-calls.md`.
 ## Stack
 
 - TypeScript for both the extension host and the chat webview.
-- Use `bun` to install, test, and build. Use Node 22 or newer only to package and publish, because `@vscode/vsce`
-  and `ovsx` run under Node and hardcode npm.
+- Use `bun` for everything, including packaging and publishing. The project needs no Node and no npm. Run the
+  publishing tools under the Bun runtime with `bunx --bun @vscode/vsce` and `bunx --bun ovsx`, and always pass
+  `--no-dependencies` to `vsce`, because it otherwise calls npm to list dependencies. The bun bundle
+  already contains them.
 - The webview uses React and `react-markdown`, with hand-written CSS built on VS Code theme variables. Do not
   add Tailwind or a component kit, and do not use `@vscode/webview-ui-toolkit`, which Microsoft deprecated.
 - The UI ships in English and French and follows the VS Code display language, with English as the fallback.
