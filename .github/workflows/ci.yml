@@ -20,3 +20,13 @@ jobs:
       - run: bun run typecheck
       - run: bun test
       - run: bun run build
+      - name: Package (dry run of the release step)
+        env:
+          VERSION: 0.0.1
+        run: |
+          bun run package
+          packaged=$(unzip -p "broke-code-$VERSION.vsix" extension/package.json | jq -r .version)
+          if [ "$packaged" != "$VERSION" ]; then
+            echo "::error::The VSIX carries version $packaged, expected $VERSION."
+            exit 1
+          fi
