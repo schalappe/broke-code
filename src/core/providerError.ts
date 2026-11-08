@@ -6,10 +6,12 @@
 export type CutOffReason =
   /** Stream closed before `[DONE]` or a `finish_reason`. */
   | "ended"
-  /** Chunk not valid JSON. */
+  /** Chunk not valid JSON, or a recognized field with the wrong shape or type. */
   | "malformed"
-  /** Network failed while reading body. */
+  /** Network failed while reading reply stream. */
   | "dropped"
+  /** Network failed while reading model list body. */
+  | "listDropped"
   /** Provider sent `{ error }` event mid-stream. */
   | "providerError";
 
@@ -23,7 +25,7 @@ export type ProviderError =
    * `bodyReadError` set when body download failed (then `detail` empty).
    */
   | { kind: "rejected"; provider: string; status: number; detail: string; bodyReadError?: string }
-  /** Body broke after 2xx: reply stream, or model list download (`dropped`). Partial reply text kept by caller. */
+  /** Body broke after 2xx: reply stream, or model list download (`listDropped`). Partial reply text kept by caller. */
   | { kind: "cutOff"; provider: string; reason: CutOffReason; cause?: string }
   /** 2xx model listing whose body is not `{ data: [{ id }] }`. Usually wrong base URL. */
   | { kind: "invalidResponse"; provider: string; detail: string };

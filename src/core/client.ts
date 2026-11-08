@@ -47,7 +47,7 @@ export async function listModels(access: ProviderAccess): Promise<ModelListing> 
   if (!sent.ok) return { ok: false, error: sent.error };
 
   const read = await readText(sent.response);
-  if (!read.ok) return { ok: false, error: { kind: "cutOff", provider: provider.name, reason: "dropped", cause: read.cause } };
+  if (!read.ok) return { ok: false, error: { kind: "cutOff", provider: provider.name, reason: "listDropped", cause: read.cause } };
   const body = read.text;
   const models = parseModelIds(body);
   if (!models) return { ok: false, error: { kind: "invalidResponse", provider: provider.name, detail: truncate(body) } };

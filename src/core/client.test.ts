@@ -152,7 +152,7 @@ describe("listModels", () => {
     try {
       const result = await listModels({ provider: { name: "Half", baseUrl: `http://127.0.0.1:${listener.port}/v1` }, apiKey: undefined });
       if (result.ok || result.error.kind !== "cutOff") throw new Error(`expected cutOff, got ${JSON.stringify(result)}`);
-      expect(result.error).toMatchObject({ provider: "Half", reason: "dropped" });
+      expect(result.error).toMatchObject({ provider: "Half", reason: "listDropped" });
       expect(result.error.cause?.length).toBeGreaterThan(0);
     } finally {
       listener.stop(true);

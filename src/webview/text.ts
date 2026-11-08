@@ -46,6 +46,8 @@ function cutOffMessage(error: ProviderError & { kind: "cutOff" }): string {
       return l10n.t("The reply from {0} was cut off: the stream sent an unreadable chunk.", error.provider);
     case "dropped":
       return l10n.t("The reply from {0} was cut off: the connection dropped.", error.provider);
+    case "listDropped":
+      return l10n.t("The model list from {0} was cut off: the connection dropped.", error.provider);
     case "providerError":
       return l10n.t("The reply from {0} was cut off: the provider reported an error.", error.provider);
   }
