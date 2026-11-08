@@ -102,9 +102,16 @@ export class ChatController {
   async restore(): Promise<void> {
     const switchId = this.switchId;
     try {
-      const listed = await this.store.list();
+      const { conversations, unreadable } = await this.store.list();
       const known = new Set(this.state.conversations.map((summary) => summary.id));
-      this.setConversations([...this.state.conversations, ...listed.filter((summary) => !known.has(summary.id))]);
+      this.setConversations([
+        ...this.state.conversations,
+        ...conversations.filter((summary) => !known.has(summary.id)),
+      ]);
+      if (unreadable.length > 0) {
+        const cause = unreadable.map((file) => `${file.id}: ${file.cause}`).join("\n");
+        this.report({ kind: "listFailed", cause }, "could not read saved conversations", unreadable);
+      }
     } catch (error) {
       this.report({ kind: "listFailed", cause: String(error) }, "could not list saved conversations", error);
     }

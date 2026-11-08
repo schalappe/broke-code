@@ -53,6 +53,10 @@ describe("conversation record", () => {
     }
   });
 
+  test("accepts times up to the last date JavaScript can show", () => {
+    expect(parse({ ...record(), createdAt: 0, updatedAt: 8.64e15 })).toMatchObject({ ok: true });
+  });
+
   test("falls back to the typed text when a user entry has no model text", () => {
     const { modelText: _, ...user } = record().entries[0] as ConversationRecord["entries"][0] & { modelText: string };
     const parsed = parse({ ...record(), entries: [user] });
@@ -77,6 +81,10 @@ describe("conversation record", () => {
       { ...record(), version: 2 },
       { ...record(), id: "../escape" },
       { ...record(), updatedAt: "yesterday" },
+      { ...record(), updatedAt: 1e100 },
+      { ...record(), updatedAt: 8.64e15 + 1 },
+      { ...record(), updatedAt: 1.5 },
+      { ...record(), createdAt: -1 },
       { ...record(), provider: 3 },
       { ...record(), entries: "none" },
       { ...record(), entries: [{ role: "system", content: "x" }] },

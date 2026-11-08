@@ -193,8 +193,12 @@ function isString(value: unknown): value is string {
   return typeof value === "string";
 }
 
+/** Largest time `Date` accepts, in milliseconds from the epoch. */
+const MAX_TIME = 8.64e15;
+
+/** Whole milliseconds from the epoch (not before) up to the last date `Date` can show. */
 function isTime(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+  return Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) <= MAX_TIME;
 }
 
 function isOptional(value: unknown, check: (value: unknown) => boolean): boolean {

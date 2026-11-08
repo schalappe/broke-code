@@ -33,10 +33,13 @@ describe("ConversationStore", () => {
     expect(await store.save(recent)).toBe(true);
 
     expect([...files.files.keys()].sort()).toEqual([`${old.id}.json`, `${recent.id}.json`].sort());
-    expect(await store.list()).toEqual([
-      { id: recent.id, title: "recent", updatedAt: 2000 },
-      { id: old.id, title: "old", updatedAt: 1000 },
-    ]);
+    expect(await store.list()).toEqual({
+      conversations: [
+        { id: recent.id, title: "recent", updatedAt: 2000 },
+        { id: old.id, title: "old", updatedAt: 1000 },
+      ],
+      unreadable: [],
+    });
     expect(await store.load(old.id)).toEqual(old);
   });
 
@@ -44,12 +47,14 @@ describe("ConversationStore", () => {
     const good = record(1000);
     const broken = newConversationId();
     const future = newConversationId();
+    const empty = record(4000);
     const files = memoryFiles({
       [`${good.id}.json`]: JSON.stringify(good),
       [`${broken}.json`]: "{",
       [`${future}.json`]: JSON.stringify({ ...record(3000), id: future, version: 2 }),
       "notes.txt": "hello",
       [`${good.id}.json.1234.tmp`]: "{",
+      [`${empty.id}.json`]: JSON.stringify({ ...empty, entries: [] }),
     });
     const store = new ConversationStore(files);
 
@@ -57,7 +62,10 @@ describe("ConversationStore", () => {
     const logged = await quietly(async () => {
       listed = await store.list();
     });
-    expect(listed).toEqual([{ id: good.id, title: "message at 1000", updatedAt: 1000 }]);
+    expect(listed).toEqual({
+      conversations: [{ id: good.id, title: "message at 1000", updatedAt: 1000 }],
+      unreadable: [],
+    });
     expect(logged).toHaveLength(2);
     expect(String(logged.flat())).toContain("unknown version 2");
 
@@ -66,6 +74,53 @@ describe("ConversationStore", () => {
       loaded = await store.load(future);
     });
     expect(loaded).toBeUndefined();
+  });
+
+  test("reports a file it cannot read apart from the ones it lists", async () => {
+    const [good, locked] = [record(1000), record(2000)];
+    const files = memoryFiles({
+      [`${good.id}.json`]: JSON.stringify(good),
+      [`${locked.id}.json`]: JSON.stringify(locked),
+    });
+    const read = files.read;
+    files.read = async (name) => {
+      if (name === `${locked.id}.json`) throw new Error("EACCES: permission denied");
+      return read(name);
+    };
+    expect(await new ConversationStore(files).list()).toEqual({
+      conversations: [{ id: good.id, title: "message at 1000", updatedAt: 1000 }],
+      unreadable: [{ id: locked.id, cause: "Error: EACCES: permission denied" }],
+    });
+  });
+
+  test("deletes leftover temporary files when it first lists, and keeps everything else", async () => {
+    const saved = record(1000);
+    const leftover = `${saved.id}.json.${newConversationId()}.tmp`;
+    const files = memoryFiles({ [`${saved.id}.json`]: JSON.stringify(saved), [leftover]: "{", "notes.tmp": "x" });
+    await new ConversationStore(files).list();
+    expect([...files.files.keys()].sort()).toEqual([`${saved.id}.json`, "notes.tmp"].sort());
+  });
+
+  test("reads after the writes and removes queued before them", async () => {
+    const files = memoryFiles();
+    const store = new ConversationStore(files);
+    const first = record(1000, "first");
+    await store.save(first);
+    let release: () => void = () => {};
+    files.holdWrites = new Promise((resolve) => {
+      release = resolve;
+    });
+    const saving = store.save({ ...first, updatedAt: 2000 });
+    const loading = store.load(first.id);
+    const listing = store.list();
+    const removing = store.remove(first.id);
+    const afterRemove = store.load(first.id);
+    release();
+
+    expect(await loading).toMatchObject({ updatedAt: 2000 });
+    expect((await listing).conversations).toMatchObject([{ id: first.id, updatedAt: 2000 }]);
+    await Promise.all([saving, removing]);
+    expect(await afterRemove).toBeUndefined();
   });
 
   test("loads nothing for a missing file", async () => {
@@ -147,7 +202,7 @@ describe("ConversationStore", () => {
     const store = new ConversationStore(undefined);
     const saved = record(1000);
     expect(await store.save(saved)).toBe(false);
-    expect(await store.list()).toEqual([]);
+    expect(await store.list()).toEqual({ conversations: [], unreadable: [] });
     expect(await store.load(saved.id)).toBeUndefined();
     await store.remove(saved.id);
   });

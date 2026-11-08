@@ -784,6 +784,37 @@ describe("ChatController conversations", () => {
     }
   });
 
+  test("shows a saved conversation it cannot read as a listing failure, and lists the others", async () => {
+    const [good, locked] = [newConversationId(), newConversationId()];
+    const saved = (id: string): ConversationRecord => ({
+      version: 1,
+      id,
+      createdAt: 1,
+      updatedAt: 1,
+      entries: [{ role: "user", content: "ok", mentions: [], modelText: "ok" }],
+    });
+    const files = memoryFiles({
+      [`${good}.json`]: JSON.stringify(saved(good)),
+      [`${locked}.json`]: JSON.stringify(saved(locked)),
+    });
+    const read = files.read;
+    files.read = async (name) => {
+      if (name === `${locked}.json`) throw new Error("EACCES: permission denied");
+      return read(name);
+    };
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { state } = await load(workspace(files));
+      expect(state().conversations).toMatchObject([{ id: good }]);
+      expect(state().storageProblem).toEqual({
+        kind: "listFailed",
+        cause: `${locked}: Error: EACCES: permission denied`,
+      });
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
   test("without a storage directory, chats in memory with an empty list and no error", async () => {
     const controller = new ChatController(
       { get: async () => undefined },
