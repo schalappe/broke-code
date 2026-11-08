@@ -38,6 +38,13 @@ describe("findMentionToken", () => {
     expect(findMentionToken("a ` lone backtick @sse", 22)).toEqual({ start: 18, query: "sse" });
   });
 
+  test("opens the menu after escaped backticks and across paragraphs, where no code span forms", () => {
+    const escaped = "a \\` then @a \\`";
+    expect(findMentionToken(escaped, escaped.indexOf("@a") + 2)).toEqual({ start: 10, query: "a" });
+    const paragraphs = "x `\n\n@a\n\ny `";
+    expect(findMentionToken(paragraphs, 7)).toEqual({ start: 5, query: "a" });
+  });
+
   test("opens no menu where either reading, with or without picked paths, puts the token in code", () => {
     expect(findMentionToken("@a`b.ts @q", 10, ["a`b.ts"])).toEqual({ start: 8, query: "q" });
     expect(findMentionToken("@a`b.ts @q `", 10, ["a`b.ts"])).toBeUndefined();
@@ -61,6 +68,17 @@ describe("indexEntries", () => {
       { path: "src/core/sse.test.ts", kind: "file" },
       { path: "src/main.ts", kind: "file" },
       { path: "README.md", kind: "file" },
+    ]);
+  });
+
+  test("derives no folder inside a multi-root folder name holding a slash", () => {
+    expect(indexEntries(["libs/core/x.ts", "libs/core/src/y.ts", "app/z.ts"], ["libs/core", "app"])).toEqual([
+      { path: "libs/core/", kind: "folder" },
+      { path: "libs/core/x.ts", kind: "file" },
+      { path: "libs/core/src/", kind: "folder" },
+      { path: "libs/core/src/y.ts", kind: "file" },
+      { path: "app/", kind: "folder" },
+      { path: "app/z.ts", kind: "file" },
     ]);
   });
 

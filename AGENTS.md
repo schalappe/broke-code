@@ -158,9 +158,9 @@ The code so far covers the extension skeleton and a streaming chat with a provid
   match it, never a row for an older query. When the files cannot be listed, the menu says so instead of "No match".
 - The file index is built on the first menu query with `findFiles("**/*", "**/{node_modules,.git,dist,out,build}/**",
   5000)`: an explicit exclude adds to `files.exclude` (only `null` drops it). `.gitignore` is not read. Folders are
-  derived from file paths. Paths are `asRelativePath` with its default prefix, the folder name in a multi-root
+  derived from file paths, none inside a multi-root folder name that holds `/`. Paths are `asRelativePath` with its default prefix, the folder name in a multi-root
   workspace only, which the mention resolver accepts. A file watcher marks the index stale on create and delete
-  outside the excluded folders, and so does a workspace folder change; the next query rebuilds it, and queries
+  outside the excluded folders, and so does a workspace folder or `files.exclude` change; the next query rebuilds it, and queries
   during a build share it. At 5,000 files the menu's last line says the index is limited.
 - Conversations are saved per workspace.
 

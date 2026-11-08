@@ -75,18 +75,32 @@ function maskFences(text: string): string {
     .join("\n");
 }
 
-/** A run of N backticks opens a span closed by the next run of exactly N; an unmatched run is literal. */
+/**
+ * A run of N backticks opens a span closed by the next run of exactly N in the same paragraph (no blank line
+ * between); an unmatched run is literal. A backslash escapes the first backtick of an opening run, but not a closing
+ * one, as in CommonMark.
+ */
 function maskCodeSpans(text: string): string {
   const runs = [...text.matchAll(/`+/g)];
   let masked = text;
   for (let open = 0; open < runs.length; open++) {
-    const length = runs[open]![0].length;
-    const close = runs.findIndex((run, index) => index > open && run[0].length === length);
+    const escaped = backslashesBefore(text, runs[open]!.index) % 2 === 1;
+    const start = runs[open]!.index + (escaped ? 1 : 0);
+    const length = runs[open]![0].length - (escaped ? 1 : 0);
+    if (length === 0) continue;
+    const blankLine = text.slice(start).search(/\n[ \t\r]*\n/);
+    const paragraphEnd = blankLine === -1 ? text.length : start + blankLine;
+    const close = runs.findIndex((run, index) => index > open && run.index < paragraphEnd && run[0].length === length);
     if (close === -1) continue;
-    const start = runs[open]!.index;
     const end = runs[close]!.index + length;
     masked = masked.slice(0, start) + masked.slice(start, end).replace(/[^\n]/g, MASK) + masked.slice(end);
     open = close;
   }
   return masked;
+}
+
+function backslashesBefore(text: string, index: number): number {
+  let count = 0;
+  while (text.charAt(index - 1 - count) === "\\") count++;
+  return count;
 }

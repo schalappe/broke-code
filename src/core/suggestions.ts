@@ -48,13 +48,17 @@ export function isExcludedFromIndex(path: string): boolean {
 /** A workspace path offered by the menu: relative, a folder suffixed with `/`. */
 export type Suggestion = { path: string; kind: EntryKind };
 
-/** Each file of `files` (relative, `/`-separated) and each folder above one, once, folders first where met. */
-export function indexEntries(files: string[]): Suggestion[] {
+/**
+ * Each file of `files` (relative, `/`-separated) and each folder above one, once, folders first where met. A path
+ * starting with one of `rootNames` (a folder name, which may hold `/`) gets no folder inside that name.
+ */
+export function indexEntries(files: string[], rootNames: readonly string[] = []): Suggestion[] {
   const folders = new Set<string>();
   const entries: Suggestion[] = [];
   for (const file of files) {
     const segments = file.split("/");
-    for (let depth = 1; depth < segments.length; depth++) {
+    const rootName = rootNames.filter((name) => file.startsWith(`${name}/`)).sort((a, b) => b.length - a.length)[0];
+    for (let depth = rootName ? rootName.split("/").length : 1; depth < segments.length; depth++) {
       const folder = `${segments.slice(0, depth).join("/")}/`;
       if (folders.has(folder)) continue;
       folders.add(folder);

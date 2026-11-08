@@ -16,8 +16,9 @@ import {
 /**
  * Search of the workspace files, stopping at `limit` results. `found`: results returned, local or not, so reaching
  * `limit` means the search stopped early. `local`: relative `/`-separated paths of those on disk.
+ * `rootNames`: the workspace folder names starting those paths, in a multi-root workspace only.
  */
-export type FileScan = (limit: number) => Promise<{ local: string[]; found: number }>;
+export type FileScan = (limit: number) => Promise<{ local: string[]; found: number; rootNames?: string[] }>;
 
 /** Answer to a menu query. `capped`: the scan stopped at `MAX_INDEXED_FILES`, so matches may be missing. */
 export type FileQueryAnswer = { items: Suggestion[]; capped: boolean };
@@ -55,7 +56,7 @@ export class FileIndex {
   }
 
   private async snapshot(): Promise<Snapshot> {
-    const { local, found } = await this.scan(MAX_INDEXED_FILES);
-    return { entries: indexEntries(local), capped: found >= MAX_INDEXED_FILES };
+    const { local, found, rootNames } = await this.scan(MAX_INDEXED_FILES);
+    return { entries: indexEntries(local, rootNames), capped: found >= MAX_INDEXED_FILES };
   }
 }

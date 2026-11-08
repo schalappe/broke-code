@@ -59,6 +59,18 @@ describe("findMentions", () => {
   });
 });
 
+describe("findMentions code span rules", () => {
+  test("keeps a mention between escaped backticks, which are literal, and ends a span at a backtick after a backslash", () => {
+    expect(findMentions("a \\` then @a.ts then \\`")).toEqual(["a.ts"]);
+    expect(findMentions("`x \\` @b.ts")).toEqual(["b.ts"]);
+  });
+
+  test("keeps a mention between backticks in different paragraphs", () => {
+    expect(findMentions("one `\n\n@a.ts\n\ntwo `")).toEqual(["a.ts"]);
+    expect(findMentions("`one\ntwo @b.ts`")).toEqual([]);
+  });
+});
+
 describe("findMentions with picked paths", () => {
   test("takes a picked path with a space whole, with no mention for its first word", () => {
     expect(findMentions("explain @my file.ts please", ["my file.ts"])).toEqual(["my file.ts"]);

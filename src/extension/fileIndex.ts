@@ -30,6 +30,9 @@ export class WorkspaceFileIndex implements vscode.Disposable {
       watcher.onDidCreate(changed),
       watcher.onDidDelete(changed),
       vscode.workspace.onDidChangeWorkspaceFolders(() => this.index.invalidate()),
+      vscode.workspace.onDidChangeConfiguration((event) => {
+        if (event.affectsConfiguration("files.exclude")) this.index.invalidate();
+      }),
     );
   }
 }
@@ -42,5 +45,7 @@ export class WorkspaceFileIndex implements vscode.Disposable {
 const scanWorkspace: FileScan = async (limit) => {
   const uris = await vscode.workspace.findFiles("**/*", INDEX_EXCLUDE_GLOB, limit);
   const local = uris.filter((uri) => uri.scheme === "file").map((uri) => vscode.workspace.asRelativePath(uri));
-  return { local, found: uris.length };
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  const rootNames = folders.length > 1 ? folders.map((folder) => folder.name) : undefined;
+  return { local, found: uris.length, rootNames };
 };
