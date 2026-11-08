@@ -83,8 +83,8 @@ The code so far covers the extension skeleton and a streaming chat with a provid
   - One setting auto-approves writes. Nothing auto-approves commands.
 - `run_command` runs in a hidden child process in the workspace folder with the user's shell, captures the
   output, and stops after 120 seconds by default.
-- Reasoning output (`<think>` tags or `reasoning_content`) shows collapsed in the chat. The parser never looks
-  for tool calls in it, and the conversation history sent back to the model drops it.
+- Reasoning output (`<think>` tags, `reasoning`, or `reasoning_content`) shows collapsed in the chat. The parser
+  never looks for tool calls in it, and the conversation history sent back to the model drops it.
 - An agent turn has a Stop button and stops after 50 tool steps by default. Truncate tool results longer than
   about 2,000 lines and say so in the result. When the context is full, stop the turn with a clear message.
   v1 has no automatic summarization.
