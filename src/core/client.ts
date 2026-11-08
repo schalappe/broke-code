@@ -2,6 +2,7 @@
  * @module client
  * Provider HTTP client: `GET {baseUrl}/models`, streaming `POST {baseUrl}/chat/completions`.
  * Never sends `tools`, never reads `tool_calls` (ADR 0001). Failures returned as typed values, never thrown.
+ * Only module that knows the reasoning wire shapes: callers see the reasoning and the answer apart.
  */
 import type { Provider } from "./providers";
 import type { CutOffReason, ProviderError } from "./providerError";
@@ -29,7 +30,7 @@ const DETAIL_LIMIT = 500;
 export const MODEL_LIST_MAX_BYTES = 8 * 1024 * 1024;
 /** Non-2xx body; only its first `DETAIL_LIMIT` characters are shown. */
 const ERROR_BODY_MAX_BYTES = 64 * 1024;
-/** Total `delta.content` of one reply, in UTF-16 code units. */
+/** Total `delta.content` plus reasoning fields of one reply, in UTF-16 code units. */
 export const REPLY_MAX_LENGTH = 4 * 1024 * 1024;
 
 /**
@@ -69,16 +70,28 @@ export type StreamChatOptions = {
   messages: ChatMessage[];
   /** Abort -> outcome `stopped`, never `cutOff`. */
   signal: AbortSignal;
-  /** Called with each non-empty `delta.content`, in order. */
+  /** Called with each non-empty piece of the answer, in order. Answer starts at its first non-blank line. */
   onContent: (text: string) => void;
+  /** Called with each non-empty piece of the reasoning, in order, tags removed. */
+  onReasoning: (text: string) => void;
 };
 
 /**
- * Stream chat reply. Only `choices[0].delta.content` read; `reasoning` and other delta fields ignored.
+ * Stream chat reply, split into reasoning and answer. Reasoning: `delta.reasoning` (Ollama),
+ * `delta.reasoning_content` (vLLM-style), and a `<think>…</think>` block opening the content. `<think>` later in
+ * the content is answer text. Unclosed `<think>` -> whole content is reasoning, answer empty.
  * Complete when `[DONE]` arrives, or stream ends after a `finish_reason`.
  * Reply over `REPLY_MAX_LENGTH`, or one event over the SSE cap -> cut off (`tooLarge`), stream cancelled.
+ * Text held back to recognize a split tag is flushed before any outcome returns.
  */
 export async function streamChat(access: ProviderAccess, options: StreamChatOptions): Promise<ChatOutcome> {
+  const splitter = new ReplySplitter(options.onReasoning, options.onContent);
+  const outcome = await readReply(access, options, splitter);
+  splitter.flush();
+  return outcome;
+}
+
+async function readReply(access: ProviderAccess, options: StreamChatOptions, splitter: ReplySplitter): Promise<ChatOutcome> {
   const { signal } = options;
   const provider = access.provider.name;
   const request = buildChatRequest(access, options.model, options.messages);
@@ -102,9 +115,10 @@ export async function streamChat(access: ProviderAccess, options: StreamChatOpti
       const chunk = parseChunk(data);
       if (chunk.kind === "malformed") return cutOff("malformed", truncate(data));
       if (chunk.kind === "error") return cutOff("providerError", chunk.message);
-      length += chunk.content.length;
+      length += chunk.reasoning.length + chunk.content.length;
       if (length > REPLY_MAX_LENGTH) return cutOff("tooLarge");
-      if (chunk.content) options.onContent(chunk.content);
+      if (chunk.reasoning) options.onReasoning(chunk.reasoning);
+      if (chunk.content) splitter.push(chunk.content);
       if (chunk.finished) finished = true;
     }
   } catch (error) {
@@ -118,6 +132,86 @@ export async function streamChat(access: ProviderAccess, options: StreamChatOpti
   }
   if (signal.aborted) return { status: "stopped" };
   return finished ? { status: "done" } : cutOff("ended");
+}
+
+const THINK_OPEN = "<think>";
+const THINK_CLOSE = "</think>";
+
+/**
+ * Streaming split of `delta.content` into reasoning (leading `<think>` block) and answer. Holds back only what a
+ * tag split across deltas, or the blank lines opening the answer, still needs; everything else passes on at once.
+ */
+class ReplySplitter {
+  private phase: "start" | "reasoning" | "answerStart" | "answer" = "start";
+  private held = "";
+
+  constructor(
+    private readonly onReasoning: (text: string) => void,
+    private readonly onAnswer: (text: string) => void,
+  ) {}
+
+  push(text: string): void {
+    this.held += text;
+    if (this.phase === "start") {
+      const lead = this.held.trimStart();
+      if (lead.length < THINK_OPEN.length && THINK_OPEN.startsWith(lead)) return;
+      if (lead.startsWith(THINK_OPEN)) {
+        this.phase = "reasoning";
+        this.held = lead.slice(THINK_OPEN.length);
+      } else {
+        this.phase = "answerStart";
+      }
+    }
+    if (this.phase === "reasoning") {
+      const close = this.held.indexOf(THINK_CLOSE);
+      if (close === -1) {
+        const keep = partialSuffix(this.held, THINK_CLOSE);
+        this.emit(this.onReasoning, this.held.slice(0, this.held.length - keep));
+        this.held = this.held.slice(this.held.length - keep);
+        return;
+      }
+      this.emit(this.onReasoning, this.held.slice(0, close));
+      this.held = this.held.slice(close + THINK_CLOSE.length);
+      this.phase = "answerStart";
+    }
+    if (this.phase === "answerStart") {
+      const answer = withoutLeadingBlankLines(this.held);
+      if (answer === undefined) return;
+      this.held = answer;
+      this.phase = "answer";
+    }
+    this.emit(this.onAnswer, this.held);
+    this.held = "";
+  }
+
+  /** End of stream: text held for a possible tag is what it looked like; blank lines alone are no answer. */
+  flush(): void {
+    if (this.phase === "start") this.emit(this.onAnswer, withoutLeadingBlankLines(this.held) ?? "");
+    if (this.phase === "reasoning") this.emit(this.onReasoning, this.held);
+    this.held = "";
+  }
+
+  private emit(callback: (text: string) => void, text: string): void {
+    if (text) callback(text);
+  }
+}
+
+/**
+ * `text` from its first non-blank line, that line's indentation kept (indented code block); `undefined` when
+ * `text` is all whitespace.
+ */
+function withoutLeadingBlankLines(text: string): string | undefined {
+  const visible = text.search(/\S/);
+  if (visible === -1) return undefined;
+  return text.slice(text.lastIndexOf("\n", visible) + 1);
+}
+
+/** Length of the longest end of `text` that starts `tag`, without being all of it. */
+function partialSuffix(text: string, tag: string): number {
+  for (let length = Math.min(text.length, tag.length - 1); length > 0; length--) {
+    if (tag.startsWith(text.slice(text.length - length))) return length;
+  }
+  return 0;
 }
 
 type Sent = { ok: true; response: Response } | { ok: false; error: ProviderError };
@@ -189,13 +283,14 @@ function authorization(apiKey: string | undefined): Record<string, string> {
 }
 
 type Chunk =
-  | { kind: "delta"; content: string; finished: boolean }
+  | { kind: "delta"; reasoning: string; content: string; finished: boolean }
   | { kind: "error"; message: string }
   | { kind: "malformed" };
 
 /**
  * Validate fields read from chunk. Absent or `null` fields fine (role-only, reasoning-only, usage-only,
  * empty `choices`); present with wrong type -> malformed, never silently dropped.
+ * `reasoning` = `delta.reasoning` then `delta.reasoning_content`; a server sends one or the other.
  */
 function parseChunk(data: string): Chunk {
   let value: unknown;
@@ -207,7 +302,7 @@ function parseChunk(data: string): Chunk {
   if (!isRecord(value)) return { kind: "malformed" };
   if (!isAbsent(value.error)) return { kind: "error", message: errorMessage(value.error) ?? JSON.stringify(value.error) };
 
-  const empty: Chunk = { kind: "delta", content: "", finished: false };
+  const empty: Chunk = { kind: "delta", reasoning: "", content: "", finished: false };
   if (isAbsent(value.choices)) return empty;
   if (!Array.isArray(value.choices)) return { kind: "malformed" };
   const choice: unknown = value.choices[0];
@@ -216,10 +311,12 @@ function parseChunk(data: string): Chunk {
 
   const delta = isAbsent(choice.delta) ? {} : choice.delta;
   if (!isRecord(delta)) return { kind: "malformed" };
-  const content = isAbsent(delta.content) ? "" : delta.content;
-  const finishReason = isAbsent(choice.finish_reason) ? "" : choice.finish_reason;
-  if (typeof content !== "string" || typeof finishReason !== "string") return { kind: "malformed" };
-  return { kind: "delta", content, finished: finishReason !== "" };
+  const fields = [delta.content, delta.reasoning, delta.reasoning_content, choice.finish_reason].map((field) =>
+    isAbsent(field) ? "" : field,
+  );
+  if (!fields.every((field) => typeof field === "string")) return { kind: "malformed" };
+  const [content, reasoning, reasoningContent, finishReason] = fields as string[];
+  return { kind: "delta", reasoning: reasoning! + reasoningContent!, content: content!, finished: finishReason !== "" };
 }
 
 function isAbsent(value: unknown): value is null | undefined {

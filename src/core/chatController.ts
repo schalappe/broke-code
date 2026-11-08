@@ -130,7 +130,7 @@ export class ChatController {
 
     const history = toHistory(this.state.entries);
     history.push({ role: "user", content });
-    const reply: ChatEntry & { role: "assistant" } = { role: "assistant", content: "", status: "waiting" };
+    const reply: ChatEntry & { role: "assistant" } = { role: "assistant", reasoning: "", content: "", status: "waiting" };
     this.state.entries.push({ role: "user", content }, reply);
     this.emit();
 
@@ -142,6 +142,11 @@ export class ChatController {
       signal: abort.signal,
       onContent: (delta) => {
         reply.content += delta;
+        reply.status = "streaming";
+        this.emit();
+      },
+      onReasoning: (delta) => {
+        reply.reasoning += delta;
         reply.status = "streaming";
         this.emit();
       },
@@ -190,7 +195,10 @@ export class ChatController {
   }
 }
 
-/** Conversation sent to model: user messages plus assistant replies with text (stopped and cut-off partials included). */
+/**
+ * Conversation sent to model: user messages plus assistant answers with text (stopped and cut-off partials
+ * included). Reasoning never sent; a reply with reasoning only is left out.
+ */
 function toHistory(entries: ChatEntry[]): ChatMessage[] {
   return entries
     .filter((entry) => entry.role === "user" || entry.content !== "")
