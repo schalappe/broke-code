@@ -11,12 +11,13 @@ export type ModelsState =
   | { status: "loaded"; models: string[] }
   | { status: "failed"; error: ProviderError };
 
-/** `waiting`: request sent, no `delta.content` yet (model may still be loading or reasoning). */
+/** `waiting`: request sent, no reasoning or answer yet (model may still be loading). `streaming`: either has started. */
 export type ReplyStatus = "waiting" | "streaming" | "done" | "stopped" | "failed";
 
 export type ChatEntry =
   | { role: "user"; content: string }
-  | { role: "assistant"; content: string; status: ReplyStatus; error?: ProviderError };
+  /** `reasoning`: text the model writes before its answer, shown collapsed, never sent back. `content`: the answer. */
+  | { role: "assistant"; reasoning: string; content: string; status: ReplyStatus; error?: ProviderError };
 
 export type ChatState = {
   providers: string[];

@@ -162,28 +162,42 @@ button.link:hover:not(:disabled) {
   font-style: italic;
 }
 
-.loading::after {
-  content: "";
-  display: inline-block;
-  width: 1em;
-  animation: dots 1.2s steps(4, end) infinite;
-  overflow: hidden;
-  vertical-align: bottom;
+.loading {
+  animation: pulse 1.4s ease-in-out infinite;
 }
 
-@keyframes dots {
-  0% {
-    width: 0;
-  }
-  100% {
-    width: 1em;
+@keyframes pulse {
+  50% {
+    opacity: 0.4;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .loading::after {
+  .loading {
     animation: none;
   }
+}
+
+.reasoning {
+  margin: 0 0 8px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.reasoning summary {
+  cursor: pointer;
+  font-style: italic;
+}
+
+.reasoning summary:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.reasoning-text {
+  margin-top: 4px;
+  padding-left: 8px;
+  border-left: 2px solid var(--vscode-widget-border, var(--vscode-descriptionForeground));
+  white-space: pre-wrap;
 }
 
 .error {
