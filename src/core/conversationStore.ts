@@ -78,13 +78,17 @@ export class ConversationStore {
     });
   }
 
-  /** Delete the conversation `id`; later saves of it are dropped. Rejects when the delete fails. */
+  /**
+   * Delete the conversation `id`; saves called after it are dropped. Rejects when the delete fails, and then later
+   * saves still land, since the file is still there.
+   */
   async remove(id: string): Promise<void> {
     const name = fileName(id);
-    this.removed.add(id);
     const files = this.files;
-    if (!files) return;
-    return this.queue.run(() => files.remove(name));
+    return this.queue.run(async () => {
+      await files?.remove(name);
+      this.removed.add(id);
+    });
   }
 }
 

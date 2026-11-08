@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   type ConversationRecord,
+  conversationsOverLimit,
   conversationTitle,
   isConversationId,
   newConversationId,
@@ -142,5 +143,19 @@ describe("conversation id", () => {
     for (const id of ["", "a/b", "..", `${ID}.json`, `${ID}/`, ID.toUpperCase(), `../${ID}`, 7]) {
       expect(isConversationId(id)).toBe(false);
     }
+  });
+});
+
+describe("conversations over the limit", () => {
+  const summaries = (count: number) =>
+    Array.from({ length: count }, (_, index) => ({ id: `c${index}`, title: "t", updatedAt: index }));
+
+  test("keeps 50: lists the oldest beyond them, by update time", () => {
+    expect(conversationsOverLimit(summaries(50), "c49")).toEqual([]);
+    expect(conversationsOverLimit(summaries(52).reverse(), "c51")).toEqual(["c1", "c0"]);
+  });
+
+  test("never lists the current conversation, even when it is the oldest", () => {
+    expect(conversationsOverLimit(summaries(51), "c0")).toEqual(["c1"]);
   });
 });

@@ -92,6 +92,10 @@ export class ChatView implements vscode.WebviewViewProvider {
       case "newChat":
         controller.newChat();
         return;
+      case "openConversation":
+        return void controller.openConversation(message.id);
+      case "deleteConversation":
+        return void controller.deleteConversation(message.id);
       case "setApiKey":
         return void this.actions.setApiKey(message.provider).catch((error: unknown) => {
           void vscode.window.showErrorMessage(

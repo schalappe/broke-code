@@ -3,6 +3,7 @@
  * Messages between extension host and chat webview, and their validation at the host boundary. Host owns state;
  * webview renders snapshots.
  */
+import { type ConversationSummary, isConversationId } from "./conversation";
 import type { MentionResult } from "./mentions";
 import type { ProviderError } from "./providerError";
 import type { SkippedProvider } from "./providers";
@@ -23,13 +24,26 @@ export type ChatEntry =
   /** `reasoning`: text the model writes before its answer, shown collapsed, never sent back. `content`: the answer. */
   | { role: "assistant"; reasoning: string; content: string; status: ReplyStatus; error?: ProviderError };
 
+/**
+ * Why the saved conversations could not be used: a save, delete, listing, or open that failed (`cause`: runtime
+ * error text), or a conversation to open that is missing or unreadable.
+ */
+export type StorageProblem =
+  | { kind: "saveFailed" | "deleteFailed" | "listFailed" | "openFailed"; cause: string }
+  | { kind: "notFound" };
+
 export type ChatState = {
   providers: string[];
   skipped: SkippedProvider[];
   provider: string | undefined;
   models: ModelsState;
   model: string | undefined;
+  /** Id of the conversation shown; `entries` are its entries. */
+  conversationId: string;
   entries: ChatEntry[];
+  /** Saved conversations of the workspace, newest first; the one shown is listed once saved. */
+  conversations: ConversationSummary[];
+  storageProblem: StorageProblem | undefined;
 };
 
 /** L10n bundle as `vscode.l10n.bundle`: absent in English. */
@@ -55,6 +69,9 @@ export type WebviewMessage =
   | { type: "queryFiles"; query: string; id: number }
   | { type: "stop" }
   | { type: "newChat" }
+  /** `id`: a conversation of `ChatState.conversations`. */
+  | { type: "openConversation"; id: string }
+  | { type: "deleteConversation"; id: string }
   | { type: "setApiKey"; provider: string }
   | { type: "openSettings" };
 
@@ -99,6 +116,11 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | undefined {
       const value = text("text");
       const mentions = pathList(message.mentions);
       return value === undefined || mentions === undefined ? undefined : { type: "send", text: value, mentions };
+    }
+    case "openConversation":
+    case "deleteConversation": {
+      // [!]: Ids name files in the storage directory: only the shape the host makes passes.
+      return isConversationId(message.id) ? { type: message.type, id: message.id } : undefined;
     }
     case "queryFiles": {
       const query = text("query");

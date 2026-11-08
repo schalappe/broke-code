@@ -1,5 +1,8 @@
 import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import { ChatController, type ChoiceStore } from "./chatController";
+import { type ConversationRecord, newConversationId } from "./conversation";
+import { type MemoryFiles, memoryFiles } from "./conversationFixture";
+import { ConversationStore } from "./conversationStore";
 import type { MentionReader, ReadMention } from "./mentions";
 import { type ChatState, isReplying } from "./protocol";
 import type { Provider } from "./providers";
@@ -43,7 +46,7 @@ const server = Bun.serve({
     const whole =
       prefix === "unclosed"
         ? reasoningOnly
-        : prefix === "mentions"
+        : prefix === "mentions" || prefix === "saved"
           ? shapes.reasoning
           : shapes[prefix.replace(/^shape-/, "")];
     if (whole)
@@ -105,7 +108,13 @@ async function ready(
   mentions: MentionReader = noMentions,
   publish: (state: ChatState) => void = () => {},
 ) {
-  const controller = new ChatController({ get: async () => undefined }, memoryStore(), publish, mentions);
+  const controller = new ChatController(
+    { get: async () => undefined },
+    memoryStore(),
+    publish,
+    mentions,
+    new ConversationStore(undefined),
+  );
   const state = () => controller.snapshot;
   controller.setProviders({ providers: [provider], skipped: [] });
   await until(state, (s) => s.model === "m");
@@ -188,7 +197,13 @@ describe("ChatController settings reapplied", () => {
 
 describe("ChatController CA file change", () => {
   test("relists the models when the active provider's CA file changes, without a retry", async () => {
-    const controller = new ChatController({ get: async () => undefined }, memoryStore(), () => {}, noMentions);
+    const controller = new ChatController(
+      { get: async () => undefined },
+      memoryStore(),
+      () => {},
+      noMentions,
+      new ConversationStore(undefined),
+    );
     const state = () => controller.snapshot;
     controller.setProviders({ providers: [{ ...ollama, caFile: "relative.pem" }], skipped: [] });
     await until(state, (s) => s.models.status === "failed");
@@ -234,6 +249,7 @@ describe("ChatController reasoning", () => {
         if (last?.role === "assistant") published.push(structuredClone(last));
       },
       noMentions,
+      new ConversationStore(undefined),
     );
     const state = () => controller.snapshot;
     controller.setProviders({
@@ -484,5 +500,346 @@ describe("ChatController mentions", () => {
 
     expect(controller.snapshot.entries.at(-1)).toMatchObject({ role: "assistant", status: "stopped" });
     expect(requests.get("mentions-stop")).toBeUndefined();
+  });
+});
+
+describe("ChatController conversations", () => {
+  const reasoningProvider: Provider = { name: "Saved", baseUrl: `http://localhost:${server.port}/saved/v1` };
+  const lastRequest = (prefix: string) => requests.get(prefix)?.at(-1) as { messages: unknown[] };
+
+  /** One workspace's storage: conversation files and memento, shared by every controller opened on it. */
+  type Workspace = { files: MemoryFiles; memento: ChoiceStore };
+  const workspace = (files: MemoryFiles = memoryFiles()): Workspace => ({ files, memento: memoryStore() });
+
+  /** Controller as at window load on `ws`: settings applied, saved conversations restored, model listed. */
+  async function load(
+    ws: Workspace,
+    options: { provider?: Provider; mentions?: MentionReader; apiKey?: string; now?: () => number } = {},
+  ) {
+    const controller = new ChatController(
+      { get: async () => options.apiKey },
+      ws.memento,
+      () => {},
+      options.mentions ?? noMentions,
+      new ConversationStore(ws.files),
+      options.now,
+    );
+    const state = () => controller.snapshot;
+    controller.setProviders({ providers: [options.provider ?? ollama], skipped: [] });
+    await controller.restore();
+    await until(state, (s) => s.model === "m");
+    return { controller, state };
+  }
+
+  /** Raw saved JSON of conversation `id`, as written. */
+  const raw = (ws: Workspace, id: string) => {
+    const text = ws.files.files.get(`${id}.json`);
+    return text === undefined ? undefined : (JSON.parse(text) as ConversationRecord);
+  };
+
+  /** Saved reply of conversation `id`: its second entry. */
+  const savedReply = (ws: Workspace, id: string) => {
+    const entry = raw(ws, id)?.entries[1];
+    return entry?.role === "assistant" ? entry : undefined;
+  };
+
+  async function eventually(check: () => boolean, what: string): Promise<void> {
+    for (let waited = 0; !check(); waited += 5) {
+      if (waited > 2000) throw new Error(`timed out waiting for ${what}`);
+      await Bun.sleep(5);
+    }
+  }
+
+  /** Reader that holds each read until `release`, then reports the path missing. */
+  function heldReader() {
+    let release: () => void = () => {};
+    const reader: MentionReader = {
+      read: (path) =>
+        new Promise((resolve) => {
+          release = () => resolve({ path, kind: "file", status: "missing", content: "", omitted: 0 });
+        }),
+    };
+    return { reader, release: () => release() };
+  }
+
+  test("saves the message and its waiting reply when sent, then the text the model received", async () => {
+    const ws = workspace();
+    const { reader, release } = heldReader();
+    const { controller, state } = await load(ws, { provider: reasoningProvider, mentions: reader });
+    const sent = controller.send("read  @slow.ts");
+    const id = state().conversationId;
+
+    await eventually(() => raw(ws, id) !== undefined, "the first save");
+    expect(raw(ws, id)?.entries).toEqual([
+      { role: "user", content: "read  @slow.ts", mentions: [], modelText: "read  @slow.ts" },
+      { role: "assistant", reasoning: "", content: "", status: "waiting" },
+    ]);
+    release();
+    await sent;
+    await eventually(() => savedReply(ws, id)?.status === "done", "the final save");
+    expect(raw(ws, id)?.entries).toEqual([
+      {
+        role: "user",
+        content: "read  @slow.ts",
+        mentions: [{ path: "slow.ts", kind: "file", status: "missing" }],
+        modelText: "read  @slow.ts\n\n@slow.ts (file, missing)\nNot attached: no such file or folder in the workspace.",
+      },
+      { role: "assistant", reasoning: "Plan.", content: "Answer", status: "done" },
+    ]);
+    expect(state().conversations).toMatchObject([{ id, title: "read @slow.ts" }]);
+    expect(JSON.stringify(state())).not.toContain("Not attached");
+  });
+
+  test("saves a streaming reply at most every 500 ms and on its end; a reload meanwhile shows it stopped", async () => {
+    const ws = workspace();
+    let writes = 0;
+    const write = ws.files.write;
+    ws.files.write = (name, text) => {
+      writes += 1;
+      return write(name, text);
+    };
+    const { controller, state } = await load(ws);
+    const sent = controller.send("Hi");
+    const id = state().conversationId;
+    await until(state, (s) => s.entries.at(-1)?.content === "Partial ");
+    await Bun.sleep(50);
+    expect(writes).toBe(1);
+    expect(raw(ws, id)?.entries[1]).toMatchObject({ content: "", status: "waiting" });
+
+    await eventually(() => raw(ws, id)?.entries[1]?.content === "Partial ", "the streaming save");
+    expect(writes).toBe(2);
+    expect(raw(ws, id)?.entries[1]).toMatchObject({ status: "streaming" });
+
+    const reloaded = await load(workspace(ws.files), {});
+    expect(reloaded.state().conversations).toMatchObject([{ id }]);
+    const reopened = await load({ files: ws.files, memento: ws.memento });
+    expect(reopened.state().conversationId).toBe(id);
+    expect(reopened.state().entries).toEqual([
+      { role: "user", content: "Hi", mentions: [] },
+      { role: "assistant", reasoning: "", content: "Partial ", status: "stopped" },
+    ]);
+    expect(isReplying(reopened.state())).toBe(false);
+
+    finishReply();
+    await sent;
+    await eventually(() => savedReply(ws, id)?.status === "done", "the final save");
+    expect(writes).toBe(3);
+    expect(raw(ws, id)?.entries[1]).toMatchObject({ content: "Partial end", status: "done" });
+  });
+
+  test("after a reload, continues the conversation with every earlier message as sent and no reasoning", async () => {
+    const ws = workspace();
+    const reader: MentionReader = {
+      read: async (path) => ({
+        path,
+        kind: "file",
+        status: "attached",
+        lines: 1,
+        content: "const a = 1;\n",
+        omitted: 0,
+      }),
+    };
+    const first = await load(ws, { provider: reasoningProvider, mentions: reader });
+    await first.controller.send("explain @a.ts");
+    const composed = lastRequest("saved").messages.at(-1);
+    await eventually(() => first.state().conversations.length === 1, "the save");
+
+    const { controller, state } = await load(ws, { provider: reasoningProvider });
+    expect(state().entries).toEqual(first.state().entries);
+    await controller.send("And then?");
+    expect(lastRequest("saved").messages).toEqual([
+      composed,
+      { role: "assistant", content: "Answer" },
+      { role: "user", content: "And then?" },
+    ]);
+    expect(JSON.stringify(lastRequest("saved"))).not.toContain("Plan.");
+  });
+
+  test("New chat starts a new conversation and lists the previous one; reopening it continues it", async () => {
+    const ws = workspace();
+    const { controller, state } = await load(ws, { provider: reasoningProvider });
+    await controller.send("First");
+    const firstId = state().conversationId;
+    controller.newChat();
+
+    expect(state().conversationId).not.toBe(firstId);
+    expect(state().entries).toEqual([]);
+    await eventually(() => state().conversations.length === 1, "the list");
+    expect(state().conversations).toMatchObject([{ id: firstId, title: "First" }]);
+    expect([...ws.files.files.keys()]).toEqual([`${firstId}.json`]);
+
+    await controller.send("Second");
+    await controller.openConversation(firstId);
+    expect(state()).toMatchObject({ conversationId: firstId, entries: [{ content: "First" }, { content: "Answer" }] });
+    await controller.send("More");
+    expect(lastRequest("saved").messages).toEqual([
+      { role: "user", content: "First" },
+      { role: "assistant", content: "Answer" },
+      { role: "user", content: "More" },
+    ]);
+    await eventually(() => state().conversations[0]?.id === firstId, "the reopened one listed newest");
+    expect(state().conversations).toHaveLength(2);
+  });
+
+  test("New chat or opening another conversation during a reply saves it stopped in its own record", async () => {
+    const ws = workspace();
+    const { controller, state } = await load(ws);
+    const one = controller.send("One");
+    const oneId = state().conversationId;
+    await until(state, (s) => s.entries.at(-1)?.content === "Partial ");
+    controller.newChat();
+    await one;
+    await eventually(() => savedReply(ws, oneId)?.status === "stopped", "one stopped");
+    expect(raw(ws, oneId)?.entries[1]).toMatchObject({ content: "Partial " });
+
+    const two = controller.send("Two");
+    const twoId = state().conversationId;
+    await until(state, (s) => s.entries.at(-1)?.content === "Partial ");
+    await controller.openConversation(oneId);
+    await two;
+    expect(state()).toMatchObject({ conversationId: oneId, entries: [{ content: "One" }, { status: "stopped" }] });
+    await eventually(() => savedReply(ws, twoId)?.status === "stopped", "two stopped");
+    expect(raw(ws, twoId)?.entries).toMatchObject([{ content: "Two" }, { content: "Partial " }]);
+  });
+
+  test("deleting removes the file and the row; deleting the one shown starts a new one", async () => {
+    const ws = workspace();
+    const { controller, state } = await load(ws, { provider: reasoningProvider });
+    await controller.send("Keep");
+    const keepId = state().conversationId;
+    controller.newChat();
+    await controller.send("Drop");
+    const dropId = state().conversationId;
+    await eventually(() => state().conversations.length === 2, "two listed");
+
+    await controller.deleteConversation(keepId);
+    expect(state().conversationId).toBe(dropId);
+    expect(state().conversations.map((c) => c.id)).toEqual([dropId]);
+    expect(ws.files.files.has(`${keepId}.json`)).toBe(false);
+
+    await controller.deleteConversation(dropId);
+    expect(state().conversationId).not.toBe(dropId);
+    expect(state()).toMatchObject({ entries: [], conversations: [] });
+    expect(ws.files.files.size).toBe(0);
+  });
+
+  test("deleting the conversation shown during a reply stops it and never brings its file back", async () => {
+    const ws = workspace();
+    const { controller, state } = await load(ws);
+    const sent = controller.send("Hi");
+    const id = state().conversationId;
+    await until(state, (s) => s.entries.at(-1)?.content === "Partial ");
+    await controller.deleteConversation(id);
+    await sent;
+    await Bun.sleep(600);
+    expect(ws.files.files.size).toBe(0);
+    expect(state().conversations).toEqual([]);
+  });
+
+  test("the 51st conversation deletes the oldest from the list and the disk", async () => {
+    const seeded = Array.from(
+      { length: 50 },
+      (_, index): ConversationRecord => ({
+        version: 1,
+        id: newConversationId(),
+        createdAt: index + 1,
+        updatedAt: index + 1,
+        entries: [{ role: "user", content: `c${index}`, mentions: [], modelText: `c${index}` }],
+      }),
+    );
+    const files = memoryFiles(
+      Object.fromEntries(seeded.map((record) => [`${record.id}.json`, JSON.stringify(record)])),
+    );
+    const ws = workspace(files);
+    const { controller, state } = await load(ws, { provider: reasoningProvider, now: () => 1000 });
+    expect(state().conversations).toHaveLength(50);
+
+    await controller.send("Newest");
+    await eventually(() => files.files.size === 50 && state().conversations.length === 50, "the oldest deleted");
+    expect(files.files.has(`${seeded[0]!.id}.json`)).toBe(false);
+    expect(state().conversations[0]).toMatchObject({ id: state().conversationId, title: "Newest" });
+    expect(state().conversations.map((c) => c.id)).not.toContain(seeded[0]!.id);
+  });
+
+  test("starts a new conversation when the saved current one is unreadable, and lists the valid ones", async () => {
+    const valid: ConversationRecord = {
+      version: 1,
+      id: newConversationId(),
+      createdAt: 1,
+      updatedAt: 1,
+      entries: [{ role: "user", content: "ok", mentions: [], modelText: "ok" }],
+    };
+    const broken = newConversationId();
+    const ws = workspace(
+      memoryFiles({ [`${valid.id}.json`]: JSON.stringify(valid), [`${broken}.json`]: '{"version":9}' }),
+    );
+    await ws.memento.update("brokeCode.currentConversation", broken);
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { state } = await load(ws);
+      expect(state()).toMatchObject({ entries: [], conversations: [{ id: valid.id }], storageProblem: undefined });
+      expect(state().conversationId).not.toBe(broken);
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
+  test("without a storage directory, chats in memory with an empty list and no error", async () => {
+    const controller = new ChatController(
+      { get: async () => undefined },
+      memoryStore(),
+      () => {},
+      noMentions,
+      new ConversationStore(undefined),
+    );
+    const state = () => controller.snapshot;
+    controller.setProviders({ providers: [reasoningProvider], skipped: [] });
+    await controller.restore();
+    await until(state, (s) => s.model === "m");
+    await controller.send("Hi");
+    controller.newChat();
+    await Bun.sleep(20);
+    expect(state()).toMatchObject({ entries: [], conversations: [], storageProblem: undefined });
+  });
+
+  test("reports a failed save, and clears it once a save succeeds", async () => {
+    const ws = workspace();
+    const { controller, state } = await load(ws, { provider: reasoningProvider });
+    ws.files.failWrites = new Error("ENOSPC: no space left on device");
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await controller.send("Hi");
+      await until(state, (s) => s.storageProblem !== undefined);
+      expect(state().storageProblem).toEqual({ kind: "saveFailed", cause: "Error: ENOSPC: no space left on device" });
+      expect(state().conversations).toEqual([]);
+      expect(logged).toHaveBeenCalled();
+
+      ws.files.failWrites = undefined;
+      await controller.send("Again");
+      await until(state, (s) => s.storageProblem === undefined && s.conversations.length === 1);
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
+  test("says a conversation to open is not found, and leaves the one shown alone", async () => {
+    const { controller, state } = await load(workspace(), { provider: reasoningProvider });
+    await controller.send("Hi");
+    const id = state().conversationId;
+    await controller.openConversation(newConversationId());
+    expect(state()).toMatchObject({ conversationId: id, storageProblem: { kind: "notFound" } });
+    expect(state().entries).toHaveLength(2);
+  });
+
+  test("never writes the API key or the provider address into a saved conversation", async () => {
+    const ws = workspace();
+    const { controller, state } = await load(ws, { provider: reasoningProvider, apiKey: "sk-secret-123" });
+    await controller.send("Hi");
+    await eventually(() => state().conversations.length === 1, "the save");
+    const text = ws.files.files.get(`${state().conversationId}.json`)!;
+    expect(text).not.toContain("sk-secret-123");
+    expect(text).not.toContain("apiKey");
+    expect(text).not.toContain("localhost");
+    expect(JSON.parse(text)).toMatchObject({ version: 1, provider: "Saved", model: "m" });
   });
 });

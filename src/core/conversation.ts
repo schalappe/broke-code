@@ -96,6 +96,16 @@ export function summarize(record: ConversationRecord): ConversationSummary {
   return { id: record.id, title: conversationTitle(record.entries), updatedAt: record.updatedAt };
 }
 
+/** Conversations kept per workspace. */
+export const MAX_CONVERSATIONS = 50;
+
+/** Ids to delete so at most 50 remain: the oldest by `updatedAt`, newest of them first, never `current`. */
+export function conversationsOverLimit(summaries: readonly ConversationSummary[], current: string): string[] {
+  const others = summaries.filter((summary) => summary.id !== current).sort((a, b) => b.updatedAt - a.updatedAt);
+  const room = MAX_CONVERSATIONS - (others.length < summaries.length ? 1 : 0);
+  return others.slice(room).map((summary) => summary.id);
+}
+
 const REPLY_STATUSES: readonly ReplyStatus[] = ["waiting", "streaming", "done", "stopped", "failed"];
 const MENTION_KINDS: readonly string[] = ["file", "folder"];
 const MENTION_STATUSES: readonly string[] = [

@@ -13,11 +13,16 @@ const { moveHighlight } = await import("./SuggestionMenu");
 
 type Reply = ChatEntry & { role: "assistant" };
 
+const CONVERSATION_ID = "0b0d4c1e-8f9a-4c3b-9d2e-1a2b3c4d5e6f";
+/** Conversation fields of a state with nothing saved. */
+const unsaved = { conversationId: CONVERSATION_ID, conversations: [], storageProblem: undefined };
+
 /** Panel markup for a conversation of one question and `reply`, English strings. */
 function render(reply: Omit<Reply, "role">): string {
   const state: ChatState = {
     providers: ["P"],
     skipped: [],
+    ...unsaved,
     provider: "P",
     models: { status: "loaded", models: ["m"] },
     model: "m",
@@ -81,6 +86,7 @@ describe("error actions", () => {
     const state: ChatState = {
       providers: ["P"],
       skipped: [],
+      ...unsaved,
       provider: "P",
       models: { status: "failed", error },
       model: undefined,
@@ -110,6 +116,7 @@ describe("mentions", () => {
     const state: ChatState = {
       providers: ["P"],
       skipped: [],
+      ...unsaved,
       provider: "P",
       models: { status: "loaded", models: ["m"] },
       model: "m",

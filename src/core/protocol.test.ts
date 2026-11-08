@@ -50,6 +50,20 @@ describe("parseWebviewMessage", () => {
     expect(send(["a".repeat(MAX_MENTION_PATH_LENGTH)])).toBeDefined();
   });
 
+  test("accepts opening and deleting a conversation by its id", () => {
+    const id = "0b0d4c1e-8f9a-4c3b-9d2e-1a2b3c4d5e6f";
+    expect(parseWebviewMessage({ type: "openConversation", id })).toEqual({ type: "openConversation", id });
+    expect(parseWebviewMessage({ type: "deleteConversation", id })).toEqual({ type: "deleteConversation", id });
+  });
+
+  test("rejects a conversation id that is not one the host makes, so no other file can be named", () => {
+    for (const type of ["openConversation", "deleteConversation"]) {
+      for (const id of [undefined, 3, "", "../x", "a/b", "0b0d4c1e-8f9a-4c3b-9d2e-1a2b3c4d5e6f.json", "conversation"]) {
+        expect(parseWebviewMessage({ type, id })).toBeUndefined();
+      }
+    }
+  });
+
   test("accepts a file query with an integer id", () => {
     expect(parseWebviewMessage({ type: "queryFiles", query: "src/co", id: 7 })).toEqual({
       type: "queryFiles",
@@ -77,7 +91,10 @@ describe("chatStateOf", () => {
     provider: undefined,
     models: { status: "noProvider" },
     model: undefined,
+    conversationId: "0b0d4c1e-8f9a-4c3b-9d2e-1a2b3c4d5e6f",
     entries: [],
+    conversations: [],
+    storageProblem: undefined,
   };
 
   test("takes the chat state from init and state messages", () => {

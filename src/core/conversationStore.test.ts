@@ -124,6 +124,19 @@ describe("ConversationStore", () => {
     expect(await store.save(record(2000))).toBe(true);
   });
 
+  test("after a failed remove, keeps saving the conversation", async () => {
+    const files = memoryFiles();
+    const store = new ConversationStore(files);
+    const saved = record(1000);
+    await store.save(saved);
+    files.remove = async () => {
+      throw new Error("EACCES: permission denied");
+    };
+    await expect(store.remove(saved.id)).rejects.toThrow("EACCES");
+    expect(await store.save({ ...saved, updatedAt: 2000 })).toBe(true);
+    expect(await store.load(saved.id)).toMatchObject({ updatedAt: 2000 });
+  });
+
   test("never writes a conversation without entries", async () => {
     const files = memoryFiles();
     expect(await new ConversationStore(files).save({ ...record(1000), entries: [] })).toBe(false);

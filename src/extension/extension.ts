@@ -1,15 +1,17 @@
 /**
  * @module extension
- * Activation entry point: wires settings, API keys, mentions, file index, chat controller, chat view, and
- * `broke-code.setApiKey`.
+ * Activation entry point: wires settings, API keys, mentions, file index, saved conversations, chat controller, chat
+ * view, and `broke-code.setApiKey`.
  */
 import * as vscode from "vscode";
 import { ChatController } from "../core/chatController";
+import { ConversationStore } from "../core/conversationStore";
 import { type MentionReader, readMention } from "../core/mentions";
 import { parseProviders } from "../core/providers";
 import type { WorkspaceRoot } from "../core/workspaceFiles";
 import { ApiKeys } from "./apiKeys";
 import { CHAT_VIEW_ID, ChatView } from "./chatView";
+import { workspaceConversationFiles } from "./conversationFiles";
 import { WorkspaceFileIndex } from "./fileIndex";
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -23,8 +25,15 @@ export function activate(context: vscode.ExtensionContext): void {
   // [>]: Roots read at each mention, since folders can be added or removed while the window is open.
   const mentions: MentionReader = { read: (path) => readMention(workspaceRoots(), path) };
 
+  const conversations = new ConversationStore(workspaceConversationFiles(context.storageUri));
   let view: ChatView | undefined;
-  const controller = new ChatController(apiKeys, context.workspaceState, (state) => view?.publish(state), mentions);
+  const controller = new ChatController(
+    apiKeys,
+    context.workspaceState,
+    (state) => view?.publish(state),
+    mentions,
+    conversations,
+  );
   const fileIndex = new WorkspaceFileIndex();
   view = new ChatView(context.extensionUri, controller, { setApiKey, queryFiles: (query) => fileIndex.query(query) });
 
@@ -46,6 +55,7 @@ export function activate(context: vscode.ExtensionContext): void {
     { dispose: () => controller.stop() },
   );
   applySettings();
+  void controller.restore();
 }
 
 export function deactivate(): void {}
