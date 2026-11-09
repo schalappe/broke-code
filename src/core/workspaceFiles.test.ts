@@ -268,9 +268,10 @@ describe("readWorkspaceEntry with read-only roots", () => {
     });
   });
 
-  test("a written path under the root's unresolved path is outside: the root is matched as given", async () => {
-    // [>]: `base` sits under /var, the real path under /private/var: only the real path reaches the root.
-    expect(await readWorkspaceEntry([], join(base, "skills", "one", "a.md"), {}, [one])).toEqual({
+  test("a written path under a link to the root is outside: the root is matched as given", async () => {
+    // [>]: A link made here, so the test needs no system symlink such as macOS's /var (absent on Linux).
+    await symlink(join(base, "skills"), join(base, "skills-link"));
+    expect(await readWorkspaceEntry([], join(base, "skills-link", "one", "a.md"), {}, [one])).toEqual({
       status: "outsideWorkspace",
       kind: "file",
     });
