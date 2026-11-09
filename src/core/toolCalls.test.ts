@@ -128,6 +128,20 @@ describe("parseToolCall", () => {
     expect(performance.now() - started).toBeLessThan(1000);
   });
 
+  test("stays fast on many inline code spans, before a call", () => {
+    const answer = `${"a `x` ".repeat(64000)}\n<read_file>\n<path>a</path>\n</read_file>`;
+    const started = performance.now();
+    expect(parseToolCall(answer, TOOLS)).toMatchObject({ kind: "call", args: { path: "a" } });
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+
+  test("reports a known tool as never closing when its only closing tags come before it", () => {
+    const answer = "</read_file>\n<read_file>\n<path>a</path>";
+    const parsed = parseToolCall(answer, TOOLS);
+    expect(parsed).toMatchObject({ kind: "malformed", start: answer.indexOf("<read_file>"), end: answer.length });
+    expect(malformedMessage(answer)).toContain("The <read_file> tag never closes");
+  });
+
   test("closes the outer tag at its first closing tag after it, not at one before it", () => {
     const answer = "Text </read_file> first.\n<read_file>\n<path>a</path>\n</read_file>\n</read_file>";
     expect(parseToolCall(answer, TOOLS)).toMatchObject({
