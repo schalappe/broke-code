@@ -1,11 +1,11 @@
 /**
  * @module chatController
  * Chat state owner: provider and model choice, model listing, agent turns (streamed replies, body tool calls, tool
- * steps, step limit, context budget), context usage, stop, and the workspace's saved conversations (new chat, reopen,
- * delete). The conversation shown is saved when a message is sent, at most every 500 ms while a reply streams, when a
+ * steps, their approval requests, step limit, context budget), context usage, stop, and the workspace's saved
+ * conversations (new chat, reopen, delete). The conversation shown is saved when a message is sent, at most every 500 ms while a reply streams, when a
  * call starts, after each tool step, and when the turn ends, so a reload or crash loses at most the reply streaming.
  * vscode-free: host passes key store, workspace memento, mention reader, conversation store, tool runner, instruction
- * file reader, skill reader, and limits source through ports.
+ * file reader, skill reader, limits source, and auto-approve setting through ports.
  */
 import type { ApprovalRequest, Decision, Preview } from "./approval";
 import { type ChatMessage, listModels, type ProviderAccess, streamChat } from "./client";
