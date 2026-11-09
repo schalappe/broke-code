@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ApprovalRequest, Decision } from "./approval";
-import { type CommandEnv, commandShell, runCommand, runCommandTool } from "./commands";
+import { type CommandEnv, commandShell, killRunningCommands, runCommand, runCommandTool } from "./commands";
 import type { ToolCall } from "./tools";
 import type { WorkspaceRoot } from "./workspaceFiles";
 
@@ -40,9 +40,21 @@ async function expectGroupGone(pgid: number) {
   expect(code).toBe("ESRCH");
 }
 
-async function waitFor(condition: () => Promise<boolean>) {
+async function waitFor(condition: () => Promise<boolean> | boolean) {
   for (let tries = 0; tries < 100 && !(await condition()); tries++) await Bun.sleep(10);
 }
+
+/** True while process `pid` exists, a zombie not yet reaped included. */
+function processExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as { code?: unknown }).code !== "ESRCH";
+  }
+}
+
+const MIB = 1024 * 1024;
 
 describe("runCommand", () => {
   test("a command that exits 0 is ok, with its stdout", async () => {
@@ -125,13 +137,13 @@ describe("runCommand", () => {
     await expectGroupGone(Number(result.text.split("\n")[2]));
   });
 
-  test("a process that ignores SIGTERM and holds no output still gets SIGKILL once the result is in", async () => {
+  test("a process that ignores SIGTERM and holds no output gets SIGKILL before the result is in", async () => {
     const command = "echo $$; (trap '' TERM; exec sleep 5 >/dev/null 2>&1) & wait";
+    const started = Date.now();
     const result = await run(command, { timeoutMs: 100, killGraceMs: 200 });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(300);
     expect(result.text).toStartWith("stopped after 0.1 seconds");
-    const pgid = Number(result.text.split("\n")[2]);
-    await Bun.sleep(400);
-    await expectGroupGone(pgid);
+    await expectGroupGone(Number(result.text.split("\n")[2]));
   });
 
   test("a process that left the group while holding the output does not keep the result waiting", async () => {
@@ -159,11 +171,117 @@ describe("runCommand", () => {
     expect(result.text).toContain("\n[truncated: 2 more lines not shown]\nstderr: (empty)");
   });
 
+  test.each([
+    ["three-byte", "\\xe2\\x82\\xac", "€", [0, 2]],
+    ["four-byte", "\\xf0\\x9f\\x98\\x80", "😀", [1, 2, 3]],
+  ])(
+    "keeps the first MiB cut inside a %s character, at each byte of it, as whole characters",
+    async (_case, bytes, character, prefixes) => {
+      const width = Buffer.byteLength(character);
+      for (const prefix of prefixes) {
+        // [>]: `prefix` ASCII bytes shift where the 1 MiB cut lands inside a character: 1 MiB - prefix is not a multiple of
+        // the character's width for any prefix listed.
+        expect((MIB - prefix) % width).not.toBe(0);
+        const result = await run(`perl -e 'print "x" x ${prefix}, "${bytes}" x 400000, "\\n"'`);
+        const stdout = result.text.split("\n")[2]!;
+        expect(stdout).toBe(`${"x".repeat(prefix)}${character.repeat(Math.floor((MIB - prefix) / width))}`);
+      }
+    },
+  );
+
+  test("a stop after the shell exited, while the output drains, ends the wait at once", async () => {
+    const abort = new AbortController();
+    const pidFile = join(base, "drain.pid");
+    const running = run(`sleep 5 & echo $$ > '${pidFile}'`, { drainMs: 5000 }, abort.signal);
+    await waitFor(async () => (await readFile(pidFile, "utf8").catch(() => "")).endsWith("\n"));
+    const shell = Number(await readFile(pidFile, "utf8"));
+    await waitFor(async () => !processExists(shell));
+    const stopped = Date.now();
+    abort.abort();
+    const result = await running;
+    expect(Date.now() - stopped).toBeLessThan(1500);
+    expect(result.text).toEndWith("The processes the command left running in the background were stopped.");
+    await expectGroupGone(shell);
+  });
+
+  test("a leftover process that ignores SIGTERM gets SIGKILL at the grace, and the result says so then", async () => {
+    const started = Date.now();
+    const result = await run("echo $$; (trap '' TERM; exec sleep 5 >/dev/null 2>&1) & sleep 0.05", {
+      killGraceMs: 300,
+    });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(300);
+    expect(result.status).toBe("ok");
+    expect(result.text).toEndWith(
+      "The processes the command left running in the background did not stop on SIGTERM; they were sent SIGKILL after 0.3 seconds.",
+    );
+    await expectGroupGone(Number(result.text.split("\n")[2]));
+  });
+
+  test("a signal that cannot be sent is an error naming it, its message kept when it has no code", async () => {
+    const kill = (pid: number, signal: NodeJS.Signals | 0) => {
+      if (signal === "SIGTERM") throw new Error("signals are off");
+      process.kill(pid, signal);
+    };
+    const result = await run("echo $$; sleep 5", { timeoutMs: 100, killGraceMs: 200, kill });
+    expect(result.status).toBe("error");
+    expect(result.text).toStartWith("stopped after 0.1 seconds\n");
+    expect(result.text).toEndWith("\n\nSending SIGTERM to the command's processes failed (signals are off).");
+    await expectGroupGone(Number(result.text.split("\n")[2]));
+  });
+
+  test("a group no signal reaches is said to be maybe still running", async () => {
+    const pids: number[] = [];
+    const kill = (pid: number, signal: NodeJS.Signals | 0) => {
+      pids.push(pid);
+      if (signal !== 0) throw Object.assign(new Error("not allowed"), { code: "EINVAL" });
+      process.kill(pid, signal);
+    };
+    const result = await run("echo $$; sleep 5 >/dev/null 2>&1 & echo started", { killGraceMs: 100, kill });
+    const pgid = Number(result.text.split("\n")[2]);
+    try {
+      expect(result.status).toBe("ok");
+      expect(result.text).toEndWith(
+        [
+          "The processes the command left running in the background could not be stopped; they may still be running.",
+          "Sending SIGTERM to the command's processes failed (EINVAL).",
+          "Sending SIGKILL to the command's processes failed (EINVAL).",
+        ].join("\n"),
+      );
+    } finally {
+      process.kill(-pgid, "SIGKILL");
+    }
+  });
+
   test("a shell that cannot start is an error naming it", async () => {
     expect(await run("true", { shell: join(base, "no-shell") })).toEqual({
       status: "error",
       text: `run_command: the command could not start with the shell ${join(base, "no-shell")} (ENOENT).`,
     });
+  });
+});
+
+describe("killRunningCommands", () => {
+  test.each([
+    ["while it runs", false],
+    ["after a stop, during the grace", true],
+  ])("sends SIGKILL at once to a command that ignores SIGTERM, %s", async (_case, stopFirst) => {
+    const abort = new AbortController();
+    const pidFile = join(base, `host-exit-${stopFirst}.pid`);
+    const running = runCommand(
+      { command: `trap '' TERM; echo $$ > '${pidFile}'; exec sleep 30`, cwd: base },
+      { signal: abort.signal },
+      { shell: "/bin/sh", timeoutMs: 60_000 },
+    );
+    await waitFor(async () => (await readFile(pidFile, "utf8").catch(() => "")).endsWith("\n"));
+    const pgid = Number(await readFile(pidFile, "utf8"));
+    if (stopFirst) abort.abort();
+    const killed = Date.now();
+    killRunningCommands();
+    // [>]: Well under the 2-second grace a stopped command would otherwise get before its SIGKILL.
+    await expectGroupGone(pgid);
+    expect(Date.now() - killed).toBeLessThan(1000);
+    abort.abort();
+    await running;
   });
 });
 

@@ -38,10 +38,20 @@ export const RUN_COMMAND_TOOL: ToolSpec = {
 
 /**
  * What an approved command runs with. `shell`: the program run as `<shell> -c <command>`. `timeoutMs`: how long the
- * command may run before its process group is stopped. `killGraceMs`: how long the group has between SIGTERM and
- * SIGKILL, two seconds unless set (tests shorten it).
+ * command may run before its process group is stopped. The rest is for tests: `killGraceMs`, how long the group has
+ * between SIGTERM and SIGKILL (two seconds); `drainMs`, how long the output may keep coming once the shell exited
+ * (200 ms); `kill`, what sends the signals (`process.kill`).
  */
-export type CommandEnv = { shell: string; timeoutMs: number; killGraceMs?: number };
+export type CommandEnv = {
+  shell: string;
+  timeoutMs: number;
+  killGraceMs?: number;
+  drainMs?: number;
+  kill?: KillFunction;
+};
+
+/** `process.kill`'s shape: signal `pid`, a negative one naming a process group. Throws when the signal is not sent. */
+export type KillFunction = (pid: number, signal: NodeJS.Signals | 0) => void;
 
 /**
  * The shell commands run with: `terminalShell` (`vscode.env.shell`, the terminal's default profile, empty where VS Code
@@ -62,8 +72,13 @@ const DEFAULT_KILL_GRACE_MS = 2000;
  * the command left in the background keeps the pipes open, and would keep the result waiting until the timeout.
  */
 const DRAIN_MS = 200;
-/** How long the pipes may stay open after SIGKILL, held by a process that left the group, before the run settles. */
+/**
+ * How long the pipes may stay open once the signalled group is done, held by a process that left the group, before
+ * the run settles.
+ */
 const CLOSE_AFTER_KILL_MS = 500;
+/** How often a signalled group is checked for its end during the grace. */
+const GROUP_POLL_MS = 20;
 
 /**
  * Run `call` in `roots`: check `command` and `cwd`, ask the user through `context.requestApproval`, then run it with
@@ -141,8 +156,10 @@ function errorCode(error: unknown): string {
  *
  * The timeout and `context.signal` (Stop) end the whole group, a pipeline's other processes included: SIGTERM, then
  * SIGKILL after the grace. Processes the command leaves in its group once the shell exits are stopped the same way,
- * since nothing could reach them afterwards. The run settles once the output pipes close, at most a moment after
- * SIGKILL, so a process that ignores SIGTERM cannot keep the turn waiting.
+ * since nothing could reach them afterwards. Once the group is signalled, the run settles when the group is gone or
+ * SIGKILL was sent, so the result never claims a stop that has not happened, and when the output pipes close, at most
+ * a moment past that, so a process that left the group cannot keep the turn waiting. A signal that fails for another
+ * reason than a group already gone adds a line naming it. `killRunningCommands` ends every group still running at once.
  */
 export function runCommand(
   request: CommandRequest,
@@ -152,6 +169,7 @@ export function runCommand(
   const { signal } = context;
   if (signal.aborted) return Promise.resolve(stopped(TOOL));
   const graceMs = env.killGraceMs ?? DEFAULT_KILL_GRACE_MS;
+  const kill = env.kill ?? process.kill;
 
   return new Promise((resolve) => {
     let child: ReturnType<typeof spawn>;
@@ -169,46 +187,77 @@ export function runCommand(
       resolve(couldNotStart(env.shell, error));
       return;
     }
+    const pgid = child.pid;
+    if (pgid !== undefined) liveGroups.add(pgid);
 
     const stdout = new CapturedOutput();
     const stderr = new CapturedOutput();
     let exit: { code: number | null; signal: NodeJS.Signals | null } | undefined;
     let ending: Ending | undefined;
+    let groupEnd: GroupEnd | undefined;
+    const signalFailures: string[] = [];
+    let closed = false;
     let settled = false;
-    let closeTimer: ReturnType<typeof setTimeout> | undefined;
     let drainTimer: ReturnType<typeof setTimeout> | undefined;
+    let pollTimer: ReturnType<typeof setInterval> | undefined;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
+    let closeTimer: ReturnType<typeof setTimeout> | undefined;
 
     const settle = (result: ToolResult) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timeout);
-      clearTimeout(closeTimer);
-      clearTimeout(drainTimer);
+      if (pgid !== undefined) liveGroups.delete(pgid);
+      for (const timer of [timeout, drainTimer, killTimer, closeTimer]) clearTimeout(timer);
+      clearInterval(pollTimer);
       signal.removeEventListener("abort", onAbort);
       resolve(result);
     };
     const finish = () => {
       child.stdout?.destroy();
       child.stderr?.destroy();
-      settle(commandResult({ exit, ending, timeoutMs: env.timeoutMs, stdout, stderr }));
+      settle(
+        commandResult({ exit, ending, groupEnd, signalFailures, timeoutMs: env.timeoutMs, graceMs, stdout, stderr }),
+      );
     };
-    /**
-     * SIGTERM to the group, SIGKILL after the grace. The SIGKILL is never cancelled, also once the result settled: a
-     * process that ignores SIGTERM and holds no pipe would outlive it. The result waits for the pipes to close, at most
-     * a moment past the SIGKILL, since a process that left the group may still hold one.
-     */
+    /** The run may settle: the group was never signalled, or it is done and its pipes closed. */
+    const finishIfDone = () => {
+      if (ending === undefined || (groupEnd !== undefined && closed)) finish();
+    };
+    /** Signal the group; false when the signal could not be sent, a line then saying why. */
+    const send = (name: NodeJS.Signals): boolean => {
+      if (pgid === undefined) return true;
+      const failure = killGroup(kill, pgid, name);
+      if (failure === undefined) return true;
+      // [>]: Logged too: after a Stop the controller drops the result, line included.
+      console.error(`broke-code: could not send ${name} to the command group ${pgid} (${failure})`);
+      signalFailures.push(`Sending ${name} to the command's processes failed (${failure}).`);
+      return false;
+    };
+    /** The group is gone or got SIGKILL: no signal goes to its id again, since the system may reuse it. */
+    const groupDone = (how: GroupEnd) => {
+      groupEnd = how;
+      if (pgid !== undefined) liveGroups.delete(pgid);
+      clearInterval(pollTimer);
+      clearTimeout(killTimer);
+      // [>]: A process that left the group may still hold a pipe: the result waits for it only a moment.
+      if (!closed) closeTimer = setTimeout(finish, CLOSE_AFTER_KILL_MS);
+      finishIfDone();
+    };
+    /** SIGTERM to the group, then a check for its end until SIGKILL at the grace. */
     const endGroup = (reason: Ending) => {
       if (ending !== undefined) return;
       ending = reason;
-      const pid = child.pid;
-      if (pid === undefined) return;
-      killGroup(pid, "SIGTERM");
-      setTimeout(() => killGroup(pid, "SIGKILL"), graceMs).unref();
-      closeTimer = setTimeout(finish, graceMs + CLOSE_AFTER_KILL_MS);
+      clearTimeout(drainTimer);
+      if (pgid === undefined) return;
+      send("SIGTERM");
+      pollTimer = setInterval(() => {
+        if (!groupAlive(kill, pgid)) groupDone("gone");
+      }, GROUP_POLL_MS);
+      killTimer = setTimeout(() => groupDone(send("SIGKILL") ? "killed" : "unreachable"), graceMs);
     };
     /** Once the shell exited: a process still in its group was left behind, and nothing else could stop it. */
     const afterExit = () => {
-      if (groupAlive(child.pid)) endGroup("leftover");
+      if (groupAlive(kill, pgid)) endGroup("leftover");
       else finish();
     };
 
@@ -231,12 +280,13 @@ export function runCommand(
       clearTimeout(timeout);
       // [>]: A process the command started may hold the pipes open, in the group or out of it: the output gets a
       // moment to drain, then the result no longer waits for it.
-      if (ending === undefined) drainTimer = setTimeout(afterExit, DRAIN_MS);
+      if (ending === undefined) drainTimer = setTimeout(afterExit, env.drainMs ?? DRAIN_MS);
     });
     child.on("close", () => {
+      closed = true;
       // [>]: A job left in the background with its output redirected holds no pipe, so only this check finds it.
-      if (ending === undefined && groupAlive(child.pid)) endGroup("leftover");
-      finish();
+      if (ending === undefined && groupAlive(kill, pgid)) endGroup("leftover");
+      finishIfDone();
     });
   });
 }
@@ -247,26 +297,56 @@ export function runCommand(
  */
 type Ending = "timeout" | "stopped" | "leftover";
 
-/** Send `name` to every process of group `pgid`. */
-function killGroup(pgid: number, name: NodeJS.Signals): void {
+/**
+ * How a signalled group ended: `gone` once no process of it is left, `killed` once SIGKILL was sent at the grace,
+ * `unreachable` when SIGKILL could not be sent.
+ */
+type GroupEnd = "gone" | "killed" | "unreachable";
+
+/** Process groups of commands still running or not yet stopped: what `killRunningCommands` ends. */
+const liveGroups = new Set<number>();
+
+/**
+ * Send SIGKILL at once to the group of every command still running, or stopped but still in its grace. For the
+ * extension's `deactivate`: the host may exit right after it, and a timer would die with it, leaving a process that
+ * ignores SIGTERM running. A host that crashes never calls it.
+ */
+export function killRunningCommands(): void {
+  for (const pgid of liveGroups) {
+    const failure = killGroup(process.kill, pgid, "SIGKILL");
+    if (failure !== undefined) console.error(`broke-code: could not kill the command group ${pgid} (${failure})`);
+  }
+  liveGroups.clear();
+}
+
+/**
+ * Send `name` to every process of group `pgid`: `undefined` when sent or when nothing is left to signal, else the
+ * error's code or message.
+ */
+function killGroup(kill: KillFunction, pgid: number, name: NodeJS.Signals): string | undefined {
   try {
-    process.kill(-pgid, name);
-  } catch {
-    // [>]: ESRCH: no process of the group is left, which is the goal.
+    kill(-pgid, name);
+    return undefined;
+  } catch (error) {
+    // [>]: ESRCH: no process of the group is left, which is the goal. EPERM: see `groupAlive`.
+    const code = errorCode(error);
+    return code === "ESRCH" || code === "EPERM" ? undefined : code;
   }
 }
 
 /**
  * True when group `pid` holds a process this host may signal. [&]: macOS answers EPERM for a group of zombies not yet
- * reaped, and for one whose processes changed user (setuid), which could not be stopped anyway: neither counts.
+ * reaped, and for one whose processes changed user (setuid), which could not be stopped anyway: neither counts. Signal
+ * 0 fails for no other reason; should it, the group counts as alive, so the stop goes on and its failure shows.
  */
-function groupAlive(pid: number | undefined): boolean {
+function groupAlive(kill: KillFunction, pid: number | undefined): boolean {
   if (pid === undefined) return false;
   try {
-    process.kill(-pid, 0);
+    kill(-pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    const code = errorCode(error);
+    return code !== "ESRCH" && code !== "EPERM";
   }
 }
 
@@ -280,20 +360,38 @@ function couldNotStart(shell: string, error: unknown): ToolResult {
 function commandResult(run: {
   exit: { code: number | null; signal: NodeJS.Signals | null } | undefined;
   ending: Ending | undefined;
+  groupEnd: GroupEnd | undefined;
+  signalFailures: string[];
   timeoutMs: number;
+  graceMs: number;
   stdout: CapturedOutput;
   stderr: CapturedOutput;
 }): ToolResult {
-  if (run.ending === "stopped") return stopped(TOOL);
+  if (run.ending === "stopped" && run.signalFailures.length === 0) return stopped(TOOL);
+  const failures = run.signalFailures.map((line) => `\n${line}`).join("");
+  if (run.ending === "stopped") return { status: "error", text: `${stopped(TOOL).text}\n${failures}` };
   const sections = `${section("stdout", run.stdout)}\n${section("stderr", run.stderr)}`;
-  const leftover =
-    run.ending === "leftover" ? "\n\nThe processes the command left running in the background were stopped." : "";
   if (run.ending === "timeout") {
-    return { status: "error", text: `stopped after ${run.timeoutMs / 1000} seconds\n${sections}` };
+    const tail = failures === "" ? "" : `\n${failures}`;
+    return { status: "error", text: `stopped after ${run.timeoutMs / 1000} seconds\n${sections}${tail}` };
   }
+  const leftover = run.ending === "leftover" ? `\n\n${leftoverLine(run.groupEnd, run.graceMs)}${failures}` : "";
   const code = run.exit?.code ?? null;
   const first = code !== null ? `exit code ${code}` : `killed by ${run.exit?.signal ?? "an unknown signal"}`;
   return { status: code === 0 ? "ok" : "error", text: `${first}\n${sections}${leftover}` };
+}
+
+/** What became of the processes the command left running, as true when the result settles. */
+function leftoverLine(groupEnd: GroupEnd | undefined, graceMs: number): string {
+  const subject = "The processes the command left running in the background";
+  switch (groupEnd) {
+    case "killed":
+      return `${subject} did not stop on SIGTERM; they were sent SIGKILL after ${graceMs / 1000} seconds.`;
+    case "unreachable":
+      return `${subject} could not be stopped; they may still be running.`;
+    default:
+      return `${subject} were stopped.`;
+  }
 }
 
 /** `name:` then the output on the lines after it, or `name: (empty)`. */
@@ -347,7 +445,7 @@ class CapturedOutput {
 /** `bytes` without a UTF-8 character the byte cap cut in its middle. */
 function toCharacterBoundary(bytes: Buffer): Buffer {
   let end = bytes.length;
-  // [>]: Back over continuation bytes (10xxxxxx) to the lead byte, then drop it unless its character is whole.
+  // [>]: The decoder would turn a cut character into U+FFFD, a character the command never wrote: drop it instead.
   let start = end - 1;
   while (start >= 0 && start > end - 4 && (bytes[start]! & 0xc0) === 0x80) start--;
   if (start < 0) return bytes;

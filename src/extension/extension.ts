@@ -7,7 +7,7 @@
 import { homedir } from "node:os";
 import * as vscode from "vscode";
 import { ChatController, type InstructionReader, type SkillReader } from "../core/chatController";
-import { type CommandEnv, commandShell } from "../core/commands";
+import { type CommandEnv, commandShell, killRunningCommands } from "../core/commands";
 import { directoryFiles } from "../core/conversationFiles";
 import { ConversationStore } from "../core/conversationStore";
 import { readInstructionFiles } from "../core/instructions";
@@ -103,7 +103,13 @@ export function activate(context: vscode.ExtensionContext): void {
   void controller.restore();
 }
 
-export function deactivate(): void {}
+/**
+ * Kill every command still running, or stopped and in its grace, at once: the host may exit right after this, and the
+ * SIGKILL a stop schedules would die with it. Synchronous, so it is done before VS Code moves on.
+ */
+export function deactivate(): void {
+  killRunningCommands();
+}
 
 /** Log what a send discovered, one line; the warnings show in the chat panel. */
 function logSkills(discovery: SkillDiscovery): SkillDiscovery {
