@@ -74,6 +74,20 @@ describe("readInstructionFiles", () => {
     ]);
   });
 
+  test("accepts a workspace AGENTS.md linked to a file in another open workspace folder", async () => {
+    const policy = join(base, "policy");
+    await mkdir(policy);
+    await writeFile(join(policy, "rules.md"), "Shared rules.");
+    await symlink(join(policy, "rules.md"), join(workspace, "AGENTS.md"));
+    const roots = [
+      { name: "app", path: workspace },
+      { name: "policy", path: policy },
+    ];
+    const { result, logged } = await quietly(() => readInstructionFiles(home, roots));
+    expect(result).toEqual([{ label: "app/AGENTS.md", text: "Shared rules." }]);
+    expect(logged).toEqual([]);
+  });
+
   test("follows a symlinked home file, as dotfiles often are", async () => {
     const dotfiles = join(base, "dotfiles");
     await mkdir(dotfiles);

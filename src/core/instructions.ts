@@ -19,7 +19,7 @@ const FILE_NAME = "AGENTS.md";
 /**
  * The instruction files that exist, in prompt order: the home file, then one per workspace folder, labelled by its
  * folder name in a multi-root workspace. The home file follows symlinks (dotfiles are often linked); a workspace file
- * is held to the workspace boundary, as mentions are. A missing file is left out; any other failure is logged and
+ * is held to the workspace boundary, as mentions are: inside any of the workspace folders. A missing file is left out; any other failure is logged and
  * left out. Never rejects.
  */
 export async function readInstructionFiles(home: string, roots: WorkspaceRoot[]): Promise<InstructionFile[]> {
@@ -27,7 +27,9 @@ export async function readInstructionFiles(home: string, roots: WorkspaceRoot[])
     { label: `~/.agents/${FILE_NAME}`, read: () => readFileOutsideWorkspace(join(home, ".agents", FILE_NAME)) },
     ...roots.map((root) => ({
       label: roots.length > 1 ? `${root.name}/${FILE_NAME}` : FILE_NAME,
-      read: () => readWorkspaceEntry([root], FILE_NAME),
+      // [>]: The absolute path names this folder's file whatever the folder names are, and the boundary check runs
+      // against every workspace folder, as for mentions: a link to a file in another open folder is accepted.
+      read: () => readWorkspaceEntry(roots, join(root.path, FILE_NAME)),
     })),
   ];
   const entries = await Promise.all(sources.map((source) => source.read()));
