@@ -397,7 +397,7 @@ yet. Read
   on `qwen3.8:27b` then `gemma4:26b-a4b-it-qat`, all runs of one model before the next. Each run drives the
   chat controller with the read and write tools over a throwaway copy of the scenario's fixture, each write applied
   at once, no instruction file, no skill, and a
-  step limit of 6. Three scenarios, each judged on the turn ending `done` and on the workspace after it: every file
+  step limit of 10. Three scenarios, each judged on the turn ending `done` and on the workspace after it: every file
   the scenario writes holds its exact expected text, byte for byte, and every other file is unchanged.
   - `read`: the model must read a setting it cannot guess and answer with its value. Passes when a tool step got the
     value, the answer holds it, and no file changed.

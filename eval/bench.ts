@@ -17,8 +17,11 @@ import { describeError, judge, SCENARIOS, workspaceChanges } from "./scenarios";
 
 export const BENCH_MODELS = ["qwen3.8:27b", "gemma4:26b-a4b-it-qat"];
 const OLLAMA_URL = "http://localhost:11434/v1";
-/** Small, so a model that loops ends as a step limit after a few requests, not after 50. */
-const MAX_TOOL_STEPS = 6;
+/**
+ * Small, so a model that loops ends as a step limit after a few requests, not after 50; room for an edit's list, read,
+ * edit, and search, and for empty replies, which count as steps (ADR 0001).
+ */
+const MAX_TOOL_STEPS = 10;
 
 /**
  * `models`: `--model`, repeatable, else both bench models; a name given twice is played once, since the report scores

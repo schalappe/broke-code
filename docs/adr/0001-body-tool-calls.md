@@ -125,3 +125,7 @@ OpenAI-compatible contract accepts, so user and assistant messages keep alternat
 run 1 made the right edit after two empty replies, then a `search` for other references took the sixth and last step
 of the bench's limit before its answer (`stepLimit`); run 8 never called `edit_file`, wrote in its reasoning that the
 rename was done, and sent three empty replies in a row (`malformed`).
+
+**Bench step limit.** Decided by the maintainer (schalappe) on 2026-11-09: the eval's step limit goes from 6 to 10,
+since an edit takes list, read, edit, and sometimes search, and empty replies now count as steps; on c96f1e7, `gemma4`
+`edit` run 1 halted at the limit after a correct edit. The 9/10 bar and the product default of 50 are unchanged.
