@@ -113,3 +113,15 @@ answer to the user.", sent back as `<tool_result tool="unknown" status="error">`
 counts toward the three malformed calls in a row and the step limit. A reply with text and no call stays the final
 answer. The empty assistant message goes back in the history before its step, as `content: ""`, which the
 OpenAI-compatible contract accepts, so user and assistant messages keep alternating as Gemma's chat template requires.
+
+**Result.** On revision c96f1e7, 10 runs per model:
+
+| Model                   | `read` | `edit` | `create` |
+| ----------------------- | ------ | ------ | -------- |
+| `qwen3.8:27b`           | 10/10  | 10/10  | 10/10    |
+| `gemma4:26b-a4b-it-qat` | 10/10  | 8/10   | 10/10    |
+
+`gemma4` sent empty replies in 4 runs; 2 recovered and passed (`read` 9, `edit` 3). `edit` stays one run under the bar:
+run 1 made the right edit after two empty replies, then a `search` for other references took the sixth and last step
+of the bench's limit before its answer (`stepLimit`); run 8 never called `edit_file`, wrote in its reasoning that the
+rename was done, and sent three empty replies in a row (`malformed`).

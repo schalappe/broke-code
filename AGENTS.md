@@ -414,10 +414,10 @@ yet. Read
   a local iteration; `--dump <file>` appends each run's entries (tool steps with their call's arguments), verdict, and
   `changes` (each file that differs from the fixture, with its text, `null` when removed) as JSON Lines, to read the
   failing replies; an incomplete last line left by an interrupted run is removed, with a notice, before the first
-  append. A full run took 11 min 43 s on the maintainer's Mac, the first run of each model including its load. It
-  runs locally on demand and never in CI. On 6224b01, `gemma4:26b-a4b-it-qat` is under the bar on `edit` (6/10):
-  every miss is a reply with reasoning and no text, which ends the turn `done` before any call (ADR 0001, amendment
-  of 2026-11-09). Scenarios for commands and skills come with
+  append. A full run took 17 min 19 s on the maintainer's Mac, the first run of each model including its load. It
+  runs locally on demand and never in CI. On c96f1e7, `gemma4:26b-a4b-it-qat` is under the bar on `edit` (8/10): one
+  run made the edit, but two empty replies had used steps and it halted at the step limit; the other never called
+  `edit_file`, then sent three empty replies (ADR 0001, amendment of 2026-11-09 on empty replies). Scenarios for commands and skills come with
   `run_command` (#9) and skills (#10).
 - v1 supports macOS only. Windows and Linux are planned for v2.
 

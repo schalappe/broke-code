@@ -203,9 +203,9 @@ runs of each task, with the bar at nine. The bench has three tasks:
 - **Edit**: rename a function in a source file, changing nothing else.
 - **Create**: create a file whose text holds double quotes, backslashes, tags, and a code block, exactly as asked.
 
-Both models pass **Read** and **Create**, and `qwen3.8:27b` passes **Edit**. `gemma4:26b-a4b-it-qat` is under the
-bar on **Edit** for now: in some runs it thinks, then stops without answering or calling a tool, so the file stays
-as it was. Contributors run the bench with `bun run eval`.
+`qwen3.8:27b` passes all three tasks. `gemma4:26b-a4b-it-qat` passes **Read** and **Create**, and is one run under
+the bar on **Edit** for now (8 of 10): it sometimes thinks, then stops without a word, and although broke-code asks it
+again, it does not always recover. Contributors run the bench with `bun run eval`.
 
 ## Privacy
 
