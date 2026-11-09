@@ -94,8 +94,8 @@ export function judge(scenario: Scenario, entries: readonly ChatEntry[], after: 
     case "failed":
       return { pass: false, category: "providerError", detail: describeError(reply.error) };
     case "halted": {
-      const category: FailureCategory =
-        reply.haltReason === "malformedCalls" ? "malformed" : (reply.haltReason ?? "stepLimit");
+      if (reply.haltReason === undefined) throw new Error("A halted reply has no halt reason.");
+      const category = reply.haltReason === "malformedCalls" ? "malformed" : reply.haltReason;
       const steps = entries.filter((entry) => entry.role === "tool");
       return { pass: false, category, detail: `steps: ${describeSteps(steps)}` };
     }

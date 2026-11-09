@@ -28,14 +28,14 @@ export function formatReport(results: readonly RunResult[], runs: number): { tex
       lines.push(`  ${scenario}: ${passes}/${group.length} passed (bar ${bar}), ${formatDuration(ms)}`);
       if (passes < bar) under.push(`${model} ${scenario} ${passes}/${group.length}`);
 
-      const failures = group.flatMap((result) => (result.verdict.pass ? [] : [{ ...result, verdict: result.verdict }]));
-      const categories = unique(failures.map((failure) => failure.verdict.category)).sort();
+      const failures = group.flatMap(({ run, verdict }) => (verdict.pass ? [] : [{ run, ...verdict }]));
+      const categories = unique(failures.map((failure) => failure.category)).sort();
       for (const category of categories) {
-        const count = failures.filter((failure) => failure.verdict.category === category).length;
+        const count = failures.filter((failure) => failure.category === category).length;
         lines.push(`    ${category}: ${count}`);
       }
-      for (const failure of failures) {
-        lines.push(`    run ${failure.run + 1} ${failure.verdict.category}: ${failure.verdict.detail}`);
+      for (const { run, category, detail } of failures) {
+        lines.push(`    run ${run + 1} ${category}: ${detail}`);
       }
     }
   }
