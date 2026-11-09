@@ -166,9 +166,9 @@ yet. Read
   symlink, and it must still hold the planned text (or already the new text: a success). Only then does the
   temporary file get the old file's permission bits (`rwx` for owner, group, and others) and take its place:
   `rename(2)` over an existing file, `link(2)` for a new one, which fails rather than replace a file created meanwhile
-  (refused as changed since planned). On any failure the temporary file is removed and the file stays
-  byte-identical; the error result keeps the cause ("the file was not written (ENOSPC)"), and folders created for the
-  write stay. Accepted costs: a hard link to the file keeps the old text; its owner, extended attributes, and ACLs
+  (refused as changed since planned). On any failure the file stays byte-identical and the temporary file is
+  removed; when that removal fails, the result names the temporary file and its cause. The error result keeps the
+  cause ("the file was not written (ENOSPC)"), and folders created for the write stay. Accepted costs: a hard link to the file keeps the old text; its owner, extended attributes, and ACLs
   are not kept; the folder must be writable; a crash before the swap, or a folder renamed during the write, leaves
   the temporary file behind. Residual races, accepted as for reads, since such a writer already runs with the user's
   rights: a write landing between the last read and the rename is overwritten (Node has no compare-and-swap on a
