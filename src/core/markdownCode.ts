@@ -1,7 +1,7 @@
 /**
  * @module markdownCode
- * Where a message holds Markdown code, which never holds mentions. No `node:` or `vscode` import, since the webview
- * bundle loads it.
+ * Where a message holds Markdown code, which never holds mentions or body tool calls. No `node:` or `vscode` import,
+ * since the webview bundle loads it.
  */
 
 /** Stands in for code characters; not whitespace, so a token cannot start right after masked code. */
@@ -53,8 +53,8 @@ function standsAlone(text: string, index: number, length: number): boolean {
   return (before === "" || /\s/.test(before)) && /^[.,;:!?)]*(\s|$)/.test(text.slice(index + length));
 }
 
-/** `text` with fenced blocks and inline code spans masked, lengths and newlines kept. */
-function maskCode(text: string): string {
+/** `text` with fenced blocks and inline code spans masked with `MASK`, lengths and newlines kept. */
+export function maskCode(text: string): string {
   return maskCodeSpans(maskFences(text));
 }
 
@@ -78,25 +78,50 @@ function maskFences(text: string): string {
 /**
  * A run of N backticks opens a span closed by the next run of exactly N in the same paragraph (no blank line
  * between); an unmatched run is literal. A backslash escapes the first backtick of an opening run, but not a closing
- * one, as in CommonMark.
+ * one, as in CommonMark. [>]: Each lookup moves forward only, so a message full of spans stays linear.
  */
 function maskCodeSpans(text: string): string {
-  const runs = [...text.matchAll(/`+/g)];
-  let masked = text;
+  const runs = [...text.matchAll(/`+/g)].map((run) => ({ index: run.index, length: run[0].length }));
+  const paragraphs = paragraphOf(text, runs);
+  const runsByLength = new Map<number, { runs: number[]; next: number }>();
+  runs.forEach((run, index) => {
+    const entry = runsByLength.get(run.length) ?? { runs: [], next: 0 };
+    entry.runs.push(index);
+    runsByLength.set(run.length, entry);
+  });
+  let masked = "";
+  let copied = 0;
   for (let open = 0; open < runs.length; open++) {
     const escaped = backslashesBefore(text, runs[open]!.index) % 2 === 1;
     const start = runs[open]!.index + (escaped ? 1 : 0);
-    const length = runs[open]![0].length - (escaped ? 1 : 0);
+    const length = runs[open]!.length - (escaped ? 1 : 0);
     if (length === 0) continue;
-    const blankLine = text.slice(start).search(/\n[ \t\r]*\n/);
-    const paragraphEnd = blankLine === -1 ? text.length : start + blankLine;
-    const close = runs.findIndex((run, index) => index > open && run.index < paragraphEnd && run[0].length === length);
-    if (close === -1) continue;
+    const close = nextRunOfLength(runsByLength, length, open);
+    if (close === -1 || paragraphs[close] !== paragraphs[open]) continue;
     const end = runs[close]!.index + length;
-    masked = masked.slice(0, start) + masked.slice(start, end).replace(/[^\n]/g, MASK) + masked.slice(end);
+    masked += text.slice(copied, start) + text.slice(start, end).replace(/[^\n]/g, MASK);
+    copied = end;
     open = close;
   }
-  return masked;
+  return masked + text.slice(copied);
+}
+
+/** For each run, how many blank lines stand before it: runs with the same count share a paragraph. */
+function paragraphOf(text: string, runs: readonly { index: number }[]): number[] {
+  const blankLines = [...text.matchAll(/\n[ \t\r]*\n/g)].map((match) => match.index);
+  let before = 0;
+  return runs.map((run) => {
+    while (before < blankLines.length && blankLines[before]! < run.index) before++;
+    return before;
+  });
+}
+
+/** The first run after `open` that is exactly `length` backticks long, or -1. `open` only grows between calls. */
+function nextRunOfLength(runsByLength: Map<number, { runs: number[]; next: number }>, length: number, open: number) {
+  const entry = runsByLength.get(length);
+  if (entry === undefined) return -1;
+  while (entry.next < entry.runs.length && entry.runs[entry.next]! <= open) entry.next++;
+  return entry.runs[entry.next] ?? -1;
 }
 
 function backslashesBefore(text: string, index: number): number {
