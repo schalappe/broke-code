@@ -100,6 +100,7 @@
     "build": "bun run scripts/build.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "bun test",
+    "eval": "bun run eval/bench.ts",
     "lint": "bunx --bun biome check .",
     "format": "bunx --bun biome check --write .",
     "package": "bun run build && bunx --bun vsce package ${VERSION:-0.0.0} --no-update-package-json --no-git-tag-version --no-dependencies --out broke-code-${VERSION:-0.0.0}.vsix"
