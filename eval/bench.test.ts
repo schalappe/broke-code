@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { BENCH_MODELS, modelsProblem, parseBenchArgs } from "./bench";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { BENCH_MODELS, modelsProblem, parseBenchArgs, trimIncompleteLine } from "./bench";
 
 describe("parseBenchArgs", () => {
   test("defaults to both models and 10 runs", () => {
@@ -50,4 +53,45 @@ describe("modelsProblem", () => {
   test("finds no problem when Ollama lists every requested model", () => {
     expect(modelsProblem({ ok: true, models: ["b", "a"] }, ["a", "b"], url)).toBeUndefined();
   });
+});
+
+describe("trimIncompleteLine", () => {
+  async function inTempDir(body: (dir: string) => Promise<void>): Promise<void> {
+    const dir = await mkdtemp(join(tmpdir(), "broke-code-dump-"));
+    try {
+      await body(dir);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  test("drops a fragment left by an interrupted append, so every line parses after the next append", () =>
+    inTempDir(async (dir) => {
+      const dump = join(dir, "runs.jsonl");
+      await writeFile(dump, '{"run":1}\n{"run":2,"entr');
+      expect(await trimIncompleteLine(dump)).toBe(14);
+      await writeFile(dump, '{"run":3}\n', { flag: "a" });
+      const lines = (await readFile(dump, "utf8")).trimEnd().split("\n");
+      expect(lines.map((line) => JSON.parse(line))).toEqual([{ run: 1 }, { run: 3 }]);
+      expect(await trimIncompleteLine(dump)).toBe(0);
+    }));
+
+  test("empties a file holding only a fragment", () =>
+    inTempDir(async (dir) => {
+      const dump = join(dir, "runs.jsonl");
+      await writeFile(dump, '{"run":1');
+      expect(await trimIncompleteLine(dump)).toBe(8);
+      expect(await readFile(dump, "utf8")).toBe("");
+    }));
+
+  test("leaves a missing file, an empty file, and complete lines alone", () =>
+    inTempDir(async (dir) => {
+      const dump = join(dir, "runs.jsonl");
+      expect(await trimIncompleteLine(dump)).toBe(0);
+      await writeFile(dump, "");
+      expect(await trimIncompleteLine(dump)).toBe(0);
+      await writeFile(dump, '{"run":1}\n');
+      expect(await trimIncompleteLine(dump)).toBe(0);
+      expect(await readFile(dump, "utf8")).toBe('{"run":1}\n');
+    }));
 });

@@ -6,7 +6,7 @@
  */
 
 import { rmSync } from "node:fs";
-import { appendFile, mkdtemp, rm } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, rm, truncate } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
@@ -54,6 +54,26 @@ export function modelsProblem(listing: ModelListing, models: readonly string[], 
   return `Not served by Ollama at ${baseUrl}: ${missing.join(", ")}. Pull with \`ollama pull <name>\`.`;
 }
 
+/**
+ * Cuts the dump file at `path` after its last newline, so the next append starts a line of its own: an interrupted
+ * append (Ctrl-C exits at once) can leave a JSON fragment that the next run's first record would otherwise join.
+ * Returns how many bytes it dropped, 0 when the file is missing, empty, or ends with a newline. Safe to run twice.
+ */
+export async function trimIncompleteLine(path: string): Promise<number> {
+  let content: Buffer;
+  try {
+    content = await readFile(path);
+  } catch (error) {
+    // [>]: A missing dump is the first run's normal state; appendFile creates it.
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
+    throw error;
+  }
+  if (content.length === 0 || content.at(-1) === 0x0a) return 0;
+  const keep = content.lastIndexOf(0x0a) + 1;
+  await truncate(path, keep);
+  return content.length - keep;
+}
+
 async function main(): Promise<number> {
   const { models, runs, dump } = parseBenchArgs(process.argv.slice(2));
 
@@ -64,6 +84,11 @@ async function main(): Promise<number> {
     return 1;
   }
 
+  if (dump) {
+    const dropped = await trimIncompleteLine(dump);
+    if (dropped > 0)
+      console.error(`${dump} ended with an incomplete line (${dropped} bytes), removed before appending.`);
+  }
   console.error(`broke-code eval: Ollama at ${OLLAMA_URL}, ${runs} runs per scenario, step limit ${MAX_TOOL_STEPS}.`);
   // [>]: One folder holds every run's workspace copy, so an interrupted bench can remove it too.
   const tmpRoot = await mkdtemp(join(tmpdir(), "broke-code-bench-"));

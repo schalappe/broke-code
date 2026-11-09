@@ -307,7 +307,8 @@ commands are not built yet. Read
   `contextFull`, `providerError`, `workspaceChanged`) and a one-line detail. The bar is 9 runs of 10 per model and
   scenario; the bench exits 1 when a model is under it, and before any run when Ollama is unreachable or does not
   list a model. `--model <name>` (repeatable) and `--runs <n>` shorten a local iteration; `--dump <file>` appends
-  each run's entries and verdict as JSON Lines, to read the failing replies. A full run took 2 min 40 s on the
+  each run's entries and verdict as JSON Lines, to read the failing replies; an incomplete last line left by an
+  interrupted run is removed, with a notice, before the first append. A full run took 2 min 40 s on the
   maintainer's Mac, the first run of each model including its load. It runs locally on demand and never in CI.
   Scenarios for edits, created files, commands, and skills come with the write tools (#8), `run_command` (#9), and
   skills (#10).
