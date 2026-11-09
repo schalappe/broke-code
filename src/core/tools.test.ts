@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { READ_TOOLS, type ReadToolEnv, ripgrepCandidates, runReadTool, type ToolCall, type ToolResult } from "./tools";
@@ -337,6 +337,62 @@ describe("search", () => {
     ]);
   });
 
+  test("excludes a nested root whose name ends with a space, never its sibling without the space", async () => {
+    const outer = join(base, "spaced");
+    await writeFile(join(await mkdirp(join(outer, "nested")), "ordinary.ts"), "needle ordinary\n");
+    await writeFile(join(await mkdirp(join(outer, "nested ")), "opened.ts"), "needle opened\n");
+    await writeFile(join(await mkdirp(join(outer, "tab\t")), "tabbed.ts"), "needle tabbed\n");
+    const roots = [
+      { name: "outer", path: outer },
+      { name: "inner", path: join(outer, "nested ") },
+      { name: "tabbed", path: join(outer, "tab\t") },
+    ];
+    expect(sortedLines(await run("search", { pattern: "needle" }, roots))).toEqual([
+      "inner/opened.ts:1:needle opened",
+      "outer/nested/ordinary.ts:1:needle ordinary",
+      "tabbed/tabbed.ts:1:needle tabbed",
+    ]);
+  });
+
+  test("searches a folder open twice, through a symlink, once", async () => {
+    const alias = join(base, "lib-alias");
+    await symlink(lib.path, alias);
+    expect(await run("search", { pattern: "needle" }, [lib, { name: "alias", path: alias }])).toEqual({
+      status: "ok",
+      text: "lib/x.ts:1:lib needle",
+    });
+  });
+
+  test("gives ripgrep each distinct folder once and excludes only the nested ones from the outer walk", async () => {
+    const argsFile = join(base, "rg.args");
+    const recorder = await fakeRipgrep("args-rg", `printf '%s\\n' "$@" > '${argsFile}'\nexit 1`);
+    const twin = join(base, "app-twin");
+    await symlink(app.path, twin);
+    const roots = [app, { name: "twin", path: twin }, { name: "core", path: join(app.path, "src") }, lib];
+    await run("search", { pattern: "needle" }, roots, { ripgrepCandidates: [recorder] });
+    const realApp = await realpath(app.path);
+    expect((await readFile(argsFile, "utf8")).split("\n")).toEqual([
+      "--no-config",
+      "--with-filename",
+      "--line-number",
+      "--no-heading",
+      "--color",
+      "never",
+      "--max-columns",
+      "500",
+      "--max-columns-preview",
+      "--glob",
+      `!${realApp}/src`,
+      "-e",
+      "needle",
+      "--",
+      realApp,
+      `${realApp}/src`,
+      await realpath(lib.path),
+      "",
+    ]);
+  });
+
   test("excludes a nested root whose real path holds glob characters", async () => {
     const weird = join(base, "we[i]rd*{x}?");
     await writeFile(join(await mkdirp(weird), "w.ts"), "needle w\n");
@@ -456,6 +512,34 @@ describe("runReadTool", () => {
     }
   });
 
+  test("settles Stop at once while a read still waits on the disk, the late outcome dropped", async () => {
+    for (const call of [
+      { name: "read_file", args: { path: "ten.txt" } },
+      { name: "list_files", args: { path: "src" } },
+    ]) {
+      let entered!: () => void;
+      const reachedRead = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const controller = new AbortController();
+      const running = runReadTool(call, [app], env, controller.signal, {
+        beforeOpen: () => {
+          entered();
+          return held;
+        },
+      });
+      await reachedRead;
+      controller.abort();
+      // [>]: The read is released only after the result came: a Stop that waited for it would never settle.
+      expect(await running).toEqual({ status: "error", text: `${call.name}: stopped before it finished.` });
+      release();
+    }
+  });
+
   test("shows a model-given path in an error by its first line, cut at 200 characters", async () => {
     for (const name of ["read_file", "list_files", "search"]) {
       const result = await run(name, { pattern: "x", path: "x\n".repeat(3000) });
@@ -466,6 +550,20 @@ describe("runReadTool", () => {
     expect(await run("read_file", { path: "a/".repeat(150) })).toEqual({
       status: "error",
       text: `read_file: ${"a/".repeat(100)}…: no such file or folder in the workspace.`,
+    });
+    const longFolder = `src${"/.".repeat(150)}`;
+    expect(await run("read_file", { path: longFolder })).toEqual({
+      status: "error",
+      text: `read_file: ${longFolder.slice(0, 200)}…: the path is a folder. Use list_files to see its children.`,
+    });
+    const longFile = `${"./".repeat(150)}ten.txt`;
+    expect(await run("list_files", { path: longFile })).toEqual({
+      status: "error",
+      text: `list_files: ${longFile.slice(0, 200)}…: the path is a file. Use read_file to read it.`,
+    });
+    expect(await run("x".repeat(300), {})).toEqual({
+      status: "error",
+      text: `${"x".repeat(200)}… is not a read tool.`,
     });
   });
 

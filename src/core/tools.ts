@@ -23,6 +23,7 @@ import {
   compareNames,
   isInside,
   locateWorkspacePath,
+  type RaceSeam,
   resolveWorkspaceRoots,
   truncateLines,
   type WorkspaceRoot,
@@ -70,7 +71,7 @@ export const READ_TOOLS: ToolSpec[] = [
         name: "pattern",
         required: true,
         description:
-          "The regular expression to find. Escape characters such as ( . * [ with \\ to match them literally.",
+          "The regular expression to find; it must not be empty. Escape characters such as ( . * [ with \\ to match them literally.",
       },
       {
         name: "path",
@@ -84,34 +85,53 @@ export const READ_TOOLS: ToolSpec[] = [
 
 /**
  * Run read tool `call` inside `roots`. Never rejects: an unknown tool, a refused path, and a failed or stopped run
- * all come back as an `error` result for the model. `signal` (Stop) ends a running `search` and kills ripgrep; a
- * read that finishes after it gives the stopped error, never a late result.
+ * all come back as an `error` result for the model. `signal` (Stop) gives the stopped error at once, even while a
+ * disk step that cannot be aborted still runs, and its late outcome is dropped; a running ripgrep is killed first,
+ * and the result waits for its exit, which SIGKILL bounds. `seam`: for tests, see `readWorkspaceEntry`.
  */
 export async function runReadTool(
   call: ToolCall,
   roots: WorkspaceRoot[],
   env: ReadToolEnv,
   signal: AbortSignal,
+  seam: RaceSeam = {},
 ): Promise<ToolResult> {
   if (!READ_TOOLS.some((tool) => tool.name === call.name)) {
     return { status: "error", text: `${excerpt(call.name)} is not a read tool.` };
   }
   if (signal.aborted) return stopped(call.name);
   if (roots.length === 0) return { status: "error", text: `${call.name}: no workspace folder is open.` };
-  const result = await runTool(call, roots, env, signal);
-  return signal.aborted ? stopped(call.name) : result;
+
+  const ripgrepRuns: Promise<unknown>[] = [];
+  let onAbort = () => {};
+  const aborted = new Promise<"aborted">((resolve) => {
+    onAbort = () => resolve("aborted");
+  });
+  signal.addEventListener("abort", onAbort, { once: true });
+  try {
+    // [>]: The race subscribes to the tool's promise, so an outcome dropped after Stop never rejects unhandled.
+    const result = await Promise.race([runTool(call, roots, env, signal, seam, ripgrepRuns), aborted]);
+    if (result !== "aborted" && !signal.aborted) return result;
+    await Promise.all(ripgrepRuns);
+    return stopped(call.name);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
 }
 
+/** Never rejects. `ripgrepRuns`: gets each ripgrep run `search` starts, settled once its process has exited. */
 async function runTool(
   call: ToolCall,
   roots: WorkspaceRoot[],
   env: ReadToolEnv,
   signal: AbortSignal,
+  seam: RaceSeam,
+  ripgrepRuns: Promise<unknown>[],
 ): Promise<ToolResult> {
   try {
-    if (call.name === "read_file") return await readFileTool(roots, call.args.path ?? "");
-    if (call.name === "list_files") return await listFilesTool(roots, call.args.path);
-    return await searchTool(roots, call.args.pattern ?? "", call.args.path, env, signal);
+    if (call.name === "read_file") return await readFileTool(roots, call.args.path ?? "", seam);
+    if (call.name === "list_files") return await listFilesTool(roots, call.args.path, seam);
+    return await searchTool(roots, call.args.pattern ?? "", call.args.path, env, signal, ripgrepRuns);
   } catch (error) {
     // [!]: The tools catch what they expect; this keeps a bug from rejecting into the agent loop.
     const message = error instanceof Error ? error.message : String(error);
@@ -119,8 +139,8 @@ async function runTool(
   }
 }
 
-async function readFileTool(roots: WorkspaceRoot[], path: string): Promise<ToolResult> {
-  const mention = await readMention(roots, path);
+async function readFileTool(roots: WorkspaceRoot[], path: string, seam: RaceSeam): Promise<ToolResult> {
+  const mention = await readMention(roots, path, seam);
   const failure = failureOf(mention);
   if (failure) return refused("read_file", path, failure, mention.cause);
   if (mention.kind === "folder") {
@@ -130,11 +150,11 @@ async function readFileTool(roots: WorkspaceRoot[], path: string): Promise<ToolR
   return { status: "ok", text: formatMention(mention) };
 }
 
-async function listFilesTool(roots: WorkspaceRoot[], path: string | undefined): Promise<ToolResult> {
+async function listFilesTool(roots: WorkspaceRoot[], path: string | undefined, seam: RaceSeam): Promise<ToolResult> {
   const wholeWorkspace = path === undefined || path === "" || path === ".";
   if (wholeWorkspace && roots.length > 1) return { status: "ok", text: formatMention(rootListing(roots)) };
   const shown = wholeWorkspace ? "." : path;
-  const mention = await readMention(roots, shown);
+  const mention = await readMention(roots, shown, seam);
   const failure = failureOf(mention);
   // [>]: A binary or oversized file is still known to be a file: the reason to give is the tool to use.
   if (mention.kind === "file" && (!failure || failure === "binary" || failure === "tooLarge")) {
@@ -255,6 +275,7 @@ async function searchTool(
   path: string | undefined,
   env: ReadToolEnv,
   signal: AbortSignal,
+  ripgrepRuns: Promise<unknown>[],
 ): Promise<ToolResult> {
   if (pattern === "") return { status: "error", text: "search: the pattern is empty." };
   const scope = await searchScope(roots, path);
@@ -264,7 +285,9 @@ async function searchTool(
     const tried = env.ripgrepCandidates.length > 0 ? env.ripgrepCandidates.map((c) => `\n- ${c}`).join("") : " none";
     return { status: "error", text: `search: ripgrep (rg) was not found. Paths tried:${tried}` };
   }
-  return runRipgrep(ripgrep, pattern, scope, env.searchTimeoutMs ?? DEFAULT_SEARCH_TIMEOUT_MS, signal);
+  const run = runRipgrep(ripgrep, pattern, scope, env.searchTimeoutMs ?? DEFAULT_SEARCH_TIMEOUT_MS, signal);
+  ripgrepRuns.push(run);
+  return run;
 }
 
 /**
@@ -305,9 +328,12 @@ async function searchScope(roots: WorkspaceRoot[], path: string | undefined): Pr
   }
 }
 
-/** A ripgrep glob matching exactly `path`: its glob characters escaped. */
+/**
+ * A ripgrep glob matching exactly `path`: its glob characters escaped. [!]: ripgrep trims trailing whitespace from a
+ * glob, an escaping backslash included, so each whitespace character goes in a class of its own instead.
+ */
 function literalGlob(path: string): string {
-  return path.replace(/[\\*?[\]{}!]/g, "\\$&");
+  return path.replace(/[\\*?[\]{}!]/g, "\\$&").replace(/\s/g, "[$&]");
 }
 
 /**
@@ -342,6 +368,11 @@ function runRipgrep(
       resolve(result);
     };
 
+    // [>]: Stop came while the scope or the binary was being checked: nothing is started.
+    if (signal.aborted) {
+      resolve(stopped("search"));
+      return;
+    }
     let child: ReturnType<typeof spawn>;
     try {
       // [!]: An argv array and no shell: the pattern and paths reach ripgrep as they are. stdin is closed, so ripgrep

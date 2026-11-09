@@ -6,6 +6,7 @@ import { MASK, maskMessage } from "./markdownCode";
 import {
   type AccessFailure,
   type EntryKind,
+  type RaceSeam,
   readWorkspaceEntry,
   truncateLines,
   type WorkspaceRoot,
@@ -105,9 +106,12 @@ function plural(count: number, one: string, many: string): string {
   return `${count} ${count === 1 ? one : many}`;
 }
 
-/** Read mentioned `path` inside `roots`: whole or truncated content, or the reason nothing is attached. */
-export async function readMention(roots: WorkspaceRoot[], path: string): Promise<ReadMention> {
-  const entry = await readWorkspaceEntry(roots, path);
+/**
+ * Read mentioned `path` inside `roots`: whole or truncated content, or the reason nothing is attached. `seam`: for
+ * tests, see `readWorkspaceEntry`.
+ */
+export async function readMention(roots: WorkspaceRoot[], path: string, seam: RaceSeam = {}): Promise<ReadMention> {
+  const entry = await readWorkspaceEntry(roots, path, seam);
   if (entry.status !== "ok") {
     const cause = entry.status === "unreadable" ? { cause: entry.cause } : {};
     return { path, kind: entry.kind, status: entry.status, content: "", omitted: 0, ...cause };
