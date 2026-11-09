@@ -1,13 +1,19 @@
 /**
  * @module systemPrompt
- * The system prompt: the agent's role, the body tool call format and its rules, the tools, then the instruction
- * files. Composed from data only; the host reads the files. No `node:` or `vscode` import. Model-facing text is
- * English and never localized.
+ * The system prompt: the agent's role, the body tool call format and its rules, the tools, the skills listed to the
+ * model, then the instruction files. Composed from data only; the host reads the files. No `node:` or `vscode` import.
+ * Model-facing text is English and never localized.
  */
 import { describeTool, GENERIC_CALL_SHAPE, type ToolSpec } from "./toolCalls";
 
 /** An instruction file, such as an `AGENTS.md`: `label` names it in the prompt, `text` goes in verbatim. */
 export type InstructionFile = { label: string; text: string };
+
+/**
+ * A discovered skill. `root`: the real path of its folder. `listedToModel`: false for `disable-model-invocation: true`,
+ * a skill only the user loads, kept for the `/` menu.
+ */
+export type Skill = { name: string; description: string; root: string; listedToModel: boolean };
 
 // [>]: Short plain sentences, since small open models read it. The format shows as raw lines, never in a code
 // fence, which would teach the model to fence its calls, and a fenced call never runs.
@@ -32,12 +38,30 @@ const RULES = [
   "- Never wrap a tool call in a code fence or inline code: it would not run.",
 ].join("\n");
 
-/** The system prompt for `tools` and the `instructions` files, in order. Without files, it ends after the tools. */
-export function composeSystemPrompt(tools: readonly ToolSpec[], instructions: readonly InstructionFile[]): string {
+const SKILLS_INTRO =
+  "A skill holds instructions for one kind of task. When a task matches a skill's description, call load_skill with the skill's name first, then follow the instructions it returns.";
+
+/**
+ * The system prompt for `tools`, the `skills` listed to the model, and the `instructions` files, in order. Without a
+ * listed skill or a file, it ends after the tools.
+ */
+export function composeSystemPrompt(
+  tools: readonly ToolSpec[],
+  instructions: readonly InstructionFile[],
+  skills: readonly Skill[],
+): string {
   const toolList = [
     "# Tools",
     ...tools.map((tool) => `## ${tool.name}\n\n${tool.description}\n\n${describeTool(tool)}`),
   ];
   const files = instructions.map((file) => `# Instructions from ${file.label}\n\n${file.text}`);
-  return [ROLE, FORMAT, RULES, ...toolList, ...files].join("\n\n");
+  return [ROLE, FORMAT, RULES, ...toolList, ...skillSection(skills), ...files].join("\n\n");
+}
+
+/** The skills section: one line per skill listed to the model, its description on one line; none without such skill. */
+function skillSection(skills: readonly Skill[]): string[] {
+  const listed = skills.filter((skill) => skill.listedToModel);
+  if (listed.length === 0) return [];
+  const lines = listed.map((skill) => `- ${skill.name}: ${skill.description.replace(/\s+/g, " ").trim()}`);
+  return [`# Skills\n\n${SKILLS_INTRO}\n\n${lines.join("\n")}`];
 }

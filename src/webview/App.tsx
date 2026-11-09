@@ -13,6 +13,7 @@ import {
   describeListFailure,
   describeMention,
   describeProviderError,
+  describeSkillWarning,
   describeSkippedProvider,
   describeStorageProblem,
   describeToolStep,
@@ -169,12 +170,16 @@ function modelPlaceholder(state: ChatState): string {
   }
 }
 
+/** Skipped providers, from the settings, then skipped skills, from the last send. */
 function Warnings({ state }: { state: ChatState }) {
-  if (state.skipped.length === 0) return null;
+  if (state.skipped.length === 0 && state.skillWarnings.length === 0) return null;
   return (
     <ul className="warnings" role="status">
       {state.skipped.map((skipped) => (
-        <li key={skipped.position}>{describeSkippedProvider(skipped)}</li>
+        <li key={`provider-${skipped.position}`}>{describeSkippedProvider(skipped)}</li>
+      ))}
+      {state.skillWarnings.map((warning) => (
+        <li key={`skill-${warning.path}`}>{describeSkillWarning(warning)}</li>
       ))}
     </ul>
   );

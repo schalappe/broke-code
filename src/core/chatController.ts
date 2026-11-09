@@ -5,7 +5,7 @@
  * delete). The conversation shown is saved when a message is sent, at most every 500 ms while a reply streams, when a
  * call starts, after each tool step, and when the turn ends, so a reload or crash loses at most the reply streaming.
  * vscode-free: host passes key store, workspace memento, mention reader, conversation store, tool runner, instruction
- * file reader, and limits source through ports.
+ * file reader, skill reader, and limits source through ports.
  */
 import { type ChatMessage, listModels, type ProviderAccess, streamChat } from "./client";
 import {
@@ -32,6 +32,7 @@ import {
 } from "./protocol";
 import type { ParsedProviders, Provider } from "./providers";
 import { SerialQueue } from "./serialQueue";
+import type { SkillDiscovery } from "./skills";
 import { composeSystemPrompt, type InstructionFile } from "./systemPrompt";
 import { type ParsedReply, parseToolCall, type ToolSpec } from "./toolCalls";
 import type { ToolCall, ToolResult } from "./tools";
@@ -60,6 +61,12 @@ export type ToolRunner = {
  */
 export type InstructionReader = { read(): Promise<InstructionFile[]> };
 
+/**
+ * Discovers the skills at each send: the valid ones for the system prompt, a warning per skipped one for the panel.
+ * Must not reject.
+ */
+export type SkillReader = { read(): Promise<SkillDiscovery> };
+
 /** The current turn limits, from the user settings. Must not throw. */
 export type LimitsSource = { read(): TurnLimits };
 
@@ -75,6 +82,7 @@ export type ChatPorts = {
   store: ConversationStore;
   tools: ToolRunner;
   instructions: InstructionReader;
+  skills: SkillReader;
   limits?: LimitsSource;
   now?: () => number;
 };
@@ -140,6 +148,7 @@ export class ChatController {
   private readonly store: ConversationStore;
   private readonly tools: ToolRunner;
   private readonly instructions: InstructionReader;
+  private readonly skills: SkillReader;
   private readonly limitsSource: LimitsSource;
   private readonly now: () => number;
   /** Limits the usage display reads, refreshed at each send and by `limitsChanged`. */
@@ -158,17 +167,19 @@ export class ChatController {
     this.store = ports.store;
     this.tools = ports.tools;
     this.instructions = ports.instructions;
+    this.skills = ports.skills;
     this.limitsSource = ports.limits ?? {
       read: () => parseLimits({ maxToolSteps: undefined, contextSizes: undefined }),
     };
     this.limits = this.limitsSource.read();
     this.now = ports.now ?? Date.now;
-    // [>]: Instruction files are read only at a send, never just to refresh the display.
-    this.systemPrompt = composeSystemPrompt(this.tools.tools, []);
+    // [>]: Instruction files and skills are read only at a send, never just to refresh the display.
+    this.systemPrompt = composeSystemPrompt(this.tools.tools, [], []);
     this.conversation = this.freshConversation();
     this.state = {
       providers: [],
       skipped: [],
+      skillWarnings: [],
       provider: undefined,
       models: { status: "noProvider" },
       model: undefined,
@@ -374,12 +385,14 @@ export class ChatController {
           this.readMentions(content, picked),
           this.accessOf(provider),
           this.readInstructions(),
+          this.readSkills(),
           this.save(conversation),
         ]),
         signal,
       );
       if (!prepared) return settle("stopped");
-      const [mentions, access, instructions] = prepared;
+      const [mentions, access, instructions, discovery] = prepared;
+      this.state.skillWarnings = discovery.warnings;
       user.mentions = mentions.map(toResult);
       this.modelText.set(user, composeUserMessage(content, mentions));
       if (mentions.length > 0) {
@@ -391,9 +404,9 @@ export class ChatController {
         if (!saved) return settle("stopped");
       }
 
-      const system = composeSystemPrompt(this.tools.tools, instructions);
+      const system = composeSystemPrompt(this.tools.tools, instructions, discovery.skills);
       this.systemPrompt = system;
-      // [>]: The display counts the instruction files now, not at the first reply delta.
+      // [>]: The display counts the instruction files and skills now, not at the first reply delta.
       this.emit();
       let steps = 0;
       let malformedInARow = 0;
@@ -500,6 +513,16 @@ export class ChatController {
       .catch((error: unknown) => {
         console.error("broke-code: could not read the instruction files", error);
         return [];
+      });
+  }
+
+  /** The skills of this send; a reader that rejects despite its contract gives none and no warning, logged. */
+  private readSkills(): Promise<SkillDiscovery> {
+    return Promise.resolve()
+      .then(() => this.skills.read())
+      .catch((error: unknown) => {
+        console.error("broke-code: could not read the skills", error);
+        return { skills: [], warnings: [] };
       });
   }
 

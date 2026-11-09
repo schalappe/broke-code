@@ -98,6 +98,7 @@ describe("chatStateOf", () => {
   const state: ChatState = {
     providers: [],
     skipped: [],
+    skillWarnings: [],
     provider: undefined,
     models: { status: "noProvider" },
     model: undefined,

@@ -46,7 +46,7 @@ describe("playScenario", () => {
     replies = ["No idea."];
     await playScenario(READ_SCENARIO, { baseUrl, model: "m", maxToolSteps: 6 }, parent);
 
-    expect(requests[0]?.messages[0]).toEqual({ role: "system", content: composeSystemPrompt(READ_TOOLS, []) });
+    expect(requests[0]?.messages[0]).toEqual({ role: "system", content: composeSystemPrompt(READ_TOOLS, [], []) });
   });
 
   test("halts at the step limit it is given", async () => {
