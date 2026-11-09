@@ -284,6 +284,27 @@ describe("approval", () => {
     ]);
   });
 
+  test("Enter in the reason field rejects with the reason; other keys and Enter while composing (IME) do not", () => {
+    const field = elements(ApprovalControls({ approval, reason: " Too broad. ", setReason: () => {} })).find(
+      (element) => element.type === "input",
+    );
+    if (!field) throw new Error("no reason field");
+    const onKeyDown = field.props.onKeyDown as (event: unknown) => void;
+    const prevented: string[] = [];
+    const press = (key: string, isComposing = false) =>
+      onKeyDown({ key, nativeEvent: { isComposing }, preventDefault: () => prevented.push(key) });
+
+    press("a");
+    press("Escape");
+    press("Enter", true);
+    expect(posted).toEqual([]);
+    expect(prevented).toEqual([]);
+
+    press("Enter");
+    expect(posted).toEqual([{ type: "reject", id: 7, reason: "Too broad." }]);
+    expect(prevented).toEqual(["Enter"]);
+  });
+
   test("a rejected step says so; an auto-approved one says so beside its status", () => {
     const rejected = turn(
       [
