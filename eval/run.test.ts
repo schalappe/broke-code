@@ -62,6 +62,18 @@ describe("playScenario", () => {
     expect(after["notes/new.toml"]).toBe(`${content}\n`);
   });
 
+  test("reads back a file named __proto__ the turn wrote, so the judge sees the unrequested file", async () => {
+    replies = ["<write_file>\n<path>__proto__</path>\n<content>\nx\n</content>\n</write_file>", "Done."];
+    const { entries, after } = await playScenario(EDIT_SCENARIO, { baseUrl, model: "m", maxToolSteps: 6 }, parent);
+
+    expect(Object.hasOwn(after, "__proto__")).toBe(true);
+    expect(judge({ ...EDIT_SCENARIO, writes: {} }, entries, after)).toEqual({
+      pass: false,
+      category: "workspaceChanged",
+      detail: "changed: __proto__",
+    });
+  });
+
   test("passes the edit scenario on an edit_file call that renames the function", async () => {
     const old = "def compute_surcharge_v2(distance_km):";
     const edit = `<edit_file>\n<path>src/pricing.py</path>\n<old>${old}</old>\n<new>def distance_surcharge(distance_km):</new>\n</edit_file>`;

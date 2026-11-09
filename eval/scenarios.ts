@@ -8,8 +8,17 @@
 import type { ChatEntry } from "../src/core/protocol";
 import type { ProviderError } from "../src/core/providerError";
 
-/** Workspace files by relative POSIX path: a scenario's fixture, or the throwaway copy read back after a run. */
+/**
+ * Workspace files by relative POSIX path: a scenario's fixture, or the throwaway copy read back after a run. [!]: A
+ * path is any file name, `__proto__` included, so look one up with `fileAt` and build one on `Object.create(null)`,
+ * never with `files[path]` or `in` on a plain object.
+ */
 export type WorkspaceFiles = Record<string, string>;
+
+/** The text of the file at `path` in `files`, `undefined` when it holds none: own keys only, never the prototype's. */
+export function fileAt(files: WorkspaceFiles, path: string): string | undefined {
+  return Object.hasOwn(files, path) ? files[path] : undefined;
+}
 
 /**
  * Why a run failed, one per failed run. `malformed`: a malformed call halted the turn, or the turn had one and missed
@@ -189,11 +198,11 @@ export function judge(scenario: Scenario, entries: readonly ChatEntry[], after: 
 function workspaceVerdict(scenario: Scenario, after: WorkspaceFiles): Verdict | undefined {
   const expected = { ...scenario.files, ...scenario.writes };
   const differing = Object.keys(workspaceChanges(expected, after));
-  const wrong = differing.filter((path) => path in scenario.writes);
-  const changed = differing.filter((path) => !(path in scenario.writes));
+  const wrong = differing.filter((path) => Object.hasOwn(scenario.writes, path));
+  const changed = differing.filter((path) => !Object.hasOwn(scenario.writes, path));
   const changedText = changed.length > 0 ? `changed: ${changed.join(", ")}` : undefined;
   if (wrong.length > 0) {
-    const misses = wrong.map((path) => `${path} ${fileDifference(expected[path] ?? "", after[path])}`);
+    const misses = wrong.map((path) => `${path} ${fileDifference(fileAt(expected, path) ?? "", fileAt(after, path))}`);
     return {
       pass: false,
       category: "wrongEdit",
@@ -210,9 +219,10 @@ function workspaceVerdict(scenario: Scenario, after: WorkspaceFiles): Verdict | 
  */
 export function workspaceChanges(before: WorkspaceFiles, after: WorkspaceFiles): Record<string, string | null> {
   const paths = [...new Set([...Object.keys(before), ...Object.keys(after)])].sort();
-  const changes: Record<string, string | null> = {};
+  const changes: Record<string, string | null> = Object.create(null);
   for (const path of paths) {
-    if (before[path] !== after[path]) changes[path] = after[path] ?? null;
+    const now = fileAt(after, path);
+    if (fileAt(before, path) !== now) changes[path] = now ?? null;
   }
   return changes;
 }

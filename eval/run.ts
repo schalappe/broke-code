@@ -90,7 +90,8 @@ async function writeWorkspace(directory: string, files: WorkspaceFiles): Promise
 
 /** Every regular file under `directory`, by POSIX path relative to it. */
 async function readWorkspace(directory: string): Promise<WorkspaceFiles> {
-  const files: WorkspaceFiles = {};
+  // [!]: Null prototype: a file named `__proto__` must land as a path, not reach the setter.
+  const files: WorkspaceFiles = Object.create(null);
   for (const entry of await readdir(directory, { recursive: true, withFileTypes: true })) {
     if (!entry.isFile()) continue;
     const file = join(entry.parentPath, entry.name);

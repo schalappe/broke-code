@@ -319,4 +319,35 @@ describe("workspaceChanges", () => {
     expect(workspaceChanges(fixture, after)).toEqual({ "b.txt": null, "c.txt": "C\n", "d/e.txt": "" });
     expect(workspaceChanges(fixture, { ...fixture })).toEqual({});
   });
+
+  test("records a file named __proto__ like any other: added, changed, or removed", () => {
+    const withProto = JSON.parse('{"__proto__": "x\\n"}') as Record<string, string>;
+    expect(Object.entries(workspaceChanges({}, withProto))).toEqual([["__proto__", "x\n"]]);
+    expect(Object.entries(workspaceChanges(withProto, {}))).toEqual([["__proto__", null]]);
+    expect(Object.entries(workspaceChanges(withProto, { ...withProto }))).toEqual([]);
+  });
+});
+
+describe("judge on a file named __proto__", () => {
+  const done = [answer("Done.")];
+  const expected = { ...CREATE_SCENARIO.files, ...CREATE_SCENARIO.writes };
+  const proto = JSON.parse('{"__proto__": "unrequested file\\n"}') as Record<string, string>;
+
+  test("workspaceChanged: the files asked for are right but a file named __proto__ appeared", () => {
+    expect(judge(CREATE_SCENARIO, done, { ...expected, ...proto })).toMatchObject({
+      pass: false,
+      category: "workspaceChanged",
+      detail: "changed: __proto__",
+    });
+  });
+
+  test("wrongEdit: a scenario asking for a file named __proto__ that is missing", () => {
+    const scenario = { ...CREATE_SCENARIO, writes: proto };
+    expect(judge(scenario, done, CREATE_SCENARIO.files)).toMatchObject({
+      pass: false,
+      category: "wrongEdit",
+      detail: "__proto__ missing",
+    });
+    expect(judge(scenario, done, { ...CREATE_SCENARIO.files, ...proto })).toEqual({ pass: true });
+  });
 });
