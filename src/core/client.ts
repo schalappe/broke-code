@@ -22,7 +22,8 @@ export type ProviderAccess = {
   apiKey: string | undefined;
 };
 
-export type ChatMessage = { role: "user" | "assistant"; content: string };
+/** `system`: the system prompt, sent first. Tool results go back as `user` messages, never as the `tool` role (ADR 0001). */
+export type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
 
 export type HttpRequest = { url: string; method: "GET" | "POST"; headers: Record<string, string>; body?: string };
 
