@@ -17,7 +17,9 @@ request is open.
 
 For a write, the request opens the native diff editor beside the chat: the planned text on the left, the one Accept
 checks the file against (empty for a new file), and the proposed text on the right, both served from memory, so the
-diff never touches the file. The tab closes when the request ends, whatever ended it.
+diff never touches the file. The tab closes when the request ends, whatever ended it. Closing the tab by hand changes
+nothing (maintainer decision, 2026-11-09): the request stays open, Accept and Reject in the chat still work, and the
+diff cannot be reopened.
 
 A rejection goes back to the model as an `error` tool result: "The user rejected this change.", then the reason on
 its own line when the user gave one. It is an ordinary tool step, so it counts toward the step limit, and the record

@@ -190,7 +190,9 @@ yet. Read
     ignored. One request at a time, since one call runs per reply.
   - A write opens the native VS Code diff editor beside the chat, titled with the path: the planned `before` text on
     the left (empty for a new file), the proposed text on the right, both from a content provider. Accept writes with
-    the atomic applier below, never through `WorkspaceEdit`; the diff tab closes on Accept, Reject, and Cancel. A file
+    the atomic applier below, never through `WorkspaceEdit`; the diff tab closes on Accept, Reject, and Cancel. Closing
+    the tab by hand changes nothing: the request stays open, Accept and Reject still work, and the diff cannot be
+    reopened. A file
     open in an editor with unsaved changes is refused before the request and again right before the write, with
     auto-approve too, as an `error` result saying so; a file changed on disk since the plan is refused by the
     applier's planned-text check.
