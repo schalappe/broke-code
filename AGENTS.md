@@ -45,7 +45,8 @@ model. `bun run eval` measures that loop on local Ollama models and applies each
   `write_file` and `edit_file` plan a change `{ path, target, before, after }` and never write; an applier port writes
   it, `fileApplier` straight to disk for the tests and the eval, `approvalApplier` around it in the extension: the
   unsaved-editor check, the approval request, then the write), the approval seam (`approval.ts`: the request a tool
-  makes, the decision it gets, the rejection text), the tool runner (`toolRunner.ts`: the read and write tools over the
+  makes, the decision it gets, the rejection text, and the decisions of the editor side: which change diffs to close,
+  the unsaved-editor check over the open documents, the auto-approve setting from its user value), the tool runner (`toolRunner.ts`: the read and write tools over the
   workspace folders, each write handed to the applier the host builds for the run), the instruction files
   (`instructions.ts`: `~/.agents/AGENTS.md`, then each workspace folder's `AGENTS.md`, under the mention caps), and the
   skills (`skills.ts`: discovery in `~/.agents/skills/` and each workspace folder's `.agents/skills/`, the frontmatter
@@ -57,8 +58,8 @@ model. `bun run eval` measures that loop on local Ollama models and applies each
   file index's `findFiles` scan and watcher in `fileIndex.ts`, the turn limits from the user settings and the "Set
   context size" input box in `contextSizes.ts`, the tool runner's wiring (the ripgrep candidates from
   `vscode.env.appRoot` and `PATH`, the write tools behind `approvalApplier`), the write approval's editor side in
-  `approval.ts` (the diff preview over `vscode.diff` and a content provider, the unsaved-editor check, the
-  `brokeCode.autoApproveWrites` setting), the instruction reader and the skill reader from the home folder and the workspace folders, the latter logging the
+  `approval.ts` (the diff preview over `vscode.diff` and a content provider, the tabs, documents, and
+  `brokeCode.autoApproveWrites` values it feeds the core decisions), the instruction reader and the skill reader from the home folder and the workspace folders, the latter logging the
   skills of each send).
 - `src/webview/`: the React chat panel and its CSS, tool step rows and the approval controls included. `SuggestionMenu.tsx` is the autocomplete list the `@` menu
   uses and the `/` menu (#11) is meant to reuse.

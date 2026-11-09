@@ -1,16 +1,21 @@
 /**
  * @module approval
  * The editor side of a write's approval: the diff preview of a planned change, the unsaved-changes check before a
- * write, and the auto-approve setting.
+ * write, and the auto-approve setting. The decisions live in `core/approval.ts`; this module feeds them VS Code's tabs,
+ * documents, and settings.
  */
 import { realpath } from "node:fs/promises";
 import { basename } from "node:path";
 import * as vscode from "vscode";
-import type { Preview } from "../core/approval";
+import {
+  autoApproveWrites,
+  CHANGE_SCHEME,
+  closeChangeDiffs,
+  hasUnsavedChanges as documentsHaveUnsavedChanges,
+  type Preview,
+} from "../core/approval";
 import { displayPath } from "../core/tools";
 import type { PlannedChange } from "../core/writeTools";
-
-const SCHEME = "broke-code-change";
 
 /**
  * Opens each planned change in the native diff editor: the planned text on the left, the one Accept checks the file
@@ -21,7 +26,7 @@ export class DiffPreviews implements vscode.TextDocumentContentProvider, vscode.
   /** Text of each side open, by URI. */
   private readonly texts = new Map<string, string>();
   private lastId = 0;
-  private readonly registration = vscode.workspace.registerTextDocumentContentProvider(SCHEME, this);
+  private readonly registration = vscode.workspace.registerTextDocumentContentProvider(CHANGE_SCHEME, this);
 
   provideTextDocumentContent(uri: vscode.Uri): string {
     return this.texts.get(uri.toString()) ?? "";
@@ -32,7 +37,7 @@ export class DiffPreviews implements vscode.TextDocumentContentProvider, vscode.
     const id = ++this.lastId;
     // [>]: The file name ends each side's path, so the diff picks the file's language.
     const side = (name: string) =>
-      vscode.Uri.from({ scheme: SCHEME, path: `/${id}/${name}/${basename(change.target)}` });
+      vscode.Uri.from({ scheme: CHANGE_SCHEME, path: `/${id}/${name}/${basename(change.target)}` });
     const before = side("planned");
     const after = side("proposed");
     this.texts.set(before.toString(), change.before ?? "");
@@ -55,7 +60,7 @@ export class DiffPreviews implements vscode.TextDocumentContentProvider, vscode.
     return {
       close: async () => {
         try {
-          await closeDiffs((uri) => uri.toString() === after.toString());
+          await closeDiffs(after);
         } finally {
           release();
         }
@@ -65,7 +70,7 @@ export class DiffPreviews implements vscode.TextDocumentContentProvider, vscode.
 
   dispose(): void {
     // [>]: Deactivation: the requests were cancelled; a diff left open would show an empty change after a reload.
-    void closeDiffs((uri) => uri.scheme === SCHEME).then(undefined, (error: unknown) =>
+    void closeDiffs().then(undefined, (error: unknown) =>
       console.error("broke-code: could not close the change previews", error),
     );
     this.texts.clear();
@@ -73,35 +78,26 @@ export class DiffPreviews implements vscode.TextDocumentContentProvider, vscode.
   }
 }
 
-/** Close every diff tab whose proposed side matches `matches`. */
-async function closeDiffs(matches: (uri: vscode.Uri) => boolean): Promise<void> {
-  const tabs = vscode.window.tabGroups.all
-    .flatMap((group) => group.tabs)
-    .filter((tab) => tab.input instanceof vscode.TabInputTextDiff && matches(tab.input.modified));
-  if (tabs.length > 0) await vscode.window.tabGroups.close(tabs);
+/** Close the change diff whose proposed side is `proposed`, or every change diff when it is absent. */
+function closeDiffs(proposed?: vscode.Uri): Promise<void> {
+  return closeChangeDiffs(
+    vscode.window.tabGroups.all.flatMap((group) => group.tabs),
+    (tab) => (tab.input instanceof vscode.TabInputTextDiff ? tab.input.modified : undefined),
+    (tabs) => vscode.window.tabGroups.close(tabs),
+    proposed,
+  );
 }
 
 /**
- * Whether an editor holds unsaved changes to the file at `target`, which a write would race. Paths compare once
- * resolved, symlinks and letter case included; a path that cannot be resolved (a new file) compares as given. Never
- * rejects.
+ * Whether an editor holds unsaved changes to the file at `target` (see the core `hasUnsavedChanges`). A path that
+ * cannot be resolved (a new file) compares as given. Never rejects.
  */
-export async function hasUnsavedChanges(target: string): Promise<boolean> {
-  const dirty = vscode.workspace.textDocuments.filter((document) => document.isDirty && document.uri.scheme === "file");
-  if (dirty.length === 0) return false;
-  const resolved = (path: string) => realpath(path).catch(() => path);
-  const file = await resolved(target);
-  for (const document of dirty) {
-    if ((await resolved(document.uri.fsPath)) === file) return true;
-  }
-  return false;
+export function hasUnsavedChanges(target: string): Promise<boolean> {
+  const resolve = (path: string) => realpath(path).catch(() => path);
+  return documentsHaveUnsavedChanges(vscode.workspace.textDocuments, target, resolve);
 }
 
-/**
- * `brokeCode.autoApproveWrites` from the user settings. [!]: User settings only, like the providers: a repository must
- * not turn approval off. The manifest's `application` scope already makes VS Code ignore a workspace value; reading
- * `globalValue` keeps that explicit here.
- */
+/** `brokeCode.autoApproveWrites` from the user settings only (see `autoApproveWrites`). */
 export function readAutoApproveWrites(): boolean {
-  return vscode.workspace.getConfiguration("brokeCode").inspect<unknown>("autoApproveWrites")?.globalValue === true;
+  return autoApproveWrites(vscode.workspace.getConfiguration("brokeCode").inspect<unknown>("autoApproveWrites"));
 }
