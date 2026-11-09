@@ -33,7 +33,7 @@ local Ollama models and applies each change at once. `run_command` and slash com
   the file port, and its implementation over a local directory with `node:fs`: missing versus failed, regular files
   only, atomic writes, leftover temporary files), the dialog queue, the host-webview message
   protocol and its validation, workspace file access (`workspaceFiles.ts`: the inside-workspace check and its read-only
-  roots (the loaded skills' folders, for reads only), capped reads, one-level listings, line truncation, the write boundary and atomic writes, with `node:fs`), mentions (`mentions.ts`: token detection, picked and typed
+  roots (the loaded skills' folders outside the workspace, for reads only), capped reads, one-level listings, line truncation, the write boundary and atomic writes, with `node:fs`), mentions (`mentions.ts`: token detection, picked and typed
   mentions merged, reading, and the text the model receives), where a message holds Markdown code
   (`markdownCode.ts`), the mention menu logic (`suggestions.ts`: the `@` token at the caret, index entries,
   filtering, the index exclusions), the menu's file index (`fileIndex.ts`: one scan shared until a file
@@ -190,7 +190,7 @@ local Ollama models and applies each change at once. `run_command` and slash com
   path), and a missing parent folder swapped for a symlink out after the check makes `mkdir` create an empty folder
   outside before the write is refused.
 - Tools act inside the open workspace only. The one exception is read-only access to the directories of skills
-  loaded in the current conversation (ADR 0003):
+  loaded in the current conversation that lie outside the workspace (ADR 0003):
   - A skill is loaded when the conversation holds an `ok` `load_skill` step for its name; an `error` step, a step
     dropped by Stop, and a malformed call load nothing. Before each call the controller maps those names to folders
     through the current send's discovery (`ToolContext.skillRoots`, beside `ToolContext.skills`, the send's skills),
@@ -198,12 +198,16 @@ local Ollama models and applies each change at once. `run_command` and slash com
     record change, and a skill gone since is no longer readable.
   - `read_file`, `list_files`, and `search` also accept an absolute path inside a loaded skill's real folder, the path
     its load result gives. The shared read boundary (`readWorkspaceEntry`, `locateWorkspacePath`) takes the folders
-    as read-only roots: a path written inside one must resolve inside that same folder, symlinks resolved, and the
-    open handle must match it by device and inode, as for workspace reads. A symlink out of it, into another loaded
-    folder or the workspace included, is `outsideWorkspace`. The folder is matched by the real path discovery gave,
-    never resolved again. `search` with such a `path` prints absolute paths.
+    as read-only roots. An absolute path written inside one is read as written, never rerouted through a multi-root
+    folder name (a folder named `/private` included). For a folder outside the workspace, the path must resolve inside
+    the deepest loaded folder that holds it, symlinks resolved, and the open handle must match it by device and
+    inode, as for workspace reads. A symlink out of it, into another loaded folder (its outer one included) or the
+    workspace, is `outsideWorkspace`. The folder is matched by the real path discovery gave, never resolved again.
+    `search` with a `path` in such a folder prints absolute paths.
   - Mentions never get the exception, and the write boundary never takes the read-only roots: a planned write into a
-    skill folder outside the workspace is refused `outsideWorkspace`. A workspace skill's folder is workspace.
+    skill folder outside the workspace is refused `outsideWorkspace`. A workspace skill's folder is ordinary
+    workspace (maintainer decision): writable with approval, its symlinks may resolve anywhere in the workspace, and
+    `search` prints its paths relative to the workspace.
 - Approvals (ADR 0002):
   - Reads run without asking.
   - A tool asks through its run context: `ToolContext.requestApproval(request)` settles with Accept, Reject (with the
@@ -265,7 +269,8 @@ local Ollama models and applies each change at once. `run_command` and slash com
   v1 has no automatic summarization.
 - After the tools, the system prompt has a "Skills" section, one `- <name>: <description>` line per skill listed to
   the model, telling it to call `load_skill` first; without such a skill the section is absent, and so are the
-  `load_skill` tool and its rule (reading a loaded skill's files by the absolute path the result gives, read-only): the
+  `load_skill` tool and its rule (reading a loaded skill's files by the absolute path the result gives, read-only
+  outside the workspace): the
   controller offers the runner's tools less `load_skill` (`offeredTools`), so its call is then malformed.
 - The system prompt includes `~/.agents/AGENTS.md`, then each workspace folder's `AGENTS.md` (labelled with its
   folder name in a multi-root workspace), read at each send under the mention caps (1 MiB, 2,000 lines). A missing

@@ -26,10 +26,16 @@ the same device and inode as that path. The write boundary never takes the read-
 
 ## Symlink policy
 
+This section is about a loaded skill's folder outside the workspace; a workspace skill's folder follows the workspace
+rules, its symlinks resolving anywhere in the workspace (maintainer decision, 2026-11-09).
+
 A path written inside a loaded skill's folder must resolve inside that same folder. A symlink in it to elsewhere is
 `outsideWorkspace`, also one into another loaded skill's folder or into the workspace: each folder is held to itself,
-as a workspace folder is. The folder is matched by the real path discovery found, never resolved again, so a skill
-folder swapped for a symlink since its discovery leads elsewhere and stays outside.
+as a workspace folder is. When loaded folders nest (two personal skills linked to nested folders), a path is held to
+the deepest one that holds it, so the inner skill cannot reach its outer one through a link. The folder is matched by
+the real path discovery found, never resolved again, so a skill folder swapped for a symlink since its discovery
+leads elsewhere and stays outside. An absolute path inside a loaded folder is read as written: a multi-root folder
+whose name prefixes it (`/private`) never reroutes it into the workspace.
 
 Every file of a skill lies in its own folder, `SKILL.md` included (maintainer decision, 2026-11-09). Discovery skips a
 personal or workspace skill whose `SKILL.md` resolves outside the skill folder's real path, with an
@@ -44,7 +50,8 @@ The model writes the folder's absolute real path, as the load result gives it. A
 or `@skills/review/…`) would go through the mention resolver, where a multi-root workspace folder may hold any name,
 `/` included, so a prefix could clash with a folder name. A new tool argument (`skill`) would widen the three read
 tools' specs for every call. An absolute path needs neither: the resolver already takes absolute paths, and `search`
-inside the folder prints the absolute paths the model reads them by.
+inside a folder outside the workspace prints the absolute paths the model reads them by; inside a workspace skill's
+folder it prints workspace paths, as anywhere in the workspace.
 
 ## The loaded set is derived from the conversation
 

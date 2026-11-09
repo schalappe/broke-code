@@ -65,7 +65,8 @@ _Avoid_: plugin, prompt template, custom command
 
 **Loaded skill**:
 A skill the model loaded in this conversation: the conversation holds its instructions, and the read tools may read
-its folder, never change it, until the conversation ends.
+its folder until the conversation ends. A folder outside the workspace stays read-only; a workspace skill's folder
+follows the workspace rules.
 _Avoid_: active skill, enabled skill
 
 **Personal skill**:

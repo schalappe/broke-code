@@ -184,8 +184,9 @@ When a task matches a skill's description, the model calls **load_skill** with i
 instructions, without the frontmatter, cut to their first 2,000 lines, together with the real path of the skill's
 folder. From then on, for the rest of the conversation, the model may read the files of that folder with
 **read_file**, **list_files**, and **search**, by that absolute path, even for a personal skill outside the workspace.
-It cannot change them, and before the load it cannot read them. A file in the skill's folder that is a symbolic link
-to somewhere outside that folder is refused. A skill loaded in a past conversation is loaded again when you reopen it, as long as it is still
+It cannot change the files of a skill outside the workspace, and before the load it cannot read them; there, a file
+that is a symbolic link to somewhere outside the skill's folder is refused. A workspace skill's folder is part of the
+workspace: the usual rules apply, so the model can change its files with your approval. A skill loaded in a past conversation is loaded again when you reopen it, as long as it is still
 there. `load_skill` is offered to the model only while a skill is listed to it.
 
 A skill whose `SKILL.md` is invalid, unreadable, or over 1 MiB is skipped, and the chat shows a warning naming the
