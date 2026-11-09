@@ -169,10 +169,14 @@ function firstClose(closes: ClosingTags, name: string, from: number): number {
   return entry.positions[entry.next] ?? -1;
 }
 
-/** True when only spaces or tabs stand between the start of its line and `index`. */
+/**
+ * True when only spaces or tabs stand between the start of its line and `index`. [>]: Walks back over spaces and tabs
+ * only, never to the line start, so a long line full of tags stays linear.
+ */
 function startsLine(text: string, index: number): boolean {
-  const lineStart = text.lastIndexOf("\n", index - 1) + 1;
-  return /^[ \t]*$/.test(text.slice(lineStart, index));
+  let before = index - 1;
+  while (text[before] === " " || text[before] === "\t") before--;
+  return before === -1 || text[before] === "\n";
 }
 
 /**

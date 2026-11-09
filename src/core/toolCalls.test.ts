@@ -121,6 +121,13 @@ describe("parseToolCall", () => {
     expect(performance.now() - started).toBeLessThan(1000);
   });
 
+  test("stays fast on one long line full of tags, before a call", () => {
+    const answer = `${"x<a>".repeat(240000)}\n<read_file>\n<path>a</path>\n</read_file>`;
+    const started = performance.now();
+    expect(parseToolCall(answer, TOOLS)).toMatchObject({ kind: "call", args: { path: "a" } });
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+
   test("closes the outer tag at its first closing tag after it, not at one before it", () => {
     const answer = "Text </read_file> first.\n<read_file>\n<path>a</path>\n</read_file>\n</read_file>";
     expect(parseToolCall(answer, TOOLS)).toMatchObject({
