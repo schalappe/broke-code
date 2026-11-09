@@ -92,6 +92,12 @@
           "default": 50,
           "minimum": 1,
           "markdownDescription": "%config.maxToolSteps.description%"
+        },
+        "brokeCode.autoApproveWrites": {
+          "type": "boolean",
+          "scope": "application",
+          "default": false,
+          "markdownDescription": "%config.autoApproveWrites.description%"
         }
       }
     }

@@ -7,6 +7,7 @@
  * vscode-free: host passes key store, workspace memento, mention reader, conversation store, tool runner, instruction
  * file reader, skill reader, and limits source through ports.
  */
+import type { ApprovalRequest, Decision, Preview } from "./approval";
 import { type ChatMessage, listModels, type ProviderAccess, streamChat } from "./client";
 import {
   CONVERSATION_VERSION,
@@ -28,6 +29,7 @@ import {
   type HaltReason,
   isReplying,
   type ReplyStatus,
+  type StepApproval,
   type StorageProblem,
 } from "./protocol";
 import type { ParsedProviders, Provider } from "./providers";
@@ -46,8 +48,15 @@ export type ChoiceStore = {
   update(key: string, value: unknown): PromiseLike<void>;
 };
 
-/** What a tool run gets from its turn. `signal`: Stop; the turn does not wait for a run that ignores it. */
-export type ToolContext = { signal: AbortSignal };
+/**
+ * What a tool run gets from its turn. `signal`: Stop; the turn does not wait for a run that ignores it.
+ * `requestApproval`: asks the user to accept or reject what the call is about to do, and settles with the decision.
+ * The request shows in `ChatState.approval` with its preview open until the user decides; Stop, and the navigation
+ * that stops the reply, cancel it and close the preview. A write is accepted at once, without a preview, while the
+ * auto-approve setting is on; a command always waits. Rejects only when the preview cannot open, or when another
+ * request of the run is still open.
+ */
+export type ToolContext = { signal: AbortSignal; requestApproval: (request: ApprovalRequest) => Promise<Decision> };
 
 /** Runs body tool calls. `tools`: what the system prompt lists and the parser accepts. `run` must not reject. */
 export type ToolRunner = {
@@ -72,7 +81,9 @@ export type LimitsSource = { read(): TurnLimits };
 
 /**
  * What the controller needs from the host. `limits`: absent gives the defaults (50 steps, 32,768 tokens for every
- * model). `now`: clock for record times, in milliseconds since the epoch.
+ * model). `autoApproveWrites`: the auto-approve setting, read at each write's approval request, so turning it off
+ * reaches the next write of a turn in flight; absent or throwing means off. `now`: clock for record times, in
+ * milliseconds since the epoch.
  */
 export type ChatPorts = {
   apiKeys: KeyStore;
@@ -84,6 +95,7 @@ export type ChatPorts = {
   instructions: InstructionReader;
   skills: SkillReader;
   limits?: LimitsSource;
+  autoApproveWrites?: () => boolean;
   now?: () => number;
 };
 
@@ -125,6 +137,10 @@ export class ChatController {
   private reply: { abort: AbortController; provider: Provider; settled: Promise<void> } | undefined;
   /** Bumped per listing request; stale listings dropped. */
   private listingId = 0;
+  /** Bumped per approval request shown; a decision counts only for the request open. */
+  private approvalId = 0;
+  /** The approval request open, mirrored in `ChatState.approval`, and how to settle it. */
+  private openApproval: { id: number; settle: (decision: Decision) => void } | undefined;
   /**
    * Navigation (restore, New chat, open, delete, pruning) runs one operation at a time, in request order, so the
    * conversation shown is always the result of the last request and never one deleted or pruned before it. The
@@ -150,6 +166,7 @@ export class ChatController {
   private readonly instructions: InstructionReader;
   private readonly skills: SkillReader;
   private readonly limitsSource: LimitsSource;
+  private readonly autoApproveWrites: () => boolean;
   private readonly now: () => number;
   /** Limits the usage display reads, refreshed at each send and by `limitsChanged`. */
   private limits: TurnLimits;
@@ -172,6 +189,7 @@ export class ChatController {
       read: () => parseLimits({ maxToolSteps: undefined, contextSizes: undefined }),
     };
     this.limits = this.limitsSource.read();
+    this.autoApproveWrites = ports.autoApproveWrites ?? (() => false);
     this.now = ports.now ?? Date.now;
     // [>]: Instruction files and skills are read only at a send, never just to refresh the display.
     this.systemPrompt = composeSystemPrompt(this.tools.tools, [], []);
@@ -432,9 +450,25 @@ export class ChatController {
           reply.call = { name, args, start, end };
           this.emit();
           void this.save(conversation);
-          const result = await unlessAborted(this.runTool({ name, args }, signal), signal);
+          let approval: StepApproval | undefined;
+          const context: ToolContext = {
+            signal,
+            requestApproval: async (request) => {
+              const answer = await this.askApproval(request, signal);
+              approval = answer.approval ?? approval;
+              return answer.decision;
+            },
+          };
+          const result = await unlessAborted(this.runTool({ name, args }, context), signal);
           if (!result) return settle("stopped");
-          step = { role: "tool", name, args, status: result.status, text: result.text };
+          step = {
+            role: "tool",
+            name,
+            args,
+            status: result.status,
+            text: result.text,
+            ...(approval ? { approval } : {}),
+          };
           malformedInARow = 0;
         } else {
           step = {
@@ -497,9 +531,9 @@ export class ChatController {
   }
 
   /** Run `call`. A runner that rejects despite its contract gives an `error` result, logged. */
-  private runTool(call: ToolCall, signal: AbortSignal): Promise<ToolResult> {
+  private runTool(call: ToolCall, context: ToolContext): Promise<ToolResult> {
     return Promise.resolve()
-      .then(() => this.tools.run(call, { signal }))
+      .then(() => this.tools.run(call, context))
       .catch((error: unknown): ToolResult => {
         console.error("broke-code: tool run failed", call.name, error);
         return { status: "error", text: `${call.name}: the tool failed (${String(error)}).` };
@@ -524,6 +558,72 @@ export class ChatController {
         console.error("broke-code: could not read the skills", error);
         return { skills: [], warnings: [] };
       });
+  }
+
+  /**
+   * Answer `request` for the call running under `signal`, with what the step records of it. A write is accepted at
+   * once while auto-approve is on; otherwise the preview opens and the request shows until the user decides or
+   * `signal` aborts, which cancels it. The preview closes as the request ends, whatever ended it; one that finishes
+   * opening after Stop is closed at once.
+   */
+  private async askApproval(
+    request: ApprovalRequest,
+    signal: AbortSignal,
+  ): Promise<{ decision: Decision; approval?: StepApproval }> {
+    if (signal.aborted) return { decision: { kind: "cancel" } };
+    // [!]: The one place the setting applies, so it can never accept a command.
+    if (request.kind === "write" && this.readAutoApprove()) return { decision: { kind: "accept" }, approval: "auto" };
+    if (this.openApproval) throw new Error("another approval request is still open");
+    const preview = request.preview ? await request.preview() : undefined;
+    if (signal.aborted) {
+      closePreview(preview);
+      return { decision: { kind: "cancel" } };
+    }
+    const id = ++this.approvalId;
+    const decision = await new Promise<Decision>((resolve) => {
+      // [>]: Cleared and published at once, also on Stop, so no state after the stop still shows the buttons.
+      const settle = (decision: Decision) => {
+        signal.removeEventListener("abort", onAbort);
+        this.openApproval = undefined;
+        this.state.approval = undefined;
+        this.emit();
+        closePreview(preview);
+        resolve(decision);
+      };
+      const onAbort = () => settle({ kind: "cancel" });
+      signal.addEventListener("abort", onAbort, { once: true });
+      this.openApproval = { id, settle };
+      this.state.approval = { id, tool: request.tool, summary: request.summary };
+      this.emit();
+    });
+    const approval: StepApproval | undefined =
+      decision.kind === "accept" ? "accepted" : decision.kind === "reject" ? "rejected" : undefined;
+    return { decision, ...(approval ? { approval } : {}) };
+  }
+
+  /** The auto-approve setting; a reader that throws despite its contract means off, logged. */
+  private readAutoApprove(): boolean {
+    try {
+      return this.autoApproveWrites();
+    } catch (error) {
+      console.error("broke-code: could not read the auto-approve setting", error);
+      return false;
+    }
+  }
+
+  /** The user accepts approval request `id`. Ignored unless it is the request open. */
+  approve(id: number): void {
+    if (this.openApproval?.id === id) this.openApproval.settle({ kind: "accept" });
+  }
+
+  /**
+   * The user rejects approval request `id`, with `reason` when it holds more than whitespace. Ignored unless it is the
+   * request open.
+   */
+  reject(id: number, reason?: string): void {
+    if (this.openApproval?.id !== id) return;
+    const trimmed = reason?.trim();
+    this.openApproval.settle(trimmed ? { kind: "reject", reason: trimmed } : { kind: "reject" });
   }
 
   stop(): void {
@@ -846,6 +946,14 @@ function unlessAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T | un
     signal.addEventListener("abort", onAbort, { once: true });
     work.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
   });
+}
+
+/** Close `preview`, if any; a failure is logged, since the request has already ended. */
+function closePreview(preview: Preview | undefined): void {
+  if (!preview) return;
+  Promise.resolve()
+    .then(() => preview.close())
+    .catch((error: unknown) => console.error("broke-code: could not close an approval preview", error));
 }
 
 function waitingReply(): ChatEntry & { role: "assistant" } {

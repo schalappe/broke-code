@@ -2,9 +2,10 @@
  * @module writeTools
  * The write tools of the harness, `write_file` and `edit_file`. Each turns one parsed body tool call into a planned
  * change, checked against the workspace boundary and the file as it stands, and never writes: an applier the host
- * passes writes it. `fileApplier` writes straight to disk, for the tests and the eval; the extension does not list
- * these tools until its applier asks the user first. Model-facing text is English and never localized.
+ * passes writes it. `fileApplier` writes straight to disk, for the tests and the eval; the extension wraps it in
+ * `approvalApplier`, which asks the user first. Model-facing text is English and never localized.
  */
+import { type ApprovalRequest, type Decision, type Preview, rejectionText } from "./approval";
 import { accessFailureReason } from "./mentions";
 import type { ToolSpec } from "./toolCalls";
 import { displayPath, excerpt, stopped, type ToolCall, type ToolResult } from "./tools";
@@ -124,8 +125,66 @@ function replaceOnce(text: string, old: string, replacement: string, path: strin
 }
 
 /**
+ * What the host does around an approved write. `preview`: opens the change for review, such as a diff editor.
+ * `hasUnsavedChanges`: whether an editor holds unsaved changes to the file at `target`, which a write would race;
+ * must not reject.
+ */
+export type WriteApprovalHost = {
+  preview(change: PlannedChange): Promise<Preview>;
+  hasUnsavedChanges(target: string): Promise<boolean>;
+};
+
+/**
+ * The applier that asks the user first: each change goes through `requestApproval` (the run's
+ * `ToolContext.requestApproval`), and `apply` writes it only on Accept. A file with unsaved changes in an editor is
+ * refused before the request, and again right before the write, since the user may have typed in it meanwhile: the
+ * write would replace the file under the editor's unsaved text. A rejection gives its `rejectionText`; a cancelled
+ * request, the stopped error; a request that fails, an error naming its cause. Nothing is written in those cases.
+ */
+export function approvalApplier(
+  apply: ChangeApplier,
+  host: WriteApprovalHost,
+  requestApproval: (request: ApprovalRequest) => Promise<Decision>,
+): ChangeApplier {
+  return async (change) => {
+    if (await host.hasUnsavedChanges(change.target)) return unsavedResult(change);
+    let decision: Decision;
+    try {
+      decision = await requestApproval({
+        kind: "write",
+        tool: change.tool,
+        summary: displayPath(change.path),
+        preview: () => host.preview(change),
+      });
+    } catch (error) {
+      console.error("broke-code: could not ask the approval of a write", change.target, error);
+      return {
+        status: "error",
+        text: `${change.tool}: ${excerpt(change.path)}: the change could not be shown for approval (${String(error)}). Nothing was written.`,
+      };
+    }
+    switch (decision.kind) {
+      case "cancel":
+        return stopped(change.tool);
+      case "reject":
+        return { status: "error", text: rejectionText(decision.reason) };
+      case "accept":
+        if (await host.hasUnsavedChanges(change.target)) return unsavedResult(change);
+        return apply(change);
+    }
+  };
+}
+
+function unsavedResult(change: PlannedChange): ToolResult {
+  return {
+    status: "error",
+    text: `${change.tool}: ${excerpt(change.path)}: the file has unsaved changes in the editor. Nothing was written; ask the user to save or revert them first.`,
+  };
+}
+
+/**
  * The applier that writes each change to disk at once, checked again first: for the tests and the eval, which
- * approve every change. A file that no longer holds the planned text is left alone; a failed write leaves the file as
+ * approve every change, and for the extension behind `approvalApplier`. A file that no longer holds the planned text is left alone; a failed write leaves the file as
  * it was (see `writeWorkspaceFile`).
  */
 export function fileApplier(roots: WorkspaceRoot[]): ChangeApplier {
