@@ -22,8 +22,9 @@ The code so far covers the extension skeleton and a streaming chat with a provid
 - `src/core/`: modules that import nothing from `vscode`: settings parsing, the API key shape check, the provider
   HTTP client, the CA trust and certificate error classification (`tls.ts`), the SSE reader, the typed provider
   errors, the chat controller (conversation state, streaming, Stop, saving, reopen, delete), the conversation record
-  (`conversation.ts`: version 1, its validation on load, title, id), its store (`conversationStore.ts`: one file
-  per conversation, reads, writes, and deletes in call order), and the store's file access (`conversationFiles.ts`:
+  (`conversation.ts`: version 1, its validation on load, title, id, the summary file's shape), its store
+  (`conversationStore.ts`: a record and a summary file per conversation, the list from the summaries, reads, writes,
+  and deletes in call order), and the store's file access (`conversationFiles.ts`:
   the file port, and its implementation over a local directory with `node:fs`: missing versus failed, regular files
   only, atomic writes, leftover temporary files), the dialog queue, the host-webview message
   protocol and its validation, workspace file access (`workspaceFiles.ts`: the inside-workspace check, capped reads,
@@ -167,17 +168,34 @@ The code so far covers the extension skeleton and a streaming chat with a provid
   workspace only, which the mention resolver accepts. A file watcher marks the index stale on create and delete
   outside the excluded folders, and so does a workspace folder or `files.exclude` change; the next query rebuilds it, and queries
   during a build share it. At 5,000 files the menu's last line says the index is limited.
-- Conversations are saved per workspace, as one JSON file per conversation in the extension's per-workspace storage
+- Conversations are saved per workspace, as two JSON files per conversation in the extension's per-workspace storage
   directory (`ExtensionContext.storageUri`), never in the memento: the memento serializes every key on each update
-  and VS Code warns from about 500 KB. A write goes to a uniquely named temporary file, flushed to disk, then a
-  `rename(2)` over the final one with `node:fs`, never `workspace.fs`: its rename with overwrite deletes the
-  destination first, so a crash between the two steps would lose the conversation. The first listing deletes
-  temporary files left by a crash. Reads, writes, and deletes run one at a time in
-  call order, so a read sees every write and delete asked before it. The workspace memento holds only the last
+  and VS Code warns from about 500 KB. The record `<id>.json` holds the conversation; the summary
+  `<id>.summary.json` holds `{ version, id, title, updatedAt }` only, `version` being the record's, so a valid summary
+  spares the list parsing a record that may reach megabytes. A write goes to a uniquely named temporary file, flushed
+  to disk, then a `rename(2)` over the final one with `node:fs`, never `workspace.fs`: its rename with overwrite
+  deletes the destination first, so a crash between the two steps would lose the conversation. The first listing
+  deletes temporary files of either file left by a crash. Reads, writes, and deletes run one at a time in call order,
+  so a read sees every write and delete asked before it. A save deletes the summary, writes the record, then writes
+  the new summary, in one queued operation, so a summary never describes an older record: the prune deletes by the
+  listed update time, and a stale one would delete a recently updated conversation as the oldest. A failed summary
+  delete fails the save before the record is written, as a failed record write does, and both files stay as the last
+  save left them; a failed summary write is logged only, and that failure or a crash after the delete leaves no
+  summary, so the list parses the record until the next save. A delete removes the record, then the summary: a failed record delete keeps both
+  and fails; a failed summary delete is logged and the conversation is gone. The workspace memento holds only the last
   provider and model choice and the id of the conversation shown. The list is derived from the directory, newest
-  first, conversations without entries left out; 50 conversations are kept: a save past the limit, and the window load, queue a prune
-  with the navigation (below), which deletes the oldest by update time, oldest first, never the one shown when it
-  runs.
+  first, conversations without entries left out. It reads a conversation's summary, or its record when the summary is
+  missing, unreadable, invalid, of another id, or of another version than 1, and parses the record only then; only a
+  record that cannot be read is a listing failure. Accepted gap: a valid version-1 summary beside a corrupt or newer
+  record (a crash right after a downgrade, or disk corruption) is listed, and opening it shows the usual not-found or
+  invalid error. A summary without its record is not listed and is deleted at that listing. 50 conversations are
+  kept: a save past the limit, and the window load, queue a prune with the navigation (below), which deletes the
+  oldest by update time, oldest first, never the one shown when it runs. Before each delete the prune reads the
+  record: a newer update time than its row (a summary left by a build without summaries) corrects the row and the
+  oldest is picked again; a record that cannot be read is kept and the failure shown. The prune deletes only a record
+  it has validated: a missing, invalid, or newer-version record is kept on disk and in the list and is logged, never
+  shown as a failure, and the prune deletes the next oldest valid conversation instead, so 50 rows remain; the user can
+  still delete its row.
 - The record is versioned (`version: 1`) and holds the displayed entries, each user entry with the text the model
   received (`modelText`), so a reopened conversation resends exactly what was sent and never reads its mentions
   again. It holds no API key and nothing else of `ProviderAccess`; a failed reply's error keeps the provider's base

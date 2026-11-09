@@ -405,11 +405,54 @@ export class ChatController {
   }
 
   /**
-   * Delete the conversations past the 50 kept, oldest first, sparing the one shown when this runs. Never stops the
-   * reply: the reply's own save queued this prune, and the conversation shown does not change.
+   * Delete the conversations past the 50 kept, oldest first, sparing the one shown when this runs and any whose record
+   * cannot be loaded and validated. Never stops the reply: the reply's own save queued this prune, and the conversation
+   * shown does not change.
    */
   private async prune(): Promise<void> {
-    for (const id of conversationsOverLimit(this.state.conversations, [this.conversation.id])) await this.remove(id);
+    const tried = new Set<string>();
+    let lastFailure: StorageProblem | undefined;
+    for (;;) {
+      // [>]: A tried row is kept like the shown one, so the excess is still counted over every row and the next
+      // oldest untried one is picked. Each pass adds to `tried` or settles a row's time, so the loop ends.
+      const id = conversationsOverLimit(this.state.conversations, [this.conversation.id, ...tried])[0];
+      if (id === undefined) {
+        // [>]: A later successful delete clears a `deleteFailed` problem, which would hide an earlier failed check or
+        // failed delete.
+        if (lastFailure && this.state.storageProblem === undefined) {
+          this.state.storageProblem = lastFailure;
+          this.emit();
+        }
+        return;
+      }
+      // [>]: A listed row may come from a summary older than its record (one a build without summaries left behind),
+      // so the record decides before a delete: a newer one corrects the row, and the oldest is picked again.
+      let record: ConversationRecord | undefined;
+      try {
+        record = await this.store.load(id);
+      } catch (error) {
+        tried.add(id);
+        lastFailure = { kind: "deleteFailed", cause: String(error) };
+        this.report(lastFailure, "could not check a conversation to prune", error);
+        continue;
+      }
+      if (!record) {
+        // [>]: Only a record validated here is deleted. One that is invalid or of another version (a newer build's,
+        // after a downgrade) is user data this build cannot read, so it stays on disk and in the list, where the user
+        // can delete it. A missing one has nothing left to delete; the next listing drops its summary.
+        tried.add(id);
+        console.error("broke-code: kept a conversation to prune whose record is missing or invalid", id);
+        continue;
+      }
+      const row = this.state.conversations.find((summary) => summary.id === id);
+      if (row && record.updatedAt !== row.updatedAt) {
+        const others = this.state.conversations.filter((summary) => summary.id !== id);
+        this.setConversations([summarize(record), ...others]);
+        continue;
+      }
+      tried.add(id);
+      lastFailure = (await this.remove(id)) ?? lastFailure;
+    }
   }
 
   /** Each mention of `text`, read in parallel. A reader that rejects despite its contract yields `unreadable`. */
@@ -502,15 +545,21 @@ export class ChatController {
     );
   }
 
-  /** Delete `id` from disk, then from the list. A failed delete keeps the row and is reported. */
-  private async remove(id: string): Promise<void> {
+  /**
+   * Delete `id` from disk, then from the list. A failed delete keeps the row, is reported, and is returned; a success
+   * returns nothing.
+   */
+  private async remove(id: string): Promise<StorageProblem | undefined> {
     try {
       await this.store.remove(id);
     } catch (error) {
-      return this.report({ kind: "deleteFailed", cause: String(error) }, "could not delete a conversation", error);
+      const problem: StorageProblem = { kind: "deleteFailed", cause: String(error) };
+      this.report(problem, "could not delete a conversation", error);
+      return problem;
     }
     if (this.state.storageProblem?.kind === "deleteFailed") this.state.storageProblem = undefined;
     this.setConversations(this.state.conversations.filter((summary) => summary.id !== id));
+    return undefined;
   }
 
   /** Newest first. */
