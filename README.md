@@ -210,14 +210,15 @@ never hold an API key. A window with no folder open keeps its conversation in me
 ## Tested models
 
 broke-code's tool calls are measured on local models with Ollama: `qwen3.8:27b` and `gemma4:26b-a4b-it-qat`, ten
-runs of each task, with the bar at nine. The bench has three tasks:
+runs of each task, with the bar at nine. The bench has four tasks:
 
 - **Read**: answer with the value of a setting that only a file holds.
 - **Edit**: rename a function in a source file, changing nothing else.
 - **Create**: create a file whose text holds double quotes, backslashes, tags, and a code block, exactly as asked.
+- **Skill**: answer a question that a personal skill covers, by loading the skill and reading a file in its folder.
 
-Both models pass all three tasks, 10 runs of 10 each. When a model thinks, then stops without a word, broke-code
-tells it so and asks again. Contributors run the bench with `bun run eval`.
+Both models pass the read, edit, and create tasks, 10 runs of 10 each. When a model thinks, then stops without a
+word, broke-code tells it so and asks again. Contributors run the bench with `bun run eval`.
 
 ## Privacy
 

@@ -74,11 +74,12 @@ local Ollama models and applies each change at once. `run_command` and slash com
   bundle (`dist/webview/`).
 - `scripts/next-version.ts`: computes the next release version from the commits since the last `v*` tag. The
   release workflow runs it as a CLI. Its tests sit next to it.
-- `eval/`: the Ollama eval bench (`bun run eval`). `scenarios.ts` holds each scenario (fixture files, message, the
-  files it must write with their exact text, an optional check of a turn that ended `done`) and `judge`, the verdict
-  and failure category of a run, which compares the workspace after the run with the fixture plus those writes; `run.ts` plays one run through
-  the `ChatController` ports, with the read and write tools over a copy of the fixture under the system temporary
-  directory, each write applied at once by `fileApplier` and recorded for the dump;
+- `eval/`: the Ollama eval bench (`bun run eval`). `scenarios.ts` holds each scenario (fixture files, an optional
+  fixture home folder, message, the files it must write with their exact text, an optional check of a turn that ended
+  `done`) and `judge`, the verdict and failure category of a run, which compares the workspace after the run with the
+  fixture plus those writes; `run.ts` plays one run through the `ChatController` ports, with the read and write tools
+  and `load_skill` over a copy of the fixture under the system temporary directory, each write applied at once by
+  `fileApplier` and recorded for the dump, and the skills discovered in a copy of the fixture home, never the real one;
   `report.ts` formats the scores; `bench.ts` is the CLI, guarded by `import.meta.main` so `bun test` never starts it.
   Its unit tests sit next to them and need no Ollama.
 - `biome.jsonc`: the Biome linter and formatter settings. Markdown is excluded, because Biome's Markdown formatter
@@ -427,32 +428,39 @@ local Ollama models and applies each change at once. `run_command` and slash com
   (VSCodium is the maintainer's editor). Rebuild and reload the window after each change.
 - `bun run eval` plays each scenario 10 times per model against the local Ollama at `http://localhost:11434/v1`,
   on `qwen3.8:27b` then `gemma4:26b-a4b-it-qat`, all runs of one model before the next. Each run drives the
-  chat controller with the read and write tools over a throwaway copy of the scenario's fixture, each write applied
-  at once, no instruction file, no skill, and a
-  step limit of 10. Three scenarios, each judged on the turn ending `done` and on the workspace after it: every file
-  the scenario writes holds its exact expected text, byte for byte, and every other file is unchanged.
+  chat controller with the read and write tools and `load_skill` over a throwaway copy of the scenario's fixture,
+  each write applied at once, no instruction file, and a step limit of 10. Skills are discovered as the extension
+  does, but with a throwaway copy of the scenario's home fixture as the home folder, so the bench never reads the real
+  `~/.agents`; a scenario without one gets no skill, and its prompt has neither the Skills section nor `load_skill`.
+  Four scenarios, each judged on the turn ending `done` and on the workspace after it: every file the scenario writes
+  holds its exact expected text, byte for byte, and every other file is unchanged.
   - `read`: the model must read a setting it cannot guess and answer with its value. Passes when a tool step got the
     value, the answer holds it, and no file changed.
   - `edit`: rename a function named once in `src/pricing.py`. Passes when exactly that line changed.
   - `create`: create `docs/call-format.md` with a text stated in the message that holds double quotes, backslashes,
     `<content>...</content>`, `</write_file>`, and a fenced code block. Passes when the file is exactly that text
     plus one line break.
+  - `skill`: the home fixture holds one personal skill, `depot-codes`, whose description matches the message (the
+    dispatch code of a depot) and whose body sends the model to `reference/depots.md` in its folder, the only file
+    holding the code. The message names neither the skill nor the tool. Passes when an `ok` `load_skill` step ran, a
+    read step got the code, the answer holds it, and no file changed; without an `ok` `load_skill` step it is
+    `wrongTool`.
 
   A failed run shows one category and a one-line detail: `malformed`, `wrongTool`, `wrongAnswer`, `stepLimit`,
   `contextFull`, `providerError`, `wrongEdit` (a file the scenario writes is missing or holds other text, with the
   first differing line), or `workspaceChanged` (the written files are right, or none was asked for, but another file
   changed). The bar is 9 runs of 10 per model and scenario; the bench exits 1 when a model is under it, and before
-  any run when Ollama is unreachable or does not list a model. `--model <name>` (repeatable) and `--runs <n>` shorten
-  a local iteration; `--dump <file>` appends each run's entries (tool steps with their call's arguments), verdict,
+  any run when Ollama is unreachable or does not list a model. `--model <name>`, `--scenario <name>` (both
+  repeatable; an unknown scenario exits 1 naming the others), and `--runs <n>` shorten a local iteration; `--dump <file>` appends each run's entries (tool steps with their call's arguments), verdict,
   `planned` (each change handed to the applier, in call order: tool, path, `before` (`null` for a new file), `after`,
   and the applier's status), and `changes` (each file that differs from the fixture after the run, with its text,
   `null` when removed) as JSON Lines, to read the
   failing replies; an incomplete last line left by an interrupted run is removed, with a notice, before the first
   append. A full run took 34 min 04 s on the maintainer's Mac on b1049a2, the first run of each model including its load;
   about 16 min without one `gemma4` run of 18 min whose reasoning ran on for about 98,000 characters (the bench has no
-  time limit per run). It runs locally on demand and never in CI. On b1049a2 every model met the bar on every
-  scenario (ADR 0001, amendment of 2026-11-09 on empty replies). Scenarios for commands and skills come with
-  `run_command` (#9) and skills (#10).
+  time limit per run); that run predates the `skill` scenario. It runs locally on demand and never in CI. On b1049a2
+  every model met the bar on the three earlier scenarios (ADR 0001, amendment of 2026-11-09 on empty replies).
+  Scenarios for commands come with `run_command` (#9), and for slash commands with #11.
 - v1 supports macOS only. Windows and Linux are planned for v2.
 
 ## Git and release workflow

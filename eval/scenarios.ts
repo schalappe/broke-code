@@ -7,6 +7,7 @@
  */
 import type { ChatEntry } from "../src/core/protocol";
 import type { ProviderError } from "../src/core/providerError";
+import { READ_TOOLS } from "../src/core/tools";
 
 /**
  * Workspace files by relative POSIX path: a scenario's fixture, or the throwaway copy read back after a run. [!]: A
@@ -42,18 +43,24 @@ export type FailureCategory =
 export type Verdict = { pass: true } | { pass: false; category: FailureCategory; detail: string };
 
 /**
- * `files`: the fixture workspace, copied fresh for each run. `message`: what the user sends. `writes`: the files the
- * turn must leave, each with its exact text, byte for byte; every other fixture file must stay as it is and no other
- * file may appear. Empty for a scenario that changes nothing. `check`: what else a turn that ended `done` with the
- * expected workspace must show, from its entries; absent when the workspace says it all.
+ * `files`: the fixture workspace, copied fresh for each run. `home`: the fixture home folder, copied fresh for each run
+ * and the only one the run's skills are discovered in (`.agents/skills/` under it); absent for an empty home, so the
+ * model gets no skill. `message`: what the user sends. `writes`: the files the turn must leave in the workspace, each
+ * with its exact text, byte for byte; every other fixture file must stay as it is and no other file may appear. Empty
+ * for a scenario that changes nothing. `check`: what else a turn that ended `done` with the expected workspace must
+ * show, from its entries; absent when the workspace says it all.
  */
 export type Scenario = {
   name: string;
   files: WorkspaceFiles;
+  home?: WorkspaceFiles;
   message: string;
   writes: WorkspaceFiles;
   check?(entries: readonly ChatEntry[]): Verdict;
 };
+
+/** The tools whose `ok` text is what the model read: a value in it came from a file. */
+const READ_TOOL_NAMES = new Set(READ_TOOLS.map((tool) => tool.name));
 
 const ROUTE_SEED = "kestrel-4471-vanta";
 
@@ -160,8 +167,64 @@ export const CREATE_SCENARIO: Scenario = {
   writes: { [NOTE_PATH]: `${NOTE_CONTENT}\n` },
 };
 
+const DISPATCH_CODE = "LYN-7Q42-ORCA";
+const DEPOT_SKILL = ".agents/skills/depot-codes";
+
+/**
+ * Follow a skill: a personal skill whose description matches the message, and whose body sends the model to a
+ * reference file in the skill's folder, outside the workspace, for a value it cannot guess. Passes when an `ok`
+ * `load_skill` step ran, an `ok` read step's text holds the value (only the reference file does, so that step read
+ * it), the answer holds it, and no workspace file changed. The message names neither the tool nor the folder.
+ */
+export const SKILL_SCENARIO: Scenario = {
+  name: "skill",
+  files: READ_FILES,
+  home: {
+    [`${DEPOT_SKILL}/SKILL.md`]: [
+      "---",
+      "name: depot-codes",
+      "description: Look up the dispatch code of a courier depot. Use when asked for a depot's dispatch code.",
+      "---",
+      "",
+      "# Depot codes",
+      "",
+      "Every courier depot has a dispatch code. The codes are listed in reference/depots.md, in this skill's folder.",
+      "",
+      "1. Read reference/depots.md.",
+      "2. Find the row of the depot asked for.",
+      "3. Answer with its dispatch code, exactly as written in the table.",
+      "",
+    ].join("\n"),
+    [`${DEPOT_SKILL}/reference/depots.md`]: [
+      "# Depot dispatch codes",
+      "",
+      "| Depot | Dispatch code |",
+      "| --- | --- |",
+      "| Bordeaux | BDX-3K18-MIRA |",
+      `| Lyon | ${DISPATCH_CODE} |`,
+      "| Marseille | MRS-9T05-HALO |",
+      "",
+    ].join("\n"),
+  },
+  message: "What is the dispatch code of the Lyon depot? Reply with the exact code.",
+  writes: {},
+  check(entries) {
+    const steps = entries.filter((entry) => entry.role === "tool");
+    const loaded = steps.some((step) => step.name === "load_skill" && step.status === "ok");
+    const read = steps.some(
+      (step) => READ_TOOL_NAMES.has(step.name) && step.status === "ok" && step.text.includes(DISPATCH_CODE),
+    );
+    if (!loaded || !read) return { pass: false, category: "wrongTool", detail: `steps: ${describeSteps(steps)}` };
+    const answer = lastReply(entries).content;
+    if (!answer.includes(DISPATCH_CODE)) {
+      return { pass: false, category: "wrongAnswer", detail: `answer: ${excerpt(answer)}` };
+    }
+    return { pass: true };
+  },
+};
+
 /** Every scenario the bench plays, in order. */
-export const SCENARIOS: readonly Scenario[] = [READ_SCENARIO, EDIT_SCENARIO, CREATE_SCENARIO];
+export const SCENARIOS: readonly Scenario[] = [READ_SCENARIO, EDIT_SCENARIO, CREATE_SCENARIO, SKILL_SCENARIO];
 
 /**
  * The verdict of one run of `scenario`: `entries` are the conversation after `send` resolved, `after` the workspace
