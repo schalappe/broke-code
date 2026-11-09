@@ -85,7 +85,8 @@ export const READ_TOOLS: ToolSpec[] = [
 
 /**
  * What a read tool may reach besides the workspace. `skillRoots`: the real paths of the folders of the skills loaded in
- * the conversation, read by absolute path, read-only (see `readWorkspaceEntry`). `seam`: for tests, see
+ * the conversation, read by absolute path; one outside the workspace is read-only (see `readWorkspaceEntry`). `seam`:
+ * for tests, see
  * `readWorkspaceEntry`.
  */
 export type ReadToolOptions = { skillRoots?: readonly string[]; seam?: RaceSeam };
@@ -316,8 +317,9 @@ async function searchTool(
 
 /**
  * The real paths `search` may give ripgrep: every workspace folder when `path` is left out, empty, or `.`, otherwise
- * `path` once it passed the check `read_file` makes. Never a path that did not pass. Output under a workspace folder
- * shows as a mention resolves it; output under a loaded skill's folder keeps its absolute path, the one to read it by.
+ * `path` once it passed the check `read_file` makes. Never a path that did not pass. Output under a workspace folder,
+ * a workspace skill's folder included, shows as a mention resolves it; output under a loaded skill's folder outside
+ * the workspace keeps its absolute path, the one to read it by.
  *
  * [!]: ripgrep opens the path by name after the check, so a folder swapped for a symlink out between the two, or a
  * subfolder swapped during the walk, is searched. Accepted, as for mentions: a process that can swap workspace files

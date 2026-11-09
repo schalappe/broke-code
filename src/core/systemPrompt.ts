@@ -44,7 +44,7 @@ const TOOL_RULES: Record<string, string> = {
     "- edit_file replaces an exact passage that must appear once in the file: copy it from the file, line breaks and indentation included.",
   write_file: "- write_file replaces the whole file: give its complete content.",
   load_skill:
-    "- A loaded skill's files live outside the workspace: read them with read_file, list_files, or search by the absolute path the load_skill result gives. They cannot be changed.",
+    "- Read a loaded skill's files with read_file, list_files, or search by the absolute path the load_skill result gives. A skill folder outside the workspace is read-only.",
 };
 
 const SKILLS_INTRO =
