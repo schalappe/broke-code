@@ -21,7 +21,8 @@ const OLLAMA_URL = "http://localhost:11434/v1";
 const MAX_TOOL_STEPS = 6;
 
 /**
- * `models`: `--model`, repeatable, else both bench models. `runs`: `--runs`, else 10. `dump`: `--dump <file>`, a JSON
+ * `models`: `--model`, repeatable, else both bench models; a name given twice is played once, since the report scores
+ * a model's runs together against the bar of one batch. `runs`: `--runs`, else 10. `dump`: `--dump <file>`, a JSON
  * Lines file each run's entries and verdict are appended to, for reading failed replies. Throws on any other flag.
  */
 export function parseBenchArgs(args: string[]): { models: string[]; runs: number; dump: string | undefined } {
@@ -39,7 +40,7 @@ export function parseBenchArgs(args: string[]): { models: string[]; runs: number
   if (!/^\d+$/.test(values.runs ?? "10") || !Number.isSafeInteger(runs) || runs < 1) {
     throw new Error(`--runs takes a whole number of at least 1, not ${JSON.stringify(values.runs)}.`);
   }
-  return { models: values.model ?? BENCH_MODELS, runs, dump: values.dump };
+  return { models: [...new Set(values.model ?? BENCH_MODELS)], runs, dump: values.dump };
 }
 
 async function main(): Promise<number> {

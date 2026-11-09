@@ -15,6 +15,10 @@ describe("parseBenchArgs", () => {
     });
   });
 
+  test("plays a model named twice once, in first-seen order, so its runs are never scored together", () => {
+    expect(parseBenchArgs(["--model", "b", "--model", "a", "--model", "b"]).models).toEqual(["b", "a"]);
+  });
+
   test("refuses a run count that is not a positive integer, and unknown flags", () => {
     for (const runs of ["0", "-1", "2.5", "ten", ""]) {
       expect(() => parseBenchArgs(["--runs", runs])).toThrow("--runs");
