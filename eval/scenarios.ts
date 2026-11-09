@@ -94,11 +94,7 @@ export const READ_SCENARIO: Scenario = {
     if (!steps.some((step) => step.status === "ok" && step.text.includes(ROUTE_SEED))) {
       return { pass: false, category: "wrongTool", detail: `steps: ${describeSteps(steps)}` };
     }
-    const answer = lastReply(entries).content;
-    if (!answer.includes(ROUTE_SEED)) {
-      return { pass: false, category: "wrongAnswer", detail: `answer: ${excerpt(answer)}` };
-    }
-    return { pass: true };
+    return answerHolds(entries, ROUTE_SEED);
   },
 };
 
@@ -215,11 +211,7 @@ export const SKILL_SCENARIO: Scenario = {
       (step) => READ_TOOL_NAMES.has(step.name) && step.status === "ok" && step.text.includes(DISPATCH_CODE),
     );
     if (!loaded || !read) return { pass: false, category: "wrongTool", detail: `steps: ${describeSteps(steps)}` };
-    const answer = lastReply(entries).content;
-    if (!answer.includes(DISPATCH_CODE)) {
-      return { pass: false, category: "wrongAnswer", detail: `answer: ${excerpt(answer)}` };
-    }
-    return { pass: true };
+    return answerHolds(entries, DISPATCH_CODE);
   },
 };
 
@@ -303,6 +295,13 @@ function fileDifference(expected: string, actual: string | undefined): string {
     return JSON.stringify(line.length > 60 ? `${line.slice(0, 60)}…` : line);
   };
   return `line ${at + 1}: expected ${show(want[at])}, got ${show(got[at])}`;
+}
+
+/** A pass when the turn's last answer holds `value`, otherwise `wrongAnswer` with an excerpt of it. */
+function answerHolds(entries: readonly ChatEntry[], value: string): Verdict {
+  const answer = lastReply(entries).content;
+  if (answer.includes(value)) return { pass: true };
+  return { pass: false, category: "wrongAnswer", detail: `answer: ${excerpt(answer)}` };
 }
 
 function lastReply(entries: readonly ChatEntry[]): ChatEntry & { role: "assistant" } {
