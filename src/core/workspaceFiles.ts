@@ -1,12 +1,13 @@
 /**
  * @module workspaceFiles
  * Access to the workspace folders: the inside-workspace check, file reads under a size cap, one-level folder
- * listings, line truncation, and the write boundary with in-place writes. Mentions and the read tools (`tools.ts`)
+ * listings, line truncation, and the write boundary with atomic writes. Mentions and the read tools (`tools.ts`)
  * read through it; the write tools (`writeTools.ts`) check and write through it.
  * Plain `node:fs`: v1 runs on local macOS folders only, and real files keep the boundary rules testable.
  */
+import { randomBytes } from "node:crypto";
 import { constants, type Dirent, type Stats } from "node:fs";
-import { type FileHandle, lstat, mkdir, open, readdir, realpath, stat } from "node:fs/promises";
+import { type FileHandle, link, lstat, mkdir, open, readdir, realpath, rename, stat, unlink } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 /** A workspace folder: its name in a multi-root workspace and its absolute path. */
@@ -259,11 +260,15 @@ export type WriteTarget =
   | { status: Exclude<WriteFailure, "unreadable"> }
   | { status: "unreadable"; cause: string };
 
-/** A target that passed the check, with what the write needs: its real path, the folders to create, in order. */
+/**
+ * A target that passed the check, with what the write needs: its real path, the folders to create, in order, and the
+ * permission bits of the file there (`undefined` for a new file).
+ */
 type CheckedTarget = {
   status: "ok";
   path: string;
   before: string | undefined;
+  mode: number | undefined;
   realPath: string;
   realRoots: string[];
   newFolders: string[];
@@ -277,73 +282,168 @@ export const MAX_WRITE_BYTES = MAX_FILE_BYTES;
  * resolves it; a path that exists nowhere goes to the first folder that may hold it. The deepest existing folder
  * above the file must resolve inside a workspace folder, the file itself must not be a symlink, and an existing file
  * is read as `readWorkspaceEntry` reads it, its handle checked to be the file at that path. Never writes; never
- * rejects.
+ * rejects. `seam`: for tests, `beforeOpen` runs between the file's check and its read.
  */
-export async function locateWriteTarget(roots: WorkspaceRoot[], path: string): Promise<WriteTarget> {
-  const checked = await checkWriteTarget(roots, candidatePaths(roots, path));
+export async function locateWriteTarget(
+  roots: WorkspaceRoot[],
+  path: string,
+  seam: RaceSeam = {},
+): Promise<WriteTarget> {
+  const checked = await checkWriteTarget(roots, candidatePaths(roots, path), seam);
   return checked.status === "ok" ? { status: "ok", path: checked.path, before: checked.before } : checked;
 }
 
 /**
- * Write `after` to the file at `path`, a path `locateWriteTarget` returned, once checked again: missing folders are
- * created, then the file is created, or truncated and written in place through a handle that never follows a
- * symlink. `alreadyWritten`: the file already holds `after`, so running twice changes nothing. `changed`: it no longer
- * holds `before`, so nothing is written. Never rejects.
+ * What applying a change did. `alreadyWritten`: the file already holds the new text, so running twice changes nothing.
+ * `changed`: the file no longer holds the planned text, or the path no longer leads where it did; nothing is written.
+ * `notWritten`: a disk failure (`cause`) stopped the write; the file is as it was, but folders created for it stay.
+ * The check's refusals come back as `locateWriteTarget` gives them. `leftover`: the temporary file could not be
+ * removed (`cause`); it sits in the file's folder under `name`.
+ */
+export type WriteOutcome = (
+  | { status: "written" | "alreadyWritten" | "changed" }
+  | Exclude<WriteTarget, { status: "ok" }>
+  | { status: "notWritten"; cause: string }
+) & { leftover?: { name: string; cause: string } };
+
+/**
+ * Test seam of `writeWorkspaceFile`: each hook runs where a concurrent change could land. `afterCheck`: before the
+ * missing folders are created. `afterTempWritten`: once the new text is on disk, before the last check.
+ * `afterLastCheck`: right before the new text takes the file's place.
+ */
+export type WriteSeam = {
+  afterCheck?: () => Promise<void>;
+  afterTempWritten?: () => Promise<void>;
+  afterLastCheck?: () => Promise<void>;
+};
+
+/**
+ * Write `after` to the file at `path`, a path `locateWriteTarget` returned, atomically: the file holds either its
+ * old text or `after`, never a mix or nothing, even after a crash. Checked again first; missing folders are created;
+ * `after` goes to a new temporary file in the same folder (`.<name>.broke-code-<random>.tmp`), flushed to disk, with
+ * the old file's permission bits or the default ones for a new file. Then the target is checked a last time (inside
+ * the workspace, not a symlink, still holding `before`), and the temporary file takes its place: renamed over an
+ * existing file, or linked to a new name, which fails rather than replace a file created meanwhile. Never rejects.
  *
- * [!]: The check goes by name before the open, as for reads. A component swapped for a symlink out after it is caught
- * by the handle check before any byte is written, but a new file is created empty by then: accepted, as for reads, since
- * such a writer already runs with the user's rights.
+ * [!]: Accepted costs of replacing the file rather than writing into it: a hard link to it keeps the old text, and
+ * its owner, extended attributes, and ACLs are not kept; a folder that holds the file must be writable. A crash
+ * before the swap leaves the temporary file behind, recognizable by its name, and so does a folder renamed during
+ * the write, which carries it out of the cleanup's reach.
+ * [!]: The last check reads the file by name, then the rename goes by name: a write landing between the two is
+ * overwritten, as a swap between the checks and the open is accepted for reads. Node offers no compare-and-swap on a
+ * path; the window is one read long.
  */
 export async function writeWorkspaceFile(
   roots: WorkspaceRoot[],
   path: string,
   before: string | undefined,
   after: string,
-): Promise<{ status: "written" | "alreadyWritten" | "changed" } | Exclude<WriteTarget, { status: "ok" }>> {
+  seam: WriteSeam = {},
+): Promise<WriteOutcome> {
+  const first = await checkWriteTarget(roots, [resolve(path)]);
+  if (first.status !== "ok") return first;
+  if (first.before === after) return { status: "alreadyWritten" };
+  if (first.before !== before) return { status: "changed" };
   try {
-    const checked = await checkWriteTarget(roots, [resolve(path)]);
-    if (checked.status !== "ok") return checked;
-    if (checked.before === after) return { status: "alreadyWritten" };
-    if (checked.before !== before) return { status: "changed" };
-    for (const folder of checked.newFolders) {
+    await seam.afterCheck?.();
+    for (const folder of first.newFolders) {
       await mkdir(folder).catch((error: unknown) => {
+        // [>]: Created meanwhile; the folder check below tells whether it still leads inside.
         if (errorCode(error) !== "EEXIST") throw error;
       });
     }
-    const flags =
-      before === undefined
-        ? constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW
-        : constants.O_WRONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
-    const handle = await open(checked.realPath, flags).catch((error: unknown) => {
-      // [>]: Created or swapped for a symlink since the check.
-      if (errorCode(error) === "EEXIST" || errorCode(error) === "ELOOP") return undefined;
-      throw error;
-    });
-    if (handle === undefined) return { status: "changed" };
+    const moved = await folderMoved(first);
+    if (moved !== undefined) return { status: moved };
+    const temp = join(
+      dirname(first.realPath),
+      `.${basename(first.realPath)}.broke-code-${randomBytes(6).toString("hex")}.tmp`,
+    );
+    const handle = await open(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW);
+    let outcome: WriteOutcome;
     try {
-      const opened = await handle.stat();
-      if (!opened.isFile()) return { status: "changed" };
-      if (!(await isInsideFile(checked.realRoots, checked.realPath, opened))) return { status: "outsideWorkspace" };
-      const bytes = Buffer.from(after);
-      await handle.truncate(0);
-      let written = 0;
-      while (written < bytes.length) {
-        written += (await handle.write(bytes, written, bytes.length - written, written)).bytesWritten;
-      }
-      await handle.sync();
-      return { status: "written" };
-    } finally {
-      await handle.close();
+      outcome = await swapIn(roots, first, handle, temp, after, seam);
+    } catch (error) {
+      outcome = notWritten(error);
     }
+    const leftover = await removeTemporaryFile(temp);
+    return leftover === undefined ? outcome : { ...outcome, leftover };
   } catch (error) {
-    return { status: "unreadable", cause: errorCode(error) ?? String(error) };
+    return notWritten(error);
   }
+}
+
+/** Write `after` through `handle` to the temporary file `temp`, then put it at `checked`'s path once checked again. */
+async function swapIn(
+  roots: WorkspaceRoot[],
+  checked: CheckedTarget,
+  handle: FileHandle,
+  temp: string,
+  after: string,
+  seam: WriteSeam,
+): Promise<WriteOutcome> {
+  try {
+    const bytes = Buffer.from(after);
+    let written = 0;
+    while (written < bytes.length) {
+      written += (await handle.write(bytes, written, bytes.length - written, written)).bytesWritten;
+    }
+    // [>]: By handle, so the umask the open applied does not narrow the old file's bits.
+    if (checked.mode !== undefined) await handle.chmod(checked.mode);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await seam.afterTempWritten?.();
+
+  const last = await checkWriteTarget(roots, [checked.path]);
+  if (last.status !== "ok") return last;
+  if (last.realPath !== checked.realPath || last.newFolders.length > 0) return { status: "changed" };
+  if (last.before === after) return { status: "alreadyWritten" };
+  if (last.before !== checked.before) return { status: "changed" };
+  await seam.afterLastCheck?.();
+
+  if (checked.before !== undefined) {
+    await rename(temp, checked.realPath);
+    return { status: "written" };
+  }
+  // [>]: `link` never replaces an existing name, unlike `rename`: a file created since the last check stays.
+  return link(temp, checked.realPath).then(
+    () => ({ status: "written" }),
+    (error: unknown) => {
+      if (errorCode(error) === "EEXIST") return { status: "changed" };
+      throw error;
+    },
+  );
+}
+
+/** Why the folder of `checked` no longer leads where it did once its missing folders exist, if it does not. */
+async function folderMoved(checked: CheckedTarget): Promise<"outsideWorkspace" | "changed" | undefined> {
+  const folder = dirname(checked.realPath);
+  const now = await realpath(folder);
+  if (now === folder) return undefined;
+  return checked.realRoots.some((root) => isInside(root, now)) ? "changed" : "outsideWorkspace";
+}
+
+/** Remove the temporary file at `temp`, gone already once renamed; why it could not be removed, otherwise. */
+async function removeTemporaryFile(temp: string): Promise<{ name: string; cause: string } | undefined> {
+  try {
+    await unlink(temp);
+    return undefined;
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return undefined;
+    return { name: basename(temp), cause: errorCode(error) ?? String(error) };
+  }
+}
+
+function notWritten(error: unknown): WriteOutcome {
+  return { status: "notWritten", cause: errorCode(error) ?? String(error) };
 }
 
 /** `locateWriteTarget` over absolute `candidates`, the first that exists winning. Never rejects. */
 async function checkWriteTarget(
   roots: WorkspaceRoot[],
   candidates: string[],
+  seam: RaceSeam = {},
 ): Promise<CheckedTarget | Exclude<WriteTarget, { status: "ok" }>> {
   try {
     const inside = candidates.filter((candidate) => roots.some((root) => isInside(resolve(root.path), candidate)));
@@ -360,13 +460,13 @@ async function checkWriteTarget(
     );
     const realPath = join(ancestor.realPath, ...ancestor.missing, basename(path));
     const target = { status: "ok" as const, path, realPath, realRoots, newFolders };
-    if (newFolders.length > 0) return { ...target, before: undefined };
+    if (newFolders.length > 0) return { ...target, before: undefined, mode: undefined };
 
     const info = await lstat(realPath).catch((error: unknown) => {
       if (MISSING_CODES.has(errorCode(error) ?? "")) return undefined;
       throw error;
     });
-    if (info === undefined) return { ...target, before: undefined };
+    if (info === undefined) return { ...target, before: undefined, mode: undefined };
     if (info.isSymbolicLink()) {
       const linked = await realpath(realPath).catch(() => undefined);
       const stays = linked !== undefined && realRoots.some((root) => isInside(root, linked));
@@ -374,19 +474,21 @@ async function checkWriteTarget(
     }
     if (info.isDirectory()) return { status: "folder" };
     if (!info.isFile()) return { status: "unreadable", cause: "not a file" };
-    const before = await readWriteTarget(realPath, realRoots);
-    return typeof before === "string" ? { ...target, before } : before;
+    await seam.beforeOpen?.();
+    const read = await readWriteTarget(realPath, realRoots);
+    return "text" in read ? { ...target, before: read.text, mode: read.mode } : read;
   } catch (error) {
+    // [>]: Deleted between the check and the read.
     if (MISSING_CODES.has(errorCode(error) ?? "")) return { status: "missing" };
     return { status: "unreadable", cause: errorCode(error) ?? String(error) };
   }
 }
 
-/** The text of the regular file at `realPath`, every byte kept, a byte order mark included. */
+/** The text of the regular file at `realPath`, every byte kept, a byte order mark included, and its permission bits. */
 async function readWriteTarget(
   realPath: string,
   realRoots: string[],
-): Promise<string | Exclude<WriteTarget, { status: "ok" }>> {
+): Promise<{ text: string; mode: number } | Exclude<WriteTarget, { status: "ok" }>> {
   const handle = await open(realPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const opened = await handle.stat();
@@ -395,7 +497,11 @@ async function readWriteTarget(
     const bytes = await readTextBytes(handle);
     if (typeof bytes === "string") return { status: bytes };
     try {
-      return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+      // [>]: Permission bits only: setting the sticky bit on a file fails on macOS (`EFTYPE`) for anyone but root.
+      return {
+        text: new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes),
+        mode: opened.mode & 0o777,
+      };
     } catch {
       return { status: "notText" };
     }

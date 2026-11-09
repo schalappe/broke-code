@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolResult } from "./tools";
@@ -25,6 +25,9 @@ beforeAll(async () => {
   await symlink(join(base, "outside-dir"), join(app.path, "link-out-dir"));
 });
 afterAll(async () => {
+  // [>]: Tests lock these folders and files; unlock them so the cleanup can remove them.
+  for (const path of ["locked", "locked-parent", "denied.txt"])
+    await chmod(join(app.path, path), 0o755).catch(() => {});
   await rm(base, { recursive: true, force: true });
 });
 
@@ -116,6 +119,13 @@ describe("write_file", () => {
     expect(await readFile(join(lib.path, "named.txt"), "utf8")).toBe("2\n");
   });
 
+  test("edits a bare path that exists only in a later folder there, in a multi-root workspace", async () => {
+    await writeFile(join(lib.path, "only-lib.txt"), "lib\n");
+    expect((await run("edit_file", { path: "only-lib.txt", old: "lib", new: "LIB" }, [app, lib])).status).toBe("ok");
+    expect(await readFile(join(lib.path, "only-lib.txt"), "utf8")).toBe("LIB\n");
+    expect(existsSync(join(app.path, "only-lib.txt"))).toBe(false);
+  });
+
   test("refuses every path when no folder is open", async () => {
     expect(await run("write_file", { path: "a.txt", content: "x" }, [])).toEqual({
       status: "error",
@@ -168,6 +178,15 @@ describe("edit_file", () => {
     await writeFile(join(app.path, "empty-old.ts"), "a\n");
     expect((await run("edit_file", { path: "empty-old.ts", old: "", new: "b" })).status).toBe("error");
     expect(await readFile(join(app.path, "empty-old.ts"), "utf8")).toBe("a\n");
+  });
+
+  test("refuses a file it may not read, naming the cause", async () => {
+    await writeFile(join(app.path, "denied.txt"), "a\n");
+    await chmod(join(app.path, "denied.txt"), 0o000);
+    expect(await run("edit_file", { path: "denied.txt", old: "a", new: "b" })).toEqual({
+      status: "error",
+      text: "edit_file: denied.txt: the path could not be read (EACCES).",
+    });
   });
 
   test("refuses a binary file and a file over 1 MiB with the read tools' wording", async () => {
@@ -241,6 +260,49 @@ describe("fileApplier", () => {
       text: "write_file: swap.txt: the path is outside the workspace folders.",
     });
     expect(await readFile(join(base, "outside.txt"), "utf8")).toBe("secret\n");
+  });
+
+  test("replaces a file whole by a new one: its permission bits kept, a hard link left on the old text, no temporary file", async () => {
+    await mkdir(join(app.path, "swap-in"));
+    const file = join(app.path, "swap-in", "a.sh");
+    await writeFile(file, "old\n");
+    await chmod(file, 0o751);
+    await link(file, join(app.path, "swap-in", "hard-link.sh"));
+    const change = await plan("write_file", { path: "swap-in/a.sh", content: "new" });
+    expect((await fileApplier([app])(change)).status).toBe("ok");
+    expect(await readFile(file, "utf8")).toBe("new\n");
+    expect((await stat(file)).mode & 0o777).toBe(0o751);
+    expect(await readFile(join(app.path, "swap-in", "hard-link.sh"), "utf8")).toBe("old\n");
+    expect(await readdir(join(app.path, "swap-in"))).toEqual(["a.sh", "hard-link.sh"]);
+  });
+
+  test("creates a new file with the default permission bits", async () => {
+    const change = await plan("write_file", { path: "fresh.txt", content: "x" });
+    expect((await fileApplier([app])(change)).status).toBe("ok");
+    expect((await stat(join(app.path, "fresh.txt"))).mode & 0o777).toBe(0o666 & ~process.umask());
+  });
+
+  test("a write that fails leaves the file byte-identical and no temporary file, and names the cause", async () => {
+    await mkdir(join(app.path, "locked"));
+    await writeFile(join(app.path, "locked", "a.txt"), "original\n");
+    const change = await plan("edit_file", { path: "locked/a.txt", old: "original", new: "changed" });
+    await chmod(join(app.path, "locked"), 0o555);
+    expect(await fileApplier([app])(change)).toEqual({
+      status: "error",
+      text: "edit_file: locked/a.txt: the file was not written (EACCES).",
+    });
+    expect(await readFile(join(app.path, "locked", "a.txt"), "utf8")).toBe("original\n");
+    expect(await readdir(join(app.path, "locked"))).toEqual(["a.txt"]);
+  });
+
+  test("a folder that cannot be created fails the write with its cause", async () => {
+    await mkdir(join(app.path, "locked-parent"));
+    const change = await plan("write_file", { path: "locked-parent/new/a.txt", content: "x" });
+    await chmod(join(app.path, "locked-parent"), 0o555);
+    expect(await fileApplier([app])(change)).toEqual({
+      status: "error",
+      text: "write_file: locked-parent/new/a.txt: the file was not written (EACCES).",
+    });
   });
 
   test("hands nothing over once Stop is pressed", async () => {

@@ -1,8 +1,16 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { compareNames, readWorkspaceEntry, truncateLines, type WorkspaceRoot } from "./workspaceFiles";
+import {
+  compareNames,
+  locateWriteTarget,
+  readWorkspaceEntry,
+  truncateLines,
+  type WorkspaceRoot,
+  writeWorkspaceFile,
+} from "./workspaceFiles";
 
 // [>]: `tmpdir()` sits under /var, a symlink to /private/var on macOS: every root here has a real path that differs
 // from its path, as a workspace opened through a symlink would.
@@ -188,6 +196,100 @@ describe("readWorkspaceEntry while the path changes", () => {
       status: "outsideWorkspace",
       kind: "folder",
     });
+  });
+});
+
+describe("writeWorkspaceFile while the file changes", () => {
+  // [>]: Each hook runs where a concurrent writer could land; the planned `before` comes from a real plan.
+  async function planned(path: string): Promise<{ target: string; before: string | undefined }> {
+    const target = await locateWriteTarget([app], path);
+    if (target.status !== "ok") throw new Error(`not planned: ${target.status}`);
+    return { target: target.path, before: target.before };
+  }
+
+  async function temporaryFiles(folder: string): Promise<string[]> {
+    return (await readdir(folder)).filter((name) => name.includes(".broke-code-"));
+  }
+
+  test("refuses a file edited after the new text is staged, keeping the edit and leaving no temporary file", async () => {
+    await mkdir(join(app.path, "w1"));
+    await writeFile(join(app.path, "w1", "a.txt"), "original\n");
+    const { target, before } = await planned("w1/a.txt");
+    const edit = () => writeFile(join(app.path, "w1", "a.txt"), "user edit\n");
+    expect(await writeWorkspaceFile([app], target, before, "agent edit\n", { afterTempWritten: edit })).toEqual({
+      status: "changed",
+    });
+    expect(await readFile(join(app.path, "w1", "a.txt"), "utf8")).toBe("user edit\n");
+    expect(await temporaryFiles(join(app.path, "w1"))).toEqual([]);
+  });
+
+  test("takes a file that came to hold the new text meanwhile as already written, leaving no temporary file", async () => {
+    await mkdir(join(app.path, "w2"));
+    await writeFile(join(app.path, "w2", "a.txt"), "original\n");
+    const { target, before } = await planned("w2/a.txt");
+    const same = () => writeFile(join(app.path, "w2", "a.txt"), "agent edit\n");
+    expect(await writeWorkspaceFile([app], target, before, "agent edit\n", { afterTempWritten: same })).toEqual({
+      status: "alreadyWritten",
+    });
+    expect(await temporaryFiles(join(app.path, "w2"))).toEqual([]);
+  });
+
+  test("never clobbers a new file created after the last check", async () => {
+    await mkdir(join(app.path, "w3"));
+    const { target, before } = await planned("w3/new.txt");
+    const create = () => writeFile(join(app.path, "w3", "new.txt"), "theirs\n");
+    expect(await writeWorkspaceFile([app], target, before, "mine\n", { afterLastCheck: create })).toEqual({
+      status: "changed",
+    });
+    expect(await readFile(join(app.path, "w3", "new.txt"), "utf8")).toBe("theirs\n");
+    expect(await temporaryFiles(join(app.path, "w3"))).toEqual([]);
+  });
+
+  test("goes on when a missing folder is created meanwhile, and refuses one created as a symlink out", async () => {
+    await mkdir(join(app.path, "w4"));
+    const made = await planned("w4/made/a.txt");
+    const create = () => mkdir(join(app.path, "w4", "made")).then(() => {});
+    expect(await writeWorkspaceFile([app], made.target, made.before, "a\n", { afterCheck: create })).toEqual({
+      status: "written",
+    });
+    expect(await readFile(join(app.path, "w4", "made", "a.txt"), "utf8")).toBe("a\n");
+
+    const outsideDir = join(base, "outside-w4");
+    await mkdir(outsideDir);
+    const linked = await planned("w4/linked/a.txt");
+    const link = () => symlink(outsideDir, join(app.path, "w4", "linked"));
+    // [>]: Not even the temporary file may land outside, however briefly.
+    const seenOutside: string[][] = [];
+    const look = async () => {
+      seenOutside.push(await readdir(outsideDir));
+    };
+    const seam = { afterCheck: link, afterTempWritten: look };
+    expect(await writeWorkspaceFile([app], linked.target, linked.before, "a\n", seam)).toEqual({
+      status: "outsideWorkspace",
+    });
+    expect(seenOutside).toEqual([]);
+    expect(await readdir(outsideDir)).toEqual([]);
+  });
+
+  test("refuses when the folder is swapped for a link to another folder inside once the new text is staged", async () => {
+    await mkdir(join(app.path, "w5", "sub"), { recursive: true });
+    await mkdir(join(app.path, "w5", "other"));
+    const { target, before } = await planned("w5/sub/a.txt");
+    const swap = async () => {
+      await rename(join(app.path, "w5", "sub"), join(app.path, "w5", "sub-moved"));
+      await symlink(join(app.path, "w5", "other"), join(app.path, "w5", "sub"));
+    };
+    expect(await writeWorkspaceFile([app], target, before, "a\n", { afterTempWritten: swap })).toEqual({
+      status: "changed",
+    });
+    expect(await readdir(join(app.path, "w5", "other"))).toEqual([]);
+  });
+
+  test("reports a target deleted between its check and its read as missing", async () => {
+    await writeFile(join(app.path, "vanishing.txt"), "here\n");
+    const remove = () => unlink(join(app.path, "vanishing.txt"));
+    expect(await locateWriteTarget([app], "vanishing.txt", { beforeOpen: remove })).toEqual({ status: "missing" });
+    expect(existsSync(join(app.path, "vanishing.txt"))).toBe(false);
   });
 });
 

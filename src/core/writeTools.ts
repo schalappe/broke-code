@@ -13,6 +13,7 @@ import {
   MAX_WRITE_BYTES,
   type WorkspaceRoot,
   type WriteFailure,
+  type WriteOutcome,
   writeWorkspaceFile,
 } from "./workspaceFiles";
 
@@ -61,8 +62,9 @@ export const WRITE_TOOLS: ToolSpec[] = [
 
 /**
  * Run write tool `call` inside `roots`: plan the change, then hand it to `apply`. Never rejects: an unknown tool, a
- * refused path or passage, and a failed write all come back as an `error` result for the model, with nothing
- * written. `signal` (Stop) before the change is handed over gives the stopped error, and nothing is written.
+ * refused path or passage, and a failed write all come back as an `error` result for the model; the file is left as
+ * it was (`fileApplier` writes atomically). `signal` (Stop) before the change is handed over gives the stopped error,
+ * and nothing is written.
  */
 export async function runWriteTool(
   call: ToolCall,
@@ -121,27 +123,40 @@ function replaceOnce(text: string, old: string, replacement: string, path: strin
 
 /**
  * The applier that writes each change to disk at once, checked again first: for the tests and the eval, which
- * approve every change. A file that no longer holds the planned text is left alone.
+ * approve every change. A file that no longer holds the planned text is left alone; a failed write leaves the file as
+ * it was (see `writeWorkspaceFile`).
  */
 export function fileApplier(roots: WorkspaceRoot[]): ChangeApplier {
   return async (change) => {
     const outcome = await writeWorkspaceFile(roots, change.target, change.before, change.after);
-    const shown = displayPath(change.path);
-    switch (outcome.status) {
-      case "written":
-        if (change.tool === "edit_file") return { status: "ok", text: `edit_file: replaced the passage in ${shown}.` };
-        return { status: "ok", text: `write_file: ${change.before === undefined ? "created" : "replaced"} ${shown}.` };
-      case "alreadyWritten":
-        return { status: "ok", text: `${change.tool}: ${shown} already holds this change.` };
-      case "changed":
-        return {
-          status: "error",
-          text: `${change.tool}: ${excerpt(change.path)}: the file changed since this change was planned. Read it again.`,
-        };
-      default:
-        return refused(change.tool, change.path, outcome.status, "cause" in outcome ? outcome.cause : undefined);
-    }
+    const result = describeOutcome(change, outcome);
+    if (outcome.leftover === undefined) return result;
+    const { name, cause } = outcome.leftover;
+    return { ...result, text: `${result.text} The temporary file ${excerpt(name)} could not be removed (${cause}).` };
   };
+}
+
+function describeOutcome(change: PlannedChange, outcome: WriteOutcome): ToolResult {
+  const shown = displayPath(change.path);
+  switch (outcome.status) {
+    case "written":
+      if (change.tool === "edit_file") return { status: "ok", text: `edit_file: replaced the passage in ${shown}.` };
+      return { status: "ok", text: `write_file: ${change.before === undefined ? "created" : "replaced"} ${shown}.` };
+    case "alreadyWritten":
+      return { status: "ok", text: `${change.tool}: ${shown} already holds this change.` };
+    case "changed":
+      return {
+        status: "error",
+        text: `${change.tool}: ${excerpt(change.path)}: the file changed since this change was planned. Read it again.`,
+      };
+    case "notWritten":
+      return {
+        status: "error",
+        text: `${change.tool}: ${excerpt(change.path)}: the file was not written (${outcome.cause}).`,
+      };
+    default:
+      return refused(change.tool, change.path, outcome.status, "cause" in outcome ? outcome.cause : undefined);
+  }
 }
 
 /** A refused path, in the read tools' wording for the failures they share. */
