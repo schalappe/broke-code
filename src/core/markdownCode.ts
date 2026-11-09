@@ -1,6 +1,6 @@
 /**
  * @module markdownCode
- * Where a message holds Markdown code, which never holds mentions. No `node:` or `vscode` import, since the webview
+ * Where a message holds Markdown code, which never holds mentions or body tool calls. No `node:` or `vscode` import, since the webview
  * bundle loads it.
  */
 
@@ -53,8 +53,8 @@ function standsAlone(text: string, index: number, length: number): boolean {
   return (before === "" || /\s/.test(before)) && /^[.,;:!?)]*(\s|$)/.test(text.slice(index + length));
 }
 
-/** `text` with fenced blocks and inline code spans masked, lengths and newlines kept. */
-function maskCode(text: string): string {
+/** `text` with fenced blocks and inline code spans masked with `MASK`, lengths and newlines kept. */
+export function maskCode(text: string): string {
   return maskCodeSpans(maskFences(text));
 }
 

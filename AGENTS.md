@@ -30,8 +30,10 @@ The code so far covers the extension skeleton and a streaming chat with a provid
   one-level listings, line truncation, with `node:fs`), mentions (`mentions.ts`: token detection, picked and typed
   mentions merged, reading, and the text the model receives), where a message holds Markdown code
   (`markdownCode.ts`), the mention menu logic (`suggestions.ts`: the `@` token at the caret, index entries,
-  filtering, the index exclusions), and the menu's file index (`fileIndex.ts`: one scan shared until a file
-  changes, behind a scan port). `markdownCode.ts`, `suggestions.ts`, and `conversation.ts` import nothing from
+  filtering, the index exclusions), the menu's file index (`fileIndex.ts`: one scan shared until a file
+  changes, behind a scan port), the body tool call parser (`toolCalls.ts`: `ToolSpec`, the first call-shaped block,
+  malformed-call messages), and the system prompt composer (`systemPrompt.ts`: role, call format, rules, tools,
+  instruction files). `markdownCode.ts`, `suggestions.ts`, and `conversation.ts` import nothing from
   `node:`, since the webview loads them. Unit tests sit next to them as `*.test.ts`, because `bun test` cannot load `vscode`. `tlsFixture.ts`
   generates test certificates with `/usr/bin/openssl` at test time; no private key is committed.
   `conversationFixture.ts` is the in-memory conversation file port for tests.

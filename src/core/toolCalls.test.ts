@@ -1,0 +1,253 @@
+import { describe, expect, test } from "bun:test";
+import { parseToolCall, type ToolSpec } from "./toolCalls";
+
+const TOOLS: ToolSpec[] = [
+  {
+    name: "read_file",
+    description: "Read a file.",
+    args: [
+      { name: "path", required: true, description: "The file to read." },
+      { name: "start_line", required: false, description: "The first line to read." },
+    ],
+  },
+  {
+    name: "write_file",
+    description: "Write a file.",
+    args: [
+      { name: "path", required: true, description: "The file to write." },
+      { name: "content", required: true, description: "The whole new content." },
+    ],
+  },
+];
+
+describe("parseToolCall", () => {
+  test("returns the tool name and the raw values of a valid call with two arguments", () => {
+    const answer = "I will write it.\n<write_file>\n<path>a.txt</path>\n<content>hello</content>\n</write_file>";
+    expect(parseToolCall(answer, TOOLS)).toEqual({
+      kind: "call",
+      name: "write_file",
+      args: { path: "a.txt", content: "hello" },
+      start: 17,
+      end: answer.length,
+    });
+  });
+
+  test("returns no call for a reply without a tag", () => {
+    expect(parseToolCall("The answer is 42.", TOOLS)).toEqual({ kind: "none" });
+    expect(parseToolCall("", TOOLS)).toEqual({ kind: "none" });
+  });
+
+  test("returns no call for a call inside a fenced block", () => {
+    const answer = "Call it like this:\n```\n<read_file>\n<path>a.txt</path>\n</read_file>\n```\nDone.";
+    expect(parseToolCall(answer, TOOLS)).toEqual({ kind: "none" });
+  });
+
+  test("returns no call for a call inside an inline code span", () => {
+    expect(parseToolCall("Write `<read_file><path>a</path></read_file>`.", TOOLS)).toEqual({ kind: "none" });
+    expect(parseToolCall("Write ``\n<read_file><path>a</path></read_file>\n`` to read.", TOOLS)).toEqual({
+      kind: "none",
+    });
+  });
+
+  test("returns the first of two calls and ignores the second, with no error", () => {
+    const first = "<read_file>\n<path>a.txt</path>\n</read_file>";
+    const answer = `${first}\n<read_file>\n<path>b.txt</path>\n</read_file>`;
+    expect(parseToolCall(answer, TOOLS)).toEqual({
+      kind: "call",
+      name: "read_file",
+      args: { path: "a.txt" },
+      start: 0,
+      end: first.length,
+    });
+  });
+
+  test("ignores everything after the first call, even a malformed block", () => {
+    const first = "<read_file>\n<path>a.txt</path>\n</read_file>";
+    expect(parseToolCall(`${first}\n<nope>\n</nope>`, TOOLS)).toMatchObject({ kind: "call", end: first.length });
+  });
+
+  test("reads a call after a fenced block that quotes one", () => {
+    const answer = "```\n<read_file>\n<path>a</path>\n</read_file>\n```\n<read_file>\n<path>b</path>\n</read_file>";
+    expect(parseToolCall(answer, TOOLS)).toMatchObject({
+      kind: "call",
+      args: { path: "b" },
+      start: answer.lastIndexOf("<read_file>"),
+    });
+  });
+
+  test("treats a tag that does not start a line as plain text", () => {
+    expect(parseToolCall("Use <b>bold</b> and <div>x</div>.", TOOLS)).toEqual({ kind: "none" });
+    expect(parseToolCall("Run: <read_file><path>a</path></read_file>", TOOLS)).toEqual({ kind: "none" });
+    expect(parseToolCall("  <read_file><path>a</path></read_file>", TOOLS)).toEqual({ kind: "none" });
+  });
+
+  test("treats a tag whose name is not snake_case, or that has attributes, as plain text", () => {
+    expect(parseToolCall("<Read_File><path>a</path></Read_File>", TOOLS)).toEqual({ kind: "none" });
+    expect(parseToolCall("<read-file><path>a</path></read-file>", TOOLS)).toEqual({ kind: "none" });
+    expect(parseToolCall('<read_file id="1"><path>a</path></read_file>', TOOLS)).toEqual({ kind: "none" });
+  });
+
+  test("treats a line-start tag of an unknown name that never closes as plain text, and keeps scanning", () => {
+    expect(parseToolCall("<br>\nSee below.", TOOLS)).toEqual({ kind: "none" });
+    const answer = "<p>\nReading it.\n<read_file>\n<path>a</path>\n</read_file>";
+    expect(parseToolCall(answer, TOOLS)).toMatchObject({ kind: "call", start: answer.indexOf("<read_file>") });
+  });
+});
+
+/** The message of a malformed result, failing the test on any other kind. */
+function malformedMessage(answer: string): string {
+  const parsed = parseToolCall(answer, TOOLS);
+  if (parsed.kind !== "malformed") throw new Error(`expected malformed, got ${JSON.stringify(parsed)}`);
+  return parsed.message;
+}
+
+const READ_FILE_SHAPE = "<read_file>\n<path>…</path>\n<start_line>…</start_line>\n</read_file>";
+
+describe("parseToolCall on a malformed call", () => {
+  test("reports an outer tag that never closes, naming it, up to the end of the answer", () => {
+    const answer = "Reading.\n<read_file>\n<path>a.txt</path>\n";
+    expect(parseToolCall(answer, TOOLS)).toMatchObject({ kind: "malformed", start: 9, end: answer.length });
+    const message = malformedMessage(answer);
+    expect(message).toContain("<read_file>");
+    expect(message).toContain("never closes");
+    expect(message).toContain(READ_FILE_SHAPE);
+  });
+
+  test("reports an unknown snake_case tool at a line start, listing the known tools", () => {
+    const answer = "<delete_file>\n<path>a</path>\n</delete_file>\nThen more.";
+    expect(parseToolCall(answer, TOOLS)).toMatchObject({ kind: "malformed", start: 0, end: answer.indexOf("\nThen") });
+    const message = malformedMessage(answer);
+    expect(message).toContain("<delete_file>");
+    expect(message).toContain("read_file, write_file");
+  });
+
+  test("reports a closed HTML-looking block at a line start as an unknown tool", () => {
+    expect(malformedMessage("<div>\nhello\n</div>")).toContain("<div>");
+  });
+
+  test("reports a missing required argument, naming it", () => {
+    const message = malformedMessage("<write_file>\n<path>a.txt</path>\n</write_file>");
+    expect(message).toContain("<content>");
+    expect(message).toContain("missing");
+    expect(message).toContain("<write_file>\n<path>…</path>\n<content>…</content>\n</write_file>");
+  });
+
+  test("names every missing required argument", () => {
+    const message = malformedMessage("<write_file>\n</write_file>");
+    expect(message).toContain("<path>, <content>");
+  });
+
+  test("accepts a call without its optional arguments", () => {
+    expect(parseToolCall("<read_file>\n<path>a</path>\n</read_file>", TOOLS)).toMatchObject({
+      kind: "call",
+      args: { path: "a" },
+    });
+  });
+
+  test("reports an argument unknown to the tool, naming it", () => {
+    const message = malformedMessage("<read_file>\n<path>a</path>\n<encoding>utf8</encoding>\n</read_file>");
+    expect(message).toContain("<encoding>");
+    expect(message).toContain(READ_FILE_SHAPE);
+  });
+
+  test("reports text other than whitespace and argument tags inside the outer tag, quoting it", () => {
+    const message = malformedMessage("<read_file>\nthe file is <path>a</path>\n</read_file>");
+    expect(message).toContain("the file is");
+    expect(message).toContain(READ_FILE_SHAPE);
+    expect(malformedMessage("<read_file>\n<path>a</path>\ntrailing words\n</read_file>")).toContain("trailing words");
+    expect(malformedMessage("<read_file>\n<Path>a</Path>\n</read_file>")).toContain("<Path>");
+  });
+
+  test("reports an argument tag that never closes, naming it", () => {
+    const message = malformedMessage("<read_file>\n<path>a.txt\n</read_file>");
+    expect(message).toContain("<path>");
+    expect(message).toContain("never closes");
+  });
+
+  test("reports an argument opened again after it closed as never closing", () => {
+    expect(malformedMessage("<read_file>\n<path>a</path>\n<path>b\n</read_file>")).toContain("never closes");
+  });
+
+  test("reports the first problem: an unclosed outer tag before an unknown argument", () => {
+    const message = malformedMessage("<read_file>\n<encoding>x</encoding>\n");
+    expect(message).toContain("never closes");
+    expect(message).not.toContain("<encoding>");
+  });
+
+  test("reports the first problem: unexpected text before a missing argument", () => {
+    expect(malformedMessage("<write_file>\nhello\n</write_file>")).toContain("hello");
+  });
+
+  test("covers the whole block with start and end", () => {
+    const block = "<read_file>\n<nope>x</nope>\n</read_file>";
+    const answer = `Let me look.\n${block}\nok`;
+    expect(parseToolCall(answer, TOOLS)).toMatchObject({ kind: "malformed", start: 13, end: 13 + block.length });
+  });
+});
+
+/** The argument values of a call, failing the test on any other kind. */
+function callArgs(answer: string): Record<string, string> {
+  const parsed = parseToolCall(answer, TOOLS);
+  if (parsed.kind !== "call") throw new Error(`expected a call, got ${JSON.stringify(parsed)}`);
+  return parsed.args;
+}
+
+describe("parseToolCall argument values", () => {
+  test("keep angle brackets, another tool's tags, and a fenced code block byte for byte", () => {
+    const content = [
+      "if (a < b && c > d) {}",
+      "<read_file>",
+      "<start_line>3</start_line>",
+      "</read_file>",
+      "```ts",
+      "const x = `<content>`;",
+      "```",
+      "</content> inside the value",
+      "  indented line\t",
+    ].join("\n");
+    const answer = `<write_file>\n<path>a.md</path>\n<content>\n${content}\n</content>\n</write_file>`;
+    expect(callArgs(answer)).toEqual({ path: "a.md", content });
+  });
+
+  test("keep a value on the same line as its tags untouched, spaces included", () => {
+    expect(callArgs("<read_file>\n<path>  a b.txt </path>\n</read_file>").path).toBe("  a b.txt ");
+  });
+
+  test("drop one leading and one trailing line break when the value sits on its own lines", () => {
+    const answer = "<write_file>\n<path>a</path>\n<content>\n\n  two\n\n</content>\n</write_file>";
+    expect(callArgs(answer).content).toBe("\n  two\n");
+  });
+
+  test("drop CRLF line breaks the same way", () => {
+    const answer = "<write_file>\r\n<path>a</path>\r\n<content>\r\nline\r\n</content>\r\n</write_file>";
+    expect(callArgs(answer)).toEqual({ path: "a", content: "line" });
+  });
+
+  test("keep a value untouched when only one side has a line break", () => {
+    expect(callArgs("<write_file>\n<path>a</path>\n<content>\nline</content>\n</write_file>").content).toBe("\nline");
+    expect(callArgs("<write_file>\n<path>a</path>\n<content>line\n</content>\n</write_file>").content).toBe("line\n");
+  });
+
+  test("read a value that is one line break, or nothing, as empty", () => {
+    expect(callArgs("<write_file>\n<path>a</path>\n<content>\n</content>\n</write_file>").content).toBe("");
+    expect(callArgs("<write_file>\n<path>a</path>\n<content>\r\n</content>\n</write_file>").content).toBe("");
+    expect(callArgs("<write_file>\n<path>a</path>\n<content></content>\n</write_file>").content).toBe("");
+  });
+
+  test("end at the last closing tag before the outer close, so an earlier one stays in the value", () => {
+    const answer = "<write_file>\n<path>a</path>\n<content>x</content>y</content>\n</write_file>";
+    expect(callArgs(answer).content).toBe("x</content>y");
+  });
+
+  test("end at the first outer closing tag", () => {
+    const answer = "<write_file>\n<path>a</path>\n<content>x</content>\n</write_file>\n</write_file>";
+    expect(parseToolCall(answer, TOOLS)).toMatchObject({ kind: "call", end: answer.lastIndexOf("\n</write_file>") });
+  });
+});
+
+test("toolCalls imports nothing from vscode or node:", async () => {
+  const source = await Bun.file(`${import.meta.dir}/toolCalls.ts`).text();
+  const specifiers = [...source.matchAll(/(?:from|import)\s+"([^"]+)"/g)].map((match) => match[1]);
+  expect(specifiers.length).toBeGreaterThan(0);
+  expect(specifiers.filter((specifier) => specifier === "vscode" || specifier!.startsWith("node:"))).toEqual([]);
+});
