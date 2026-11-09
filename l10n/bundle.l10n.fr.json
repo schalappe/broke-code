@@ -83,5 +83,15 @@
   "Stopped: the agent turn reached its tool step limit.": "Tour de l'agent arrêté : la limite d'étapes d'outil est atteinte.",
   "stopped, no result": "arrêté, sans résultat",
   "no result": "sans résultat",
-  "An unexpected internal error ended the reply.": "Une erreur interne inattendue a interrompu la réponse."
+  "An unexpected internal error ended the reply.": "Une erreur interne inattendue a interrompu la réponse.",
+  "Stopped: the conversation fills the model's context. Start a new chat with New chat or /new.": "Tour de l'agent arrêté : la discussion remplit le contexte du modèle. Commencez une nouvelle discussion avec Nouvelle discussion ou /new.",
+  "{0} / {1} tokens ({2})": "{0} / {1} tokens ({2})",
+  "Estimated size of the next request": "Taille estimée de la prochaine requête",
+  "Unknown context size, using 32k": "Taille de contexte inconnue, 32k utilisés",
+  "Set context size": "Définir la taille du contexte",
+  "Context size of {0}": "Taille du contexte de {0}",
+  "Tokens the model accepts in one request, prompt and reply together.": "Nombre de tokens que le modèle accepte dans une requête, prompt et réponse compris.",
+  "For example 131072": "Par exemple 131072",
+  "Enter a whole number of tokens, at least 1.": "Saisissez un nombre entier de tokens, au moins 1.",
+  "Could not save the context size of {0}: {1}": "Impossible d'enregistrer la taille du contexte de {0} : {1}"
 }

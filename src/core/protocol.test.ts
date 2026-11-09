@@ -14,6 +14,16 @@ describe("parseWebviewMessage", () => {
     expect(parseWebviewMessage({ type: "setApiKey", provider: "P" })).toEqual({ type: "setApiKey", provider: "P" });
   });
 
+  test("accepts a context size request for a named model only", () => {
+    expect(parseWebviewMessage({ type: "setContextSize", model: "qwen3:8b" })).toEqual({
+      type: "setContextSize",
+      model: "qwen3:8b",
+    });
+    for (const model of [undefined, "", 3]) {
+      expect(parseWebviewMessage({ type: "setContextSize", model })).toBeUndefined();
+    }
+  });
+
   test("rejects a non-object, an unknown type, and a missing string field", () => {
     for (const raw of [
       null,
@@ -96,6 +106,7 @@ describe("chatStateOf", () => {
     conversations: [],
     listFailed: undefined,
     storageProblem: undefined,
+    context: { used: 0, size: 32768, known: false },
   };
 
   test("takes the chat state from init and state messages", () => {

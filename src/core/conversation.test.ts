@@ -64,6 +64,16 @@ describe("conversation record", () => {
     expect(parseConversation(serializeConversation(turn))).toEqual({ ok: true, record: turn });
   });
 
+  test("reads back a reply halted on a full context before its request, with no content", () => {
+    const halted = record({
+      entries: [
+        { role: "user", content: "x", mentions: [], modelText: "x" },
+        { role: "assistant", reasoning: "", content: "", status: "halted", haltReason: "contextFull" },
+      ],
+    });
+    expect(parseConversation(serializeConversation(halted))).toEqual({ ok: true, record: halted });
+  });
+
   test("reads back a reply failed on an internal error, and refuses one without its message", () => {
     const failed = record({
       entries: [
@@ -140,6 +150,7 @@ describe("conversation record", () => {
       { ...reply, status: "halted" },
       { ...reply, status: "halted", haltReason: "tired" },
       { ...reply, status: "done", haltReason: "stepLimit" },
+      { ...reply, status: "done", haltReason: "contextFull" },
     ];
     for (const entry of bad) {
       expect(parse({ ...record(), entries: [user, entry] }).ok).toBe(false);

@@ -12,6 +12,8 @@ export const CHAT_VIEW_ID = "brokeCode.chat";
 
 export type ChatViewActions = {
   setApiKey: (provider: string) => Promise<void>;
+  /** Ask for `model`'s context size and save it; shows its own failures. */
+  setContextSize: (model: string) => Promise<void>;
   /** Mention menu entries matching `query`. */
   queryFiles: (query: string) => Promise<FileQueryAnswer>;
 };
@@ -99,6 +101,13 @@ export class ChatView implements vscode.WebviewViewProvider {
         return void this.actions.setApiKey(message.provider).catch((error: unknown) => {
           void vscode.window.showErrorMessage(
             vscode.l10n.t("Could not save the API key for {0}: {1}", message.provider, String(error)),
+          );
+        });
+      case "setContextSize":
+        return void this.actions.setContextSize(message.model).catch((error: unknown) => {
+          console.error("broke-code: could not ask for a context size", error);
+          void vscode.window.showErrorMessage(
+            vscode.l10n.t("Could not save the context size of {0}: {1}", message.model, String(error)),
           );
         });
       case "openSettings":

@@ -8,6 +8,7 @@ import type { MentionToken, Suggestion } from "../core/suggestions";
 import { composerKeyAction, type MenuAnswer, menuToken, menuView, openMenuToken, pickedInText } from "./composer";
 import { moveHighlight, optionId, SuggestionMenu } from "./SuggestionMenu";
 import {
+  describeContextUsage,
   describeHalt,
   describeListFailure,
   describeMention,
@@ -28,9 +29,15 @@ export function App({ state, language }: { state: ChatState; language: string })
   return (
     <main className="panel">
       {/* Saved conversations are local: History works without a provider; only the composer needs one. */}
-      <Header state={state} historyOpen={historyOpen} toggleHistory={() => setHistoryOpen(!historyOpen)} />
+      <Header
+        state={state}
+        language={language}
+        historyOpen={historyOpen}
+        toggleHistory={() => setHistoryOpen(!historyOpen)}
+      />
       {!configured && <EmptyState />}
       <Warnings state={state} />
+      {state.model !== undefined && !state.context.known && <ContextNotice model={state.model} />}
       {state.listFailed && <TextBlock text={describeListFailure(state.listFailed)} />}
       {state.storageProblem && <TextBlock text={describeStorageProblem(state.storageProblem)} />}
       {state.models.status === "failed" && (
@@ -63,19 +70,29 @@ function EmptyState() {
 
 const HISTORY_ID = "history";
 
-/** Provider and model pickers (with a provider configured), New chat, and the History toggle. */
+/**
+ * Provider and model pickers (with a provider configured), the context usage of the selected model, New chat, and the
+ * History toggle. `language`: BCP 47 tag for the usage numbers.
+ */
 export function Header({
   state,
+  language,
   historyOpen,
   toggleHistory,
 }: {
   state: ChatState;
+  language: string;
   historyOpen: boolean;
   toggleHistory: () => void;
 }) {
   return (
     <header className="header">
       {state.providers.length > 0 && <Pickers state={state} />}
+      {state.model !== undefined && (
+        <span className="usage" title={l10n.t("Estimated size of the next request")}>
+          {describeContextUsage(state.context, language)}
+        </span>
+      )}
       <div className="actions">
         <button
           type="button"
@@ -160,6 +177,18 @@ function Warnings({ state }: { state: ChatState }) {
         <li key={skipped.position}>{describeSkippedProvider(skipped)}</li>
       ))}
     </ul>
+  );
+}
+
+/** The selected `model` is absent from the context size table: 32k is used, and the link asks the host for its size. */
+export function ContextNotice({ model }: { model: string }) {
+  return (
+    <p className="notice" role="status">
+      {l10n.t("Unknown context size, using 32k")}{" "}
+      <button type="button" className="link" onClick={() => post({ type: "setContextSize", model })}>
+        {l10n.t("Set context size")}
+      </button>
+    </p>
   );
 }
 

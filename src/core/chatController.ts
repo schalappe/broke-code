@@ -1,11 +1,11 @@
 /**
  * @module chatController
  * Chat state owner: provider and model choice, model listing, agent turns (streamed replies, body tool calls, tool
- * steps), stop, and the workspace's saved conversations (new chat, reopen, delete). The conversation shown is saved
- * when a message is sent, at most every 500 ms while a reply streams, when a call starts, after each tool step, and
- * when the turn ends, so a reload or crash loses at most the reply streaming.
- * vscode-free: host passes key store, workspace memento, mention reader, conversation store, tool runner, and
- * instruction file reader through ports.
+ * steps, step limit, context budget), context usage, stop, and the workspace's saved conversations (new chat, reopen,
+ * delete). The conversation shown is saved when a message is sent, at most every 500 ms while a reply streams, when a
+ * call starts, after each tool step, and when the turn ends, so a reload or crash loses at most the reply streaming.
+ * vscode-free: host passes key store, workspace memento, mention reader, conversation store, tool runner, instruction
+ * file reader, and limits source through ports.
  */
 import { type ChatMessage, listModels, type ProviderAccess, streamChat } from "./client";
 import {
@@ -19,10 +19,12 @@ import {
   summarize,
 } from "./conversation";
 import type { ConversationStore } from "./conversationStore";
+import { contextOf, estimateTokens, fillsContext, parseLimits, type TurnLimits } from "./limits";
 import { composeUserMessage, findMentions, type MentionReader, type MentionResult, type ReadMention } from "./mentions";
 import {
   type ChatEntry,
   type ChatState,
+  type ContextUsage,
   type HaltReason,
   isReplying,
   type ReplyStatus,
@@ -58,7 +60,13 @@ export type ToolRunner = {
  */
 export type InstructionReader = { read(): Promise<InstructionFile[]> };
 
-/** What the controller needs from the host. `now`: clock for record times, in milliseconds since the epoch. */
+/** The current turn limits, from the user settings. Must not throw. */
+export type LimitsSource = { read(): TurnLimits };
+
+/**
+ * What the controller needs from the host. `limits`: absent gives the defaults (50 steps, 32,768 tokens for every
+ * model). `now`: clock for record times, in milliseconds since the epoch.
+ */
 export type ChatPorts = {
   apiKeys: KeyStore;
   workspaceState: ChoiceStore;
@@ -67,11 +75,10 @@ export type ChatPorts = {
   store: ConversationStore;
   tools: ToolRunner;
   instructions: InstructionReader;
+  limits?: LimitsSource;
   now?: () => number;
 };
 
-/** Tool steps per agent turn, calls and malformed calls alike, before it halts. */
-export const MAX_TOOL_STEPS = 50;
 /** Malformed calls in a row that halt an agent turn; a call that parses resets the count. */
 export const MAX_MALFORMED_IN_A_ROW = 3;
 
@@ -94,6 +101,8 @@ type Conversation = {
   provider?: string;
   model?: string;
   entries: ChatEntry[];
+  /** System prompt of the last send in this session, which the usage display counts; until then, the default one. */
+  systemPrompt?: string;
   /** Pending throttled save while a reply streams. */
   saveTimer?: ReturnType<typeof setTimeout>;
 };
@@ -133,7 +142,12 @@ export class ChatController {
   private readonly store: ConversationStore;
   private readonly tools: ToolRunner;
   private readonly instructions: InstructionReader;
+  private readonly limitsSource: LimitsSource;
   private readonly now: () => number;
+  /** Limits the usage display reads, refreshed at each send and by `limitsChanged`. */
+  private limits: TurnLimits;
+  /** System prompt without instruction files, counted by the usage display before a conversation's first send. */
+  private readonly defaultSystemPrompt: string;
 
   constructor(ports: ChatPorts) {
     this.apiKeys = ports.apiKeys;
@@ -143,7 +157,13 @@ export class ChatController {
     this.store = ports.store;
     this.tools = ports.tools;
     this.instructions = ports.instructions;
+    this.limitsSource = ports.limits ?? {
+      read: () => parseLimits({ maxToolSteps: undefined, contextSizes: undefined }),
+    };
+    this.limits = this.limitsSource.read();
     this.now = ports.now ?? Date.now;
+    // [>]: Instruction files are read only at a send, never just to refresh the display.
+    this.defaultSystemPrompt = composeSystemPrompt(this.tools.tools, []);
     this.conversation = this.freshConversation();
     this.state = {
       providers: [],
@@ -156,6 +176,7 @@ export class ChatController {
       conversations: [],
       listFailed: undefined,
       storageProblem: undefined,
+      context: this.contextUsage(undefined),
     };
   }
 
@@ -260,6 +281,15 @@ export class ChatController {
     this.emit();
   }
 
+  /**
+   * The step limit or context sizes changed in the settings: the usage display reads the new values at once. A turn
+   * in flight keeps the limits it started with; the next send reads the new ones.
+   */
+  limitsChanged(): void {
+    this.limits = this.limitsSource.read();
+    this.emit();
+  }
+
   /** Key of `provider` changed -> relist its models, since listing may have failed on old key. */
   keyChanged(provider: string): void {
     if (provider === this.state.provider) void this.loadModels();
@@ -296,15 +326,20 @@ export class ChatController {
   /**
    * Send user message with its mentions read now, and run the agent turn: stream the reply, run the body tool call
    * its answer holds, record the tool step, and request again, until a reply holds no call, a limit halts the turn,
-   * the reply fails, or Stop. Ignored while replying or without provider and model. `picked`: paths chosen in the
-   * menu, mentions while their `@<path>` is still in the text. A mention that cannot be read is reported to the
-   * model and in the entry; the message still goes.
+   * the reply fails, or Stop. Limits: the step limit, three malformed calls in a row, and the context budget, checked
+   * before each request, the first included, so a request that would fill the model's context is never sent. The
+   * turn reads the settings once, when it starts. Ignored while replying or without provider and model. `picked`:
+   * paths chosen in the menu, mentions while their `@<path>` is still in the text. A mention that cannot be read is
+   * reported to the model and in the entry; the message still goes.
    */
   async send(text: string, picked: readonly string[] = []): Promise<void> {
     const provider = this.currentProvider();
     const model = this.state.model;
     const content = text.trim();
     if (!provider || !model || !content || isReplying(this.state)) return;
+    this.limits = this.limitsSource.read();
+    const { maxToolSteps } = this.limits;
+    const contextSize = contextOf(this.limits, model).size;
 
     const conversation = this.conversation;
     conversation.provider = provider.name;
@@ -356,10 +391,15 @@ export class ChatController {
       }
 
       const system: ChatMessage = { role: "system", content: composeSystemPrompt(this.tools.tools, instructions) };
+      conversation.systemPrompt = system.content;
       let steps = 0;
       let malformedInARow = 0;
       for (;;) {
         const messages = [system, ...this.toHistory(conversation)];
+        // [>]: Never a provider error: no request goes. The reply that would have carried it ends halted.
+        if (fillsContext(estimateTokens(messages.map((message) => message.content)), contextSize)) {
+          return settle("halted", "contextFull");
+        }
         const outcome = await this.stream(access, model, messages, conversation, reply, signal);
         if (!outcome) return settle("stopped");
         if (outcome.status === "failed") reply.error = outcome.error;
@@ -393,7 +433,7 @@ export class ChatController {
         steps += 1;
         conversation.entries.push(step);
         if (malformedInARow >= MAX_MALFORMED_IN_A_ROW) return settle("halted", "malformedCalls");
-        if (steps >= MAX_TOOL_STEPS) return settle("halted", "stepLimit");
+        if (steps >= maxToolSteps) return settle("halted", "stepLimit");
         // [>]: The step and the next reply land in one update, so the turn never reads as ended between them.
         reply.status = "done";
         reply = waitingReply();
@@ -755,7 +795,16 @@ export class ChatController {
     });
   }
 
+  /** Estimate of the next request of the conversation shown, against `model`'s context size. */
+  private contextUsage(model: string | undefined): ContextUsage {
+    const conversation = this.conversation;
+    const system = conversation.systemPrompt ?? this.defaultSystemPrompt;
+    const contents = [system, ...this.toHistory(conversation).map((message) => message.content)];
+    return { used: estimateTokens(contents), ...contextOf(this.limits, model) };
+  }
+
   private emit(): void {
+    this.state.context = this.contextUsage(this.state.model);
     this.publish(this.state);
   }
 }

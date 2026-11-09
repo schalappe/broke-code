@@ -1,7 +1,7 @@
 /**
  * @module extension
- * Activation entry point: wires settings, API keys, mentions, read tools, instruction files, file index, saved
- * conversations, chat controller, chat view, and `broke-code.setApiKey`.
+ * Activation entry point: wires settings, API keys, mentions, read tools, instruction files, turn limits, file index,
+ * saved conversations, chat controller, chat view, and `broke-code.setApiKey`.
  */
 import { homedir } from "node:os";
 import * as vscode from "vscode";
@@ -15,6 +15,7 @@ import { READ_TOOLS, ripgrepCandidates, runReadTool } from "../core/tools";
 import type { WorkspaceRoot } from "../core/workspaceFiles";
 import { ApiKeys } from "./apiKeys";
 import { CHAT_VIEW_ID, ChatView } from "./chatView";
+import { askContextSize, LIMIT_SETTINGS, readLimits } from "./contextSizes";
 import { WorkspaceFileIndex } from "./fileIndex";
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -45,9 +46,14 @@ export function activate(context: vscode.ExtensionContext): void {
     store: conversations,
     tools,
     instructions,
+    limits: { read: readLimits },
   });
   const fileIndex = new WorkspaceFileIndex();
-  view = new ChatView(context.extensionUri, controller, { setApiKey, queryFiles: (query) => fileIndex.query(query) });
+  view = new ChatView(context.extensionUri, controller, {
+    setApiKey,
+    setContextSize: askContextSize,
+    queryFiles: (query) => fileIndex.query(query),
+  });
 
   const applySettings = () => {
     controller.setProviders(readProviders());
@@ -61,6 +67,7 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration("brokeCode.providers")) applySettings();
+      if (LIMIT_SETTINGS.some((setting) => event.affectsConfiguration(setting))) controller.limitsChanged();
     }),
     apiKeys.onDidChange((provider) => controller.keyChanged(provider)),
     fileIndex,

@@ -8,12 +8,13 @@ import {
   type ChatPorts,
   type ChoiceStore,
   type InstructionReader,
-  MAX_TOOL_STEPS,
+  type LimitsSource,
   type ToolRunner,
 } from "./chatController";
 import { type ConversationRecord, newConversationId, serializeSummary } from "./conversation";
 import { type MemoryFiles, memoryFiles } from "./conversationFixture";
 import { ConversationStore } from "./conversationStore";
+import { parseLimits } from "./limits";
 import type { MentionReader, ReadMention } from "./mentions";
 import { type ChatEntry, type ChatState, isReplying } from "./protocol";
 import type { Provider } from "./providers";
@@ -75,7 +76,8 @@ const server = Bun.serve({
     const prefix = path.split("/")[1]!;
     if (path.endsWith("/models")) {
       listings.set(prefix, (listings.get(prefix) ?? 0) + 1);
-      return Response.json({ data: [{ id: "m" }] });
+      const models = prefix === "two-models" ? ["m", "n"] : ["m"];
+      return Response.json({ data: models.map((id) => ({ id })) });
     }
     requests.set(prefix, [...(requests.get(prefix) ?? []), await request.json()]);
     if (prefix === "fails") return new Response("model crashed", { status: 500 });
@@ -142,6 +144,12 @@ async function until(state: () => ChatState, predicate: (state: ChatState) => bo
 
 /** The text of a user or assistant entry; `undefined` for a tool step or no entry. */
 const contentOf = (entry: ChatEntry | undefined) => (entry && entry.role !== "tool" ? entry.content : undefined);
+
+/** Limits source that always answers the same: `steps` and `sizes` unset by default, as with no setting. */
+function fixedLimits({ steps, sizes }: { steps?: number; sizes?: Record<string, number> }): LimitsSource {
+  const limits = parseLimits({ maxToolSteps: steps, contextSizes: sizes });
+  return { read: () => limits };
+}
 
 /** The system message of a turn with the read tools and no instruction file. */
 const SYSTEM = { role: "system", content: composeSystemPrompt(READ_TOOLS, []) };
@@ -1734,6 +1742,7 @@ describe("ChatController agent turn", () => {
     script: ScriptedReply[],
     runner: ToolRunner = okRunner().runner,
     instructions: InstructionReader = { read: async () => [] },
+    limits?: LimitsSource,
   ) {
     const prefix = `script-${scriptCount++}`;
     scripts.set(prefix, [...script]);
@@ -1746,6 +1755,7 @@ describe("ChatController agent turn", () => {
       store: new ConversationStore(files),
       tools: runner,
       instructions,
+      limits,
     });
     const state = () => controller.snapshot;
     controller.setProviders({
@@ -1875,16 +1885,115 @@ describe("ChatController agent turn", () => {
     expect(state().entries.filter((entry) => entry.role === "tool")).toHaveLength(5);
   });
 
-  test(`${MAX_TOOL_STEPS} tool steps halt the turn on the step limit`, async () => {
-    const calls = Array.from({ length: MAX_TOOL_STEPS + 1 }, (_, index) => ({ content: readCall(`f${index}.ts`) }));
+  test("without a limits source, 50 tool steps halt the turn on the step limit", async () => {
+    const calls = Array.from({ length: 51 }, (_, index) => ({ content: readCall(`f${index}.ts`) }));
     const { controller, state, sent } = await scripted(calls);
     await controller.send("read everything");
 
-    expect(MAX_TOOL_STEPS).toBe(50);
     expect(sent()).toHaveLength(50);
     expect(state().entries.filter((entry) => entry.role === "tool")).toHaveLength(50);
     expect(state().entries.at(-2)).toMatchObject({ role: "assistant", status: "halted", haltReason: "stepLimit" });
     expect(state().entries.at(-1)).toMatchObject({ role: "tool", args: { path: "f49.ts" }, status: "ok" });
+  });
+
+  test("with the step limit at 3, a model that always calls a tool halts after 3 steps and no fourth request goes", async () => {
+    const calls = Array.from({ length: 5 }, (_, index) => ({ content: readCall(`f${index}.ts`) }));
+    const { controller, state, sent } = await scripted(calls, okRunner().runner, undefined, fixedLimits({ steps: 3 }));
+    await controller.send("read everything");
+
+    expect(sent()).toHaveLength(3);
+    expect(state().entries.filter((entry) => entry.role === "tool")).toHaveLength(3);
+    expect(state().entries.at(-2)).toMatchObject({ role: "assistant", status: "halted", haltReason: "stepLimit" });
+    expect(state().entries.at(-1)).toMatchObject({ role: "tool", args: { path: "f2.ts" }, status: "ok" });
+  });
+
+  test("a message that fills the context halts the turn before any request, saved halted, and reopens as such", async () => {
+    const { controller, state, sent, saved } = await scripted(
+      [{ content: "never sent" }],
+      okRunner().runner,
+      undefined,
+      fixedLimits({ sizes: { m: 1000 } }),
+    );
+    await controller.send("x".repeat(4000));
+
+    expect(sent()).toHaveLength(0);
+    const halted: ChatEntry = {
+      role: "assistant",
+      reasoning: "",
+      content: "",
+      status: "halted",
+      haltReason: "contextFull",
+    };
+    expect(state().entries).toEqual([{ role: "user", content: "x".repeat(4000), mentions: [] }, halted]);
+    expect(isReplying(state())).toBe(false);
+    await settledSave(saved, 2);
+    expect(saved()?.entries.at(-1)).toEqual(halted);
+
+    const id = state().conversationId;
+    await controller.newChat();
+    await controller.openConversation(id);
+    expect(state().conversationId).toBe(id);
+    expect(state().entries.at(-1)).toEqual(halted);
+  });
+
+  test("a short message under the same context size is sent", async () => {
+    const { controller, sent } = await scripted(
+      [{ content: "ok" }],
+      okRunner().runner,
+      undefined,
+      fixedLimits({ sizes: { m: 1000 } }),
+    );
+    await controller.send("hi");
+    expect(sent()).toHaveLength(1);
+  });
+
+  test("a tool step that fills the context halts the turn before the next request", async () => {
+    const { runner } = fakeRunner(async () => ({ status: "ok", text: "y".repeat(2000) }));
+    const { controller, state, sent, saved } = await scripted(
+      [{ content: readCall("big.ts") }, { content: "never sent" }],
+      runner,
+      undefined,
+      fixedLimits({ sizes: { m: 1000 } }),
+    );
+    await controller.send("go");
+
+    await Bun.sleep(30);
+    expect(sent()).toHaveLength(1);
+    expect(state().entries).toMatchObject([
+      { role: "user" },
+      { role: "assistant", status: "done", call: { name: "read_file" } },
+      { role: "tool", status: "ok" },
+      { role: "assistant", content: "", status: "halted", haltReason: "contextFull" },
+    ]);
+    await settledSave(saved, 4);
+    expect(saved()?.entries.at(-1)).toMatchObject({ status: "halted", haltReason: "contextFull" });
+  });
+
+  test("a turn keeps the limits it started with when the settings change while it runs", async () => {
+    let release: () => void = () => {};
+    const { runner, signals } = fakeRunner(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve({ status: "ok", text: "short" });
+        }),
+    );
+    let limits = parseLimits({ maxToolSteps: 2, contextSizes: { m: 100000 } });
+    const { controller, state, sent } = await scripted(
+      [{ content: readCall("a.ts") }, { content: "done" }],
+      runner,
+      undefined,
+      { read: () => limits },
+    );
+    const turn = controller.send("go");
+    await until(state, () => signals.length === 1);
+    limits = parseLimits({ maxToolSteps: 1, contextSizes: { m: 10 } });
+    controller.limitsChanged();
+    expect(state().context).toMatchObject({ size: 10, known: true });
+    release();
+    await turn;
+
+    expect(sent()).toHaveLength(2);
+    expect(state().entries.at(-1)).toMatchObject({ role: "assistant", content: "done", status: "done" });
   });
 
   test("Stop during a streaming reply after a step ends the turn at once and saves the entries so far", async () => {
@@ -1985,10 +2094,11 @@ describe("ChatController agent turn", () => {
   test("an unexpected throw inside the turn ends the reply failed with an internal error, logged and saved", async () => {
     let reads = 0;
     const throwing: ToolRunner = {
-      // [>]: Read once for the system prompt, then by the parser: the second read throws, as a bug would.
+      // [>]: Read once for the prompt the usage display counts before a send, once for the system prompt, then by the
+      // parser: the third read throws, as a bug would.
       get tools() {
         reads += 1;
-        if (reads > 1) throw new Error("tool list broke");
+        if (reads > 2) throw new Error("tool list broke");
         return READ_TOOLS;
       },
       run: async () => ({ status: "ok", text: "" }),
@@ -2054,5 +2164,96 @@ describe("ChatController agent turn", () => {
       "assistant",
       "user",
     ]);
+  });
+});
+
+describe("ChatController context usage", () => {
+  const twoModels: Provider = { name: "Two", baseUrl: `http://localhost:${server.port}/two-models/v1` };
+  const readCall = (path: string) => `<read_file>\n<path>${path}</path>\n</read_file>`;
+
+  /** Controller on `provider` under `limits`, recording the usage of each published state with its entry count. */
+  async function watched(options: {
+    limits: LimitsSource;
+    provider?: Provider;
+    tools?: ToolRunner;
+    instructions?: InstructionReader;
+    script?: ScriptedReply[];
+  }) {
+    const usages: { entries: number; used: number; size: number; known: boolean }[] = [];
+    const prefix = `usage-${crypto.randomUUID()}`;
+    if (options.script) scripts.set(prefix, [...options.script]);
+    const controller = new ChatController({
+      apiKeys: { get: async () => undefined },
+      workspaceState: memoryStore(),
+      publish: (state) => usages.push({ entries: state.entries.length, ...state.context }),
+      mentions: noMentions,
+      store: new ConversationStore(undefined),
+      tools: options.tools ?? noTools.tools,
+      instructions: options.instructions ?? noTools.instructions,
+      limits: options.limits,
+    });
+    const state = () => controller.snapshot;
+    const provider = options.provider ?? { name: "Agent", baseUrl: `http://localhost:${server.port}/${prefix}/v1` };
+    controller.setProviders({ providers: [provider], skipped: [] });
+    await until(state, (s) => s.model === "m");
+    return { controller, state, usages };
+  }
+
+  test("before any send, it counts the system prompt without instruction files against the model's size", async () => {
+    const { state } = await watched({ limits: fixedLimits({ sizes: { m: 8192 } }) });
+    expect(state().context).toEqual({ used: Math.ceil(SYSTEM.content.length / 4), size: 8192, known: true });
+  });
+
+  test("a model absent from the table reads against 32,768, unknown", async () => {
+    const { state } = await watched({ limits: fixedLimits({ sizes: { other: 8192 } }) });
+    expect(state().context).toMatchObject({ size: 32768, known: false });
+  });
+
+  test("changes after a tool step is appended, by the step's result", async () => {
+    const tools: ToolRunner = { tools: READ_TOOLS, run: async () => ({ status: "ok", text: "z".repeat(4000) }) };
+    const { controller, usages } = await watched({
+      limits: fixedLimits({}),
+      tools,
+      script: [{ content: readCall("a.ts") }, { content: "Done." }],
+    });
+    await controller.send("go");
+
+    const beforeStep = usages.filter((usage) => usage.entries === 2).at(-1)!;
+    const afterStep = usages.find((usage) => usage.entries === 4)!;
+    expect(afterStep.used - beforeStep.used).toBeGreaterThanOrEqual(1000);
+    expect(afterStep.used - beforeStep.used).toBeLessThan(1020);
+  });
+
+  test("after a send, it counts the system prompt the turn composed, instruction files included", async () => {
+    const files: InstructionFile[] = [{ label: "AGENTS.md", text: "r".repeat(4000) }];
+    const { controller, state } = await watched({
+      limits: fixedLimits({}),
+      instructions: { read: async () => files },
+      script: [{ content: "ok" }],
+    });
+    const before = state().context.used;
+    await controller.send("hi");
+    expect(state().context.used - before).toBeGreaterThanOrEqual(1000);
+  });
+
+  test("changes after the model changes", async () => {
+    const { controller, state } = await watched({
+      limits: fixedLimits({ sizes: { m: 1000, n: 2000 } }),
+      provider: twoModels,
+    });
+    expect(state().context).toMatchObject({ size: 1000, known: true });
+    controller.selectModel("n");
+    expect(state().context).toMatchObject({ size: 2000, known: true });
+  });
+
+  test("a settings change is published at once, with the new size and the model known", async () => {
+    let limits = parseLimits({ maxToolSteps: undefined, contextSizes: {} });
+    const { controller, usages } = await watched({ limits: { read: () => limits } });
+    expect(usages.at(-1)).toMatchObject({ size: 32768, known: false });
+    limits = parseLimits({ maxToolSteps: undefined, contextSizes: { m: 131072 } });
+    const published = usages.length;
+    controller.limitsChanged();
+    expect(usages).toHaveLength(published + 1);
+    expect(usages.at(-1)).toMatchObject({ size: 131072, known: true });
   });
 });
