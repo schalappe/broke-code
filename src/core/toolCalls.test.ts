@@ -237,6 +237,13 @@ describe("parseToolCall on a malformed call", () => {
     expect(malformedMessage(interleaved)).toContain("<path> appears twice in <read_file>.");
   });
 
+  test("reports an argument written twice with both values closed", () => {
+    const twice = "<read_file>\n<path>a</path>\n<path>b</path>\n</read_file>";
+    expect(malformedMessage(twice)).toContain("<path> appears twice in <read_file>.");
+    const interleaved = "<read_file>\n<path>a</path><start_line>1</start_line><path>b</path>\n</read_file>";
+    expect(malformedMessage(interleaved)).toContain("<path> appears twice in <read_file>.");
+  });
+
   test("reports the first problem: an unclosed outer tag before an unknown argument", () => {
     const message = malformedMessage("<read_file>\n<encoding>x</encoding>\n");
     expect(message).toContain("never closes");
@@ -308,14 +315,19 @@ describe("parseToolCall argument values", () => {
     expect(callArgs(answer).content).toBe("x</content>y");
   });
 
-  test("hold the tags of an earlier argument, ending at the latest closing tag before another argument", () => {
+  test("hold the tags of an earlier argument, which ends at its first closing tag before another argument", () => {
     const content = "<read_file>\n<path>x</path>\n</read_file>";
     const answer = `<write_file>\n<path>a.md</path>\n<content>\n${content}\n</content>\n</write_file>`;
     expect(callArgs(answer)).toEqual({ path: "a.md", content });
+    const nested = "<path>x</path>\n<content>y</content>";
+    expect(callArgs(`<write_file>\n<path>a.md</path>\n<content>\n${nested}\n</content>\n</write_file>`)).toEqual({
+      path: "a.md",
+      content: nested,
+    });
   });
 
   test("stay fast on a body with many repeated closing tags that never parses", () => {
-    const body = "<path>x</path>\n".repeat(32000);
+    const body = `<path>${"x</path>y".repeat(200000)}</path>\n`;
     const started = performance.now();
     expect(malformedMessage(`<read_file>\n${body}stray text\n</read_file>`)).toContain("stray text");
     expect(performance.now() - started).toBeLessThan(1000);

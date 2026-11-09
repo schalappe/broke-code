@@ -88,9 +88,10 @@ export function describeTool(tool: ToolSpec): string {
 
 /**
  * The argument values in `body`, the text between the outer tags, or the first problem found. A value ends at the
- * latest closing tag of its argument followed only by whitespace, then the end of the body or the opening tag of
- * another argument of the tool, so it may hold angle brackets, code fences, other tools' tags, and the tags of an
- * earlier argument. When no closing tag qualifies, the value ends at the last one, and the text after it is reported.
+ * first closing tag of its argument followed only by whitespace, then the end of the body or the opening tag of an
+ * argument of the tool, its own included, so it may hold angle brackets, code fences, other tools' tags, the tags of
+ * another argument, and its own closing tag followed by anything else. An argument written twice, closed or not, is
+ * reported. When no closing tag qualifies, the value ends at the last one, and the text after it is reported.
  */
 function readArgs(body: string, tool: ToolSpec): Record<string, string> | string {
   const args: Record<string, string> = {};
@@ -114,18 +115,20 @@ function readArgs(body: string, tool: ToolSpec): Record<string, string> | string
 
 /**
  * Where the value of argument `name` opened at `valueStart` ends, by the rule of `readArgs`, or -1 when no
- * `</name>` follows. Each argument is read once, so the backward scan keeps the body's reading about linear.
+ * `</name>` follows. [>]: The scan stops at the first qualifying close and the next argument starts after it, so the
+ * body is read about once.
  */
 function valueEndOf(body: string, tool: ToolSpec, name: string, valueStart: number): number {
   const tag = `</${name}>`;
-  const last = body.lastIndexOf(tag);
-  for (let close = last; close >= valueStart; close = body.lastIndexOf(tag, close - 1)) {
+  let last = -1;
+  for (let close = body.indexOf(tag, valueStart); close !== -1; close = body.indexOf(tag, close + tag.length)) {
     const next = skipWhitespace(body, close + tag.length);
     if (next === body.length) return close;
     const following = argOpeningAt(body, next);
-    if (following !== name && tool.args.some((arg) => arg.name === following)) return close;
+    if (tool.args.some((arg) => arg.name === following)) return close;
+    last = close;
   }
-  return last < valueStart ? -1 : last;
+  return last;
 }
 
 /** The first index at or after `index` that is not whitespace. */
