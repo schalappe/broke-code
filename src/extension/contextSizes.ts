@@ -4,7 +4,7 @@
  * `brokeCode.contextSizes`.
  */
 import * as vscode from "vscode";
-import { parseContextSizeInput, parseLimits, type TurnLimits } from "../core/limits";
+import { parseContextSizeInput, parseLimits, type TurnLimits, withContextSize } from "../core/limits";
 
 /** Settings whose change updates the limits. */
 export const LIMIT_SETTINGS = ["brokeCode.maxToolSteps", "brokeCode.contextSizes"] as const;
@@ -43,17 +43,12 @@ export async function askContextSize(model: string): Promise<void> {
   const config = vscode.workspace.getConfiguration("brokeCode");
   // [>]: Merged into the user value, never the effective one, so no other scope's entry is copied into it.
   const current = config.inspect<unknown>("contextSizes")?.globalValue;
-  const table = isPlainObject(current) ? current : {};
   try {
-    await config.update("contextSizes", { ...table, [model]: size }, vscode.ConfigurationTarget.Global);
+    await config.update("contextSizes", withContextSize(current, model, size), vscode.ConfigurationTarget.Global);
   } catch (error) {
     console.error("broke-code: could not save a context size", model, error);
     void vscode.window.showErrorMessage(
       vscode.l10n.t("Could not save the context size of {0}: {1}", model, String(error)),
     );
   }
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

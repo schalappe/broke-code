@@ -161,7 +161,9 @@ call. Write tools, `run_command`, skills, and slash commands are not built yet. 
   have carried it ends `halted` with reason `contextFull`, saved like the other halts; it is never a `ProviderError`,
   which means a request was sent. A turn reads the step limit and context sizes once, when it starts; a settings
   change reaches the usage display at once (`limitsChanged`) and the turns from the next send. The display counts the
-  last composed system prompt, or the one without instruction files before the conversation's first send.
+  system prompt the last send composed, in any conversation shown, since instruction files are the workspace's; before
+  the first send of the session, the one without instruction files. It updates once a send has composed it, before the
+  request goes.
   v1 has no automatic summarization.
 - The system prompt includes `~/.agents/AGENTS.md`, then each workspace folder's `AGENTS.md` (labelled with its
   folder name in a multi-root workspace), read at each send under the mention caps (1 MiB, 2,000 lines). A missing

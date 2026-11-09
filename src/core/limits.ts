@@ -25,7 +25,7 @@ export function parseLimits(raw: { maxToolSteps: unknown; contextSizes: unknown 
   const maxToolSteps = isPositiveInteger(steps) ? steps : DEFAULT_MAX_TOOL_STEPS;
   const contextSizes = new Map<string, number>();
   const table = raw.contextSizes;
-  if (typeof table === "object" && table !== null && !Array.isArray(table)) {
+  if (isPlainObject(table)) {
     for (const [model, size] of Object.entries(table)) {
       if (isPositiveInteger(size)) contextSizes.set(model, size);
     }
@@ -40,11 +40,11 @@ export function contextOf(limits: TurnLimits, model: string | undefined): Contex
 }
 
 /**
- * Estimated tokens of a request whose messages hold `contents`: their characters (UTF-16 code units) divided by 4,
+ * Estimated tokens of a request made of `messages`: the characters (UTF-16 code units) of their contents divided by 4,
  * rounded up. A decision, not a tokenizer: no provider reports usage without `stream_options`.
  */
-export function estimateTokens(contents: readonly string[]): number {
-  const characters = contents.reduce((total, content) => total + content.length, 0);
+export function estimateTokens(messages: readonly { content: string }[]): number {
+  const characters = messages.reduce((total, message) => total + message.content.length, 0);
   return Math.ceil(characters / 4);
 }
 
@@ -59,6 +59,21 @@ export function parseContextSizeInput(text: string): number | undefined {
   if (!/^\d+$/.test(trimmed)) return undefined;
   const size = Number(trimmed);
   return isPositiveInteger(size) ? size : undefined;
+}
+
+/**
+ * The user's `brokeCode.contextSizes` value with `model` set to `size`, its other entries kept. A value that is not a
+ * plain object is replaced, since `parseLimits` reads it as empty anyway.
+ */
+export function withContextSize(current: unknown, model: string, size: number): Record<string, unknown> {
+  return { ...(isPlainObject(current) ? current : {}), [model]: size };
+}
+
+/** A JSON-like object: its prototype is `Object.prototype` or none, so no class instance or array passes. */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 function isPositiveInteger(value: unknown): value is number {

@@ -101,8 +101,6 @@ type Conversation = {
   provider?: string;
   model?: string;
   entries: ChatEntry[];
-  /** System prompt of the last send in this session, which the usage display counts; until then, the default one. */
-  systemPrompt?: string;
   /** Pending throttled save while a reply streams. */
   saveTimer?: ReturnType<typeof setTimeout>;
 };
@@ -146,8 +144,11 @@ export class ChatController {
   private readonly now: () => number;
   /** Limits the usage display reads, refreshed at each send and by `limitsChanged`. */
   private limits: TurnLimits;
-  /** System prompt without instruction files, counted by the usage display before a conversation's first send. */
-  private readonly defaultSystemPrompt: string;
+  /**
+   * System prompt the usage display counts, for every conversation shown: the last one a send composed, since the
+   * instruction files are the workspace's, not a conversation's; before the first send, the one without them.
+   */
+  private systemPrompt: string;
 
   constructor(ports: ChatPorts) {
     this.apiKeys = ports.apiKeys;
@@ -163,7 +164,7 @@ export class ChatController {
     this.limits = this.limitsSource.read();
     this.now = ports.now ?? Date.now;
     // [>]: Instruction files are read only at a send, never just to refresh the display.
-    this.defaultSystemPrompt = composeSystemPrompt(this.tools.tools, []);
+    this.systemPrompt = composeSystemPrompt(this.tools.tools, []);
     this.conversation = this.freshConversation();
     this.state = {
       providers: [],
@@ -390,14 +391,16 @@ export class ChatController {
         if (!saved) return settle("stopped");
       }
 
-      const system: ChatMessage = { role: "system", content: composeSystemPrompt(this.tools.tools, instructions) };
-      conversation.systemPrompt = system.content;
+      const system = composeSystemPrompt(this.tools.tools, instructions);
+      this.systemPrompt = system;
+      // [>]: The display counts the instruction files now, not at the first reply delta.
+      this.emit();
       let steps = 0;
       let malformedInARow = 0;
       for (;;) {
-        const messages = [system, ...this.toHistory(conversation)];
+        const messages = this.requestMessages(system, conversation);
         // [>]: Never a provider error: no request goes. The reply that would have carried it ends halted.
-        if (fillsContext(estimateTokens(messages.map((message) => message.content)), contextSize)) {
+        if (fillsContext(estimateTokens(messages), contextSize)) {
           return settle("halted", "contextFull");
         }
         const outcome = await this.stream(access, model, messages, conversation, reply, signal);
@@ -760,6 +763,11 @@ export class ChatController {
    * `<tool_result>` tag, never the `tool` role, which needs native tool calling (ADR 0001). Reasoning never sent; a
    * reply with reasoning only, or none yet, is left out.
    */
+  /** The messages of `conversation`'s next request: `system`, then its history. */
+  private requestMessages(system: string, conversation: Conversation): ChatMessage[] {
+    return [{ role: "system", content: system }, ...this.toHistory(conversation)];
+  }
+
   private toHistory(conversation: Conversation): ChatMessage[] {
     const messages: ChatMessage[] = [];
     for (const entry of conversation.entries) {
@@ -797,10 +805,8 @@ export class ChatController {
 
   /** Estimate of the next request of the conversation shown, against `model`'s context size. */
   private contextUsage(model: string | undefined): ContextUsage {
-    const conversation = this.conversation;
-    const system = conversation.systemPrompt ?? this.defaultSystemPrompt;
-    const contents = [system, ...this.toHistory(conversation).map((message) => message.content)];
-    return { used: estimateTokens(contents), ...contextOf(this.limits, model) };
+    const used = estimateTokens(this.requestMessages(this.systemPrompt, this.conversation));
+    return { used, ...contextOf(this.limits, model) };
   }
 
   private emit(): void {

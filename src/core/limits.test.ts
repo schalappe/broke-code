@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { contextOf, estimateTokens, fillsContext, parseContextSizeInput, parseLimits } from "./limits";
+import { contextOf, estimateTokens, fillsContext, parseContextSizeInput, parseLimits, withContextSize } from "./limits";
 
 describe("parseLimits", () => {
   test("reads a valid step limit and context table", () => {
@@ -34,8 +34,13 @@ describe("parseLimits", () => {
   });
 
   test("treats a table that is not a plain object as empty", () => {
-    for (const raw of [[262144], "gemma-4", 42, null]) {
-      expect(contextOf(parseLimits({ maxToolSteps: undefined, contextSizes: raw }), "0")).toEqual({
+    class Table {
+      m = 8192;
+    }
+    for (const raw of [[262144], "gemma-4", 42, null, new Table(), new Map([["m", 8192]])]) {
+      const limits = parseLimits({ maxToolSteps: undefined, contextSizes: raw });
+      expect(contextOf(limits, "m")).toEqual({ size: 32768, known: false });
+      expect(contextOf(limits, "0")).toEqual({
         size: 32768,
         known: false,
       });
@@ -56,10 +61,27 @@ describe("parseLimits", () => {
 
 describe("estimateTokens", () => {
   test("is the characters of every message divided by 4, rounded up", () => {
+    const message = (content: string) => ({ content });
     expect(estimateTokens([])).toBe(0);
-    expect(estimateTokens(["abc"])).toBe(1);
-    expect(estimateTokens(["a".repeat(3000), "b".repeat(500)])).toBe(875);
-    expect(estimateTokens(["a".repeat(3504)])).toBe(876);
+    expect(estimateTokens([message("abc")])).toBe(1);
+    expect(estimateTokens([message("a".repeat(3000)), message("b".repeat(500))])).toBe(875);
+    expect(estimateTokens([message("a".repeat(3504))])).toBe(876);
+  });
+});
+
+describe("withContextSize", () => {
+  test("adds the model's size and keeps the other entries", () => {
+    expect(withContextSize({ "gemma-4": 262144 }, "qwen3:8b", 40960)).toEqual({ "gemma-4": 262144, "qwen3:8b": 40960 });
+  });
+
+  test("replaces the model's earlier size", () => {
+    expect(withContextSize({ m: 4096, n: 1 }, "m", 131072)).toEqual({ m: 131072, n: 1 });
+  });
+
+  test("starts a new table from a missing value or one that is not a plain object", () => {
+    for (const current of [undefined, null, [1], "x", 42]) {
+      expect(withContextSize(current, "m", 131072)).toEqual({ m: 131072 });
+    }
   });
 });
 

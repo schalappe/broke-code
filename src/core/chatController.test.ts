@@ -337,7 +337,8 @@ describe("ChatController reasoning", () => {
     expect(state().entries.at(-1)).toEqual({ role: "assistant", reasoning: "", content: "", status: "waiting" });
     releaseVllm();
     await sent;
-    // Every state the panel saw: the opening chunk changes nothing, the first reasoning piece ends `waiting`.
+    // Every state the panel saw: the send, then the usage with the composed system prompt, both `waiting`; the opening
+    // chunk changes nothing, the first reasoning piece ends `waiting`.
     const reply = (status: string, reasoning: string, content: string) => ({
       role: "assistant",
       reasoning,
@@ -345,6 +346,7 @@ describe("ChatController reasoning", () => {
       status,
     });
     expect(published).toEqual([
+      reply("waiting", "", ""),
       reply("waiting", "", ""),
       reply("streaming", "The user greets me.", ""),
       reply("streaming", "The user greets me. Reply politely.", ""),
@@ -2179,13 +2181,17 @@ describe("ChatController context usage", () => {
     instructions?: InstructionReader;
     script?: ScriptedReply[];
   }) {
-    const usages: { entries: number; used: number; size: number; known: boolean }[] = [];
+    const usages: { entries: number; waiting: boolean; used: number; size: number; known: boolean }[] = [];
     const prefix = `usage-${crypto.randomUUID()}`;
     if (options.script) scripts.set(prefix, [...options.script]);
     const controller = new ChatController({
       apiKeys: { get: async () => undefined },
       workspaceState: memoryStore(),
-      publish: (state) => usages.push({ entries: state.entries.length, ...state.context }),
+      publish: (state) => {
+        const last = state.entries.at(-1);
+        const waiting = last?.role === "assistant" && last.status === "waiting";
+        usages.push({ entries: state.entries.length, waiting, ...state.context });
+      },
       mentions: noMentions,
       store: new ConversationStore(undefined),
       tools: options.tools ?? noTools.tools,
@@ -2233,6 +2239,33 @@ describe("ChatController context usage", () => {
     });
     const before = state().context.used;
     await controller.send("hi");
+    expect(state().context.used - before).toBeGreaterThanOrEqual(1000);
+  });
+
+  test("while the first reply is waiting, it already counts the instruction files the turn composed", async () => {
+    const files: InstructionFile[] = [{ label: "AGENTS.md", text: "r".repeat(4000) }];
+    const { controller, usages } = await watched({
+      limits: fixedLimits({}),
+      instructions: { read: async () => files },
+      script: [{ content: "ok" }],
+    });
+    const before = usages.at(-1)!.used;
+    await controller.send("hi");
+    const lastWaiting = usages.filter((usage) => usage.waiting).at(-1)!;
+    expect(lastWaiting.used - before).toBeGreaterThanOrEqual(1000);
+  });
+
+  test("after New chat, it still counts the last composed system prompt, since instruction files are the workspace's", async () => {
+    const files: InstructionFile[] = [{ label: "AGENTS.md", text: "r".repeat(4000) }];
+    const { controller, state } = await watched({
+      limits: fixedLimits({}),
+      instructions: { read: async () => files },
+      script: [{ content: "ok" }],
+    });
+    const before = state().context.used;
+    await controller.send("hi");
+    await controller.newChat();
+    expect(state().entries).toEqual([]);
     expect(state().context.used - before).toBeGreaterThanOrEqual(1000);
   });
 
