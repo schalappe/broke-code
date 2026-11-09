@@ -83,7 +83,7 @@ files show up in the menu without reloading the window.
 ## How the agent works
 
 Each message starts an agent turn. The model may answer at once, or write a tool call in its reply; broke-code runs
-the tool, sends the result back, and asks again, until the model answers without a call. The agent has three read
+the tool, sends the result back, and asks again, until the model answers with text and no call. The agent has three read
 tools, which run without asking you, inside the workspace folders only:
 
 - **read_file** reads a file, with the same limits as a mention: binary files and files over 1 MiB are refused, and
@@ -114,11 +114,11 @@ Each tool call shows as a compact row under the model's text: the tool, its main
 pattern), and whether it worked with the size of its result. Click the row to see the result the model received.
 A path outside the workspace is refused, and the model is told why.
 
-The agent turn ends when the model answers without a tool call. It also ends when you click **Stop**, at any step;
+The agent turn ends when the model answers with text and no tool call. It also ends when you click **Stop**, at any step;
 after three malformed tool calls in a row, with a message saying so; after 50 tool steps (or the limit you set), with
 a message saying the step limit was reached; and before a request that would fill the model's context, with a
 message asking you to start a new chat. A malformed call is sent back to the model with what is wrong, so it can try
-again.
+again; so is an empty reply, which counts as a malformed call.
 
 ## Context size and step limit
 

@@ -92,3 +92,24 @@ the bar on `gemma4`. Its 4 misses, and the one of `qwen3.8`, are not about write
 text, so the turn ends `done` before any edit and the file stays as it was. The same reply was 1 miss in 60 runs on
 0d6ebb7 (`gemma4` `read`) and is 5 in 60 here; between the two, the prompt changed only in the `write_file`
 description, so whether that wording or chance moved it is not known yet.
+
+## Amendment (2026-11-09): an empty reply is no final answer
+
+Decided by the maintainer (schalappe) on 2026-11-09, on the evidence of the write eval (#38).
+
+Until now a reply without a call was the final answer, an empty one included. The models sometimes reason, then
+stop with no text: the turn ended `done` with nothing done. The eval dumps show it as the only cause of the `edit`
+misses once the line breaks were fixed:
+
+| Revision                 | Runs              | Empty final replies |
+| ------------------------ | ----------------- | ------------------- |
+| 0d6ebb7                  | 60, both models   | 1 (`gemma4` `read`) |
+| 6224b01                  | 60, both models   | 5 (`gemma4` 4 `edit`, `qwen3.8` 1 `edit`) |
+| ea0c75c (`gemma4` rerun) | 30, `gemma4` only | 6 (`edit` 5, `read` 1) |
+
+**Decision.** A reply whose answer is empty once trimmed (reasoning excluded, so no call either) is handled like a
+malformed call: a tool step with status `malformed` and the message "Your reply was empty. Call a tool, or write your
+answer to the user.", sent back as `<tool_result tool="unknown" status="error">`. The loop asks again, and the step
+counts toward the three malformed calls in a row and the step limit. A reply with text and no call stays the final
+answer. The empty assistant message goes back in the history before its step, as `content: ""`, which the
+OpenAI-compatible contract accepts, so user and assistant messages keep alternating as Gemma's chat template requires.

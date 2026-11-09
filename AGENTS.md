@@ -141,8 +141,9 @@ yet. Read
 
 - Tool calls are XML tags in the reply text, with argument values written raw. Starting parsing rules: one
   call per reply, calls inside code fences are ignored, a malformed call goes back to the model as a precise
-  error, three malformed calls in a row stop the agent turn, and a reply without a call is the final answer.
-  Change these rules only on evidence from the Ollama eval.
+  error, three malformed calls in a row stop the agent turn, and a reply with text but no call is the final answer. An
+  empty reply (no text once trimmed, reasoning excluded) is no final answer: it is handled as a malformed call
+  (maintainer decision, ADR 0001). Change these rules only on evidence from the Ollama eval.
 - A known tool's call ends at the `</tool_name>` after its last argument value, not at the first one. A value ends at
   the first `</argument>` that closes no `<argument>` opened inside the value and is followed by nothing but
   whitespace and then another argument tag of the tool or the call's closing tag: an inner `<argument>` …
@@ -217,10 +218,14 @@ yet. Read
   each assistant answer verbatim with its call block (reasoning never), and each tool step as a `user` message
   `<tool_result tool="<name>" status="ok|error">`, the text, then `</tool_result>`, never the OpenAI `tool` role
   (ADR 0001). A malformed call's message goes back the same way with `status="error"`, with `tool` the tag name the block
-  opens with, a known tool or not, and `tool="unknown"` only when no tool name can be read.
-- When a reply ends, its answer goes through the parser. No call: the turn ends. A call: the tool runs with the
+  opens with, a known tool or not, and `tool="unknown"` only when no tool name can be read, as for an empty reply. A
+  reply without text is left out of the history, unless a tool step follows it: an empty reply goes back as an
+  assistant message with `content: ""` before its step, so the roles keep alternating (Gemma's chat template requires
+  it).
+- When a reply ends, its answer goes through the parser. Text and no call: the turn ends. A call: the tool runs with the
   turn's context (`ToolRunner.run(call, { signal, requestApproval })`, the abort signal and the approval request), a tool step entry records its name, arguments, status, text, and approval, and the loop requests again.
-  A malformed call: a step entry with the message, and the loop requests again. The reply stays `streaming` while its
+  A malformed call or an empty reply: a step entry with the message (for an empty reply, "Your reply was empty. Call a
+  tool, or write your answer to the user."), and the loop requests again. The reply stays `streaming` while its
   call runs, and the step and the next reply are appended together, so `isReplying` holds across the whole turn.
 - An agent turn has a Stop button and stops after `brokeCode.maxToolSteps` tool steps (a user setting, `application`
   scope, default 50, at least 1; calls and malformed calls alike) as `halted` with reason `stepLimit`; three malformed calls in a row (`MAX_MALFORMED_IN_A_ROW`) halt it with reason

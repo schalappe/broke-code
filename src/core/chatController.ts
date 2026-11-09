@@ -880,24 +880,27 @@ export class ChatController {
     this.emit();
   }
 
-  /**
-   * `conversation` as sent to the model: user messages as composed at send time, assistant answers verbatim, their
-   * call blocks included (stopped and cut-off partials too), and each tool step as a `user` message holding a
-   * `<tool_result>` tag, never the `tool` role, which needs native tool calling (ADR 0001). Reasoning never sent; a
-   * reply with reasoning only, or none yet, is left out.
-   */
   /** The messages of `conversation`'s next request: `system`, then its history. */
   private requestMessages(system: string, conversation: Conversation): ChatMessage[] {
     return [{ role: "system", content: system }, ...this.toHistory(conversation)];
   }
 
+  /**
+   * `conversation` as sent to the model: user messages as composed at send time, assistant answers verbatim, their
+   * call blocks included (stopped and cut-off partials too), and each tool step as a `user` message holding a
+   * `<tool_result>` tag, never the `tool` role, which needs native tool calling (ADR 0001). Reasoning never sent. A
+   * reply without text is left out, unless a tool step follows it: an empty answer goes back with its malformed step,
+   * so the roles keep alternating, which some chat templates (Gemma's) require.
+   */
   private toHistory(conversation: Conversation): ChatMessage[] {
     const messages: ChatMessage[] = [];
-    for (const entry of conversation.entries) {
+    conversation.entries.forEach((entry, index) => {
       if (entry.role === "user") messages.push({ role: "user", content: this.modelText.get(entry) ?? entry.content });
       else if (entry.role === "tool") messages.push({ role: "user", content: toolResultMessage(entry) });
-      else if (entry.content !== "") messages.push({ role: "assistant", content: entry.content });
-    }
+      else if (entry.content !== "" || conversation.entries[index + 1]?.role === "tool") {
+        messages.push({ role: "assistant", content: entry.content });
+      }
+    });
     return messages;
   }
 

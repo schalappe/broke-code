@@ -19,12 +19,13 @@ back to the model.
 _Avoid_: agent mode, simulated agentic mode, runner
 
 **Agent turn**:
-One user request and every tool call and tool result it triggers, up to the model's final answer.
+One user request and every tool call and tool result it triggers, up to the model's final answer: a reply with text
+and no call. An empty reply is no final answer.
 _Avoid_: run, task, iteration
 
 **Tool step**:
-One body tool call inside an agent turn and the result sent back to the model; a malformed call and the message
-saying what is wrong count as a step too. The chat shows each step as a compact row.
+One body tool call inside an agent turn and the result sent back to the model; a malformed call, or an empty reply, and
+the message saying what is wrong count as a step too. The chat shows each step as a compact row.
 _Avoid_: tool use, action, iteration
 
 **Approval**:

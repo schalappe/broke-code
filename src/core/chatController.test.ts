@@ -380,20 +380,24 @@ describe("ChatController reasoning", () => {
     await next;
   });
 
-  test("keeps a reply with reasoning and no answer in the conversation, and leaves it out of the history", async () => {
+  test("keeps a reply with reasoning and no answer, and sends it back empty, without its reasoning", async () => {
     const { controller } = await ready({ name: "Unclosed", baseUrl: `http://localhost:${server.port}/unclosed/v1` });
     await controller.send("Hi");
-    expect(controller.snapshot.entries.at(-1)).toEqual({
+    expect(controller.snapshot.entries[1]).toEqual({
       role: "assistant",
       reasoning: "Plan, never closed",
       content: "",
       status: "done",
     });
 
-    await controller.send("Again");
-    expect(controller.snapshot.entries).toHaveLength(4);
+    const error = "Your reply was empty. Call a tool, or write your answer to the user.";
     expect(requests.get("unclosed")?.[1]).toMatchObject({
-      messages: [SYSTEM, { role: "user", content: "Hi" }, { role: "user", content: "Again" }],
+      messages: [
+        SYSTEM,
+        { role: "user", content: "Hi" },
+        { role: "assistant", content: "" },
+        { role: "user", content: `<tool_result tool="unknown" status="error">\n${error}\n</tool_result>` },
+      ],
     });
   });
 });
@@ -1905,6 +1909,85 @@ describe("ChatController agent turn", () => {
     expect(sent()).toHaveLength(6);
     expect(state().entries.at(-1)).toEqual({ role: "assistant", reasoning: "", content: "Done.", status: "done" });
     expect(state().entries.filter((entry) => entry.role === "tool")).toHaveLength(5);
+  });
+
+  const EMPTY_REPLY_ERROR = "Your reply was empty. Call a tool, or write your answer to the user.";
+
+  test("an empty answer is a malformed step sent back to the model, and the loop asks again", async () => {
+    const { controller, state, sent } = await scripted([
+      { reasoning: "I should read the file first.", content: "" },
+      { content: "Done." },
+    ]);
+    await controller.send("go");
+
+    expect(sent()).toHaveLength(2);
+    expect(sent()[1]!.messages.slice(1)).toEqual([
+      { role: "user", content: "go" },
+      { role: "assistant", content: "" },
+      { role: "user", content: `<tool_result tool="unknown" status="error">\n${EMPTY_REPLY_ERROR}\n</tool_result>` },
+    ]);
+    expect(state().entries.slice(1)).toEqual([
+      { role: "assistant", reasoning: "I should read the file first.", content: "", status: "done" },
+      { role: "tool", name: "unknown", args: {}, status: "malformed", text: EMPTY_REPLY_ERROR },
+      { role: "assistant", reasoning: "", content: "Done.", status: "done" },
+    ]);
+  });
+
+  test("an answer of whitespace only is empty too", async () => {
+    const { controller, state, sent } = await scripted([{ content: " \n\t\n" }, { content: "Done." }]);
+    await controller.send("go");
+
+    expect(sent()).toHaveLength(2);
+    expect(state().entries[2]).toEqual({
+      role: "tool",
+      name: "unknown",
+      args: {},
+      status: "malformed",
+      text: EMPTY_REPLY_ERROR,
+    });
+  });
+
+  test("three empty answers in a row halt the turn on malformed calls, without a fourth request", async () => {
+    const { controller, state, sent } = await scripted([
+      { content: "" },
+      { content: "" },
+      { content: "  " },
+      { content: "never sent" },
+    ]);
+    await controller.send("go");
+
+    expect(sent()).toHaveLength(3);
+    expect(state().entries.at(-2)).toMatchObject({ role: "assistant", status: "halted", haltReason: "malformedCalls" });
+    expect(state().entries.at(-1)).toMatchObject({ role: "tool", name: "unknown", status: "malformed" });
+  });
+
+  test("a call that parses after an empty answer resets the malformed count", async () => {
+    const { controller, state, sent } = await scripted([
+      { content: "" },
+      { content: "" },
+      { content: readCall("a.ts") },
+      { content: "" },
+      { content: "" },
+      { content: "Done." },
+    ]);
+    await controller.send("go");
+
+    expect(sent()).toHaveLength(6);
+    expect(state().entries.at(-1)).toEqual({ role: "assistant", reasoning: "", content: "Done.", status: "done" });
+  });
+
+  test("the step limit counts empty answers", async () => {
+    const { controller, state, sent } = await scripted(
+      [{ content: readCall("a.ts") }, { content: "" }, { content: "never sent" }],
+      okRunner().runner,
+      undefined,
+      fixedLimits({ steps: 2 }),
+    );
+    await controller.send("go");
+
+    expect(sent()).toHaveLength(2);
+    expect(state().entries.at(-2)).toMatchObject({ role: "assistant", status: "halted", haltReason: "stepLimit" });
+    expect(state().entries.at(-1)).toMatchObject({ role: "tool", name: "unknown", status: "malformed" });
   });
 
   test("without a limits source, 50 tool steps halt the turn on the step limit", async () => {
