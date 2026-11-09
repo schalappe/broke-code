@@ -1,7 +1,7 @@
 /**
  * @module workspaceFiles
  * Read access to the workspace folders: the inside-workspace check, file reads under a size cap, one-level folder
- * listings, and line truncation. Mentions use it; `read_file` and `list_files` (#6) are meant to.
+ * listings, and line truncation. Mentions and the read tools (`tools.ts`) use it.
  * Plain `node:fs`: v1 runs on local macOS folders only, and real files keep the boundary rules testable.
  */
 import { constants, type Dirent, type Stats } from "node:fs";
@@ -47,7 +47,7 @@ export async function readWorkspaceEntry(
 ): Promise<WorkspaceEntry> {
   const guessedKind: EntryKind = path.endsWith("/") ? "folder" : "file";
   try {
-    const located = await locate(roots, path);
+    const located = await locateWorkspacePath(roots, path);
     if (located.status !== "ok") return { status: located.status, kind: guessedKind };
     // [!]: Opening a FIFO or device could block forever or read without end.
     if (!isFileOrFolder(await stat(located.realPath))) return notFileOrFolder;
@@ -103,14 +103,18 @@ export function truncateLines(text: string, max: number): { text: string; lines:
   return { text: lines.slice(0, max).join("\n"), lines: max, omitted: lines.length - max };
 }
 
+/** A path that passed the boundary check: its real path, the real paths of all roots, and the first that holds it. */
+export type LocatedPath = { status: "ok"; realPath: string; realRoots: string[]; realRoot: string };
+
 /**
- * Real path of `path`, checked twice: lexically first, so a path outside is refused without touching the disk
- * (and without telling whether it exists), then after resolving symlinks.
+ * Real path of `path`, resolved as `readWorkspaceEntry` resolves it and checked twice: lexically first, so a path
+ * outside is refused without touching the disk (and without telling whether it exists), then after resolving
+ * symlinks. Rejects on a disk error other than a missing path, such as `EACCES`.
  */
-async function locate(
+export async function locateWorkspacePath(
   roots: WorkspaceRoot[],
   path: string,
-): Promise<{ status: "ok"; realPath: string; realRoots: string[] } | { status: "missing" | "outsideWorkspace" }> {
+): Promise<LocatedPath | { status: "missing" | "outsideWorkspace" }> {
   const candidates = candidatePaths(roots, path).filter((candidate) =>
     roots.some((root) => isInside(resolve(root.path), candidate)),
   );
@@ -125,8 +129,8 @@ async function locate(
       throw error;
     });
     if (realPath === undefined) continue;
-    const inside = realRoots.some((root) => isInside(root, realPath));
-    return inside ? { status: "ok", realPath, realRoots } : { status: "outsideWorkspace" };
+    const realRoot = realRoots.find((root) => isInside(root, realPath));
+    return realRoot === undefined ? { status: "outsideWorkspace" } : { status: "ok", realPath, realRoots, realRoot };
   }
   return { status: "missing" };
 }
@@ -143,7 +147,8 @@ function candidatePaths(roots: WorkspaceRoot[], path: string): string[] {
   return roots.map((root) => resolve(root.path, path));
 }
 
-function isInside(root: string, path: string): boolean {
+/** True when absolute `path` is `root` or inside it, compared as written: resolve symlinks first where they matter. */
+export function isInside(root: string, path: string): boolean {
   const rest = relative(root, path);
   return rest === "" || (rest !== ".." && !rest.startsWith("../") && !isAbsolute(rest));
 }
