@@ -852,16 +852,13 @@ describe("ChatController conversations", () => {
       record.updatedAt === 1 ? ({ ...record, version: 2 } as unknown as ConversationRecord) : record,
     );
     const [unsupported, oldestValid] = [seeded[0]!, seeded[1]!];
-    const extra = savedRecord("extra", 60);
-    files.files.set(`${extra.id}.json`, JSON.stringify(extra));
-    files.files.set(`${extra.id}.summary.json`, serializeSummary(extra));
     const ws = workspace(files);
     const logged = spyOn(console, "error").mockImplementation(() => {});
     try {
       const { controller, state } = await load(ws, { provider: reasoningProvider, now: () => 1000 });
-      expect(state().conversations).toHaveLength(51);
+      expect(state().conversations).toHaveLength(50);
       await controller.send("Newest");
-      await eventually(() => recordCount(files) === 51 && state().conversations.length === 51, "the prune");
+      await eventually(() => recordCount(files) === 50 && state().conversations.length === 50, "the prune");
       expect(files.files.has(`${oldestValid.id}.json`)).toBe(false);
       expect(files.files.has(`${unsupported.id}.json`)).toBe(true);
       expect(files.files.has(`${unsupported.id}.summary.json`)).toBe(true);
@@ -873,7 +870,7 @@ describe("ChatController conversations", () => {
     }
   });
 
-  test("keeps and reports a conversation to prune whose record cannot be read", async () => {
+  test("keeps and reports a conversation to prune whose record cannot be read, and prunes the next oldest", async () => {
     const { seeded, files } = seededWithSummaries();
     const ws = workspace(files);
     const { controller, state } = await load(ws, { provider: reasoningProvider, now: () => 1000 });
@@ -885,12 +882,16 @@ describe("ChatController conversations", () => {
     const logged = spyOn(console, "error").mockImplementation(() => {});
     try {
       await controller.send("Newest");
-      await eventually(() => state().storageProblem?.kind === "deleteFailed", "the reported check");
+      await eventually(
+        () => state().storageProblem?.kind === "deleteFailed" && recordCount(files) === 50,
+        "the reported check and the prune",
+      );
     } finally {
       logged.mockRestore();
     }
     expect(files.files.has(`${seeded[0]!.id}.json`)).toBe(true);
-    expect(recordCount(files)).toBe(51);
+    expect(files.files.has(`${seeded[1]!.id}.json`)).toBe(false);
+    expect(state().conversations).toHaveLength(50);
     expect(state().storageProblem).toMatchObject({ cause: expect.stringContaining("EACCES") });
   });
 

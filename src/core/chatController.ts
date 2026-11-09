@@ -411,9 +411,19 @@ export class ChatController {
    */
   private async prune(): Promise<void> {
     const tried = new Set<string>();
+    let checkFailure: StorageProblem | undefined;
     for (;;) {
-      const id = conversationsOverLimit(this.state.conversations, [this.conversation.id]).find((id) => !tried.has(id));
-      if (id === undefined) return;
+      // [>]: A tried row is kept like the shown one, so the excess is still counted over every row and the next
+      // oldest untried one is picked. Each pass adds to `tried` or settles a row's time, so the loop ends.
+      const id = conversationsOverLimit(this.state.conversations, [this.conversation.id, ...tried])[0];
+      if (id === undefined) {
+        // [>]: A later successful delete clears a `deleteFailed` problem, which would hide this failed check.
+        if (checkFailure && this.state.storageProblem === undefined) {
+          this.state.storageProblem = checkFailure;
+          this.emit();
+        }
+        return;
+      }
       // [>]: A listed row may come from a summary older than its record (one a build without summaries left behind),
       // so the record decides before a delete: a newer one corrects the row, and the oldest is picked again.
       let record: ConversationRecord | undefined;
@@ -421,7 +431,8 @@ export class ChatController {
         record = await this.store.load(id);
       } catch (error) {
         tried.add(id);
-        this.report({ kind: "deleteFailed", cause: String(error) }, "could not check a conversation to prune", error);
+        checkFailure = { kind: "deleteFailed", cause: String(error) };
+        this.report(checkFailure, "could not check a conversation to prune", error);
         continue;
       }
       if (!record) {
