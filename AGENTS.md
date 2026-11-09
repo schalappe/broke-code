@@ -12,7 +12,8 @@ twinny.
 
 The code so far covers the extension skeleton, a streaming chat with a provider, and the harness with the read tools:
 a message starts an agent turn that runs `read_file`, `list_files`, and `search` until the model answers without a
-call. Write tools, `run_command`, skills, and slash commands are not built yet. Read
+call. `bun run eval` measures that loop on local Ollama models. Write tools, `run_command`, skills, and slash
+commands are not built yet. Read
 `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the decisions behind the design, starting with
 `docs/adr/0001-body-tool-calls.md`.
 
@@ -58,6 +59,11 @@ call. Write tools, `run_command`, skills, and slash commands are not built yet. 
   bundle (`dist/webview/`).
 - `scripts/next-version.ts`: computes the next release version from the commits since the last `v*` tag. The
   release workflow runs it as a CLI. Its tests sit next to it.
+- `eval/`: the Ollama eval bench (`bun run eval`). `scenarios.ts` holds each scenario (fixture files, message, check
+  of a turn that ended `done`) and `judge`, the verdict and failure category of a run; `run.ts` plays one run through
+  the `ChatController` ports, with the read tools over a copy of the fixture under the system temporary directory;
+  `report.ts` formats the scores; `bench.ts` is the CLI, guarded by `import.meta.main` so `bun test` never starts it.
+  Its unit tests sit next to them and need no Ollama.
 - `biome.jsonc`: the Biome linter and formatter settings. Markdown is excluded, because Biome's Markdown formatter
   breaks the YAML frontmatter of the ADRs.
 - `.vscode/`: the launch configuration, Biome as the workspace formatter for TS, TSX, JSON, and CSS, and the Biome
@@ -292,10 +298,19 @@ call. Write tools, `run_command`, skills, and slash commands are not built yet. 
 - Run `actionlint` on the workflow files after editing them.
 - To try the extension, run `bun run build`, then `codium --extensionDevelopmentPath=<repository path>`
   (VSCodium is the maintainer's editor). Rebuild and reload the window after each change.
-- `bun run eval` (to be created) plays fixed scenarios against a local Ollama with `qwen3.8:27b` and
-  `gemma4:26b-a4b-it-qat`: read then answer, edit a line, create a file containing quotes and tags, run a
-  command, load a skill. A scenario passes when it succeeds at least 9 times out of 10 on each model. The eval
-  runs locally on demand and never in CI, because it takes several minutes.
+- `bun run eval` plays each scenario 10 times per model against the local Ollama at `http://localhost:11434/v1`,
+  on `qwen3.8:27b` then `gemma4:26b-a4b-it-qat`, all runs of one model before the next. Each run drives the
+  chat controller with the read tools over a throwaway copy of the scenario's fixture, no instruction file, and a
+  step limit of 6. The one scenario is read then answer: the model must read a setting it cannot guess and answer
+  with its value. A run passes when the turn ends `done`, a tool step got the value, the answer holds it, and no
+  fixture file changed; a failed run shows one category (`malformed`, `wrongTool`, `wrongAnswer`, `stepLimit`,
+  `contextFull`, `providerError`, `workspaceChanged`) and a one-line detail. The bar is 9 runs of 10 per model and
+  scenario; the bench exits 1 when a model is under it, and before any run when Ollama is unreachable or does not
+  list a model. `--model <name>` (repeatable) and `--runs <n>` shorten a local iteration; `--dump <file>` appends
+  each run's entries and verdict as JSON Lines, to read the failing replies. A full run took 2 min 40 s on the
+  maintainer's Mac, the first run of each model including its load. It runs locally on demand and never in CI.
+  Scenarios for edits, created files, commands, and skills come with the write tools (#8), `run_command` (#9), and
+  skills (#10).
 - v1 supports macOS only. Windows and Linux are planned for v2.
 
 ## Git and release workflow
