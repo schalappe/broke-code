@@ -5,13 +5,13 @@
  */
 import * as vscode from "vscode";
 import { ChatController } from "../core/chatController";
+import { directoryFiles } from "../core/conversationFiles";
 import { ConversationStore } from "../core/conversationStore";
 import { type MentionReader, readMention } from "../core/mentions";
 import { parseProviders } from "../core/providers";
 import type { WorkspaceRoot } from "../core/workspaceFiles";
 import { ApiKeys } from "./apiKeys";
 import { CHAT_VIEW_ID, ChatView } from "./chatView";
-import { workspaceConversationFiles } from "./conversationFiles";
 import { WorkspaceFileIndex } from "./fileIndex";
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -25,7 +25,8 @@ export function activate(context: vscode.ExtensionContext): void {
   // [>]: Roots read at each mention, since folders can be added or removed while the window is open.
   const mentions: MentionReader = { read: (path) => readMention(workspaceRoots(), path) };
 
-  const conversations = new ConversationStore(workspaceConversationFiles(context.storageUri));
+  // [>]: `storageUri` is a `file:` URI in the desktop extension host, and only with a folder or workspace open.
+  const conversations = new ConversationStore(directoryFiles(context.storageUri?.fsPath));
   let view: ChatView | undefined;
   const controller = new ChatController(
     apiKeys,

@@ -424,11 +424,11 @@ describe("history panel", () => {
     expect(posted).toEqual([{ type: "openConversation", id: OTHER_ID }]);
   });
 
-  test("a click on the conversation shown only closes the list", () => {
+  test("a click on the conversation shown still asks to open it, so it supersedes a pending open", () => {
     const { list, closed } = panel();
     list.props.onOpen(CONVERSATION_ID);
     expect(closed()).toBe(1);
-    expect(posted).toEqual([]);
+    expect(posted).toEqual([{ type: "openConversation", id: CONVERSATION_ID }]);
   });
 
   test("Delete asks to delete that conversation", () => {

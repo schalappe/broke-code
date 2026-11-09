@@ -24,7 +24,7 @@ The code so far covers the extension skeleton and a streaming chat with a provid
   errors, the chat controller (conversation state, streaming, Stop, saving, reopen, delete), the conversation record
   (`conversation.ts`: version 1, its validation on load, title, id), its store (`conversationStore.ts`: one file
   per conversation, reads, writes, and deletes in call order), and the store's file access (`conversationFiles.ts`:
-  the file port, and its implementation over a `vscode.FileSystem`-shaped port: missing versus failed, regular files
+  the file port, and its implementation over a local directory with `node:fs`: missing versus failed, regular files
   only, atomic writes, leftover temporary files), the dialog queue, the host-webview message
   protocol and its validation, workspace file access (`workspaceFiles.ts`: the inside-workspace check, capped reads,
   one-level listings, line truncation, with `node:fs`), mentions (`mentions.ts`: token detection, picked and typed
@@ -36,8 +36,7 @@ The code so far covers the extension skeleton and a streaming chat with a provid
   generates test certificates with `/usr/bin/openssl` at test time; no private key is committed.
   `conversationFixture.ts` is the in-memory conversation file port for tests.
 - `src/extension/`: the extension host glue (activation, webview view, API keys in `SecretStorage`, the
-  file index's `findFiles` scan and watcher in `fileIndex.ts`, and `conversationFiles.ts`, which passes
-  `workspace.fs`, `storageUri`, and the `FileSystemError` "FileNotFound" check to the core file access).
+  file index's `findFiles` scan and watcher in `fileIndex.ts`).
 - `src/webview/`: the React chat panel and its CSS. `SuggestionMenu.tsx` is the autocomplete list the `@` menu
   uses and the `/` menu (#11) is meant to reuse.
 - `src/l10n.test.ts`: checks that every `l10n.t` message has a French translation and that the
@@ -170,8 +169,10 @@ The code so far covers the extension skeleton and a streaming chat with a provid
   during a build share it. At 5,000 files the menu's last line says the index is limited.
 - Conversations are saved per workspace, as one JSON file per conversation in the extension's per-workspace storage
   directory (`ExtensionContext.storageUri`), never in the memento: the memento serializes every key on each update
-  and VS Code warns from about 500 KB. A write goes to a uniquely named temporary file, then a rename over the final
-  one; the first listing deletes temporary files left by a crash. Reads, writes, and deletes run one at a time in
+  and VS Code warns from about 500 KB. A write goes to a uniquely named temporary file, flushed to disk, then a
+  `rename(2)` over the final one with `node:fs`, never `workspace.fs`: its rename with overwrite deletes the
+  destination first, so a crash between the two steps would lose the conversation. The first listing deletes
+  temporary files left by a crash. Reads, writes, and deletes run one at a time in
   call order, so a read sees every write and delete asked before it. The workspace memento holds only the last
   provider and model choice and the id of the conversation shown. The list is derived from the directory, newest
   first, conversations without entries left out; 50 conversations are kept: a save past the limit queues a prune

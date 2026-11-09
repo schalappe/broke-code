@@ -1,9 +1,11 @@
 /**
  * @module conversationFiles
- * File access for the conversation store: the `ConversationFiles` port, and its implementation over a directory of a
- * file system shaped like the `vscode.FileSystem` subset it uses. vscode-free: the host passes `workspace.fs`, its
- * URI join, and its "file not found" check.
+ * File access for the conversation store: the `ConversationFiles` port, and its implementation over a local directory
+ * with `node:fs`. The host passes the path of `ExtensionContext.storageUri`, a `file:` URI in the desktop extension
+ * host. Not `workspace.fs`: its rename with overwrite deletes the destination before moving, so it is not atomic.
  */
+import { mkdir, open, readdir, readFile, rename, unlink } from "node:fs/promises";
+import { join } from "node:path";
 import { isConversationId } from "./conversation";
 
 /** Flat file access in the storage directory. Names carry no path separator. */
@@ -18,28 +20,6 @@ export type ConversationFiles = {
   remove(name: string): Promise<void>;
 };
 
-/** Subset of `vscode.FileSystem` used, over URIs of type `U`. Entry types as `vscode.FileType`. */
-export type FileSystem<U> = {
-  readDirectory(uri: U): PromiseLike<[string, number][]>;
-  readFile(uri: U): PromiseLike<Uint8Array>;
-  writeFile(uri: U, content: Uint8Array): PromiseLike<void>;
-  rename(source: U, target: U, options: { overwrite: boolean }): PromiseLike<void>;
-  delete(uri: U): PromiseLike<void>;
-  /** Creates missing parents too; no error when it exists. */
-  createDirectory(uri: U): PromiseLike<void>;
-};
-
-/** A storage directory: the file system, the directory, how to name a file in it, and which errors mean "missing". */
-export type StorageDirectory<U> = {
-  fs: FileSystem<U>;
-  uri: U;
-  join(directory: U, name: string): U;
-  isFileNotFound(error: unknown): boolean;
-};
-
-/** `vscode.FileType.File`. A symbolic link or a directory is not listed. */
-const REGULAR_FILE = 1;
-
 const TEMPORARY_PATTERN = /^(.+)\.json\.([^./]+-[^./]+-[^./]+-[^./]+-[^./]+)\.tmp$/;
 
 /** Temporary file a write of `name` goes through: unique per write, never ending in `.json`. */
@@ -53,16 +33,16 @@ export function isTemporaryName(name: string): boolean {
   return match !== null && isConversationId(match[1]) && isConversationId(match[2]);
 }
 
-/** Files of `storage`; `undefined` without a storage directory, so conversations stay in memory. */
-export function directoryFiles<U>(storage: StorageDirectory<U> | undefined): ConversationFiles | undefined {
-  if (!storage) return undefined;
-  const { fs, uri: directory, isFileNotFound } = storage;
-  const uri = (name: string) => storage.join(directory, name);
+/** Files in `directory`; `undefined` without a storage directory, so conversations stay in memory. */
+export function directoryFiles(directory: string | undefined): ConversationFiles | undefined {
+  if (directory === undefined) return undefined;
+  const path = (name: string) => join(directory, name);
   return {
+    // [>]: A symbolic link or a directory is not listed.
     names: async () => {
       try {
-        const entries = await fs.readDirectory(directory);
-        return entries.filter(([, type]) => type === REGULAR_FILE).map(([name]) => name);
+        const entries = await readdir(directory, { withFileTypes: true });
+        return entries.filter((entry) => entry.isFile()).map((entry) => entry.name);
       } catch (error) {
         if (isFileNotFound(error)) return [];
         throw error;
@@ -70,22 +50,29 @@ export function directoryFiles<U>(storage: StorageDirectory<U> | undefined): Con
     },
     read: async (name) => {
       try {
-        return new TextDecoder().decode(await fs.readFile(uri(name)));
+        return await readFile(path(name), "utf8");
       } catch (error) {
         if (isFileNotFound(error)) return undefined;
         throw error;
       }
     },
-    // [>]: Atomic: a temporary file with a unique name, then a rename over the final one. A crash leaves the old
-    // file or the new one; the store deletes a leftover temporary file when it first lists.
+    // [>]: Atomic: a new temporary file with a unique name, flushed to disk, then `rename(2)` over the final one, which
+    // replaces it in one step. A crash leaves the old file or the new one; the store deletes a leftover temporary
+    // file when it first lists.
     write: async (name, text) => {
-      await fs.createDirectory(directory);
-      const temp = uri(temporaryName(name));
+      await mkdir(directory, { recursive: true });
+      const temp = path(temporaryName(name));
       try {
-        await fs.writeFile(temp, new TextEncoder().encode(text));
-        await fs.rename(temp, uri(name), { overwrite: true });
+        const handle = await open(temp, "wx");
+        try {
+          await handle.writeFile(text, "utf8");
+          await handle.sync();
+        } finally {
+          await handle.close();
+        }
+        await rename(temp, path(name));
       } catch (error) {
-        await Promise.resolve(fs.delete(temp)).catch(() => {
+        await unlink(temp).catch(() => {
           // [>]: Cleanup only; the write error below is what the caller must see.
         });
         throw error;
@@ -93,10 +80,14 @@ export function directoryFiles<U>(storage: StorageDirectory<U> | undefined): Con
     },
     remove: async (name) => {
       try {
-        await fs.delete(uri(name));
+        await unlink(path(name));
       } catch (error) {
         if (!isFileNotFound(error)) throw error;
       }
     },
   };
+}
+
+function isFileNotFound(error: unknown): boolean {
+  return (error as { code?: unknown } | null)?.code === "ENOENT";
 }

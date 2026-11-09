@@ -195,7 +195,11 @@ function ErrorBlock({ error, retry }: { error: ProviderError; retry?: () => void
   );
 }
 
-/** History list wired to the host: a pick closes it and opens another conversation; Delete deletes. */
+/**
+ * History list wired to the host: a pick closes it and asks to open that conversation, even the one shown, since a
+ * pending open may be about to replace it; the controller skips an open of the conversation shown when it runs.
+ * Delete deletes.
+ */
 export function HistoryPanel({ state, language, close }: { state: ChatState; language: string; close: () => void }) {
   return (
     <ConversationList
@@ -204,7 +208,7 @@ export function HistoryPanel({ state, language, close }: { state: ChatState; lan
       language={language}
       onOpen={(id) => {
         close();
-        if (id !== state.conversationId) post({ type: "openConversation", id });
+        post({ type: "openConversation", id });
       }}
       onDelete={(id) => post({ type: "deleteConversation", id })}
     />

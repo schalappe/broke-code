@@ -1058,6 +1058,20 @@ describe("ChatController conversations", () => {
     expect(state()).toMatchObject({ conversationId: second.id, entries: [{ content: "second" }] });
   });
 
+  test("reopening the conversation shown while another open waits shows the one reopened", async () => {
+    const [shown, other] = [savedRecord("shown"), savedRecord("other")];
+    const ws = workspace(filesOf(shown, other));
+    const { controller, state } = await load(ws);
+    await controller.openConversation(shown.id);
+    const read = holdRead(ws.files, 1);
+    const opening = controller.openConversation(other.id);
+    await eventually(read.started, "the other open's read");
+    const reopening = controller.openConversation(shown.id);
+    read.release();
+    await Promise.all([opening, reopening]);
+    expect(state()).toMatchObject({ conversationId: shown.id, entries: [{ content: "shown" }] });
+  });
+
   test("never prunes the conversation being opened, even when it is the oldest", async () => {
     const seeded = Array.from({ length: 50 }, (_, index) => savedRecord(`c${index}`, index + 1));
     const oldest = seeded[0]!;
