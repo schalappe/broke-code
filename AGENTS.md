@@ -247,7 +247,8 @@ system prompt, and the read tools exist in `src/core/`, but no harness runs them
 ## Verification
 
 - `bun run lint`, `bun run typecheck`, `bun test`, and `bun run build` run in CI on every pull request and on
-  `develop` and `main`.
+  `develop` and `main`. `bun test` needs `rg` (ripgrep) on `PATH`, because the `search` tests run the real binary;
+  the workflows install it.
 - `bun run lint` runs Biome over code, CSS, and JSON without writing. `bun run format` applies its formatting,
   import sorting, and safe lint fixes. Run it before committing.
 - `bun run package` builds and writes `broke-code-<version>.vsix` with the version from `VERSION` (default
