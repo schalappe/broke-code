@@ -47,10 +47,11 @@ export function readWorkspaceEntry(roots: WorkspaceRoot[], path: string, seam: R
 /**
  * Read the file or folder at `absolutePath`, held to the same boundary as `readWorkspaceEntry`: inside any of
  * `roots`, symlinks resolved. No folder name selects a root, so a custom name that prefixes the path (`/var`) never
- * reroutes it. For a path the host builds itself, such as a folder's `AGENTS.md`. Never rejects.
+ * reroutes it. For a file path the host builds itself, such as a folder's `AGENTS.md`, so the kind of a path that
+ * could not be inspected is `file`. Never rejects.
  */
 export function readWorkspaceEntryAt(roots: WorkspaceRoot[], absolutePath: string): Promise<WorkspaceEntry> {
-  return readEntryAmong(roots, [resolve(absolutePath)], absolutePath.endsWith("/") ? "folder" : "file", {});
+  return readEntryAmong(roots, [resolve(absolutePath)], "file", {});
 }
 
 /** `readWorkspaceEntry` over absolute `candidates`, the first that exists winning. */
