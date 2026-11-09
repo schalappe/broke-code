@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { READ_TOOLS, type ReadToolEnv, ripgrepCandidates, runReadTool, type ToolResult } from "./tools";
+import { READ_TOOLS, type ReadToolEnv, ripgrepCandidates, runReadTool, type ToolCall, type ToolResult } from "./tools";
 import type { WorkspaceRoot } from "./workspaceFiles";
 
 // [>]: `tmpdir()` sits under /var, a symlink to /private/var on macOS: every root here has a real path that differs
@@ -56,6 +56,11 @@ async function fakeRipgrep(name: string, body: string): Promise<string> {
   await writeFile(path, `#!/bin/sh\n[ "$1" = warm ] && exit 0\n${body}\n`);
   await chmod(path, 0o755);
   spawnSync(path, ["warm"]);
+  return path;
+}
+
+async function mkdirp(path: string): Promise<string> {
+  await mkdir(path, { recursive: true });
   return path;
 }
 
@@ -151,6 +156,14 @@ describe("list_files", () => {
     expect(await run("list_files", { path: "." }, [app, lib])).toEqual(expected);
   });
 
+  test("sorts the folder names by code unit, before the / suffix, as a folder listing does", async () => {
+    const roots = ["b", "a-b", "a", "B"].map((name) => ({ name, path: join(base, name) }));
+    expect(await run("list_files", {}, roots)).toEqual({
+      status: "ok",
+      text: "@. (folder, 4 entries)\n```\nB/\na/\na-b/\nb/\n```",
+    });
+  });
+
   test("lists a folder of a multi-root workspace by its name", async () => {
     expect(await run("list_files", { path: "lib" }, [app, lib])).toEqual({
       status: "ok",
@@ -185,7 +198,49 @@ describe("search", () => {
   test("returns ripgrep's message as an error for an invalid regular expression", async () => {
     const result = await run("search", { pattern: "(" });
     expect(result.status).toBe("error");
-    expect(result.text).toContain("regex parse error");
+    expect(result.text).toStartWith("search: ripgrep failed:\nrg: regex parse error");
+  });
+
+  test("refuses an empty pattern, which would match every line", async () => {
+    expect(await run("search", { pattern: "" })).toEqual({ status: "error", text: "search: the pattern is empty." });
+  });
+
+  test("reports another exit code with ripgrep's message", async () => {
+    const odd = await fakeRipgrep("odd-rg", "echo 'odd failure' >&2\nexit 3");
+    expect(await run("search", { pattern: "x" }, [app], { ripgrepCandidates: [odd] })).toEqual({
+      status: "error",
+      text: "search: ripgrep failed (exit code 3):\nodd failure",
+    });
+  });
+
+  test("keeps the first 4,096 characters of ripgrep's messages and marks the cut", async () => {
+    const loud = await fakeRipgrep("loud-rg", "head -c 5000 /dev/zero | tr '\\0' e >&2\nexit 2");
+    expect(await run("search", { pattern: "x" }, [app], { ripgrepCandidates: [loud] })).toEqual({
+      status: "error",
+      text: `search: ripgrep failed:\n${"e".repeat(4096)}\n…`,
+    });
+  });
+
+  test("reports a path it may not resolve as unreadable, with the error code", async () => {
+    const guarded: WorkspaceRoot = { name: "guarded", path: join(base, "guarded") };
+    await mkdir(join(guarded.path, "sealed"), { recursive: true });
+    await chmod(join(guarded.path, "sealed"), 0o000);
+    try {
+      expect(await run("search", { pattern: "x", path: "sealed/x" }, [guarded])).toEqual({
+        status: "error",
+        text: "search: sealed/x: the path could not be read (EACCES).",
+      });
+    } finally {
+      await chmod(join(guarded.path, "sealed"), 0o700);
+    }
+  });
+
+  test("says when no workspace folder can be resolved", async () => {
+    const gone: WorkspaceRoot = { name: "gone", path: join(base, "gone") };
+    expect(await run("search", { pattern: "x" }, [gone])).toEqual({
+      status: "error",
+      text: "search: no workspace folder can be searched.",
+    });
   });
 
   test("searches only the given file or folder, paths shown from the workspace folder", async () => {
@@ -227,7 +282,7 @@ describe("search", () => {
     expect(lines[2000]).toBe("[truncated: 500 more lines not shown]");
   });
 
-  test("returns the matches of a run that could not read every file, with ripgrep's message", async () => {
+  test("returns the matches of a run that could not read every file, with ripgrep's message, as a partial success", async () => {
     // [>]: A folder of its own, so the unreadable file never shows in the other searches.
     const partial: WorkspaceRoot = { name: "partial", path: join(base, "partial") };
     await mkdir(partial.path);
@@ -259,6 +314,40 @@ describe("search", () => {
     expect(sortedLines(await run("search", { pattern: "needle" }, [app, nested, app]))).toEqual([
       "core/a.ts:1:const needle = 1;",
       "core/b.ts:2:// needle here",
+    ]);
+  });
+
+  test("searches a nested root the parent's walk would skip, each file once, other same-named folders still", async () => {
+    const nest = join(base, "nest");
+    await writeFile(join(await mkdirp(nest), "top.ts"), "needle top\n");
+    await writeFile(join(await mkdirp(join(nest, ".hidden")), "x.ts"), "needle x\n");
+    await writeFile(join(await mkdirp(join(nest, "plain")), "y.ts"), "needle y\n");
+    await writeFile(join(await mkdirp(join(base, "elsewhere", "plain")), "z.ts"), "needle z\n");
+    const roots = [
+      { name: "nest", path: nest },
+      { name: "hid", path: join(nest, ".hidden") },
+      { name: "plain", path: join(nest, "plain") },
+      { name: "elsewhere", path: join(base, "elsewhere") },
+    ];
+    expect(sortedLines(await run("search", { pattern: "needle" }, roots))).toEqual([
+      "elsewhere/plain/z.ts:1:needle z",
+      "hid/x.ts:1:needle x",
+      "nest/top.ts:1:needle top",
+      "plain/y.ts:1:needle y",
+    ]);
+  });
+
+  test("excludes a nested root whose real path holds glob characters", async () => {
+    const weird = join(base, "we[i]rd*{x}?");
+    await writeFile(join(await mkdirp(weird), "w.ts"), "needle w\n");
+    await writeFile(join(await mkdirp(join(weird, "in")), "q.ts"), "needle q\n");
+    const roots = [
+      { name: "weird", path: weird },
+      { name: "in", path: join(weird, "in") },
+    ];
+    expect(sortedLines(await run("search", { pattern: "needle" }, roots))).toEqual([
+      "in/q.ts:1:needle q",
+      "weird/w.ts:1:needle w",
     ]);
   });
 
@@ -316,8 +405,14 @@ describe("search", () => {
     await writeFile(broken, "#!/nowhere/interpreter\n");
     await chmod(broken, 0o755);
     const result = await run("search", { pattern: "needle" }, [app], { ripgrepCandidates: [broken] });
-    expect(result.status).toBe("error");
-    expect(result.text).toStartWith("search: ripgrep could not run");
+    expect(result).toEqual({ status: "error", text: "search: ripgrep could not run (ENOENT)." });
+  });
+
+  test("returns an error, never a rejection, when spawn refuses the arguments", async () => {
+    expect(await run("search", { pattern: "a\0b" })).toEqual({
+      status: "error",
+      text: "search: ripgrep could not run (ERR_INVALID_ARG_VALUE).",
+    });
   });
 
   test("uses the first candidate that is an executable file", async () => {
@@ -348,6 +443,64 @@ describe("ripgrepCandidates", () => {
 });
 
 describe("runReadTool", () => {
+  test("ends read_file and list_files as stopped when the signal aborts during the read, never a late ok", async () => {
+    const calls: ToolCall[] = [
+      { name: "read_file", args: { path: "ten.txt" } },
+      { name: "list_files", args: {} },
+    ];
+    for (const call of calls) {
+      const controller = new AbortController();
+      const running = runReadTool(call, [app], env, controller.signal);
+      controller.abort();
+      expect(await running).toEqual({ status: "error", text: `${call.name}: stopped before it finished.` });
+    }
+  });
+
+  test("shows a model-given path in an error by its first line, cut at 200 characters", async () => {
+    for (const name of ["read_file", "list_files", "search"]) {
+      const result = await run(name, { pattern: "x", path: "x\n".repeat(3000) });
+      expect(result.status).toBe("error");
+      expect(result.text).toStartWith(`${name}: x…: `);
+      expect(result.text).not.toContain("\n");
+    }
+    expect(await run("read_file", { path: "a/".repeat(150) })).toEqual({
+      status: "error",
+      text: `read_file: ${"a/".repeat(100)}…: no such file or folder in the workspace.`,
+    });
+  });
+
+  test("returns an unexpected failure as a bounded error, never a rejection", async () => {
+    const throwing = (thrown: unknown) => ({
+      name: "read_file",
+      args: {
+        get path(): string {
+          throw thrown;
+        },
+      },
+    });
+    const signal = new AbortController().signal;
+    expect(await runReadTool(throwing(new Error("boom\n".repeat(3000))), [app], env, signal)).toEqual({
+      status: "error",
+      text: "read_file: boom…",
+    });
+    expect(await runReadTool(throwing("plain"), [app], env, signal)).toEqual({
+      status: "error",
+      text: "read_file: plain",
+    });
+  });
+
+  test("says no workspace folder is open, for every read tool", async () => {
+    for (const [name, args] of [
+      ["read_file", { path: "ten.txt" }],
+      ["list_files", {}],
+      ["list_files", { path: "src" }],
+      ["search", { pattern: "x" }],
+      ["search", { pattern: "x", path: "src" }],
+    ] as const) {
+      expect(await run(name, args, [])).toEqual({ status: "error", text: `${name}: no workspace folder is open.` });
+    }
+  });
+
   test("returns an error for an unknown tool", async () => {
     expect(await run("write_file", { path: "ten.txt" })).toEqual({
       status: "error",

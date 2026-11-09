@@ -7,7 +7,7 @@
  */
 import { spawn } from "node:child_process";
 import { constants } from "node:fs";
-import { access, realpath, stat } from "node:fs/promises";
+import { access, stat } from "node:fs/promises";
 import { delimiter, isAbsolute, join } from "node:path";
 import {
   accessFailureReason,
@@ -18,7 +18,15 @@ import {
   truncationNotice,
 } from "./mentions";
 import type { ToolSpec } from "./toolCalls";
-import { type AccessFailure, isInside, locateWorkspacePath, truncateLines, type WorkspaceRoot } from "./workspaceFiles";
+import {
+  type AccessFailure,
+  compareNames,
+  isInside,
+  locateWorkspacePath,
+  resolveWorkspaceRoots,
+  truncateLines,
+  type WorkspaceRoot,
+} from "./workspaceFiles";
 
 /** What a tool call gives back to the model: `ok` with its output, or `error` with what went wrong. */
 export type ToolResult = { status: "ok" | "error"; text: string };
@@ -76,7 +84,8 @@ export const READ_TOOLS: ToolSpec[] = [
 
 /**
  * Run read tool `call` inside `roots`. Never rejects: an unknown tool, a refused path, and a failed or stopped run
- * all come back as an `error` result for the model. `signal` (Stop) ends a running `search` and kills ripgrep.
+ * all come back as an `error` result for the model. `signal` (Stop) ends a running `search` and kills ripgrep; a
+ * read that finishes after it gives the stopped error, never a late result.
  */
 export async function runReadTool(
   call: ToolCall,
@@ -84,21 +93,29 @@ export async function runReadTool(
   env: ReadToolEnv,
   signal: AbortSignal,
 ): Promise<ToolResult> {
+  if (!READ_TOOLS.some((tool) => tool.name === call.name)) {
+    return { status: "error", text: `${excerpt(call.name)} is not a read tool.` };
+  }
   if (signal.aborted) return stopped(call.name);
+  if (roots.length === 0) return { status: "error", text: `${call.name}: no workspace folder is open.` };
+  const result = await runTool(call, roots, env, signal);
+  return signal.aborted ? stopped(call.name) : result;
+}
+
+async function runTool(
+  call: ToolCall,
+  roots: WorkspaceRoot[],
+  env: ReadToolEnv,
+  signal: AbortSignal,
+): Promise<ToolResult> {
   try {
-    switch (call.name) {
-      case "read_file":
-        return await readFileTool(roots, call.args.path ?? "");
-      case "list_files":
-        return await listFilesTool(roots, call.args.path);
-      case "search":
-        return await searchTool(roots, call.args.pattern ?? "", call.args.path, env, signal);
-      default:
-        return { status: "error", text: `${call.name} is not a read tool.` };
-    }
+    if (call.name === "read_file") return await readFileTool(roots, call.args.path ?? "");
+    if (call.name === "list_files") return await listFilesTool(roots, call.args.path);
+    return await searchTool(roots, call.args.pattern ?? "", call.args.path, env, signal);
   } catch (error) {
     // [!]: The tools catch what they expect; this keeps a bug from rejecting into the agent loop.
-    return { status: "error", text: `${call.name}: ${error instanceof Error ? error.message : String(error)}` };
+    const message = error instanceof Error ? error.message : String(error);
+    return { status: "error", text: `${call.name}: ${excerpt(message)}` };
   }
 }
 
@@ -107,7 +124,8 @@ async function readFileTool(roots: WorkspaceRoot[], path: string): Promise<ToolR
   const failure = failureOf(mention);
   if (failure) return refused("read_file", path, failure, mention.cause);
   if (mention.kind === "folder") {
-    return { status: "error", text: `read_file: ${path}: the path is a folder. Use list_files to see its children.` };
+    const text = `read_file: ${excerpt(path)}: the path is a folder. Use list_files to see its children.`;
+    return { status: "error", text };
   }
   return { status: "ok", text: formatMention(mention) };
 }
@@ -120,7 +138,7 @@ async function listFilesTool(roots: WorkspaceRoot[], path: string | undefined): 
   const failure = failureOf(mention);
   // [>]: A binary or oversized file is still known to be a file: the reason to give is the tool to use.
   if (mention.kind === "file" && (!failure || failure === "binary" || failure === "tooLarge")) {
-    return { status: "error", text: `list_files: ${shown}: the path is a file. Use read_file to read it.` };
+    return { status: "error", text: `list_files: ${excerpt(shown)}: the path is a file. Use read_file to read it.` };
   }
   if (failure) return refused("list_files", shown, failure, mention.cause);
   return { status: "ok", text: formatMention(mention) };
@@ -128,7 +146,8 @@ async function listFilesTool(roots: WorkspaceRoot[], path: string | undefined): 
 
 /** The folder names of a multi-root workspace, as the listing of its top: what a path may start with. */
 function rootListing(roots: WorkspaceRoot[]): ReadMention {
-  const cut = truncateLines(roots.map((root) => `${root.name}/`).join("\n"), MAX_MENTION_LINES);
+  const names = roots.map((root) => root.name).sort(compareNames);
+  const cut = truncateLines(names.map((name) => `${name}/`).join("\n"), MAX_MENTION_LINES);
   const status = cut.omitted > 0 ? "truncated" : "attached";
   return { path: ".", kind: "folder", status, lines: cut.lines, content: cut.text, omitted: cut.omitted };
 }
@@ -140,7 +159,21 @@ function failureOf(mention: ReadMention): AccessFailure | undefined {
 
 /** A refused path, in the wording of a mention that attached nothing. */
 function refused(tool: string, path: string, failure: AccessFailure, cause?: string): ToolResult {
-  return { status: "error", text: `${tool}: ${path}: ${accessFailureReason(failure, cause)}.` };
+  return { status: "error", text: `${tool}: ${excerpt(path)}: ${accessFailureReason(failure, cause)}.` };
+}
+
+/** Characters of a model-given value or an error message an error result shows. */
+const MAX_EXCERPT_CHARS = 200;
+
+/**
+ * `text` as an error result shows it: its first line, cut at 200 characters, with `…` when anything was left out.
+ * A value comes from the model and an error message from anywhere: neither may make the result unbounded.
+ */
+function excerpt(text: string): string {
+  const lineEnd = text.indexOf("\n");
+  const line = lineEnd === -1 ? text : text.slice(0, lineEnd);
+  const shown = line.slice(0, MAX_EXCERPT_CHARS);
+  return shown === text ? text : `${shown}…`;
 }
 
 const DEFAULT_SEARCH_TIMEOUT_MS = 30_000;
@@ -205,10 +238,16 @@ async function findRipgrep(candidates: readonly string[]): Promise<string | unde
 }
 
 /**
- * What one search covers. `paths`: real paths given to ripgrep. `prefixes`: each workspace folder's real path and
- * what replaces it in the output, longest first, so a nested folder wins over the one that holds it.
+ * What one search covers. `paths`: real paths given to ripgrep. `excluded`: real paths of workspace folders nested in
+ * another, left out of the outer folder's walk since each is searched on its own. `prefixes`: each workspace folder's
+ * real path and what replaces it in the output, longest first, so a nested folder wins over the one that holds it.
  */
-type SearchScope = { cwd: string; paths: string[]; prefixes: { realRoot: string; shown: string }[] };
+type SearchScope = {
+  cwd: string;
+  paths: string[];
+  excluded: string[];
+  prefixes: { realRoot: string; shown: string }[];
+};
 
 async function searchTool(
   roots: WorkspaceRoot[],
@@ -217,6 +256,7 @@ async function searchTool(
   env: ReadToolEnv,
   signal: AbortSignal,
 ): Promise<ToolResult> {
+  if (pattern === "") return { status: "error", text: "search: the pattern is empty." };
   const scope = await searchScope(roots, path);
   if ("status" in scope) return scope;
   const ripgrep = await findRipgrep(env.ripgrepCandidates);
@@ -228,27 +268,29 @@ async function searchTool(
 }
 
 /**
- * The real paths `search` may give ripgrep: the outermost workspace folders when `path` is left out, empty, or `.`,
- * otherwise `path` once it passed the check `read_file` makes. Never a path that did not pass.
+ * The real paths `search` may give ripgrep: every workspace folder when `path` is left out, empty, or `.`, otherwise
+ * `path` once it passed the check `read_file` makes. Never a path that did not pass.
+ *
+ * [!]: ripgrep opens the path by name after the check, so a folder swapped for a symlink out between the two, or a
+ * subfolder swapped during the walk, is searched. Accepted, as for mentions: a process that can swap workspace files
+ * already runs with the user's rights and can read the outside files itself.
  */
 async function searchScope(roots: WorkspaceRoot[], path: string | undefined): Promise<SearchScope | ToolResult> {
-  const resolved = await Promise.all(
-    roots.map(async (root) => ({ root, realRoot: await realpath(root.path).catch(() => undefined) })),
-  );
-  // [>]: A folder that cannot be resolved (deleted, unmounted) holds nothing to search: it is left out.
-  const usable = resolved.flatMap(({ root, realRoot }) => (realRoot === undefined ? [] : [{ root, realRoot }]));
+  const usable = await resolveWorkspaceRoots(roots);
   const prefixes = usable
     .map(({ root, realRoot }) => ({ realRoot, shown: roots.length > 1 ? `${root.name}/` : "" }))
     .sort((a, b) => b.realRoot.length - a.realRoot.length);
 
   if (path === undefined || path === "" || path === ".") {
-    // [>]: A folder nested in another is searched through it, so its files show once, under the nested name.
     const realRoots = [...new Set(usable.map(({ realRoot }) => realRoot))];
-    const outermost = realRoots.filter(
-      (realRoot) => !realRoots.some((other) => other !== realRoot && isInside(other, realRoot)),
+    if (realRoots.length === 0) return { status: "error", text: "search: no workspace folder can be searched." };
+    // [>]: A nested folder is searched on its own, even when the outer walk would skip it (hidden, ignored), and is
+    // left out of that walk, so its files show once, under its name. An absolute exclude glob holds only with the
+    // working folder at `/`.
+    const excluded = realRoots.filter((realRoot) =>
+      realRoots.some((other) => other !== realRoot && isInside(other, realRoot)),
     );
-    if (outermost.length === 0) return { status: "error", text: "search: no workspace folder can be searched." };
-    return { cwd: outermost[0]!, paths: outermost, prefixes };
+    return { cwd: "/", paths: realRoots, excluded, prefixes };
   }
 
   try {
@@ -257,10 +299,15 @@ async function searchScope(roots: WorkspaceRoot[], path: string | undefined): Pr
     // [!]: A FIFO or device given to ripgrep could block until the timeout or read without end.
     const info = await stat(located.realPath);
     if (!info.isFile() && !info.isDirectory()) return refused("search", path, "unreadable", "not a file or folder");
-    return { cwd: located.realRoot, paths: [located.realPath], prefixes };
+    return { cwd: located.realRoot, paths: [located.realPath], excluded: [], prefixes };
   } catch (error) {
     return refused("search", path, "unreadable", errorCode(error) ?? String(error));
   }
+}
+
+/** A ripgrep glob matching exactly `path`: its glob characters escaped. */
+function literalGlob(path: string): string {
+  return path.replace(/[\\*?[\]{}!]/g, "\\$&");
 }
 
 /**
@@ -299,7 +346,8 @@ function runRipgrep(
     try {
       // [!]: An argv array and no shell: the pattern and paths reach ripgrep as they are. stdin is closed, so ripgrep
       // never waits on it, and `--` keeps a path from reading as an option.
-      child = spawn(ripgrep, [...RIPGREP_ARGS, "-e", pattern, "--", ...scope.paths], {
+      const excludes = scope.excluded.flatMap((path) => ["--glob", `!${literalGlob(path)}`]);
+      child = spawn(ripgrep, [...RIPGREP_ARGS, ...excludes, "-e", pattern, "--", ...scope.paths], {
         cwd: scope.cwd,
         stdio: ["ignore", "pipe", "pipe"],
       });
