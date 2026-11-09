@@ -250,6 +250,24 @@ describe("readWorkspaceEntry with read-only roots", () => {
     }
   });
 
+  test("a read-only root inside a workspace opened through a symlink follows the workspace rules", async () => {
+    // [>]: `app.path` sits under /var, its real path under /private/var; discovery gives the skill's real folder.
+    const folder = join(app.path, ".agents", "skills", "inside");
+    await mkdir(folder, { recursive: true });
+    await symlink(join(app.path, "src", "main.ts"), join(folder, "reference.ts"));
+    await symlink(join(base, "outside.txt"), join(folder, "out.txt"));
+    const skill = await realpath(folder);
+    expect(await readWorkspaceEntry([app], join(skill, "reference.ts"), {}, [skill])).toEqual({
+      status: "ok",
+      kind: "file",
+      text: "export {};\n",
+    });
+    expect(await readWorkspaceEntry([app], join(skill, "out.txt"), {}, [skill])).toEqual({
+      status: "outsideWorkspace",
+      kind: "file",
+    });
+  });
+
   test("a written path under the root's unresolved path is outside: the root is matched as given", async () => {
     // [>]: `base` sits under /var, the real path under /private/var: only the real path reaches the root.
     expect(await readWorkspaceEntry([], join(base, "skills", "one", "a.md"), {}, [one])).toEqual({

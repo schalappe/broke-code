@@ -45,7 +45,7 @@ const UNRESOLVED_LINK_CODES = new Set(["ENOENT", "ENOTDIR", "ELOOP", "EACCES", "
  * `readOnlyRoots`: real paths of folders outside the workspace that reads may also enter, such as the folders of the
  * skills loaded in a conversation. Only an absolute path reaches them, read as written, and the path, symlinks
  * resolved, must stay in the deepest of them it is written in: a symlink to another of them, or to the workspace, is
- * outside. A root inside a workspace folder adds nothing: its paths follow the workspace rules. The write boundary
+ * outside. A root inside a workspace folder's real path adds nothing: its paths follow the workspace rules. The write boundary
  * (`locateWriteTarget`) never takes them.
  */
 export function readWorkspaceEntry(
@@ -182,23 +182,28 @@ export function locateWorkspacePath(
 
 /**
  * `locateWorkspacePath` over absolute `candidates`, the first that exists winning. A candidate written inside a
- * workspace folder must resolve inside one; a candidate written inside a read-only root, inside the deepest root that
- * holds it, since a loaded skill's folder may sit inside another's.
+ * workspace folder, or inside a read-only root that lies in a workspace folder's real path, must resolve inside one; a
+ * candidate written inside another read-only root, inside the deepest root that holds it, since a loaded skill's
+ * folder may sit inside another's.
  */
 async function locateCandidates(
   roots: WorkspaceRoot[],
   candidates: string[],
   readOnlyRoots: readonly string[],
 ): Promise<LocatedPath | { status: "missing" | "outsideWorkspace" }> {
+  // [>]: A path under a root that cannot be resolved fails its own `realpath`, so it reads as missing or unreadable.
+  const realRoots = await realRootPaths(roots);
   const inside = candidates.flatMap((candidate) => {
-    const workspace = roots.some((root) => isInside(resolve(root.path), candidate));
     const readOnlyRoot = deepestRoot(readOnlyRoots, candidate);
+    // [>]: A read-only root is a real path, so it is matched against the workspace folders' real paths: a workspace
+    // skill's folder follows the workspace rules also in a workspace opened through a symlink.
+    const workspace =
+      roots.some((root) => isInside(resolve(root.path), candidate)) ||
+      (readOnlyRoot !== undefined && realRoots.some((root) => isInside(root, readOnlyRoot)));
     return workspace || readOnlyRoot !== undefined ? [{ candidate, workspace, readOnlyRoot }] : [];
   });
   if (inside.length === 0) return { status: "outsideWorkspace" };
 
-  // [>]: A path under a root that cannot be resolved fails its own `realpath`, so it reads as missing or unreadable.
-  const realRoots = await realRootPaths(roots);
   for (const { candidate, workspace, readOnlyRoot } of inside) {
     const realPath = await realpath(candidate).catch((error: unknown) => {
       if (MISSING_CODES.has(errorCode(error) ?? "")) return undefined;
