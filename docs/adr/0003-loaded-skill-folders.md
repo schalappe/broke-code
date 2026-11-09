@@ -56,7 +56,7 @@ simply no longer readable. Loading a skill already loaded answers `ok`, "already
 conversation already holds.
 
 `load_skill` is offered, with its prompt rule, only while a skill is listed to the model, like the Skills section: a
-workspace without skills spends no prompt on it, and the eval's prompt is unchanged. Its call is then a malformed one.
+workspace without skills spends no prompt on it, and the prompt of every eval scenario without a skill stays as it was measured. Its call is then a malformed one.
 
 ## Considered options
 
