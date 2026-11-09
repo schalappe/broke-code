@@ -18,8 +18,21 @@ import { READ_TOOLS } from "../src/core/tools";
  */
 export type WorkspaceFiles = Record<string, string>;
 
-/** The text of the file at `path` in `files`, `undefined` when it holds none: own keys only, never the prototype's. */
-export function fileAt(files: WorkspaceFiles, path: string): string | undefined {
+/**
+ * What a workspace holds at a path that is not a folder: a regular file's text, a symlink's target as written, or the
+ * kind of any other entry (`fifo`, `socket`, `blockDevice`, `characterDevice`). Objects, so a symlink never equals a
+ * file whose text is its target.
+ */
+export type WorkspaceEntry = string | { symlink: string } | { special: string };
+
+/**
+ * Every entry of the throwaway copy read back after a run, folders aside, by relative POSIX path. Keyed like
+ * `WorkspaceFiles`, which it extends to entries a command can add.
+ */
+export type WorkspaceSnapshot = Record<string, WorkspaceEntry>;
+
+/** The entry at `path` in `files`, `undefined` when there is none: own keys only, never the prototype's. */
+export function fileAt<T>(files: Record<string, T>, path: string): T | undefined {
   return Object.hasOwn(files, path) ? files[path] : undefined;
 }
 
@@ -288,7 +301,7 @@ export const SCENARIOS: readonly Scenario[] = [
  * The verdict of one run of `scenario`: `entries` are the conversation after `send` resolved, `after` the workspace
  * files then. Throws on a turn that did not end, or ended stopped: the bench never stops a turn, so that is its bug.
  */
-export function judge(scenario: Scenario, entries: readonly ChatEntry[], after: WorkspaceFiles): Verdict {
+export function judge(scenario: Scenario, entries: readonly ChatEntry[], after: WorkspaceSnapshot): Verdict {
   const reply = lastReply(entries);
   switch (reply.status) {
     case "failed":
@@ -316,7 +329,7 @@ export function judge(scenario: Scenario, entries: readonly ChatEntry[], after: 
 }
 
 /** `after` against the workspace `scenario` expects: `wrongEdit`, `workspaceChanged`, or `undefined` when it matches. */
-function workspaceVerdict(scenario: Scenario, after: WorkspaceFiles): Verdict | undefined {
+function workspaceVerdict(scenario: Scenario, after: WorkspaceSnapshot): Verdict | undefined {
   const expected = { ...scenario.files, ...scenario.writes };
   const differing = Object.keys(workspaceChanges(expected, after));
   const wrong = differing.filter((path) => Object.hasOwn(scenario.writes, path));
@@ -335,22 +348,35 @@ function workspaceVerdict(scenario: Scenario, after: WorkspaceFiles): Verdict | 
 }
 
 /**
- * The files of `after` that differ from `before`, sorted by path: an added or changed file with its text, a removed
- * one with `null`. Empty when they match. The dump records it, so a write's result reads without replaying the run.
+ * The entries of `after` that differ from `before`, sorted by path: an added or changed one with what it holds now, a
+ * removed one with `null`. Empty when they match. The dump records it, so a write's result reads without replaying the
+ * run.
  */
-export function workspaceChanges(before: WorkspaceFiles, after: WorkspaceFiles): Record<string, string | null> {
+export function workspaceChanges(
+  before: WorkspaceSnapshot,
+  after: WorkspaceSnapshot,
+): Record<string, WorkspaceEntry | null> {
   const paths = [...new Set([...Object.keys(before), ...Object.keys(after)])].sort();
-  const changes: Record<string, string | null> = Object.create(null);
+  const changes: Record<string, WorkspaceEntry | null> = Object.create(null);
   for (const path of paths) {
     const now = fileAt(after, path);
-    if (fileAt(before, path) !== now) changes[path] = now ?? null;
+    if (!sameEntry(fileAt(before, path), now)) changes[path] = now ?? null;
   }
   return changes;
 }
 
-/** Where `actual` first departs from `expected`, as one line: missing, or the first differing line of each. */
-function fileDifference(expected: string, actual: string | undefined): string {
+function sameEntry(a: WorkspaceEntry | undefined, b: WorkspaceEntry | undefined): boolean {
+  if (typeof a !== "object" || typeof b !== "object") return a === b;
+  if ("symlink" in a) return "symlink" in b && a.symlink === b.symlink;
+  return "special" in b && a.special === b.special;
+}
+
+/** Where `actual` first departs from `expected`, as one line: missing, not a file, or the first differing line of each. */
+function fileDifference(expected: string, actual: WorkspaceEntry | undefined): string {
   if (actual === undefined) return "missing";
+  if (typeof actual !== "string") {
+    return "symlink" in actual ? `is a symlink to ${JSON.stringify(actual.symlink)}` : `is a ${actual.special}`;
+  }
   const want = expected.split("\n");
   const got = actual.split("\n");
   const index = want.findIndex((line, at) => line !== got[at]);

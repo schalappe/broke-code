@@ -83,6 +83,24 @@ describe("playScenario", () => {
     expect(readdirSync(parent)).toEqual([]);
   });
 
+  test("reads back each entry a command added that is not a folder, so the judge sees an added symlink or FIFO", async () => {
+    const command =
+      "find logs -type f | wc -l; ln -s config/settings.toml alias; ln -s logs logs-link; mkfifo pipe; mkdir empty";
+    replies = [`<run_command>\n<command>${command}</command>\n</run_command>`, "61"];
+    const { entries, after } = await playScenario(COMMAND_SCENARIO, { baseUrl, model: "m", maxToolSteps: 6 }, parent);
+
+    expect(entries[2]).toMatchObject({ role: "tool", name: "run_command", status: "ok" });
+    expect(after.alias).toEqual({ symlink: "config/settings.toml" });
+    expect(after["logs-link"]).toEqual({ symlink: "logs" });
+    expect(after.pipe).toEqual({ special: "fifo" });
+    expect(Object.keys(after).filter((path) => path.startsWith("logs-link/") || path.startsWith("empty"))).toEqual([]);
+    expect(judge(COMMAND_SCENARIO, entries, after)).toEqual({
+      pass: false,
+      category: "workspaceChanged",
+      detail: "changed: alias, logs-link, pipe",
+    });
+  });
+
   test("discovers the skills of a copy of the scenario's home fixture, never the real home, and removes the copy", async () => {
     requests.length = 0;
     const lastText = (request: ChatRequest) => request.messages.at(-1)?.content ?? "";

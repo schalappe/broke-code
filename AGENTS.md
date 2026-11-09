@@ -480,7 +480,9 @@ command at once. Slash commands are not built yet. Read `GLOSSARY.md` for the do
   does, but with a throwaway copy of the scenario's home fixture as the home folder, so the bench never reads the real
   `~/.agents`; a scenario without one gets no skill, and its prompt has neither the Skills section nor `load_skill`.
   Five scenarios, each judged on the turn ending `done` and on the workspace after it: every file the scenario writes
-  holds its exact expected text, byte for byte, and every other file is unchanged.
+  holds its exact expected text, byte for byte, and every other entry is unchanged. The workspace is read back without
+  following symlinks: every entry but a folder counts, a file by its text, a symlink by its target (`{ symlink }`), any
+  other kind, such as a FIFO, by its kind (`{ special }`), so a command that adds a symlink fails `workspaceChanged`.
   - `read`: the model must read a setting it cannot guess and answer with its value. Passes when a tool step got the
     value, the answer holds it, and no file changed.
   - `edit`: rename a function named once in `src/pricing.py`. Passes when exactly that line changed.
@@ -505,8 +507,8 @@ command at once. Slash commands are not built yet. Read `GLOSSARY.md` for the do
   any run when Ollama is unreachable or does not list a model. `--model <name>`, `--scenario <name>` (both
   repeatable; an unknown scenario exits 1 naming the others), and `--runs <n>` shorten a local iteration; `--dump <file>` appends each run's entries (tool steps with their call's arguments), verdict,
   `planned` (each change handed to the applier, in call order: tool, path, `before` (`null` for a new file), `after`,
-  and the applier's status), and `changes` (each file that differs from the fixture after the run, with its text,
-  `null` when removed) as JSON Lines, to read the
+  and the applier's status), and `changes` (each entry that differs from the fixture after the run, with its text,
+  `{ symlink }`, or `{ special }`, `null` when removed) as JSON Lines, to read the
   failing replies; an incomplete last line left by an interrupted run is removed, with a notice, before the first
   append. A full run of the four scenarios took 20 min 24 s on the maintainer's Mac on 9a67dd7, the first run of each
   model including its load; the bench has no time limit per run, and one `gemma4` run whose reasoning ran on for about

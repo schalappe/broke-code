@@ -208,6 +208,15 @@ describe("judge on the edit scenario", () => {
     });
   });
 
+  test("wrongEdit: the file to write was replaced by a symlink, which the detail names", () => {
+    const linked = { ...renamed, [PRICING]: { symlink: "pricing.py" } };
+    expect(judge(EDIT_SCENARIO, edited, linked)).toEqual({
+      pass: false,
+      category: "wrongEdit",
+      detail: `${PRICING} is a symlink to "pricing.py"`,
+    });
+  });
+
   test("wrongEdit: the file was left as it was, even when the rename went to another file", () => {
     expect(judge(EDIT_SCENARIO, edited, EDIT_SCENARIO.files)).toMatchObject({ pass: false, category: "wrongEdit" });
     const elsewhere = { ...EDIT_SCENARIO.files, "pricing.py": renamed[PRICING] ?? "" };
@@ -545,6 +554,14 @@ describe("workspaceChanges", () => {
     const after = { "a.txt": "a\n", "c.txt": "C\n", "d/e.txt": "" };
     expect(workspaceChanges(fixture, after)).toEqual({ "b.txt": null, "c.txt": "C\n", "d/e.txt": "" });
     expect(workspaceChanges(fixture, { ...fixture })).toEqual({});
+  });
+
+  test("tells a symlink or a FIFO from a file holding the same text, and records a changed target", () => {
+    const fixture = { "a.txt": "target", "b.txt": "b\n" };
+    const after = { "a.txt": { symlink: "target" }, "b.txt": { special: "fifo" }, link: { symlink: "b.txt" } };
+    expect(workspaceChanges(fixture, after)).toEqual(after);
+    expect(workspaceChanges(after, structuredClone(after))).toEqual({});
+    expect(workspaceChanges(after, { ...after, link: { symlink: "a.txt" } })).toEqual({ link: { symlink: "a.txt" } });
   });
 
   test("records a file named __proto__ like any other: added, changed, or removed", () => {
