@@ -805,6 +805,7 @@ describe("warnings", () => {
       skillWarnings: [
         { path: "~/.agents/skills/a/SKILL.md", problem: { kind: "missingDescription" } },
         { path: ".agents/skills/b/SKILL.md", problem: { kind: "nameMismatch", name: "c", directory: "b" } },
+        { path: "~/.agents/skills/d/SKILL.md", problem: { kind: "outsideSkillFolder" } },
       ],
     });
     const html = renderToStaticMarkup(<App state={state} language="en" />);
@@ -812,6 +813,7 @@ describe("warnings", () => {
     expect(html).toContain("Provider number 2 in the settings is skipped: it has no name.");
     expect(html).toContain("Skill ~/.agents/skills/a/SKILL.md is skipped: it lacks a description.");
     expect(html).toContain("Skill .agents/skills/b/SKILL.md is skipped: its name c differs from its folder b.");
+    expect(html).toContain("Skill ~/.agents/skills/d/SKILL.md is skipped: it links outside its skill folder.");
   });
 
   test("shows skill warnings without any provider configured", () => {

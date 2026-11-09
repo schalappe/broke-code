@@ -29,9 +29,14 @@ the same device and inode as that path. The write boundary never takes the read-
 A path written inside a loaded skill's folder must resolve inside that same folder. A symlink in it to elsewhere is
 `outsideWorkspace`, also one into another loaded skill's folder or into the workspace: each folder is held to itself,
 as a workspace folder is. The folder is matched by the real path discovery found, never resolved again, so a skill
-folder swapped for a symlink since its discovery leads elsewhere and stays outside. `load_skill` reads `SKILL.md` by
-the same rule, so a `SKILL.md` that is itself a symlink out of its folder is listed but cannot be loaded: the result
-says it links outside the skill's folder.
+folder swapped for a symlink since its discovery leads elsewhere and stays outside.
+
+Every file of a skill lies in its own folder, `SKILL.md` included (maintainer decision, 2026-11-09). Discovery skips a
+personal or workspace skill whose `SKILL.md` resolves outside the skill folder's real path, with an
+`outsideSkillFolder` warning; a personal skill folder that is itself a symlink stays accepted, its real path being the
+root. A listed skill is therefore loadable. `load_skill` still reads `SKILL.md` by the read rule above, as the
+boundary, so a `SKILL.md` swapped for a link out after discovery gives an error saying it links outside the skill's
+folder.
 
 ## Why an absolute path
 

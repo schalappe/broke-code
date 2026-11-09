@@ -378,7 +378,10 @@ local Ollama models and applies each change at once. `run_command` and slash com
   each workspace folder's `.agents/skills/`. A child is a skill when it is a folder holding `SKILL.md` (1 MiB cap); a
   folder without one, a stray file, and a missing skills folder pass silently. A personal skill folder follows
   symlinks; a workspace one, the folder and its `SKILL.md` alike, is held to its own workspace folder, and one linked
-  out of it, into another workspace folder included, is skipped with a warning.
+  out of it, into another workspace folder included, is skipped with a warning (`outsideWorkspace`). Every file of a
+  skill lies in its own folder: for a personal or a workspace skill, a `SKILL.md` that resolves outside the skill
+  folder's real path (the folder's own link resolved) is skipped with an `outsideSkillFolder` warning, so the folder a
+  loaded skill's files are read from holds all of it.
 - A repository controls its skills folder, and each `SKILL.md` read holds a 1 MiB buffer and a file descriptor, so
   discovery reads one `SKILL.md` at a time, folder after folder, and only the first `MAX_SKILL_ENTRIES` (200) entries of
   each skills folder by name. A folder holding more gives one `tooManyEntries` warning naming it; an entry past the cap
@@ -395,8 +398,9 @@ local Ollama models and applies each change at once. `run_command` and slash com
 - `load_skill(name)` loads a skill of the send's discovery that is listed to the model. Its `ok` result is
   `Skill <name> loaded; its files live in <real folder path>; read them by that absolute path.`, a blank line, then the
   `SKILL.md` body without its frontmatter and the blank lines after it, cut to 2,000 lines with the mention notice
-  (`SKILL.md` is read under the 1 MiB cap, inside the skill's real folder like its other files, so one linked out of it
-  cannot be loaded). A skill already loaded gives `ok`, `Skill <name> is already loaded; its files live in ...`,
+  (`SKILL.md` is read under the 1 MiB cap, inside the skill's real folder like its other files: discovery already
+  skipped one linked out, so this check only catches a swap since, as `its SKILL.md could not be read (it links outside
+  the skill's folder)`). A skill already loaded gives `ok`, `Skill <name> is already loaded; its files live in ...`,
   without the body. An unknown name, a skipped skill, and one kept from the model give an `error` naming the skills the
   model may load.
 - In `/<name> args`, the text after the name replaces `$ARGUMENTS` in the skill body. If the body has no

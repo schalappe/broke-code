@@ -151,6 +151,8 @@ export function describeSkillWarning({ path, problem }: SkillWarning): string {
       return l10n.t("Skill {0} is skipped: the file is not text.", path);
     case "outsideWorkspace":
       return l10n.t("Skill {0} is skipped: it links outside the workspace.", path);
+    case "outsideSkillFolder":
+      return l10n.t("Skill {0} is skipped: it links outside its skill folder.", path);
     case "unreadable":
       return l10n.t("Skill {0} is skipped: the file cannot be read ({1}).", path, problem.cause);
     case "folderUnreadable":

@@ -95,7 +95,7 @@ export type StorageProblem =
  * Why a skill was skipped. `unparsableField`: the field's value is a form the frontmatter reader does not take, such as
  * a quoted value that does not close on its line. `folderUnreadable`: a skills folder exists but cannot be listed.
  * `tooManyEntries`: a skills folder holds more than `MAX_SKILL_ENTRIES` entries (`entries`), and only the first, by
- * name, were read. `cause`: runtime error code or text.
+ * name, were read. `outsideSkillFolder`: the skill's `SKILL.md` resolves outside the skill's folder. `cause`: runtime error code or text.
  */
 export type SkillProblem =
   | {
@@ -108,7 +108,8 @@ export type SkillProblem =
         | "descriptionTooLong"
         | "tooLarge"
         | "binary"
-        | "outsideWorkspace";
+        | "outsideWorkspace"
+        | "outsideSkillFolder";
     }
   | { kind: "nameMismatch"; name: string; directory: string }
   | { kind: "unparsableField"; field: "name" | "description" }

@@ -16,6 +16,7 @@ import { excerpt, type ToolResult } from "./tools";
 import {
   type AccessFailure,
   compareNames,
+  isInside,
   locateWorkspacePath,
   readFileOutsideWorkspace,
   readWorkspaceEntry,
@@ -67,7 +68,8 @@ type SourceDiscovery = { skills: Skill[]; warnings: SourceWarning[] };
  * a personal skill of the same name, and an earlier workspace folder a later one; a hidden candidate gives no warning,
  * valid or not. A skipped candidate hides nothing: a valid one of its name from a later source is listed, and the
  * skipped one warns. A personal skill folder follows symlinks (dotfiles are often linked); a workspace one, the folder
- * and its `SKILL.md` alike, is held to its own workspace folder, as instruction files are. A folder without `SKILL.md`, a stray file, and a missing skills
+ * and its `SKILL.md` alike, is held to its own workspace folder, as instruction files are. Either way `SKILL.md` must
+ * resolve inside the skill folder's real path, the one folder a loaded skill's files are read from. A folder without `SKILL.md`, a stray file, and a missing skills
  * folder pass silently; any other failure is a warning. Only the first `MAX_SKILL_ENTRIES` entries of a skills folder
  * are read, and one `SKILL.md` at a time, so the files a repository holds cannot multiply the reads of a send. Never
  * rejects.
@@ -180,14 +182,22 @@ async function readSkill(
   if (entry.kind !== "file") return warn({ kind: "unreadable", cause: "not a file" });
 
   try {
-    // [>]: Inside the `try`, so a parser bug skips this skill with a warning rather than the whole discovery.
-    const parsed = validate(entry.text, directory);
-    if ("problem" in parsed) return warn(parsed.problem);
     const located = await source.locate(folder);
     if (located.status !== "ok") {
       // [>]: Gone since its `SKILL.md` was read: as a folder without one.
       return located.status === "missing" ? undefined : warn({ kind: "outsideWorkspace" });
     }
+    // [!]: Every file of a skill lies in its own folder, `SKILL.md` included, so the folder the model may read once
+    // the skill is loaded holds all of it. The folder itself may be a link (its real path is the root).
+    const file = await realpath(join(located.realPath, FILE_NAME)).catch((error: unknown) => {
+      if (errorCode(error) === "ENOENT") return undefined;
+      throw error;
+    });
+    if (file === undefined) return undefined;
+    if (!isInside(located.realPath, file)) return warn({ kind: "outsideSkillFolder" });
+    // [>]: Inside the `try`, so a parser bug skips this skill with a warning rather than the whole discovery.
+    const parsed = validate(entry.text, directory);
+    if ("problem" in parsed) return warn(parsed.problem);
     return { kind: "skill", skill: { ...parsed, root: located.realPath } };
   } catch (error) {
     return warn({ kind: "unreadable", cause: causeOf(error) });
@@ -405,6 +415,7 @@ export async function loadSkill(
  * resolved. An `error` when it cannot be read. Never rejects.
  */
 export async function loadSkillText(skill: Skill): Promise<ToolResult> {
+  // [>]: Discovery already refused a `SKILL.md` linked out; this read is the boundary, should it be swapped since.
   const entry = await readWorkspaceEntry([], join(skill.root, FILE_NAME), {}, [skill.root]);
   if (entry.status !== "ok" || entry.kind !== "file") {
     const reason =

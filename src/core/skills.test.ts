@@ -300,6 +300,29 @@ describe("readSkills", () => {
     expect(warnings).toEqual([{ path: ".agents/skills/escape/SKILL.md", problem: { kind: "outsideWorkspace" } }]);
   });
 
+  test("skips a personal skill whose SKILL.md links out of its folder, with a warning, and keeps the others", async () => {
+    await mkdir(join(personal, "linked"));
+    await writeFile(join(base, "linked.md"), skillText("linked", "Lives elsewhere."));
+    await symlink(join(base, "linked.md"), join(personal, "linked", "SKILL.md"));
+    await writeSkill(personal, "notes", skillText("notes", "Notes."));
+
+    const { skills, warnings } = await readSkills(home, []);
+    expect(skills.map((skill) => skill.name)).toEqual(["notes"]);
+    expect(warnings).toEqual([{ path: "~/.agents/skills/linked/SKILL.md", problem: { kind: "outsideSkillFolder" } }]);
+  });
+
+  test("skips a workspace skill whose SKILL.md links elsewhere in its workspace folder; it hides nothing", async () => {
+    await mkdir(join(workspaceSkills(), "review"));
+    await mkdir(join(workspace, "docs"));
+    await writeFile(join(workspace, "docs", "review.md"), skillText("review", "Workspace review."));
+    await symlink(join(workspace, "docs", "review.md"), join(workspaceSkills(), "review", "SKILL.md"));
+    await writeSkill(personal, "review", skillText("review", "Personal review."));
+
+    const { skills, warnings } = await readSkills(home, single());
+    expect(skills.map((skill) => skill.description)).toEqual(["Personal review."]);
+    expect(warnings).toEqual([{ path: ".agents/skills/review/SKILL.md", problem: { kind: "outsideSkillFolder" } }]);
+  });
+
   test("keeps a disable-model-invocation skill out of the model's list, but discovered", async () => {
     await writeSkill(personal, "manual", skillText("manual", "By hand only.", "disable-model-invocation: true\n"));
     await writeSkill(personal, "auto", skillText("auto", "Any time.", "disable-model-invocation: false\n"));

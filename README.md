@@ -176,6 +176,8 @@ skill's name and description to the model; the instructions themselves stay out 
   hidden skill shows no warning. An invalid skill hides nothing: a valid skill of the same name further down counts.
 - A personal skill folder may be a symbolic link anywhere. A workspace skill folder that links outside its workspace
   folder, even into another folder of the workspace, is skipped.
+- Every file of a skill lives in its own folder: a skill whose `SKILL.md` is a symbolic link to somewhere outside the
+  skill's folder is skipped, with a warning.
 - `disable-model-invocation: true` keeps a skill out of the list the model sees, and the model cannot load it.
 
 When a task matches a skill's description, the model calls **load_skill** with its name and receives the
@@ -183,8 +185,7 @@ instructions, without the frontmatter, cut to their first 2,000 lines, together 
 folder. From then on, for the rest of the conversation, the model may read the files of that folder with
 **read_file**, **list_files**, and **search**, by that absolute path, even for a personal skill outside the workspace.
 It cannot change them, and before the load it cannot read them. A file in the skill's folder that is a symbolic link
-to somewhere outside that folder is refused, and so is a `SKILL.md` that links outside it: such a skill is listed but
-cannot be loaded. A skill loaded in a past conversation is loaded again when you reopen it, as long as it is still
+to somewhere outside that folder is refused. A skill loaded in a past conversation is loaded again when you reopen it, as long as it is still
 there. `load_skill` is offered to the model only while a skill is listed to it.
 
 A skill whose `SKILL.md` is invalid, unreadable, or over 1 MiB is skipped, and the chat shows a warning naming the
