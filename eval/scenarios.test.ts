@@ -458,8 +458,29 @@ describe("judge on the command scenario", () => {
     expect(judge(COMMAND_SCENARIO, entries, commandUntouched)).toEqual({ pass: true });
   });
 
+  test("passes the count as a whole number token, also before a sentence's final period", () => {
+    for (const right of [
+      `There are ${FILE_COUNT}.`,
+      `${FILE_COUNT}`,
+      `**${FILE_COUNT}** files`,
+      `(${FILE_COUNT}), done`,
+    ]) {
+      const entries = [commandUser, ...counted, answer(right)];
+      expect(judge(COMMAND_SCENARIO, entries, commandUntouched)).toEqual({ pass: true });
+    }
+  });
+
   test("wrongAnswer: the turn ran the command but answered another count, also one the right count prefixes", () => {
-    for (const wrong of ["There are 60 files.", "There are 610 files.", "There are 161 files."]) {
+    for (const wrong of [
+      "There are 60 files.",
+      "There are 610 files.",
+      "There are 161 files.",
+      "There are 61,000 files.",
+      "There are 1,061 files.",
+      "There are 61.5 files.",
+      "There are 0.61 files.",
+      "There are -61 files.",
+    ]) {
       const entries = [commandUser, ...counted, answer(wrong)];
       expect(judge(COMMAND_SCENARIO, entries, commandUntouched)).toMatchObject({
         pass: false,

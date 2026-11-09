@@ -262,10 +262,18 @@ export const COMMAND_SCENARIO: Scenario = {
       return { pass: false, category: "wrongTool", detail: `${lead}steps: ${describeSteps(steps)}` };
     }
     const answer = lastReply(entries).content;
-    if (new RegExp(`(?<!\\d)${LOG_FILE_COUNT}(?!\\d)`).test(answer)) return { pass: true };
+    if (wholeNumber(LOG_FILE_COUNT).test(answer)) return { pass: true };
     return { pass: false, category: "wrongAnswer", detail: `answer: ${excerpt(answer)}` };
   },
 };
+
+/**
+ * `count` written as a whole number of its own: not part of a longer number (`161`, `610`, `1,061`, `61,000`), a
+ * decimal (`61.5`, `0.61`), or a negative one (`-61`). A period after it that no digit follows ends a sentence.
+ */
+function wholeNumber(count: number): RegExp {
+  return new RegExp(`(?<![\\d.,-])${count}(?!\\d|[.,]\\d)`);
+}
 
 /** Every scenario the bench plays, in order. */
 export const SCENARIOS: readonly Scenario[] = [
