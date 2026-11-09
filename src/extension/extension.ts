@@ -5,16 +5,17 @@
  */
 import { homedir } from "node:os";
 import * as vscode from "vscode";
-import { ChatController, type InstructionReader, type SkillReader, type ToolRunner } from "../core/chatController";
+import { ChatController, type InstructionReader, type SkillReader } from "../core/chatController";
 import { directoryFiles } from "../core/conversationFiles";
 import { ConversationStore } from "../core/conversationStore";
 import { readInstructionFiles } from "../core/instructions";
 import { type MentionReader, readMention } from "../core/mentions";
 import { parseProviders } from "../core/providers";
 import { describeSkillDiscovery, readSkills, type SkillDiscovery } from "../core/skills";
-import { READ_TOOLS, ripgrepCandidates, runReadTool } from "../core/tools";
+import { workspaceToolRunner } from "../core/toolRunner";
+import { ripgrepCandidates } from "../core/tools";
 import type { WorkspaceRoot } from "../core/workspaceFiles";
-import { approvalApplier, fileApplier, runWriteTool, WRITE_TOOLS, type WriteApprovalHost } from "../core/writeTools";
+import { approvalApplier, fileApplier, type WriteApprovalHost } from "../core/writeTools";
 import { ApiKeys } from "./apiKeys";
 import { DiffPreviews, hasUnsavedChanges, readAutoApproveWrites } from "./approval";
 import { CHAT_VIEW_ID, ChatView } from "./chatView";
@@ -35,14 +36,9 @@ export function activate(context: vscode.ExtensionContext): void {
   const previews = new DiffPreviews();
   const writeHost: WriteApprovalHost = { preview: (change) => previews.preview(change), hasUnsavedChanges };
   // [!]: Every write goes through `approvalApplier`: no build writes without a click unless the user setting says so.
-  const tools: ToolRunner = {
-    tools: [...READ_TOOLS, ...WRITE_TOOLS],
-    run: (call, { signal, requestApproval }) => {
-      const roots = workspaceRoots();
-      if (!WRITE_TOOLS.some((tool) => tool.name === call.name)) return runReadTool(call, roots, toolEnv, signal);
-      return runWriteTool(call, roots, approvalApplier(fileApplier(roots), writeHost, requestApproval), signal);
-    },
-  };
+  const tools = workspaceToolRunner(workspaceRoots, toolEnv, (roots, { requestApproval }) =>
+    approvalApplier(fileApplier(roots), writeHost, requestApproval),
+  );
   const instructions: InstructionReader = { read: () => readInstructionFiles(homedir(), workspaceRoots()) };
   const skills: SkillReader = { read: () => readSkills(homedir(), workspaceRoots()).then(logSkills) };
 

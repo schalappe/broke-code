@@ -46,7 +46,8 @@ yet. Read
   `write_file` and `edit_file` plan a change `{ path, target, before, after }` and never write; an applier port writes
   it, `fileApplier` straight to disk for the tests and the eval, `approvalApplier` around it in the extension: the
   unsaved-editor check, the approval request, then the write), the approval seam (`approval.ts`: the request a tool
-  makes, the decision it gets, the rejection text), the instruction files
+  makes, the decision it gets, the rejection text), the tool runner (`toolRunner.ts`: the read and write tools over the
+  workspace folders, each write handed to the applier the host builds for the run), the instruction files
   (`instructions.ts`: `~/.agents/AGENTS.md`, then each workspace folder's `AGENTS.md`, under the mention caps), and the
   skills (`skills.ts`: discovery in `~/.agents/skills/` and each workspace folder's `.agents/skills/`, the frontmatter
   subset, validation, precedence, warnings, the line the extension logs at each send). `markdownCode.ts`, `suggestions.ts`, and `conversation.ts` import nothing from
@@ -55,7 +56,7 @@ yet. Read
   `conversationFixture.ts` is the in-memory conversation file port for tests.
 - `src/extension/`: the extension host glue (activation, webview view, API keys in `SecretStorage`, the
   file index's `findFiles` scan and watcher in `fileIndex.ts`, the turn limits from the user settings and the "Set
-  context size" input box in `contextSizes.ts`, the tool runner (the read tools with the ripgrep candidates from
+  context size" input box in `contextSizes.ts`, the tool runner's wiring (the ripgrep candidates from
   `vscode.env.appRoot` and `PATH`, the write tools behind `approvalApplier`), the write approval's editor side in
   `approval.ts` (the diff preview over `vscode.diff` and a content provider, the unsaved-editor check, the
   `brokeCode.autoApproveWrites` setting), the instruction reader and the skill reader from the home folder and the workspace folders, the latter logging the
