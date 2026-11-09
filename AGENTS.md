@@ -502,7 +502,8 @@ command at once. Slash commands are not built yet. Read `GLOSSARY.md` for the do
   model including its load; the bench has no time limit per run, and one `gemma4` run whose reasoning ran on for about
   98,000 characters once took 18 min on its own (b1049a2). It runs locally on demand and never in CI. On 9a67dd7 every
   model met the bar on every scenario: 10/10 everywhere but `gemma4` on `skill`, 9/10 (one `wrongTool`: it listed the
-  skill folder and answered without reading the reference file).
+  skill folder and answered without reading the reference file). `command` came later: 10/10 on each model on 0904daa
+  (5 min 41 s for both), every passing run counting with `find logs -type f | wc -l`, most after listing a level or two.
   Scenarios for slash commands come with #11.
 - v1 supports macOS only. Windows and Linux are planned for v2.
 
