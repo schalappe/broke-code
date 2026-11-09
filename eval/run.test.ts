@@ -62,6 +62,31 @@ describe("playScenario", () => {
     expect(after["notes/new.toml"]).toBe(`${content}\n`);
   });
 
+  test("returns each change handed to the applier, in call order, with the applier's status", async () => {
+    replies = [
+      "<write_file>\n<path>notes/a.txt</path>\n<content>\none\n</content>\n</write_file>",
+      "<edit_file>\n<path>notes/a.txt</path>\n<old>one</old>\n<new>two</new>\n</edit_file>",
+      "<write_file>\n<path>notes/a.txt</path>\n<content>\none\n</content>\n</write_file>",
+      "Done.",
+    ];
+    const { planned, after } = await playScenario(READ_SCENARIO, { baseUrl, model: "m", maxToolSteps: 6 }, parent);
+
+    expect(planned).toEqual([
+      { tool: "write_file", path: "notes/a.txt", before: null, after: "one\n", status: "ok" },
+      { tool: "edit_file", path: "notes/a.txt", before: "one\n", after: "two\n", status: "ok" },
+      { tool: "write_file", path: "notes/a.txt", before: "two\n", after: "one\n", status: "ok" },
+    ]);
+    expect(after["notes/a.txt"]).toBe("one\n");
+  });
+
+  test("records no change for a call refused before planning", async () => {
+    replies = ["<edit_file>\n<path>README.md</path>\n<old>absent text</old>\n<new>x</new>\n</edit_file>", "Done."];
+    const { entries, planned } = await playScenario(READ_SCENARIO, { baseUrl, model: "m", maxToolSteps: 6 }, parent);
+
+    expect(entries[2]).toMatchObject({ role: "tool", name: "edit_file", status: "error" });
+    expect(planned).toEqual([]);
+  });
+
   test("reads back a file named __proto__ the turn wrote, so the judge sees the unrequested file", async () => {
     replies = ["<write_file>\n<path>__proto__</path>\n<content>\nx\n</content>\n</write_file>", "Done."];
     const { entries, after } = await playScenario(EDIT_SCENARIO, { baseUrl, model: "m", maxToolSteps: 6 }, parent);

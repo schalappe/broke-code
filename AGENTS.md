@@ -75,7 +75,7 @@ yet. Read
   files it must write with their exact text, an optional check of a turn that ended `done`) and `judge`, the verdict
   and failure category of a run, which compares the workspace after the run with the fixture plus those writes; `run.ts` plays one run through
   the `ChatController` ports, with the read and write tools over a copy of the fixture under the system temporary
-  directory, each write applied at once by `fileApplier`;
+  directory, each write applied at once by `fileApplier` and recorded for the dump;
   `report.ts` formats the scores; `bench.ts` is the CLI, guarded by `import.meta.main` so `bun test` never starts it.
   Its unit tests sit next to them and need no Ollama.
 - `biome.jsonc`: the Biome linter and formatter settings. Markdown is excluded, because Biome's Markdown formatter
@@ -412,8 +412,10 @@ yet. Read
   first differing line), or `workspaceChanged` (the written files are right, or none was asked for, but another file
   changed). The bar is 9 runs of 10 per model and scenario; the bench exits 1 when a model is under it, and before
   any run when Ollama is unreachable or does not list a model. `--model <name>` (repeatable) and `--runs <n>` shorten
-  a local iteration; `--dump <file>` appends each run's entries (tool steps with their call's arguments), verdict, and
-  `changes` (each file that differs from the fixture, with its text, `null` when removed) as JSON Lines, to read the
+  a local iteration; `--dump <file>` appends each run's entries (tool steps with their call's arguments), verdict,
+  `planned` (each change handed to the applier, in call order: tool, path, `before` (`null` for a new file), `after`,
+  and the applier's status), and `changes` (each file that differs from the fixture after the run, with its text,
+  `null` when removed) as JSON Lines, to read the
   failing replies; an incomplete last line left by an interrupted run is removed, with a notice, before the first
   append. A full run took 34 min 04 s on the maintainer's Mac on b1049a2, the first run of each model including its load;
   about 16 min without one `gemma4` run of 18 min whose reasoning ran on for about 98,000 characters (the bench has no
