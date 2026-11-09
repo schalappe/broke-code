@@ -217,6 +217,17 @@ describe("readWorkspaceEntry with read-only roots", () => {
     });
   });
 
+  test("an absolute path in no read-only root still goes through a folder name that prefixes it", async () => {
+    const named: WorkspaceRoot = { name: "/private", path: join(base, "named") };
+    await mkdir(named.path, { recursive: true });
+    await writeFile(join(named.path, "named.txt"), "named\n");
+    expect(await readWorkspaceEntry([named, lib], "/private/named.txt", {}, [one])).toEqual({
+      status: "ok",
+      kind: "file",
+      text: "named\n",
+    });
+  });
+
   test("holds a path to the deepest read-only root that holds it, the outer root listed first", async () => {
     const outer = join(one, "outer");
     const inner = join(outer, "inner");
