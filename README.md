@@ -176,6 +176,18 @@ and the tool results the model received; broke-code does not read them again. A 
 with the text received so far. Conversations stay on your machine, in the editor's storage for that workspace, and
 never hold an API key. A window with no folder open keeps its conversation in memory only.
 
+## Tested models
+
+broke-code's tool calls are measured on local models with Ollama: `qwen3.8:27b` and `gemma4:26b-a4b-it-qat`, ten
+runs of each task, with the bar at nine. The bench has three tasks:
+
+- **Read**: answer with the value of a setting that only a file holds.
+- **Edit**: rename a function in a source file, changing nothing else.
+- **Create**: create a file whose text holds double quotes, backslashes, tags, and a code block, exactly as asked.
+
+Both models pass **Read** and **Edit**. On **Create**, every file held the requested text, but often with an extra
+empty line at its end, so that task is under the bar for now. Contributors run the bench with `bun run eval`.
+
 ## Privacy
 
 broke-code collects no telemetry. It contacts only the providers you configure.

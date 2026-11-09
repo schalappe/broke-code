@@ -66,8 +66,9 @@ yet. Read
   bundle (`dist/webview/`).
 - `scripts/next-version.ts`: computes the next release version from the commits since the last `v*` tag. The
   release workflow runs it as a CLI. Its tests sit next to it.
-- `eval/`: the Ollama eval bench (`bun run eval`). `scenarios.ts` holds each scenario (fixture files, message, check
-  of a turn that ended `done`) and `judge`, the verdict and failure category of a run; `run.ts` plays one run through
+- `eval/`: the Ollama eval bench (`bun run eval`). `scenarios.ts` holds each scenario (fixture files, message, the
+  files it must write with their exact text, an optional check of a turn that ended `done`) and `judge`, the verdict
+  and failure category of a run, which compares the workspace after the run with the fixture plus those writes; `run.ts` plays one run through
   the `ChatController` ports, with the read and write tools over a copy of the fixture under the system temporary
   directory, each write applied at once by `fileApplier`;
   `report.ts` formats the scores; `bench.ts` is the CLI, guarded by `import.meta.main` so `bun test` never starts it.
@@ -365,17 +366,27 @@ yet. Read
   on `qwen3.8:27b` then `gemma4:26b-a4b-it-qat`, all runs of one model before the next. Each run drives the
   chat controller with the read and write tools over a throwaway copy of the scenario's fixture, each write applied
   at once, no instruction file, no skill, and a
-  step limit of 6. The one scenario is read then answer: the model must read a setting it cannot guess and answer
-  with its value. A run passes when the turn ends `done`, a tool step got the value, the answer holds it, and no
-  fixture file changed; a failed run shows one category (`malformed`, `wrongTool`, `wrongAnswer`, `stepLimit`,
-  `contextFull`, `providerError`, `workspaceChanged`) and a one-line detail. The bar is 9 runs of 10 per model and
-  scenario; the bench exits 1 when a model is under it, and before any run when Ollama is unreachable or does not
-  list a model. `--model <name>` (repeatable) and `--runs <n>` shorten a local iteration; `--dump <file>` appends
-  each run's entries and verdict as JSON Lines, to read the failing replies; an incomplete last line left by an
-  interrupted run is removed, with a notice, before the first append. A full run took 2 min 40 s on the
-  maintainer's Mac, the first run of each model including its load. It runs locally on demand and never in CI.
-  Scenarios for edits, created files, commands, and skills come with the write eval (#38), `run_command` (#9), and
-  skills (#10).
+  step limit of 6. Three scenarios, each judged on the turn ending `done` and on the workspace after it: every file
+  the scenario writes holds its exact expected text, byte for byte, and every other file is unchanged.
+  - `read`: the model must read a setting it cannot guess and answer with its value. Passes when a tool step got the
+    value, the answer holds it, and no file changed.
+  - `edit`: rename a function named once in `src/pricing.py`. Passes when exactly that line changed.
+  - `create`: create `docs/call-format.md` with a text stated in the message that holds double quotes, backslashes,
+    `<content>...</content>`, `</write_file>`, and a fenced code block. Passes when the file is exactly that text
+    plus one line break.
+
+  A failed run shows one category and a one-line detail: `malformed`, `wrongTool`, `wrongAnswer`, `stepLimit`,
+  `contextFull`, `providerError`, `wrongEdit` (a file the scenario writes is missing or holds other text, with the
+  first differing line), or `workspaceChanged` (the written files are right, or none was asked for, but another file
+  changed). The bar is 9 runs of 10 per model and scenario; the bench exits 1 when a model is under it, and before
+  any run when Ollama is unreachable or does not list a model. `--model <name>` (repeatable) and `--runs <n>` shorten
+  a local iteration; `--dump <file>` appends each run's entries (tool steps with their call's arguments), verdict, and
+  `changes` (each file that differs from the fixture, with its text, `null` when removed) as JSON Lines, to read the
+  failing replies; an incomplete last line left by an interrupted run is removed, with a notice, before the first
+  append. A full run took 12 min 46 s on the maintainer's Mac, the first run of each model including its load. It
+  runs locally on demand and never in CI. On 0d6ebb7, `create` is under the bar on both models, every miss an extra
+  empty line at the end of the file (ADR 0001, evidence of 2026-11-09). Scenarios for commands and skills come with
+  `run_command` (#9) and skills (#10).
 - v1 supports macOS only. Windows and Linux are planned for v2.
 
 ## Git and release workflow
