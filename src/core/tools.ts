@@ -200,9 +200,11 @@ const DEFAULT_SEARCH_TIMEOUT_MS = 30_000;
 /** ripgrep's error output kept for the model: enough for a few messages, never a flood. */
 const MAX_STDERR_CHARS = 4096;
 // [!]: No config file, which could add `--pre` and run any program. `--with-filename`: a single file searched still
-// shows its path, so every line reads `path:line:text`.
+// shows its path, so every line reads `path:line:text`. `--no-require-git`: ripgrep otherwise reads `.gitignore` only
+// inside a Git repository, and the tool promises ignored files are skipped in any workspace folder.
 const RIPGREP_ARGS = [
   "--no-config",
+  "--no-require-git",
   "--with-filename",
   "--line-number",
   "--no-heading",

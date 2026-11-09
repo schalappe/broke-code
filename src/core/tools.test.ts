@@ -1,8 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { READ_TOOLS, type ReadToolEnv, ripgrepCandidates, runReadTool, type ToolCall, type ToolResult } from "./tools";
 import type { WorkspaceRoot } from "./workspaceFiles";
 
@@ -188,6 +189,20 @@ describe("search", () => {
     expect(result.text).toContain("symlinks");
   });
 
+  test("skips files ignored by .gitignore in a workspace folder outside any Git repository", async () => {
+    const plain = { name: "plain", path: join(base, "no-git") };
+    await writeFile(join(await mkdirp(plain.path), ".gitignore"), "deps/\n");
+    await writeFile(join(await mkdirp(join(plain.path, "deps")), "x.ts"), "needle dep\n");
+    await writeFile(join(await mkdirp(join(plain.path, "src")), "y.ts"), "needle src\n");
+    for (let folder = await realpath(plain.path); folder !== dirname(folder); folder = dirname(folder)) {
+      expect(existsSync(join(folder, ".git"))).toBe(false);
+    }
+    expect(await run("search", { pattern: "needle" }, [plain])).toEqual({
+      status: "ok",
+      text: "src/y.ts:1:needle src",
+    });
+  });
+
   test("takes a pattern starting with - as a pattern, never as an option", async () => {
     expect(await run("search", { pattern: "--files" })).toMatchObject({
       status: "ok",
@@ -344,15 +359,19 @@ describe("search", () => {
     await writeFile(join(await mkdirp(nest), "top.ts"), "needle top\n");
     await writeFile(join(await mkdirp(join(nest, ".hidden")), "x.ts"), "needle x\n");
     await writeFile(join(await mkdirp(join(nest, "plain")), "y.ts"), "needle y\n");
+    await writeFile(join(nest, ".gitignore"), "gen/\n");
+    await writeFile(join(await mkdirp(join(nest, "gen")), "g.ts"), "needle g\n");
     await writeFile(join(await mkdirp(join(base, "elsewhere", "plain")), "z.ts"), "needle z\n");
     const roots = [
       { name: "nest", path: nest },
       { name: "hid", path: join(nest, ".hidden") },
       { name: "plain", path: join(nest, "plain") },
+      { name: "gen", path: join(nest, "gen") },
       { name: "elsewhere", path: join(base, "elsewhere") },
     ];
     expect(sortedLines(await run("search", { pattern: "needle" }, roots))).toEqual([
       "elsewhere/plain/z.ts:1:needle z",
+      "gen/g.ts:1:needle g",
       "hid/x.ts:1:needle x",
       "nest/top.ts:1:needle top",
       "plain/y.ts:1:needle y",
@@ -395,6 +414,7 @@ describe("search", () => {
     const realApp = await realpath(app.path);
     expect((await readFile(argsFile, "utf8")).split("\n")).toEqual([
       "--no-config",
+      "--no-require-git",
       "--with-filename",
       "--line-number",
       "--no-heading",
