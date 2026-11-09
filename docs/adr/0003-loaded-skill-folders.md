@@ -2,7 +2,7 @@
 status: accepted
 ---
 
-# A loaded skill's folder is readable by its absolute real path, read-only, for the rest of the conversation
+# A loaded skill's folder outside the workspace is readable by its absolute real path, read-only, for the rest of the conversation
 
 A skill is more than its `SKILL.md`: the Agent Skills format lets the instructions point at reference files, templates,
 and scripts in the skill's folder. A personal skill lives in `~/.agents/skills/`, outside every workspace folder, and
