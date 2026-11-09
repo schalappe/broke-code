@@ -161,7 +161,7 @@ export function describeHalt(reason: HaltReason): string {
     case "stepLimit":
       return l10n.t("Stopped: the agent turn reached its tool step limit.");
     case "contextFull":
-      return l10n.t("Stopped: the conversation fills the model's context. Start a new chat with New chat or /new.");
+      return l10n.t("Stopped: the conversation fills the model's context. Start a new chat with New chat.");
   }
 }
 

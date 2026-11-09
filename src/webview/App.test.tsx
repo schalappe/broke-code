@@ -220,9 +220,7 @@ describe("agent turn", () => {
     const html = renderTurn([
       { role: "assistant", reasoning: "", content: "", status: "halted", haltReason: "contextFull" },
     ]);
-    expect(html).toContain(
-      "Stopped: the conversation fills the model&#x27;s context. Start a new chat with New chat or /new.",
-    );
+    expect(html).toContain("Stopped: the conversation fills the model&#x27;s context. Start a new chat with New chat.");
     expect(html).not.toContain("Waiting for the reply…");
   });
 });
