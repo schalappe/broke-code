@@ -120,9 +120,7 @@ export async function locateWorkspacePath(
   );
   if (candidates.length === 0) return { status: "outsideWorkspace" };
 
-  // [>]: A root that cannot be resolved (deleted, unmounted) holds nothing readable: it is left out, not an error.
-  const resolved = await Promise.all(roots.map((root) => realpath(root.path).catch(() => undefined)));
-  const realRoots = resolved.filter((root) => root !== undefined);
+  const realRoots = (await resolveWorkspaceRoots(roots)).map((entry) => entry.realRoot);
   for (const candidate of candidates) {
     const realPath = await realpath(candidate).catch((error: unknown) => {
       if (MISSING_CODES.has(errorCode(error) ?? "")) return undefined;
@@ -133,6 +131,17 @@ export async function locateWorkspacePath(
     return realRoot === undefined ? { status: "outsideWorkspace" } : { status: "ok", realPath, realRoots, realRoot };
   }
   return { status: "missing" };
+}
+
+/** The roots that resolve, in order, each with its real path. */
+export async function resolveWorkspaceRoots(
+  roots: WorkspaceRoot[],
+): Promise<{ root: WorkspaceRoot; realRoot: string }[]> {
+  const resolved = await Promise.all(
+    roots.map(async (root) => ({ root, realRoot: await realpath(root.path).catch(() => undefined) })),
+  );
+  // [>]: A root that cannot be resolved (deleted, unmounted) holds nothing readable: it is left out, not an error.
+  return resolved.flatMap(({ root, realRoot }) => (realRoot === undefined ? [] : [{ root, realRoot }]));
 }
 
 /** A custom folder name may hold `/` (`libs/core`): the longest name that prefixes the path wins. */
@@ -181,8 +190,13 @@ async function listFolder(realPath: string): Promise<string[]> {
     })),
   );
   return listed
-    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+    .sort((a, b) => compareNames(a.name, b.name))
     .map((child) => (child.folder ? `${child.name}/` : child.name));
+}
+
+/** The order of a folder listing: by UTF-16 code unit, so it never depends on the locale. */
+export function compareNames(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
 }
 
 /** True for a symlink whose target is a folder; a link whose target cannot be checked is listed as a plain name. */
