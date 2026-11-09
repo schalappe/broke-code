@@ -13,8 +13,8 @@ twinny.
 The code so far covers the extension skeleton, a streaming chat with a provider, and the harness with the read tools:
 a message starts an agent turn that runs `read_file`, `list_files`, and `search` until the model answers without a
 call. Each send discovers the skills and lists them to the model. `bun run eval` measures that loop on local Ollama
-models. `write_file` and `edit_file` exist in the core and the eval, which applies each change at once; the extension
-does not list them until the approval flow (#37) lands. `run_command`, `load_skill`, and slash commands are not built
+models. `write_file` and `edit_file` run in the extension behind the approval (a diff and Accept or Reject in the
+chat, ADR 0002); the eval applies each change at once. `run_command`, `load_skill`, and slash commands are not built
 yet. Read
 `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the decisions behind the design, starting with
 `docs/adr/0001-body-tool-calls.md`.
@@ -44,7 +44,9 @@ yet. Read
   the token estimate, the context-full threshold, the typed size check), and the read tools (`tools.ts`: `read_file` and `list_files` over the mention reader, `search`
   over ripgrep with its candidate paths, bounded `ok` or `error` results), the write tools (`writeTools.ts`:
   `write_file` and `edit_file` plan a change `{ path, target, before, after }` and never write; an applier port writes
-  it, `fileApplier` straight to disk for the tests and the eval), the instruction files
+  it, `fileApplier` straight to disk for the tests and the eval, `approvalApplier` around it in the extension: the
+  unsaved-editor check, the approval request, then the write), the approval seam (`approval.ts`: the request a tool
+  makes, the decision it gets, the rejection text), the instruction files
   (`instructions.ts`: `~/.agents/AGENTS.md`, then each workspace folder's `AGENTS.md`, under the mention caps), and the
   skills (`skills.ts`: discovery in `~/.agents/skills/` and each workspace folder's `.agents/skills/`, the frontmatter
   subset, validation, precedence, warnings, the line the extension logs at each send). `markdownCode.ts`, `suggestions.ts`, and `conversation.ts` import nothing from
@@ -53,10 +55,12 @@ yet. Read
   `conversationFixture.ts` is the in-memory conversation file port for tests.
 - `src/extension/`: the extension host glue (activation, webview view, API keys in `SecretStorage`, the
   file index's `findFiles` scan and watcher in `fileIndex.ts`, the turn limits from the user settings and the "Set
-  context size" input box in `contextSizes.ts`, the read tool runner with the ripgrep candidates from
-  `vscode.env.appRoot` and `PATH`, the instruction reader and the skill reader from the home folder and the workspace folders, the latter logging the
+  context size" input box in `contextSizes.ts`, the tool runner (the read tools with the ripgrep candidates from
+  `vscode.env.appRoot` and `PATH`, the write tools behind `approvalApplier`), the write approval's editor side in
+  `approval.ts` (the diff preview over `vscode.diff` and a content provider, the unsaved-editor check, the
+  `brokeCode.autoApproveWrites` setting), the instruction reader and the skill reader from the home folder and the workspace folders, the latter logging the
   skills of each send).
-- `src/webview/`: the React chat panel and its CSS, tool step rows included. `SuggestionMenu.tsx` is the autocomplete list the `@` menu
+- `src/webview/`: the React chat panel and its CSS, tool step rows and the approval controls included. `SuggestionMenu.tsx` is the autocomplete list the `@` menu
   uses and the `/` menu (#11) is meant to reuse.
 - `src/l10n.test.ts`: checks that every `l10n.t` message has a French translation and that the
   `package.nls*.json` files match.
@@ -179,12 +183,32 @@ yet. Read
   outside before the write is refused.
 - Tools act inside the open workspace only. The one exception is read-only access to the directories of skills
   loaded in the current conversation.
-- Approvals:
+- Approvals (ADR 0002):
   - Reads run without asking.
-  - A write opens the native VS Code diff editor, and the user clicks Accept or Reject in the chat. A
-    rejection goes back to the model as a tool result.
+  - A tool asks through its run context: `ToolContext.requestApproval(request)` settles with Accept, Reject (with the
+    reason typed, trimmed, left out when blank), or Cancel. While the request is open, the reply stays `streaming` and
+    `ChatState.approval` holds `{ id, tool, summary }`; the chat renders the step row "waiting for your decision",
+    Accept, Reject, and a reason field from that state alone. The webview's `approve { id }` and
+    `reject { id, reason? }` are validated like the other messages, and a decision for a request no longer open is
+    ignored. One request at a time, since one call runs per reply.
+  - A write opens the native VS Code diff editor beside the chat, titled with the path: the planned `before` text on
+    the left (empty for a new file), the proposed text on the right, both from a content provider. Accept writes with
+    the atomic applier below, never through `WorkspaceEdit`; the diff tab closes on Accept, Reject, and Cancel. Closing
+    the tab by hand changes nothing: the request stays open, Accept and Reject still work, and the diff cannot be
+    reopened. A file
+    open in an editor with unsaved changes is refused before the request and again right before the write, with
+    auto-approve too, as an `error` result saying so; a file changed on disk since the plan is refused by the
+    applier's planned-text check.
+  - A rejection goes back to the model as an `error` tool result: "The user rejected this change.", then the reason on
+    its own line when given. It is a tool step like any other and counts toward the step limit. The step records how it
+    was approved (`approval`: `accepted`, `rejected`, or `auto`), and the row says rejected or auto-approved.
+  - Stop, New chat, opening another conversation, deleting the one shown, and deactivation cancel the open request:
+    the diff tab closes, nothing is written, the reply ends `stopped`. An open request is never saved; a record saved
+    while one waits reloads `stopped` by the in-flight rule below.
   - `run_command` always waits for a click.
-  - One setting auto-approves writes. Nothing auto-approves commands.
+  - `brokeCode.autoApproveWrites` (boolean, default false, `application` scope, read from `globalValue` like the
+    providers) accepts writes at once, without a diff, and is read at each write's request. The controller applies it
+    to requests of kind `write` only: nothing auto-approves commands.
 - `run_command` runs in a hidden child process in the workspace folder with the user's shell, captures the
   output, and stops after 120 seconds by default.
 - Reasoning output (`<think>` tags, `reasoning`, or `reasoning_content`) shows collapsed in the chat. The parser
@@ -195,7 +219,7 @@ yet. Read
   (ADR 0001). A malformed call's message goes back the same way with `status="error"`, with `tool` the tag name the block
   opens with, a known tool or not, and `tool="unknown"` only when no tool name can be read.
 - When a reply ends, its answer goes through the parser. No call: the turn ends. A call: the tool runs with the
-  turn's context (`ToolRunner.run(call, { signal })`, the abort signal), a tool step entry records its name, arguments, status, and text, and the loop requests again.
+  turn's context (`ToolRunner.run(call, { signal, requestApproval })`, the abort signal and the approval request), a tool step entry records its name, arguments, status, text, and approval, and the loop requests again.
   A malformed call: a step entry with the message, and the loop requests again. The reply stays `streaming` while its
   call runs, and the step and the next reply are appended together, so `isReplying` holds across the whole turn.
 - An agent turn has a Stop button and stops after `brokeCode.maxToolSteps` tool steps (a user setting, `application`
@@ -288,7 +312,7 @@ yet. Read
   still delete its row.
 - The record is versioned (`version: 2`) and holds the displayed entries: user entries, each with the text the model
   received (`modelText`), assistant entries, with an optional `call` locating the call block in the answer and, when
-  `halted`, its `haltReason`, and tool steps. A reopened conversation therefore resends exactly what was sent and
+  `halted`, its `haltReason`, and tool steps, with an optional `approval`. A reopened conversation therefore resends exactly what was sent and
   never reads its mentions again. Version 1 files are skipped like any unknown version: no release wrote them, so
   none is migrated. It holds no API key and nothing else of `ProviderAccess`; a failed reply's error keeps the provider's base
   URL for display, since it is user settings, not a secret. Times are whole milliseconds within the `Date` range. A

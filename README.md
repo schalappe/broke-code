@@ -92,6 +92,24 @@ tools, which run without asking you, inside the workspace folders only:
 - **search** searches the workspace with ripgrep, the copy your editor ships or the `rg` on your `PATH`. It skips
   hidden files, files ignored by `.gitignore`, and symlinks, and stops after 30 seconds.
 
+The agent also has two write tools, which ask you first, inside the workspace folders only:
+
+- **write_file** creates a file, or replaces a whole file.
+- **edit_file** replaces one exact passage of a file; a passage found zero times or more than once is refused, never
+  guessed.
+
+When the model asks to change a file, the editor opens a diff beside the chat, titled with the path: the file as the
+model planned to change it on the left, the proposed text on the right. The chat shows **Accept** and **Reject** under
+the call, with an optional reason. **Accept** writes the change and closes the diff; the write is atomic, so the file
+holds either its old text or the new one, even after a crash. **Reject** closes the diff and writes nothing; the model
+reads that you rejected the change, with your reason when you gave one. Nothing is written when the file changed on
+disk since the model planned the change, or when an editor holds unsaved changes to it: save or revert them first.
+**Stop**, **New chat**, or opening another conversation while a change waits closes the diff and writes nothing.
+
+To apply changes without asking, set `brokeCode.autoApproveWrites` to `true` in your **user** settings: no diff opens,
+and each such step is marked auto-approved. A workspace `settings.json` cannot turn it on. Commands, once the agent
+can run them, will always ask.
+
 Each tool call shows as a compact row under the model's text: the tool, its main argument (a path or a search
 pattern), and whether it worked with the size of its result. Click the row to see the result the model received.
 A path outside the workspace is refused, and the model is told why.

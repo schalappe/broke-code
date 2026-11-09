@@ -194,13 +194,16 @@ export function mainArgument(args: Record<string, string>): string | undefined {
 
 /**
  * Short status of a finished tool step: `ok` or `error` and the result's size in lines, or the first line of a
- * malformed call's message, which says what is wrong. Model-facing messages are English, never localized.
+ * malformed call's message, which says what is wrong. A call the user rejected says so, its reason in the expanded
+ * result; one auto-approved says so before its status. Model-facing messages are English, never localized.
  */
 export function describeToolStep(step: ChatEntry & { role: "tool" }): string {
   if (step.status === "malformed") return step.text.split("\n")[0] ?? "";
+  if (step.approval === "rejected") return l10n.t("rejected");
   const count = step.text === "" ? 0 : step.text.replace(/\n$/, "").split("\n").length;
   const size = count === 1 ? l10n.t("1 line") : l10n.t("{0} lines", count);
-  return step.status === "ok" ? l10n.t("ok, {0}", size) : l10n.t("error, {0}", size);
+  const status = step.status === "ok" ? l10n.t("ok, {0}", size) : l10n.t("error, {0}", size);
+  return step.approval === "auto" ? l10n.t("auto-approved, {0}", status) : status;
 }
 
 /** Why an agent turn halted, shown after its last step, or on the reply whose request was not sent. */

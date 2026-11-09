@@ -64,6 +64,19 @@ describe("conversation record", () => {
     expect(parseConversation(serializeConversation(turn))).toEqual({ ok: true, record: turn });
   });
 
+  test("reads back how each write step was approved: accepted, rejected, or auto", () => {
+    const step = { role: "tool", name: "write_file", args: { path: "a.ts", content: "x" }, text: "t" } as const;
+    const turn = record({
+      entries: [
+        { role: "user", content: "write", mentions: [], modelText: "write" },
+        { ...step, status: "ok", approval: "accepted" },
+        { ...step, status: "error", approval: "rejected" },
+        { ...step, status: "ok", approval: "auto" },
+      ],
+    });
+    expect(parseConversation(serializeConversation(turn))).toEqual({ ok: true, record: turn });
+  });
+
   test("reads back a reply halted on a full context before its request, with no content", () => {
     const halted = record({
       entries: [
@@ -143,6 +156,8 @@ describe("conversation record", () => {
       { ...step, args: ["a"] },
       { ...step, name: 1 },
       { ...step, text: undefined },
+      { ...step, approval: "maybe" },
+      { ...step, approval: null },
       { ...reply, call: { name: "a", args: {}, start: 0, end: 99 } },
       { ...reply, call: { name: "a", args: {}, start: 5, end: 2 } },
       { ...reply, call: { name: "a", args: {}, start: -1, end: 2 } },

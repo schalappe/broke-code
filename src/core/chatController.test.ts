@@ -1,8 +1,9 @@
-import { afterAll, describe, expect, spyOn, test } from "bun:test";
-import { copyFileSync, mkdtempSync, rmSync, unlinkSync } from "node:fs";
+import { afterAll, afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { copyFileSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Decision, Preview } from "./approval";
 import {
   ChatController,
   type ChatPorts,
@@ -24,6 +25,7 @@ import { composeSystemPrompt, type InstructionFile, type Skill } from "./systemP
 import { createTlsFixture, removeTlsFixture } from "./tlsFixture";
 import { READ_TOOLS, runReadTool, type ToolResult } from "./tools";
 import { vllmOpening, vllmReasoningRest } from "./vllmFixture";
+import { approvalApplier, fileApplier, runWriteTool, WRITE_TOOLS, type WriteApprovalHost } from "./writeTools";
 
 const encoder = new TextEncoder();
 const chunk = (content: string) => encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`);
@@ -1760,6 +1762,7 @@ describe("ChatController agent turn", () => {
     instructions: InstructionReader = { read: async () => [] },
     limits?: LimitsSource,
     skills: SkillReader = noSkills,
+    autoApproveWrites?: () => boolean,
   ) {
     const prefix = `script-${scriptCount++}`;
     scripts.set(prefix, [...script]);
@@ -1774,6 +1777,7 @@ describe("ChatController agent turn", () => {
       instructions,
       skills,
       limits,
+      autoApproveWrites,
     });
     const state = () => controller.snapshot;
     controller.setProviders({
@@ -1787,7 +1791,7 @@ describe("ChatController agent turn", () => {
       const text = files.files.get(`${state().conversationId}.json`);
       return text === undefined ? undefined : (JSON.parse(text) as ConversationRecord);
     };
-    return { controller, state, sent, saved };
+    return { controller, state, sent, saved, files };
   }
 
   async function settledSave(saved: () => ConversationRecord | undefined, entries: number): Promise<void> {
@@ -2230,6 +2234,332 @@ describe("ChatController agent turn", () => {
     await controller.send("hi");
     expect(sent()[0]!.messages[0]).toEqual(SYSTEM);
     expect(SYSTEM.content).not.toContain("# Instructions from");
+  });
+
+  describe("approval", () => {
+    const writeCall = (path: string, content: string) =>
+      `<write_file>\n<path>${path}</path>\n<content>\n${content}\n</content>\n</write_file>`;
+    let workspaceDir = "";
+    beforeEach(() => {
+      workspaceDir = mkdtempSync(join(tmpdir(), "broke-code-approval-"));
+      writeFileSync(join(workspaceDir, "a.txt"), "old\n");
+    });
+    afterEach(() => rmSync(workspaceDir, { recursive: true, force: true }));
+    const fileText = () => readFileSync(join(workspaceDir, "a.txt"), "utf8");
+
+    /**
+     * Runner over the read and write tools on the temporary workspace, writes asking through `approvalApplier`. Counts
+     * the previews opened and closed.
+     */
+    function askingRunner() {
+      const previews = { opened: 0, closed: 0 };
+      const roots = [{ name: "ws", path: workspaceDir }];
+      const host: WriteApprovalHost = {
+        preview: async () => {
+          previews.opened += 1;
+          return {
+            close: async () => {
+              previews.closed += 1;
+            },
+          };
+        },
+        hasUnsavedChanges: async () => false,
+      };
+      const runner: ToolRunner = {
+        tools: [...READ_TOOLS, ...WRITE_TOOLS],
+        run: (call, context) =>
+          runWriteTool(call, roots, approvalApplier(fileApplier(roots), host, context.requestApproval), context.signal),
+      };
+      return { runner, previews };
+    }
+
+    /** A turn whose first reply writes `a.txt`, then answers "Done.", stopped at the open request. */
+    async function waiting(options: { steps?: number; auto?: () => boolean } = {}) {
+      const { runner, previews } = askingRunner();
+      const limits = options.steps === undefined ? undefined : fixedLimits({ steps: options.steps });
+      const turn = await scripted(
+        [{ content: writeCall("a.txt", "new") }, { content: "Done." }],
+        runner,
+        undefined,
+        limits,
+        undefined,
+        options.auto,
+      );
+      const done = turn.controller.send("rename it");
+      await until(turn.state, (s) => s.approval !== undefined);
+      return { ...turn, done, previews };
+    }
+
+    test("an open request shows in the state with its diff open while the reply stays streaming", async () => {
+      const { state, previews, controller, done } = await waiting();
+      expect(state().approval).toEqual({ id: expect.any(Number), tool: "write_file", summary: "a.txt" });
+      expect(state().entries.at(-1)).toMatchObject({
+        role: "assistant",
+        status: "streaming",
+        call: { name: "write_file" },
+      });
+      expect(isReplying(state())).toBe(true);
+      expect(previews).toEqual({ opened: 1, closed: 0 });
+      expect(fileText()).toBe("old\n");
+      controller.stop();
+      await done;
+    });
+
+    test("Accept writes the change, closes the diff, and the next request holds an ok result", async () => {
+      const { state, previews, controller, done, sent } = await waiting();
+      controller.approve(state().approval!.id);
+      await done;
+
+      expect(fileText()).toBe("new\n");
+      expect(previews).toEqual({ opened: 1, closed: 1 });
+      expect(state().approval).toBeUndefined();
+      expect(state().entries[2]).toEqual({
+        role: "tool",
+        name: "write_file",
+        args: { path: "a.txt", content: "new" },
+        status: "ok",
+        text: "write_file: replaced a.txt.",
+        approval: "accepted",
+      });
+      expect(sent()[1]!.messages.at(-1)?.content).toBe(
+        '<tool_result tool="write_file" status="ok">\nwrite_file: replaced a.txt.\n</tool_result>',
+      );
+      expect(state().entries.at(-1)).toMatchObject({ content: "Done.", status: "done" });
+    });
+
+    test("Reject with a reason writes nothing and sends the rejection and the reason as an error result", async () => {
+      const { state, previews, controller, done, sent } = await waiting();
+      controller.reject(state().approval!.id, "  Keep the old name.  ");
+      await done;
+
+      expect(fileText()).toBe("old\n");
+      expect(previews).toEqual({ opened: 1, closed: 1 });
+      expect(state().entries[2]).toMatchObject({ status: "error", approval: "rejected" });
+      expect(sent()[1]!.messages.at(-1)?.content).toBe(
+        '<tool_result tool="write_file" status="error">\nThe user rejected this change.\nKeep the old name.\n</tool_result>',
+      );
+    });
+
+    test("Reject without a reason, or with a blank one, sends the first line only", async () => {
+      for (const reason of [undefined, "   "]) {
+        const { state, controller, done, sent } = await waiting();
+        controller.reject(state().approval!.id, reason);
+        await done;
+        expect(sent()[1]!.messages.at(-1)?.content).toBe(
+          '<tool_result tool="write_file" status="error">\nThe user rejected this change.\n</tool_result>',
+        );
+      }
+    });
+
+    test("a decision for another request id is ignored, and so is a second decision", async () => {
+      const { state, controller, done } = await waiting();
+      const id = state().approval!.id;
+      controller.approve(id + 1);
+      controller.reject(id - 1);
+      await Bun.sleep(20);
+      expect(state().approval?.id).toBe(id);
+      controller.reject(id);
+      controller.approve(id);
+      await done;
+      expect(fileText()).toBe("old\n");
+      expect(state().entries[2]).toMatchObject({ approval: "rejected" });
+    });
+
+    test("Stop during the wait closes the diff, writes nothing, and saves the reply stopped", async () => {
+      const { state, previews, controller, done, sent, saved } = await waiting();
+      const id = state().approval!.id;
+      controller.stop();
+      await done;
+
+      expect(state().approval).toBeUndefined();
+      expect(previews).toEqual({ opened: 1, closed: 1 });
+      expect(state().entries.at(-1)).toMatchObject({
+        role: "assistant",
+        status: "stopped",
+        call: { name: "write_file" },
+      });
+      controller.approve(id);
+      await Bun.sleep(20);
+      expect(fileText()).toBe("old\n");
+      expect(sent()).toHaveLength(1);
+      await settledSave(saved, 2);
+      expect(saved()?.entries.at(-1)).toMatchObject({ status: "stopped" });
+    });
+
+    test("New chat during the wait closes the diff, writes nothing, and saves the turn stopped in its own record", async () => {
+      const { state, previews, controller, done, saved } = await waiting();
+      const id = state().approval!.id;
+      const turnId = state().conversationId;
+      await controller.newChat();
+      await done;
+
+      expect(state().conversationId).not.toBe(turnId);
+      expect(state().approval).toBeUndefined();
+      expect(previews).toEqual({ opened: 1, closed: 1 });
+      controller.approve(id);
+      await Bun.sleep(20);
+      expect(fileText()).toBe("old\n");
+      await controller.openConversation(turnId);
+      await settledSave(saved, 2);
+      expect(saved()?.entries.at(-1)).toMatchObject({ status: "stopped", call: { name: "write_file" } });
+    });
+
+    test("a record saved during the wait reloads with the call stopped, and nothing is written", async () => {
+      const { state, controller, done, files } = await waiting();
+      const id = state().conversationId;
+      const record = await new ConversationStore(files).load(id);
+      expect(record?.entries.at(-1)).toMatchObject({
+        role: "assistant",
+        status: "stopped",
+        call: { name: "write_file" },
+      });
+      controller.stop();
+      await done;
+      expect(fileText()).toBe("old\n");
+    });
+
+    test("a rejected write counts as a tool step toward the step limit", async () => {
+      const { state, controller, done, sent } = await waiting({ steps: 1 });
+      controller.reject(state().approval!.id);
+      await done;
+      expect(sent()).toHaveLength(1);
+      expect(state().entries.at(-2)).toMatchObject({ role: "assistant", status: "halted", haltReason: "stepLimit" });
+      expect(state().entries.at(-1)).toMatchObject({ role: "tool", status: "error", approval: "rejected" });
+    });
+
+    test("with auto-approve on, a write applies with no diff and no request shown, and its step says so", async () => {
+      const { runner, previews } = askingRunner();
+      let published = false;
+      const { controller, state } = await scripted(
+        [{ content: writeCall("a.txt", "new") }, { content: "Done." }],
+        runner,
+        undefined,
+        undefined,
+        undefined,
+        () => true,
+      );
+      const subscription = setInterval(() => {
+        if (state().approval) published = true;
+      }, 1);
+      await controller.send("rename it");
+      clearInterval(subscription);
+
+      expect(fileText()).toBe("new\n");
+      expect(previews).toEqual({ opened: 0, closed: 0 });
+      expect(published).toBe(false);
+      expect(state().entries[2]).toMatchObject({ status: "ok", approval: "auto" });
+    });
+
+    test("the setting is read at each request: turned off during a turn, the next write asks", async () => {
+      let auto = true;
+      const { runner } = askingRunner();
+      const { controller, state } = await scripted(
+        [{ content: writeCall("a.txt", "one") }, { content: writeCall("a.txt", "two") }, { content: "Done." }],
+        runner,
+        undefined,
+        undefined,
+        undefined,
+        () => {
+          const value = auto;
+          auto = false;
+          return value;
+        },
+      );
+      const done = controller.send("write twice");
+      await until(state, (s) => s.approval !== undefined);
+      expect(fileText()).toBe("one\n");
+      controller.approve(state().approval!.id);
+      await done;
+      expect(fileText()).toBe("two\n");
+      expect(
+        state()
+          .entries.filter((entry) => entry.role === "tool")
+          .map((step) => step.approval),
+      ).toEqual(["auto", "accepted"]);
+    });
+
+    test("auto-approve never accepts a command: it waits for the user", async () => {
+      const decisions: Decision[] = [];
+      const runner: ToolRunner = {
+        tools: READ_TOOLS,
+        run: async (call, context) => {
+          const decision = await context.requestApproval({ kind: "command", tool: call.name, summary: "rm -rf x" });
+          decisions.push(decision);
+          return { status: "error", text: "not run" };
+        },
+      };
+      const { controller, state } = await scripted(
+        [{ content: readCall("a.ts") }, { content: "Done." }],
+        runner,
+        undefined,
+        undefined,
+        undefined,
+        () => true,
+      );
+      const done = controller.send("go");
+      await until(state, (s) => s.approval !== undefined);
+      expect(state().approval).toMatchObject({ summary: "rm -rf x" });
+      controller.reject(state().approval!.id);
+      await done;
+      expect(decisions).toEqual([{ kind: "reject" }]);
+    });
+
+    test("Stop while the diff opens closes it once open and gives no request", async () => {
+      let open: (preview: Preview) => void = () => {};
+      let closed = 0;
+      const runner: ToolRunner = {
+        tools: READ_TOOLS,
+        run: async (call, context) => {
+          const decision = await context.requestApproval({
+            kind: "write",
+            tool: call.name,
+            summary: "a.ts",
+            preview: () =>
+              new Promise((resolve) => {
+                open = resolve;
+              }),
+          });
+          return { status: decision.kind === "accept" ? "ok" : "error", text: decision.kind };
+        },
+      };
+      const { controller, state } = await scripted([{ content: readCall("a.ts") }], runner);
+      const done = controller.send("go");
+      await until(state, (s) => s.entries.at(-1)?.role === "assistant" && "call" in s.entries.at(-1)!);
+      await Bun.sleep(10);
+      controller.stop();
+      await done;
+      open({
+        close: async () => {
+          closed += 1;
+        },
+      });
+      await Bun.sleep(10);
+      expect(closed).toBe(1);
+      expect(state().approval).toBeUndefined();
+    });
+
+    test("a request asked after Stop is cancelled at once", async () => {
+      let late: Promise<Decision> | undefined;
+      let ask: () => void = () => {};
+      const runner: ToolRunner = {
+        tools: READ_TOOLS,
+        run: (call, context) =>
+          new Promise(() => {
+            ask = () => {
+              late = context.requestApproval({ kind: "write", tool: call.name, summary: "a.ts" });
+            };
+          }),
+      };
+      const { controller, state } = await scripted([{ content: readCall("a.ts") }], runner);
+      const done = controller.send("go");
+      await until(state, (s) => s.entries.at(-1)?.role === "assistant" && "call" in s.entries.at(-1)!);
+      await Bun.sleep(10);
+      controller.stop();
+      await done;
+      ask();
+      expect(await late).toEqual({ kind: "cancel" });
+      expect(state().approval).toBeUndefined();
+    });
   });
 
   test("a later message resends the earlier steps as tool results", async () => {

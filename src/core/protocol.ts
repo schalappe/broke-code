@@ -39,6 +39,19 @@ export type ReplyCall = { name: string; args: Record<string, string>; start: num
  */
 export type ToolStepStatus = "ok" | "error" | "malformed";
 
+/**
+ * How a tool step that changes the workspace was approved: `accepted` or `rejected` by the user, or `auto` by the
+ * auto-approve setting. Absent for a tool that asks nothing, such as a read.
+ */
+export type StepApproval = "accepted" | "rejected" | "auto";
+
+/**
+ * The approval request open in the chat: the user's Accept or Reject of the call the reply runs. `id`: the request's,
+ * carried by the decision, so a decision for a request no longer open is ignored. `summary`: what it acts on, such as
+ * the file a write changes.
+ */
+export type PendingApproval = { id: number; tool: string; summary: string };
+
 export type ChatEntry =
   /** `content`: the text as typed. `mentions`: each mention read at send time, in order. */
   | { role: "user"; content: string; mentions: MentionResult[] }
@@ -56,8 +69,18 @@ export type ChatEntry =
       call?: ReplyCall;
       haltReason?: HaltReason;
     }
-  /** A tool step: one body tool call of the reply before it, or its malformed block, and the text the model got back. */
-  | { role: "tool"; name: string; args: Record<string, string>; status: ToolStepStatus; text: string };
+  /**
+   * A tool step: one body tool call of the reply before it, or its malformed block, and the text the model got back.
+   * `approval`: set when the call asked for one.
+   */
+  | {
+      role: "tool";
+      name: string;
+      args: Record<string, string>;
+      status: ToolStepStatus;
+      text: string;
+      approval?: StepApproval;
+    };
 
 /**
  * Why the conversation shown or the user's last action on a saved conversation failed: a save, delete, or open
@@ -122,6 +145,8 @@ export type ChatState = {
   storageProblem: StorageProblem | undefined;
   /** Usage of the conversation shown under the current settings; recomputed at each update. */
   context: ContextUsage;
+  /** The approval request the reply in flight waits on; at most one, since one call runs per reply. */
+  approval?: PendingApproval;
 };
 
 /** L10n bundle as `vscode.l10n.bundle`: absent in English. */
@@ -153,7 +178,10 @@ export type WebviewMessage =
   | { type: "setApiKey"; provider: string }
   /** Ask the user for `model`'s context size and save it to `brokeCode.contextSizes`. */
   | { type: "setContextSize"; model: string }
-  | { type: "openSettings" };
+  | { type: "openSettings" }
+  /** The user's decision on approval request `id` (`ChatState.approval`); `reason`: optional, as typed. */
+  | { type: "approve"; id: number }
+  | { type: "reject"; id: number; reason?: string };
 
 /** Chat state carried by `message`; `undefined` for a message that must leave the panel's state alone. */
 export function chatStateOf(message: HostMessage): ChatState | undefined {
@@ -214,12 +242,23 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | undefined {
       const query = text("query");
       const id = message.id;
       if (query === undefined || query.length > MAX_QUERY_LENGTH) return undefined;
-      if (typeof id !== "number" || !Number.isSafeInteger(id) || id < 0) return undefined;
+      if (!isRequestId(id)) return undefined;
       return { type: "queryFiles", query, id };
+    }
+    case "approve":
+      return isRequestId(message.id) ? { type: "approve", id: message.id } : undefined;
+    case "reject": {
+      const { id, reason } = message;
+      if (!isRequestId(id) || (reason !== undefined && typeof reason !== "string")) return undefined;
+      return reason === undefined ? { type: "reject", id } : { type: "reject", id, reason };
     }
     default:
       return undefined;
   }
+}
+
+function isRequestId(id: unknown): id is number {
+  return typeof id === "number" && Number.isSafeInteger(id) && id >= 0;
 }
 
 /**

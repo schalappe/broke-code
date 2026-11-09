@@ -27,6 +27,12 @@ One body tool call inside an agent turn and the result sent back to the model; a
 saying what is wrong count as a step too. The chat shows each step as a compact row.
 _Avoid_: tool use, action, iteration
 
+**Approval**:
+The user's Accept or Reject of a tool call that changes the workspace or runs a command, given in the chat while the
+agent turn waits; a rejection, with its optional reason, goes back to the model as the call's result. A setting can
+approve writes without asking, never commands.
+_Avoid_: confirmation, permission, consent
+
 **Conversation**:
 One thread of messages in the chat panel, saved per workspace and listed in its history; a new chat starts a new
 one.

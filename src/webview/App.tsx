@@ -2,7 +2,14 @@ import * as l10n from "@vscode/l10n";
 import { type KeyboardEvent, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import type { ConversationSummary } from "../core/conversation";
-import { type ChatEntry, type ChatState, type HostMessage, isReplying, type ReplyCall } from "../core/protocol";
+import {
+  type ChatEntry,
+  type ChatState,
+  type HostMessage,
+  isReplying,
+  type PendingApproval,
+  type ReplyCall,
+} from "../core/protocol";
 import type { ProviderError } from "../core/providerError";
 import type { MentionToken, Suggestion } from "../core/suggestions";
 import { composerKeyAction, type MenuAnswer, menuToken, menuView, openMenuToken, pickedInText } from "./composer";
@@ -50,7 +57,7 @@ export function App({ state, language }: { state: ChatState; language: string })
         // Without providers, an earlier conversation stays readable and a reply in flight keeps its Stop.
         (configured || state.entries.length > 0) && (
           // [>]: Keyed by conversation: another one starts with fresh scroll and collapsed reasoning blocks.
-          <Conversation key={state.conversationId} entries={state.entries} />
+          <Conversation key={state.conversationId} entries={state.entries} approval={state.approval} />
         )
       )}
       {(configured || isReplying(state)) && <Composer state={state} />}
@@ -303,7 +310,8 @@ export function ConversationList({
   );
 }
 
-function Conversation({ entries }: { entries: ChatEntry[] }) {
+/** `approval`: the request open, shown on the last reply, the one in flight. */
+function Conversation({ entries, approval }: { entries: ChatEntry[]; approval?: PendingApproval }) {
   const end = useRef<HTMLDivElement>(null);
   const list = useRef<HTMLElement>(null);
   const [pinned, setPinned] = useState(true);
@@ -330,16 +338,35 @@ function Conversation({ entries }: { entries: ChatEntry[] }) {
       }}
     >
       {entries.map((entry, index) => (
-        // biome-ignore lint/suspicious/noArrayIndexKey: a conversation's entries are only appended; another one remounts the list.
-        <Entry key={index} entry={entry} previous={entries[index - 1]} next={entries[index + 1]} />
+        <Entry
+          // biome-ignore lint/suspicious/noArrayIndexKey: a conversation's entries are only appended; another one remounts the list.
+          key={index}
+          entry={entry}
+          previous={entries[index - 1]}
+          next={entries[index + 1]}
+          approval={index === entries.length - 1 ? approval : undefined}
+        />
       ))}
       <div ref={end} />
     </section>
   );
 }
 
-/** One entry of the conversation, with its neighbours: a tool step shows inside the reply before it. */
-function Entry({ entry, previous, next }: { entry: ChatEntry; previous?: ChatEntry; next?: ChatEntry }) {
+/**
+ * One entry of the conversation, with its neighbours: a tool step shows inside the reply before it. `approval`: the
+ * request open, given to the last entry only.
+ */
+function Entry({
+  entry,
+  previous,
+  next,
+  approval,
+}: {
+  entry: ChatEntry;
+  previous?: ChatEntry;
+  next?: ChatEntry;
+  approval?: PendingApproval;
+}) {
   switch (entry.role) {
     case "user":
       return (
@@ -349,7 +376,7 @@ function Entry({ entry, previous, next }: { entry: ChatEntry; previous?: ChatEnt
         </div>
       );
     case "assistant":
-      return <Reply entry={entry} step={next?.role === "tool" ? next : undefined} />;
+      return <Reply entry={entry} step={next?.role === "tool" ? next : undefined} approval={approval} />;
     case "tool":
       // [>]: A step without a reply before it is still shown, never lost.
       return previous?.role === "assistant" ? null : (
@@ -362,13 +389,25 @@ function Entry({ entry, previous, next }: { entry: ChatEntry; previous?: ChatEnt
 
 /**
  * One reply of an agent turn: its reasoning, its answer as Markdown less its call block, the row of its tool step
- * (`step`: the entry after it), and how the turn ended when it ended here.
+ * (`step`: the entry after it), the decision its call waits on (`approval`, the request open, given while this is the
+ * last reply), and how the turn ended when it ended here.
  */
-function Reply({ entry, step }: { entry: ChatEntry & { role: "assistant" }; step?: ChatEntry & { role: "tool" } }) {
+function Reply({
+  entry,
+  step,
+  approval,
+}: {
+  entry: ChatEntry & { role: "assistant" };
+  step?: ChatEntry & { role: "tool" };
+  approval?: PendingApproval;
+}) {
   const { call } = entry;
   const answer = call ? (entry.content.slice(0, call.start) + entry.content.slice(call.end)).trim() : entry.content;
-  const unfinished: PendingCall["outcome"] =
-    entry.status === "waiting" || entry.status === "streaming"
+  const inFlight = entry.status === "waiting" || entry.status === "streaming";
+  const deciding = inFlight && call !== undefined && step === undefined ? approval : undefined;
+  const unfinished: PendingCall["outcome"] = deciding
+    ? "deciding"
+    : inFlight
       ? "running"
       : entry.status === "stopped"
         ? "stopped"
@@ -378,6 +417,8 @@ function Reply({ entry, step }: { entry: ChatEntry & { role: "assistant" }; step
       {entry.reasoning !== "" && <Reasoning key="reasoning" entry={entry} />}
       {answer !== "" && <Markdown>{answer}</Markdown>}
       {step ? <ToolStep result={step} /> : call && <ToolStep call={call} outcome={unfinished} />}
+      {/* [>]: Keyed by request, so a new request starts with an empty reason. */}
+      {deciding && <Approval key={deciding.id} approval={deciding} />}
       {entry.status === "waiting" && (
         <p className="loading" role="status">
           {l10n.t("Waiting for the reply…")}
@@ -391,10 +432,11 @@ function Reply({ entry, step }: { entry: ChatEntry & { role: "assistant" }; step
 }
 
 /**
- * A call whose step was never recorded. `running`: its tool runs now. `stopped`: Stop came while it ran, so its
- * result was dropped; the tool may have finished. `noResult`: the turn ended otherwise before a result came.
+ * A call whose step was never recorded. `running`: its tool runs now. `deciding`: it waits for the user's Accept or
+ * Reject. `stopped`: Stop came while it ran, so its result was dropped; the tool may have finished. `noResult`: the
+ * turn ended otherwise before a result came.
  */
-type PendingCall = { call: ReplyCall; outcome: "running" | "stopped" | "noResult" };
+type PendingCall = { call: ReplyCall; outcome: "running" | "deciding" | "stopped" | "noResult" };
 
 /**
  * A compact tool step row: tool name, main argument, and the result's status and size. The result text, or a
@@ -412,6 +454,10 @@ function ToolStep(props: { result: ChatEntry & { role: "tool" } } | PendingCall)
           {outcome === "running" ? (
             <span className="step-status loading" role="status">
               {l10n.t("running…")}
+            </span>
+          ) : outcome === "deciding" ? (
+            <span className="step-status" role="status">
+              {l10n.t("waiting for your decision")}
             </span>
           ) : (
             <span className="step-status">
@@ -436,6 +482,57 @@ function ToolStep(props: { result: ChatEntry & { role: "tool" } } | PendingCall)
         <code>{result.text}</code>
       </pre>
     </details>
+  );
+}
+
+/** The open approval request's controls, holding the reason typed until the user decides. */
+function Approval({ approval }: { approval: PendingApproval }) {
+  const [reason, setReason] = useState("");
+  return <ApprovalControls approval={approval} reason={reason} setReason={setReason} />;
+}
+
+/**
+ * Accept, Reject, and the optional reason sent with a rejection, for `approval`. Each decision carries the request's
+ * id, so the host ignores one for a request already closed; a blank reason is left out.
+ */
+export function ApprovalControls({
+  approval,
+  reason,
+  setReason,
+}: {
+  approval: PendingApproval;
+  reason: string;
+  setReason: (reason: string) => void;
+}) {
+  const { id } = approval;
+  const reject = () => {
+    const trimmed = reason.trim();
+    post(trimmed === "" ? { type: "reject", id } : { type: "reject", id, reason: trimmed });
+  };
+  return (
+    <fieldset className="approval" aria-label={l10n.t("Approve {0} on {1}", approval.tool, approval.summary)}>
+      <input
+        type="text"
+        className="approval-reason"
+        value={reason}
+        placeholder={l10n.t("Reason for rejecting (optional)")}
+        aria-label={l10n.t("Reason for rejecting (optional)")}
+        onChange={(event) => setReason(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+          event.preventDefault();
+          reject();
+        }}
+      />
+      <div className="actions">
+        <button type="button" onClick={() => post({ type: "approve", id })}>
+          {l10n.t("Accept")}
+        </button>
+        <button type="button" className="secondary" onClick={reject}>
+          {l10n.t("Reject")}
+        </button>
+      </div>
+    </fieldset>
   );
 }
 
