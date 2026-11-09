@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describeSkillDiscovery, readSkills } from "./skills";
+import { describeSkillDiscovery, MAX_SKILL_ENTRIES, readSkills } from "./skills";
+import type { WorkspaceEntry } from "./workspaceFiles";
 
 let base: string;
 let home: string;
@@ -323,6 +324,59 @@ describe("readSkills", () => {
     const { skills, warnings } = await readSkills(home, single());
     expect(skills.map((skill) => skill.name)).toEqual(["kept"]);
     expect(warnings).toEqual([{ path: "~/.agents/skills", problem: { kind: "folderUnreadable", cause: "EACCES" } }]);
+  });
+
+  test("reads one SKILL.md at a time, however many skill folders hold one", async () => {
+    // [>]: The finding's shape: many skill folders whose `SKILL.md` links to one large file inside the workspace.
+    const large = join(workspace, "large.md");
+    await writeFile(large, `${skillText("shared", "Shared.")}${"x".repeat(1024 * 1024 - 100)}`);
+    for (let index = 0; index < 50; index += 1) {
+      const folder = join(workspaceSkills(), `s${index}`);
+      await mkdir(folder);
+      await symlink(large, join(folder, "SKILL.md"));
+      await mkdir(join(personal, `p${index}`));
+      await symlink(large, join(personal, `p${index}`, "SKILL.md"));
+    }
+    let running = 0;
+    let most = 0;
+    let reads = 0;
+    const aroundRead = async (read: () => Promise<WorkspaceEntry>) => {
+      running += 1;
+      reads += 1;
+      most = Math.max(most, running);
+      try {
+        await Bun.sleep(1);
+        return await read();
+      } finally {
+        running -= 1;
+      }
+    };
+
+    await readSkills(home, single(), { aroundRead });
+    expect(reads).toBe(100);
+    expect(most).toBe(1);
+  });
+
+  test("reads only the first entries of a skills folder by name, and warns once naming the folder", async () => {
+    const names = Array.from({ length: MAX_SKILL_ENTRIES + 2 }, (_, index) => `s${String(index).padStart(3, "0")}`);
+    for (const name of names) await writeSkill(workspaceSkills(), name, skillText(name, "Repository skill."));
+    const last = names.at(-1)!;
+    await writeSkill(personal, last, skillText(last, "Personal skill."));
+    let reads = 0;
+
+    const { skills, warnings } = await readSkills(home, single(), {
+      aroundRead: (read) => {
+        reads += 1;
+        return read();
+      },
+    });
+    expect(reads).toBe(MAX_SKILL_ENTRIES + 1);
+    expect(skills.map((skill) => skill.name)).toEqual([...names.slice(0, MAX_SKILL_ENTRIES), last]);
+    // [>]: A skill past the cap is never read, so it hides nothing: the personal skill of its name is listed.
+    expect(skills.at(-1)?.description).toBe("Personal skill.");
+    expect(warnings).toEqual([
+      { path: ".agents/skills", problem: { kind: "tooManyEntries", entries: MAX_SKILL_ENTRIES + 2 } },
+    ]);
   });
 });
 

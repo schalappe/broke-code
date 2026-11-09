@@ -44,6 +44,7 @@
   "Skill {0} is skipped: it links outside the workspace.": "La skill {0} est ignorée : elle pointe hors de l'espace de travail.",
   "Skill {0} is skipped: the file cannot be read ({1}).": "La skill {0} est ignorée : le fichier est illisible ({1}).",
   "The skills in {0} are skipped: the folder cannot be read ({1}).": "Les skills de {0} sont ignorées : le dossier est illisible ({1}).",
+  "Some skills in {0} are skipped: the folder holds {1} entries, and only the first 200 by name are read.": "Des skills de {0} sont ignorées : le dossier contient {1} entrées, et seules les 200 premières par ordre de nom sont lues.",
   "Could not save the API key for {0}: {1}": "Impossible d'enregistrer la clé d'API de {0} : {1}",
   "Could not read the API key for {0}: {1}": "Impossible de lire la clé d'API de {0} : {1}",
   "API key for {0}": "Clé d'API de {0}",

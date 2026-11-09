@@ -71,7 +71,8 @@ export type StorageProblem =
 /**
  * Why a skill was skipped. `unparsableField`: the field's value is a form the frontmatter reader does not take, such as
  * a quoted value that does not close on its line. `folderUnreadable`: a skills folder exists but cannot be listed.
- * `cause`: runtime error code or text.
+ * `tooManyEntries`: a skills folder holds more than `MAX_SKILL_ENTRIES` entries (`entries`), and only the first, by
+ * name, were read. `cause`: runtime error code or text.
  */
 export type SkillProblem =
   | {
@@ -88,7 +89,8 @@ export type SkillProblem =
     }
   | { kind: "nameMismatch"; name: string; directory: string }
   | { kind: "unparsableField"; field: "name" | "description" }
-  | { kind: "unreadable" | "folderUnreadable"; cause: string };
+  | { kind: "unreadable" | "folderUnreadable"; cause: string }
+  | { kind: "tooManyEntries"; entries: number };
 
 /** A skipped skill: `path` names its `SKILL.md`, or its skills folder, as the user sees it (`~/` for the home folder). */
 export type SkillWarning = { path: string; problem: SkillProblem };

@@ -164,4 +164,10 @@ describe("describeSkillWarning", () => {
     expect(text({ kind: "outsideWorkspace" })).toBe(`${prefix}it links outside the workspace.`);
     expect(text({ kind: "unreadable", cause: "EACCES" })).toBe(`${prefix}the file cannot be read (EACCES).`);
   });
+
+  test("names the skills folder whose entries past the cap are skipped", () => {
+    expect(describeSkillWarning({ path: ".agents/skills", problem: { kind: "tooManyEntries", entries: 5000 } })).toBe(
+      "Some skills in .agents/skills are skipped: the folder holds 5000 entries, and only the first 200 by name are read.",
+    );
+  });
 });

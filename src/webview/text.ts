@@ -155,6 +155,12 @@ export function describeSkillWarning({ path, problem }: SkillWarning): string {
       return l10n.t("Skill {0} is skipped: the file cannot be read ({1}).", path, problem.cause);
     case "folderUnreadable":
       return l10n.t("The skills in {0} are skipped: the folder cannot be read ({1}).", path, problem.cause);
+    case "tooManyEntries":
+      return l10n.t(
+        "Some skills in {0} are skipped: the folder holds {1} entries, and only the first 200 by name are read.",
+        path,
+        problem.entries,
+      );
   }
 }
 

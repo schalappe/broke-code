@@ -326,6 +326,11 @@ yet. Read
   folder without one, a stray file, and a missing skills folder pass silently. A personal skill folder follows
   symlinks; a workspace one, the folder and its `SKILL.md` alike, is held to its own workspace folder, and one linked
   out of it, into another workspace folder included, is skipped with a warning.
+- A repository controls its skills folder, and each `SKILL.md` read holds a 1 MiB buffer and a file descriptor, so
+  discovery reads one `SKILL.md` at a time, folder after folder, and only the first `MAX_SKILL_ENTRIES` (200) entries of
+  each skills folder by name. A folder holding more gives one `tooManyEntries` warning naming it; an entry past the cap
+  is never read, so it hides nothing. 5,000 entries linked to one 1 MiB file take about 90 ms per send on the
+  maintainer's Mac.
 - The frontmatter is the lines between a first line `---` and the next `---`, read by a hand-written subset of YAML
   (`skills.ts`), no YAML dependency: top-level `key: value` with plain, single- or double-quoted, or `>` and `|` block
   values; nested maps and unknown keys are ignored. `name` follows the spec (1 to 64 of `a-z`, `0-9`, `-`, no hyphen

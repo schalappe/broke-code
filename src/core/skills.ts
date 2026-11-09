@@ -21,6 +21,17 @@ import {
 /** What a send discovers: the valid skills, by name, and a warning per skipped skill or unreadable skills folder. */
 export type SkillDiscovery = { skills: Skill[]; warnings: SkillWarning[] };
 
+/** Test seam: `aroundRead` wraps each `SKILL.md` read, to observe how many run at once. */
+export type SkillReadSeam = { aroundRead?: (read: () => Promise<WorkspaceEntry>) => Promise<WorkspaceEntry> };
+
+/**
+ * How many entries of one skills folder a send reads, the first by name; the rest are skipped with one warning. A
+ * repository controls its own skills folder, so without a cap it could make every send read thousands of `SKILL.md`
+ * files of up to 1 MiB each. Real folders hold tens of skills; 200 keeps them all and bounds a send to 200 reads per
+ * skills folder.
+ */
+export const MAX_SKILL_ENTRIES = 200;
+
 const FILE_NAME = "SKILL.md";
 const MAX_NAME_LENGTH = 64;
 const MAX_DESCRIPTION_LENGTH = 1024;
@@ -50,9 +61,15 @@ type SourceDiscovery = { skills: Skill[]; warnings: SourceWarning[] };
  * valid or not. A skipped candidate hides nothing: a valid one of its name from a later source is listed, and the
  * skipped one warns. A personal skill folder follows symlinks (dotfiles are often linked); a workspace one, the folder
  * and its `SKILL.md` alike, is held to its own workspace folder, as instruction files are. A folder without `SKILL.md`, a stray file, and a missing skills
- * folder pass silently; any other failure is a warning. Never rejects.
+ * folder pass silently; any other failure is a warning. Only the first `MAX_SKILL_ENTRIES` entries of a skills folder
+ * are read, and one `SKILL.md` at a time, so the files a repository holds cannot multiply the reads of a send. Never
+ * rejects.
  */
-export async function readSkills(home: string, roots: WorkspaceRoot[]): Promise<SkillDiscovery> {
+export async function readSkills(
+  home: string,
+  roots: WorkspaceRoot[],
+  seam: SkillReadSeam = {},
+): Promise<SkillDiscovery> {
   const personal: SkillSource = {
     folder: join(home, ".agents", "skills"),
     label: "~/.agents/skills",
@@ -77,7 +94,8 @@ export async function readSkills(home: string, roots: WorkspaceRoot[]): Promise<
     }),
   );
   // [>]: Sources in precedence order: the first skill of a name wins.
-  const found = await Promise.all([...workspace, personal].map(readSource));
+  const found: SourceDiscovery[] = [];
+  for (const source of [...workspace, personal]) found.push(await readSource(source, seam));
 
   const winners = new Map<string, { skill: Skill; source: number }>();
   found.forEach((source, index) => {
@@ -109,7 +127,7 @@ export function describeSkillDiscovery(discovery: SkillDiscovery): string {
   return `broke-code: skills listed to the model: ${listed.join(", ") || "none"}; kept from the model: ${kept.join(", ") || "none"}; skipped: ${discovery.warnings.length}`;
 }
 
-async function readSource(source: SkillSource): Promise<SourceDiscovery> {
+async function readSource(source: SkillSource, seam: SkillReadSeam): Promise<SourceDiscovery> {
   let children: string[];
   try {
     children = (await readdir(source.folder)).sort(compareNames);
@@ -120,12 +138,18 @@ async function readSource(source: SkillSource): Promise<SourceDiscovery> {
       warnings: [{ warning: { path: source.label, problem: { kind: "folderUnreadable", cause: causeOf(error) } } }],
     };
   }
-  const outcomes = await Promise.all(children.map((directory) => readSkill(source, directory)));
   const discovery: SourceDiscovery = { skills: [], warnings: [] };
-  outcomes.forEach((outcome, index) => {
+  if (children.length > MAX_SKILL_ENTRIES) {
+    discovery.warnings.push({
+      warning: { path: source.label, problem: { kind: "tooManyEntries", entries: children.length } },
+    });
+  }
+  // [!]: One read at a time: each holds a 1 MiB buffer and a file descriptor until it settles.
+  for (const directory of children.slice(0, MAX_SKILL_ENTRIES)) {
+    const outcome = await readSkill(source, directory, seam);
     if (outcome?.kind === "skill") discovery.skills.push(outcome.skill);
-    if (outcome?.kind === "warning") discovery.warnings.push({ directory: children[index]!, warning: outcome.warning });
-  });
+    if (outcome?.kind === "warning") discovery.warnings.push({ directory, warning: outcome.warning });
+  }
   return discovery;
 }
 
@@ -133,6 +157,7 @@ async function readSource(source: SkillSource): Promise<SourceDiscovery> {
 async function readSkill(
   source: SkillSource,
   directory: string,
+  seam: SkillReadSeam,
 ): Promise<{ kind: "skill"; skill: Skill } | { kind: "warning"; warning: SkillWarning } | undefined> {
   const folder = join(source.folder, directory);
   const warn = (problem: SkillProblem) => ({
@@ -140,7 +165,8 @@ async function readSkill(
     warning: { path: `${source.label}/${directory}/${FILE_NAME}`, problem },
   });
   // [>]: A stray file in the skills folder reads as missing too (`ENOTDIR`).
-  const entry = await source.read(join(folder, FILE_NAME));
+  const read = () => source.read(join(folder, FILE_NAME));
+  const entry = await (seam.aroundRead ? seam.aroundRead(read) : read());
   if (entry.status === "missing") return undefined;
   if (entry.status === "unreadable") return warn({ kind: "unreadable", cause: entry.cause });
   if (entry.status !== "ok") return warn({ kind: entry.status });

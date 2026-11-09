@@ -158,8 +158,9 @@ next.
 - `disable-model-invocation: true` keeps a skill out of the list the model sees.
 
 A skill whose `SKILL.md` is invalid, unreadable, or over 1 MiB is skipped, and the chat shows a warning naming the
-file and the problem; the other skills still count. The list counts in the context usage like the rest of the
-instructions.
+file and the problem; the other skills still count. broke-code reads at most 200 entries of each skills folder, the
+first by name, and shows one warning naming a folder that holds more. The list counts in the context usage like the
+rest of the instructions.
 
 ## Past conversations
 
