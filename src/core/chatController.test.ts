@@ -1847,9 +1847,8 @@ describe("ChatController agent turn", () => {
 
     expect(sent()).toHaveLength(3);
     const [, , unknownTool] = sent().at(-1)!.messages.slice(-3);
-    expect(unknownTool?.content).toStartWith(
-      '<tool_result tool="unknown" status="error">\n<nope> is not a known tool.',
-    );
+    expect(unknownTool?.content).toStartWith('<tool_result tool="nope" status="error">\n<nope> is not a known tool.');
+    expect(state().entries[4]).toMatchObject({ role: "tool", name: "nope", status: "malformed" });
     expect(sent()[1]!.messages.at(-1)?.content).toStartWith(
       '<tool_result tool="read_file" status="error">\nThe <read_file> tag never closes',
     );

@@ -383,7 +383,7 @@ export class ChatController {
         } else {
           step = {
             role: "tool",
-            name: malformedToolName(reply.content, parsed, this.tools.tools),
+            name: malformedToolName(reply.content, parsed),
             args: {},
             status: "malformed",
             text: parsed.message,
@@ -775,12 +775,12 @@ function toolResultMessage(step: ChatEntry & { role: "tool" }): string {
 }
 
 /**
- * The tool a malformed block of `answer` names, or `unknown` when it names none of `tools`. [!]: Only a known name
- * goes in the `tool` attribute, never raw model text.
+ * The tag name a malformed block of `answer` opens with, a known tool or not, or `unknown` when none can be read.
+ * [!]: The name matches the parser's tag pattern (`[a-z][a-z0-9_]*`), so it is safe inside the quoted `tool`
+ * attribute; any other text gives `unknown`.
  */
-function malformedToolName(answer: string, parsed: ParsedReply & { kind: "malformed" }, tools: readonly ToolSpec[]) {
-  const name = /^<([a-z][a-z0-9_]*)>/.exec(answer.slice(parsed.start))?.[1];
-  return tools.some((tool) => tool.name === name) ? (name as string) : "unknown";
+function malformedToolName(answer: string, parsed: ParsedReply & { kind: "malformed" }): string {
+  return /^<([a-z][a-z0-9_]*)>/.exec(answer.slice(parsed.start))?.[1] ?? "unknown";
 }
 
 /** What the chat shows and keeps of a read mention: no content. */

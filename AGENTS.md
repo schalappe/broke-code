@@ -138,8 +138,8 @@ call. Write tools, `run_command`, skills, and slash commands are not built yet. 
 - Each request of an agent turn sends a `system` message first, then the history: each user entry's composed text,
   each assistant answer verbatim with its call block (reasoning never), and each tool step as a `user` message
   `<tool_result tool="<name>" status="ok|error">`, the text, then `</tool_result>`, never the OpenAI `tool` role
-  (ADR 0001). A malformed call's message goes back the same way with `status="error"`, and `tool="unknown"` when the
-  block names no known tool.
+  (ADR 0001). A malformed call's message goes back the same way with `status="error"`, with `tool` the tag name the block
+  opens with, a known tool or not, and `tool="unknown"` only when no tool name can be read.
 - When a reply ends, its answer goes through the parser. No call: the turn ends. A call: the tool runs with the
   turn's abort signal, a tool step entry records its name, arguments, status, and text, and the loop requests again.
   A malformed call: a step entry with the message, and the loop requests again. The reply stays `streaming` while its

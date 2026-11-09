@@ -30,7 +30,8 @@ export type ReplyCall = { name: string; args: Record<string, string>; start: num
 
 /**
  * `ok` and `error`: what the tool returned. `malformed`: the reply's call could not be read; `text` is the message
- * sent back to the model, and `name` is the tool the block named, or `unknown` when it names none.
+ * sent back to the model, and `name` is the tag name the block opens with, a known tool or not, or `unknown` when
+ * no name can be read.
  */
 export type ToolStepStatus = "ok" | "error" | "malformed";
 
