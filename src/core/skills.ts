@@ -29,12 +29,19 @@ const NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 /** One skills folder: `label` shows it to the user; `read` reads a `SKILL.md` under it with its boundary policy. */
 type SkillSource = { folder: string; label: string; read: (path: string) => Promise<WorkspaceEntry> };
 
+/** A skipped candidate's warning with its directory name, or a skills folder's warning (no directory). */
+type SourceWarning = { directory?: string; warning: SkillWarning };
+
+/** What one skills folder holds: its valid skills and its warnings. */
+type SourceDiscovery = { skills: Skill[]; warnings: SourceWarning[] };
+
 /**
  * The skills of `~/.agents/skills/` under `home`, then of each of `roots`' `.agents/skills/`. A workspace skill hides
- * a personal skill of the same name, and an earlier workspace folder a later one; a hidden skill gives no warning.
- * A personal skill folder follows symlinks (dotfiles are often linked); a workspace one is held to the workspace
- * boundary, as instruction files are. A folder without `SKILL.md`, a stray file, and a missing skills folder pass
- * silently; any other failure is a warning. Never rejects.
+ * a personal skill of the same name, and an earlier workspace folder a later one; a hidden candidate gives no warning,
+ * valid or not. A skipped candidate hides nothing: a valid one of its name from a later source is listed, and the
+ * skipped one warns. A personal skill folder follows symlinks (dotfiles are often linked); a workspace one is held to
+ * its own workspace folder, as instruction files are. A folder without `SKILL.md`, a stray file, and a missing skills
+ * folder pass silently; any other failure is a warning. Never rejects.
  */
 export async function readSkills(home: string, roots: WorkspaceRoot[]): Promise<SkillDiscovery> {
   const personal: SkillSource = {
@@ -47,22 +54,43 @@ export async function readSkills(home: string, roots: WorkspaceRoot[]): Promise<
       folder: join(root.path, ".agents", "skills"),
       label: roots.length > 1 ? `${root.name}/.agents/skills` : ".agents/skills",
       // [>]: At its absolute path, never through folder names, as for instruction files (see `instructions.ts`).
-      read: (path) => readWorkspaceEntryAt(roots, path),
+      read: (path) => readWorkspaceEntryAt([root], path),
     }),
   );
+  // [>]: Sources in precedence order: the first skill of a name wins.
   const found = await Promise.all([...workspace, personal].map(readSource));
 
-  // [>]: Sources in precedence order: the first skill of a name wins.
-  const byName = new Map<string, Skill>();
-  for (const skill of found.flatMap((source) => source.skills)) {
-    if (!byName.has(skill.name)) byName.set(skill.name, skill);
-  }
-  // [>]: Warnings in discovery order: personal first, then each workspace folder.
-  const warnings = [found.at(-1)!, ...found.slice(0, -1)].flatMap((source) => source.warnings);
-  return { skills: [...byName.values()].sort((a, b) => compareNames(a.name, b.name)), warnings };
+  const winners = new Map<string, { skill: Skill; source: number }>();
+  found.forEach((source, index) => {
+    for (const skill of source.skills) if (!winners.has(skill.name)) winners.set(skill.name, { skill, source: index });
+  });
+  const hidden = (entry: SourceWarning, source: number) => {
+    const winner = entry.directory === undefined ? undefined : winners.get(entry.directory);
+    return winner !== undefined && winner.source < source;
+  };
+  const warnings = found.map((source, index) =>
+    source.warnings.filter((entry) => !hidden(entry, index)).map((entry) => entry.warning),
+  );
+  return {
+    skills: [...winners.values()].map((winner) => winner.skill).sort((a, b) => compareNames(a.name, b.name)),
+    // [>]: Warnings in discovery order: personal first, then each workspace folder.
+    warnings: [warnings.at(-1)!, ...warnings.slice(0, -1)].flat(),
+  };
 }
 
-async function readSource(source: SkillSource): Promise<SkillDiscovery> {
+/**
+ * The line the extension logs at each send, so the skills the model sees can be checked in the extension host log:
+ * each listed skill with its folder, the skills kept from the model, and how many were skipped.
+ */
+export function describeSkillDiscovery(discovery: SkillDiscovery): string {
+  const listed = discovery.skills
+    .filter((skill) => skill.listedToModel)
+    .map((skill) => `${skill.name} (${skill.root})`);
+  const kept = discovery.skills.filter((skill) => !skill.listedToModel).map((skill) => skill.name);
+  return `broke-code: skills listed to the model: ${listed.join(", ") || "none"}; kept from the model: ${kept.join(", ") || "none"}; skipped: ${discovery.warnings.length}`;
+}
+
+async function readSource(source: SkillSource): Promise<SourceDiscovery> {
   let children: string[];
   try {
     children = (await readdir(source.folder)).sort(compareNames);
@@ -70,15 +98,15 @@ async function readSource(source: SkillSource): Promise<SkillDiscovery> {
     if (errorCode(error) === "ENOENT") return { skills: [], warnings: [] };
     return {
       skills: [],
-      warnings: [{ path: source.label, problem: { kind: "folderUnreadable", cause: causeOf(error) } }],
+      warnings: [{ warning: { path: source.label, problem: { kind: "folderUnreadable", cause: causeOf(error) } } }],
     };
   }
   const outcomes = await Promise.all(children.map((directory) => readSkill(source, directory)));
-  const discovery: SkillDiscovery = { skills: [], warnings: [] };
-  for (const outcome of outcomes) {
+  const discovery: SourceDiscovery = { skills: [], warnings: [] };
+  outcomes.forEach((outcome, index) => {
     if (outcome?.kind === "skill") discovery.skills.push(outcome.skill);
-    if (outcome?.kind === "warning") discovery.warnings.push(outcome.warning);
-  }
+    if (outcome?.kind === "warning") discovery.warnings.push({ directory: children[index]!, warning: outcome.warning });
+  });
   return discovery;
 }
 

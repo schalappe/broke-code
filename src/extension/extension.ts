@@ -11,7 +11,7 @@ import { ConversationStore } from "../core/conversationStore";
 import { readInstructionFiles } from "../core/instructions";
 import { type MentionReader, readMention } from "../core/mentions";
 import { parseProviders } from "../core/providers";
-import { readSkills, type SkillDiscovery } from "../core/skills";
+import { describeSkillDiscovery, readSkills, type SkillDiscovery } from "../core/skills";
 import { READ_TOOLS, ripgrepCandidates, runReadTool } from "../core/tools";
 import type { WorkspaceRoot } from "../core/workspaceFiles";
 import { ApiKeys } from "./apiKeys";
@@ -82,18 +82,9 @@ export function activate(context: vscode.ExtensionContext): void {
 
 export function deactivate(): void {}
 
-/**
- * Log what a send discovered, one line, so the skills the model sees can be checked in the extension host log. The
- * warnings show in the chat panel.
- */
+/** Log what a send discovered, one line; the warnings show in the chat panel. */
 function logSkills(discovery: SkillDiscovery): SkillDiscovery {
-  const listed = discovery.skills
-    .filter((skill) => skill.listedToModel)
-    .map((skill) => `${skill.name} (${skill.root})`);
-  const unlisted = discovery.skills.filter((skill) => !skill.listedToModel).map((skill) => skill.name);
-  console.info(
-    `broke-code: skills listed to the model: ${listed.join(", ") || "none"}; kept from the model: ${unlisted.join(", ") || "none"}; skipped: ${discovery.warnings.length}`,
-  );
+  console.info(describeSkillDiscovery(discovery));
   return discovery;
 }
 

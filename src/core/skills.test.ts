@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readSkills } from "./skills";
+import { describeSkillDiscovery, readSkills } from "./skills";
 
 let base: string;
 let home: string;
@@ -171,6 +171,52 @@ describe("readSkills", () => {
     expect(warnings).toEqual([{ path: "lib/.agents/skills/broken/SKILL.md", problem: { kind: "noFrontmatter" } }]);
   });
 
+  test("a hidden skill gives no warning, from a personal folder or a later workspace folder", async () => {
+    const other = join(base, "other");
+    await writeSkill(workspaceSkills(), "review", skillText("review", "App review."));
+    await writeSkill(personal, "review", "# Broken, but hidden");
+    await writeSkill(join(other, ".agents", "skills"), "review", "---\nname: review\n---\n");
+    const roots = [
+      { name: "app", path: workspace },
+      { name: "lib", path: other },
+    ];
+
+    const { skills, warnings } = await readSkills(home, roots);
+    expect(skills.map((skill) => skill.description)).toEqual(["App review."]);
+    expect(warnings).toEqual([]);
+  });
+
+  test("an invalid workspace skill hides nothing: the valid personal one wins and the workspace one warns", async () => {
+    await writeSkill(workspaceSkills(), "review", "# Broken");
+    await writeSkill(personal, "review", skillText("review", "Personal review."));
+
+    const { skills, warnings } = await readSkills(home, single());
+    expect(skills.map((skill) => skill.description)).toEqual(["Personal review."]);
+    expect(warnings).toEqual([{ path: ".agents/skills/review/SKILL.md", problem: { kind: "noFrontmatter" } }]);
+  });
+
+  test("skips a workspace skill folder linked into another workspace folder, with the outside warning", async () => {
+    const other = join(base, "other");
+    await writeSkill(join(other, "tools"), "cross", skillText("cross", "Lives in lib."));
+    await symlink(join(other, "tools", "cross"), join(workspaceSkills(), "cross"));
+    const roots = [
+      { name: "app", path: workspace },
+      { name: "lib", path: other },
+    ];
+
+    expect(await readSkills(home, roots)).toEqual({
+      skills: [],
+      warnings: [{ path: "app/.agents/skills/cross/SKILL.md", problem: { kind: "outsideWorkspace" } }],
+    });
+  });
+
+  test("reads a key with an empty head and a nested map after blank lines as no string", async () => {
+    await writeSkill(personal, "nested", "---\nname: nested\ndescription:\n\n  summary: Nested.\n---\n");
+    expect((await readSkills(home, [])).warnings).toEqual([
+      { path: "~/.agents/skills/nested/SKILL.md", problem: { kind: "missingDescription" } },
+    ]);
+  });
+
   test("skips a workspace skill folder linked out of the workspace, and follows a linked personal one", async () => {
     const outside = join(base, "outside");
     await writeSkill(outside, "escape", skillText("escape", "Outside."));
@@ -218,5 +264,27 @@ describe("readSkills", () => {
     const { skills, warnings } = await readSkills(home, single());
     expect(skills.map((skill) => skill.name)).toEqual(["kept"]);
     expect(warnings).toEqual([{ path: "~/.agents/skills", problem: { kind: "folderUnreadable", cause: "EACCES" } }]);
+  });
+});
+
+describe("describeSkillDiscovery", () => {
+  test("names the listed skills with their folders, the skills kept from the model, and the skipped count", () => {
+    const line = describeSkillDiscovery({
+      skills: [
+        { name: "auto", description: "Any time.", root: "/w/.agents/skills/auto", listedToModel: true },
+        { name: "manual", description: "By hand.", root: "/h/.agents/skills/manual", listedToModel: false },
+        { name: "review", description: "Review.", root: "/h/.agents/skills/review", listedToModel: true },
+      ],
+      warnings: [{ path: "~/.agents/skills/broken/SKILL.md", problem: { kind: "noFrontmatter" } }],
+    });
+    expect(line).toBe(
+      "broke-code: skills listed to the model: auto (/w/.agents/skills/auto), review (/h/.agents/skills/review); kept from the model: manual; skipped: 1",
+    );
+  });
+
+  test("says none for an empty list", () => {
+    expect(describeSkillDiscovery({ skills: [], warnings: [] })).toBe(
+      "broke-code: skills listed to the model: none; kept from the model: none; skipped: 0",
+    );
   });
 });
