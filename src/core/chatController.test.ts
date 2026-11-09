@@ -847,6 +847,32 @@ describe("ChatController conversations", () => {
     expect(state().conversations.find((c) => c.id === seeded[0]!.id)).toMatchObject({ updatedAt: 900 });
   });
 
+  test("never prunes a record of an unsupported version listed from its summary, and prunes the oldest valid one", async () => {
+    const { seeded, files } = seededWithSummaries((record) =>
+      record.updatedAt === 1 ? ({ ...record, version: 2 } as unknown as ConversationRecord) : record,
+    );
+    const [unsupported, oldestValid] = [seeded[0]!, seeded[1]!];
+    const extra = savedRecord("extra", 60);
+    files.files.set(`${extra.id}.json`, JSON.stringify(extra));
+    files.files.set(`${extra.id}.summary.json`, serializeSummary(extra));
+    const ws = workspace(files);
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { controller, state } = await load(ws, { provider: reasoningProvider, now: () => 1000 });
+      expect(state().conversations).toHaveLength(51);
+      await controller.send("Newest");
+      await eventually(() => recordCount(files) === 51 && state().conversations.length === 51, "the prune");
+      expect(files.files.has(`${oldestValid.id}.json`)).toBe(false);
+      expect(files.files.has(`${unsupported.id}.json`)).toBe(true);
+      expect(files.files.has(`${unsupported.id}.summary.json`)).toBe(true);
+      expect(JSON.parse(files.files.get(`${unsupported.id}.json`)!)).toMatchObject({ version: 2 });
+      expect(state().conversations.map((c) => c.id)).toContain(unsupported.id);
+      expect(state().storageProblem).toBeUndefined();
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
   test("keeps and reports a conversation to prune whose record cannot be read", async () => {
     const { seeded, files } = seededWithSummaries();
     const ws = workspace(files);

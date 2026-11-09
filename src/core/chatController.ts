@@ -405,8 +405,9 @@ export class ChatController {
   }
 
   /**
-   * Delete the conversations past the 50 kept, oldest first, sparing the one shown when this runs. Never stops the
-   * reply: the reply's own save queued this prune, and the conversation shown does not change.
+   * Delete the conversations past the 50 kept, oldest first, sparing the one shown when this runs and any whose record
+   * cannot be loaded and validated. Never stops the reply: the reply's own save queued this prune, and the conversation
+   * shown does not change.
    */
   private async prune(): Promise<void> {
     const tried = new Set<string>();
@@ -423,8 +424,16 @@ export class ChatController {
         this.report({ kind: "deleteFailed", cause: String(error) }, "could not check a conversation to prune", error);
         continue;
       }
+      if (!record) {
+        // [>]: Only a record validated here is deleted. One that is invalid or of another version (a newer build's,
+        // after a downgrade) is user data this build cannot read, so it stays on disk and in the list, where the user
+        // can delete it. A missing one has nothing left to delete; the next listing drops its summary.
+        tried.add(id);
+        console.error("broke-code: kept a conversation to prune whose record is missing or invalid", id);
+        continue;
+      }
       const row = this.state.conversations.find((summary) => summary.id === id);
-      if (record && row && record.updatedAt !== row.updatedAt) {
+      if (row && record.updatedAt !== row.updatedAt) {
         const others = this.state.conversations.filter((summary) => summary.id !== id);
         this.setConversations([summarize(record), ...others]);
         continue;

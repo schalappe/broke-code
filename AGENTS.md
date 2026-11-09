@@ -192,7 +192,9 @@ The code so far covers the extension skeleton and a streaming chat with a provid
   kept: a save past the limit, and the window load, queue a prune with the navigation (below), which deletes the
   oldest by update time, oldest first, never the one shown when it runs. Before each delete the prune reads the
   record: a newer update time than its row (a summary left by a build without summaries) corrects the row and the
-  oldest is picked again; a record that cannot be read is kept and the failure shown.
+  oldest is picked again; a record that cannot be read is kept and the failure shown. The prune deletes only a record
+  it has validated: a missing, invalid, or newer-version record is kept on disk and in the list, counts toward the 50,
+  and is logged, never shown as a failure; the user can still delete its row.
 - The record is versioned (`version: 1`) and holds the displayed entries, each user entry with the text the model
   received (`modelText`), so a reopened conversation resends exactly what was sent and never reads its mentions
   again. It holds no API key and nothing else of `ProviderAccess`; a failed reply's error keeps the provider's base
