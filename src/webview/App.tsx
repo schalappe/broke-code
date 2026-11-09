@@ -51,14 +51,17 @@ export function App({ state, language }: { state: ChatState; language: string })
       {state.models.status === "failed" && (
         <ErrorBlock error={state.models.error} retry={() => post({ type: "retryModels" })} />
       )}
-      {historyOpen ? (
-        <HistoryPanel state={state} language={language} close={() => setHistoryOpen(false)} />
-      ) : (
-        // Without providers, an earlier conversation stays readable and a reply in flight keeps its Stop.
-        (configured || state.entries.length > 0) && (
-          // [>]: Keyed by conversation: another one starts with fresh scroll and collapsed reasoning blocks.
-          <Conversation key={state.conversationId} entries={state.entries} approval={state.approval} />
-        )
+      {historyOpen && <HistoryPanel state={state} language={language} close={() => setHistoryOpen(false)} />}
+      {/* Without providers, an earlier conversation stays readable and a reply in flight keeps its Stop. */}
+      {(configured || state.entries.length > 0) && (
+        // [>]: Keyed by conversation: another one starts with fresh scroll and collapsed reasoning blocks. Hidden, not
+        // unmounted, while History shows, so the reason typed for an open approval survives.
+        <Conversation
+          key={state.conversationId}
+          entries={state.entries}
+          approval={state.approval}
+          hidden={historyOpen}
+        />
       )}
       {(configured || isReplying(state)) && <Composer state={state} />}
     </main>
@@ -310,8 +313,16 @@ export function ConversationList({
   );
 }
 
-/** `approval`: the request open, shown on the last reply, the one in flight. */
-function Conversation({ entries, approval }: { entries: ChatEntry[]; approval?: PendingApproval }) {
+/** `approval`: the request open, shown on the last reply, the one in flight. `hidden`: History shows instead. */
+function Conversation({
+  entries,
+  approval,
+  hidden,
+}: {
+  entries: ChatEntry[];
+  approval?: PendingApproval;
+  hidden: boolean;
+}) {
   const end = useRef<HTMLDivElement>(null);
   const list = useRef<HTMLElement>(null);
   const [pinned, setPinned] = useState(true);
@@ -323,7 +334,7 @@ function Conversation({ entries, approval }: { entries: ChatEntry[]; approval?: 
 
   if (entries.length === 0) {
     return (
-      <section className="conversation start">
+      <section className="conversation start" hidden={hidden}>
         <p>{l10n.t("Send a message to start.")}</p>
       </section>
     );
@@ -331,6 +342,7 @@ function Conversation({ entries, approval }: { entries: ChatEntry[]; approval?: 
   return (
     <section
       className="conversation"
+      hidden={hidden}
       ref={list}
       onScroll={() => {
         const element = list.current;

@@ -216,6 +216,11 @@ button.history-open:hover:not(:disabled) {
   gap: 10px;
 }
 
+/* `display: flex` above would otherwise win over the `hidden` attribute. */
+.conversation[hidden] {
+  display: none;
+}
+
 .message {
   line-height: 1.5;
   overflow-wrap: anywhere;
