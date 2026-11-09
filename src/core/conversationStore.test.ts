@@ -212,7 +212,7 @@ describe("ConversationStore", () => {
     release();
     await saving;
     expect((await listing).conversations).toMatchObject([{ id: saved.id }]);
-    expect(removed).toEqual([]);
+    expect(removed).toEqual([`${saved.id}.summary.json`]);
   });
 
   test("deletes leftover temporary files at the first listing only", async () => {
@@ -330,7 +330,7 @@ describe("ConversationStore", () => {
     expect(await store.save(record(2000))).toBe(true);
   });
 
-  test("a failed summary write after the record's still saves; the row keeps the older summary until the next save", async () => {
+  test("a failed summary write after the record's still saves, leaves no summary, and lists the record", async () => {
     const files = memoryFiles();
     const store = new ConversationStore(files);
     const saved = record(1000, "first");
@@ -347,7 +347,51 @@ describe("ConversationStore", () => {
     expect(result).toBe(true);
     expect(String(logged.flat())).toContain("ENOSPC");
     expect(await store.load(saved.id)).toMatchObject({ updatedAt: 2000 });
+    expect(files.files.has(`${saved.id}.summary.json`)).toBe(false);
+    expect((await new ConversationStore(files).list()).conversations).toEqual([
+      { id: saved.id, title: "first", updatedAt: 2000 },
+    ]);
+  });
+
+  test("a crash after the record write leaves no summary, so the list reads the new record", async () => {
+    const files = memoryFiles();
+    const saved = record(1000, "first");
+    await new ConversationStore(files).save(saved);
+    const write = files.write;
+    let crash: Promise<void> | undefined;
+    files.write = async (name, text) => {
+      if (!name.endsWith(".summary.json")) return write(name, text);
+      crash = new Promise(() => {});
+      return crash;
+    };
+    void new ConversationStore(files).save({ ...saved, updatedAt: 2000 });
+    for (let waited = 0; crash === undefined; waited += 5) {
+      if (waited > 2000) throw new Error("timed out waiting for the summary write");
+      await Bun.sleep(5);
+    }
+    files.write = write;
+    expect([...files.files.keys()]).toEqual([`${saved.id}.json`]);
+    expect((await new ConversationStore(files).list()).conversations).toEqual([
+      { id: saved.id, title: "first", updatedAt: 2000 },
+    ]);
+  });
+
+  test("when the old summary cannot be deleted, the save fails and both files keep the last save", async () => {
+    const files = memoryFiles();
+    const store = new ConversationStore(files);
+    const saved = record(1000, "first");
+    await store.save(saved);
+    const remove = files.remove;
+    files.remove = async (name) => {
+      if (name.endsWith(".summary.json")) throw new Error("EPERM: operation not permitted");
+      return remove(name);
+    };
+    await expect(store.save({ ...saved, updatedAt: 2000 })).rejects.toThrow("EPERM");
+    expect(await store.load(saved.id)).toMatchObject({ updatedAt: 1000 });
     expect((await store.list()).conversations).toEqual([{ id: saved.id, title: "first", updatedAt: 1000 }]);
+    files.remove = remove;
+    expect(await store.save({ ...saved, updatedAt: 3000 })).toBe(true);
+    expect((await new ConversationStore(files).list()).conversations).toMatchObject([{ updatedAt: 3000 }]);
   });
 
   test("after a failed remove, keeps both files and keeps saving the conversation", async () => {
@@ -355,8 +399,10 @@ describe("ConversationStore", () => {
     const store = new ConversationStore(files);
     const saved = record(1000);
     await store.save(saved);
-    files.remove = async () => {
-      throw new Error("EACCES: permission denied");
+    const remove = files.remove;
+    files.remove = async (name) => {
+      if (name === `${saved.id}.json`) throw new Error("EACCES: permission denied");
+      return remove(name);
     };
     await expect(store.remove(saved.id)).rejects.toThrow("EACCES");
     expect([...files.files.keys()].sort()).toEqual([`${saved.id}.json`, `${saved.id}.summary.json`].sort());

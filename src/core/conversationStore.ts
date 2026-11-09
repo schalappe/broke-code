@@ -2,7 +2,8 @@
  * @module conversationStore
  * Saved conversations of one workspace, in a directory the host provides: per conversation, the record `<id>.json` and
  * its summary `<id>.summary.json`, the history row. The list is derived from the directory and reads the summaries;
- * it parses a record only when its summary is missing or invalid. vscode-free: the host passes file access through
+ * it parses a record only when its summary is missing or invalid. A save deletes the summary before it writes the
+ * record, so a summary that exists always matches its record. vscode-free: the host passes file access through
  * `ConversationFiles`.
  */
 import {
@@ -97,8 +98,9 @@ export class ConversationStore {
   }
 
   /**
-   * Write `record`, then its summary. Resolves `false` when nothing was written: no storage, no entries, or the
-   * conversation was removed. Rejects when the record write fails; a failed summary write is logged only.
+   * Delete the summary, write `record`, then its new summary. Resolves `false` when nothing was written: no storage,
+   * no entries, or the conversation was removed. Rejects when the old summary cannot be deleted or the record write
+   * fails; a failed summary write is logged only.
    */
   async save(record: ConversationRecord): Promise<boolean> {
     const name = fileName(record.id);
@@ -108,12 +110,16 @@ export class ConversationStore {
     const summary = serializeSummary(record);
     return this.queue.run(async () => {
       if (this.removed.has(record.id)) return false;
+      // [>]: The list trusts a valid summary, and the prune deletes by its `updatedAt`, so a summary must never be
+      // older than its record. Deleting it first means a crash or a failed write below leaves no summary, and the list
+      // parses the record. When it cannot be deleted, the record is not written either: the save fails as a failed
+      // record write does, the error is shown, and both files stay as the last save left them.
+      await files.remove(summaryName(record.id));
       await files.write(name, text);
       try {
         await files.write(summaryName(record.id), summary);
       } catch (error) {
-        // [>]: The record landed, so the conversation is saved. An older summary only leaves the row's position stale
-        // until the next save (the title is fixed after the first message); a missing one falls back to the record.
+        // [>]: The record landed, so the conversation is saved; without a summary the list parses the record.
         console.error("broke-code: could not write a conversation summary", record.id, error);
       }
       return true;

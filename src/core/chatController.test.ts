@@ -4,7 +4,7 @@ import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ChatController, type ChoiceStore } from "./chatController";
-import { type ConversationRecord, newConversationId } from "./conversation";
+import { type ConversationRecord, newConversationId, serializeSummary } from "./conversation";
 import { type MemoryFiles, memoryFiles } from "./conversationFixture";
 import { ConversationStore } from "./conversationStore";
 import type { MentionReader, ReadMention } from "./mentions";
@@ -777,6 +777,95 @@ describe("ChatController conversations", () => {
     expect(files.files.has(`${seeded[0]!.id}.json`)).toBe(false);
     expect(state().conversations[0]).toMatchObject({ id: state().conversationId, title: "Newest" });
     expect(state().conversations.map((c) => c.id)).not.toContain(seeded[0]!.id);
+  });
+
+  /** 50 conversations updated at times 1 to 50, each with its summary; `onDisk` changes the record file only. */
+  function seededWithSummaries(onDisk: (record: ConversationRecord) => ConversationRecord = (record) => record) {
+    const seeded = Array.from({ length: 50 }, (_, index) => savedRecord(`c${index}`, index + 1));
+    const files = memoryFiles(
+      Object.fromEntries(
+        seeded.flatMap((record) => [
+          [`${record.id}.json`, JSON.stringify(onDisk(record))],
+          [`${record.id}.summary.json`, serializeSummary(record)],
+        ]),
+      ),
+    );
+    return { seeded, files };
+  }
+
+  test("a failed summary write never makes a recently updated conversation the oldest to prune", async () => {
+    const { seeded, files } = seededWithSummaries();
+    const [updated, trulyOldest] = [seeded[0]!, seeded[1]!];
+    const ws = workspace(files);
+    const first = await load(ws, { provider: reasoningProvider, now: () => 1000 });
+    await first.controller.openConversation(updated.id);
+    const write = files.write;
+    let [recordWrites, failedSummaryWrites] = [0, 0];
+    files.write = async (name, text) => {
+      if (isSummaryName(name)) {
+        failedSummaryWrites += 1;
+        throw new Error("ENOSPC: no space left on device");
+      }
+      recordWrites += 1;
+      return write(name, text);
+    };
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await first.controller.send("Still here");
+      await eventually(() => {
+        const reply = raw(ws, updated.id)?.entries.at(-1);
+        return reply?.role === "assistant" && reply.status === "done" && failedSummaryWrites === recordWrites;
+      }, "the final summary write");
+    } finally {
+      logged.mockRestore();
+    }
+    files.write = write;
+    await first.controller.newChat();
+
+    const { controller, state } = await load(ws, { provider: reasoningProvider, now: () => 2000 });
+    expect(state().conversations).toHaveLength(50);
+    await controller.send("Newest");
+    await eventually(() => recordCount(files) === 50 && state().conversations.length === 50, "the prune");
+    expect(raw(ws, updated.id)?.entries).toHaveLength(3);
+    expect(files.files.has(`${trulyOldest.id}.json`)).toBe(false);
+    expect(state().conversations.map((c) => c.id)).toContain(updated.id);
+  });
+
+  test("prunes by the record's update time when a summary left by another build is older", async () => {
+    let updatedId: string | undefined;
+    const { seeded, files } = seededWithSummaries((record) => {
+      if (updatedId !== undefined) return record;
+      updatedId = record.id;
+      return { ...record, updatedAt: 900 };
+    });
+    const ws = workspace(files);
+    const { controller, state } = await load(ws, { provider: reasoningProvider, now: () => 1000 });
+    await controller.send("Newest");
+    await eventually(() => recordCount(files) === 50 && state().conversations.length === 50, "the prune");
+    expect(files.files.has(`${seeded[0]!.id}.json`)).toBe(true);
+    expect(files.files.has(`${seeded[1]!.id}.json`)).toBe(false);
+    expect(state().conversations.find((c) => c.id === seeded[0]!.id)).toMatchObject({ updatedAt: 900 });
+  });
+
+  test("keeps and reports a conversation to prune whose record cannot be read", async () => {
+    const { seeded, files } = seededWithSummaries();
+    const ws = workspace(files);
+    const { controller, state } = await load(ws, { provider: reasoningProvider, now: () => 1000 });
+    const read = files.read;
+    files.read = async (name) => {
+      if (name === `${seeded[0]!.id}.json`) throw new Error("EACCES: permission denied");
+      return read(name);
+    };
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await controller.send("Newest");
+      await eventually(() => state().storageProblem?.kind === "deleteFailed", "the reported check");
+    } finally {
+      logged.mockRestore();
+    }
+    expect(files.files.has(`${seeded[0]!.id}.json`)).toBe(true);
+    expect(recordCount(files)).toBe(51);
+    expect(state().storageProblem).toMatchObject({ cause: expect.stringContaining("EACCES") });
   });
 
   test("prunes at restore the conversations left past 50 by a stop before the prune", async () => {

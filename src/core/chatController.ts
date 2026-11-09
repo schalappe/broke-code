@@ -409,7 +409,29 @@ export class ChatController {
    * reply: the reply's own save queued this prune, and the conversation shown does not change.
    */
   private async prune(): Promise<void> {
-    for (const id of conversationsOverLimit(this.state.conversations, [this.conversation.id])) await this.remove(id);
+    const tried = new Set<string>();
+    for (;;) {
+      const id = conversationsOverLimit(this.state.conversations, [this.conversation.id]).find((id) => !tried.has(id));
+      if (id === undefined) return;
+      // [>]: A listed row may come from a summary older than its record (one a build without summaries left behind),
+      // so the record decides before a delete: a newer one corrects the row, and the oldest is picked again.
+      let record: ConversationRecord | undefined;
+      try {
+        record = await this.store.load(id);
+      } catch (error) {
+        tried.add(id);
+        this.report({ kind: "deleteFailed", cause: String(error) }, "could not check a conversation to prune", error);
+        continue;
+      }
+      const row = this.state.conversations.find((summary) => summary.id === id);
+      if (record && row && record.updatedAt !== row.updatedAt) {
+        const others = this.state.conversations.filter((summary) => summary.id !== id);
+        this.setConversations([summarize(record), ...others]);
+        continue;
+      }
+      tried.add(id);
+      await this.remove(id);
+    }
   }
 
   /** Each mention of `text`, read in parallel. A reader that rejects despite its contract yields `unreadable`. */
