@@ -74,6 +74,29 @@ export async function readWorkspaceEntry(
 
 const notFileOrFolder: WorkspaceEntry = { status: "unreadable", kind: "file", cause: "not a file or folder" };
 
+/**
+ * Read the file at absolute `path`, symlinks followed, under the same size cap and binary probe as
+ * `readWorkspaceEntry`, with no workspace boundary: for a file the user keeps outside the workspace, such as
+ * `~/.agents/AGENTS.md`. Anything but a regular file is `unreadable`. Never rejects.
+ */
+export async function readFileOutsideWorkspace(path: string): Promise<WorkspaceEntry> {
+  const notFile: WorkspaceEntry = { status: "unreadable", kind: "file", cause: "not a file" };
+  try {
+    // [!]: Opening a FIFO or device could block forever or read without end.
+    if (!(await stat(path)).isFile()) return notFile;
+    const handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
+    try {
+      if (!(await handle.stat()).isFile()) return notFile;
+      return await readFile(handle);
+    } finally {
+      await handle.close();
+    }
+  } catch (error) {
+    if (MISSING_CODES.has(errorCode(error) ?? "")) return { status: "missing", kind: "file" };
+    return { status: "unreadable", kind: "file", cause: errorCode(error) ?? String(error) };
+  }
+}
+
 function isFileOrFolder(info: Stats): boolean {
   return info.isFile() || info.isDirectory();
 }
