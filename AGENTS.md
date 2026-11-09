@@ -159,17 +159,21 @@ yet. Read
   for reads); content over 1 MiB is refused. The applier checks the path again and writes only when the file still
   holds the planned text (already holding the new text is a success, so applying twice is harmless).
 - A write is atomic: the file holds its old text or the new one, never a mix or nothing, even after a crash. The new
-  text goes to a temporary file `.<name>.broke-code-<random>.tmp` in the target's own folder, flushed to disk, with
-  the old file's permission bits (`rwx` for owner, group, and others) or the default ones for a new file. A last
-  check then reads the target again: its folder must still resolve to the same place inside the workspace, the
-  target must not be a symlink, and it must still hold the planned text (or already the new text: a success).
-  Then the temporary file takes its place: `rename(2)` over an existing file, `link(2)` for a new one, which fails
-  rather than replace a file created meanwhile (refused as changed since planned). On any failure the temporary
-  file is removed and the file stays byte-identical; the error result keeps the cause ("the file was not written
-  (ENOSPC)"), and folders created for the write stay. Accepted costs: a hard link to the file keeps the old text;
-  its owner, extended attributes, and ACLs are not kept; the folder must be writable; a crash before the swap, or a
-  folder renamed during the write, leaves the temporary file behind. Residual race, accepted as for reads: a write
-  landing between the last read and the rename is overwritten, since Node has no compare-and-swap on a path.
+  text goes to a temporary file `.<name>.broke-code-<random>.tmp` in the target's own folder (at most 226 bytes of
+  the file name, cut between characters, so the name fits in 255 bytes), flushed to disk. For an existing file it is
+  created readable by its owner only (`0600`); for a new file, with the default bits. A last check then reads the
+  target again: its folder must still resolve to the same place inside the workspace, the target must not be a
+  symlink, and it must still hold the planned text (or already the new text: a success). Only then does the
+  temporary file get the old file's permission bits (`rwx` for owner, group, and others) and take its place:
+  `rename(2)` over an existing file, `link(2)` for a new one, which fails rather than replace a file created meanwhile
+  (refused as changed since planned). On any failure the temporary file is removed and the file stays
+  byte-identical; the error result keeps the cause ("the file was not written (ENOSPC)"), and folders created for the
+  write stay. Accepted costs: a hard link to the file keeps the old text; its owner, extended attributes, and ACLs
+  are not kept; the folder must be writable; a crash before the swap, or a folder renamed during the write, leaves
+  the temporary file behind. Residual races, accepted as for reads, since such a writer already runs with the user's
+  rights: a write landing between the last read and the rename is overwritten (Node has no compare-and-swap on a
+  path), and a missing parent folder swapped for a symlink out after the check makes `mkdir` create an empty folder
+  outside before the write is refused.
 - Tools act inside the open workspace only. The one exception is read-only access to the directories of skills
   loaded in the current conversation.
 - Approvals:
@@ -320,8 +324,8 @@ yet. Read
 - Discovery runs at each send, like the instruction files, over the direct children of `~/.agents/skills/`, then of
   each workspace folder's `.agents/skills/`. A child is a skill when it is a folder holding `SKILL.md` (1 MiB cap); a
   folder without one, a stray file, and a missing skills folder pass silently. A personal skill folder follows
-  symlinks; a workspace one is held to its own workspace folder, and one linked out of it, into another workspace
-  folder included, is skipped with a warning.
+  symlinks; a workspace one, the folder and its `SKILL.md` alike, is held to its own workspace folder, and one linked
+  out of it, into another workspace folder included, is skipped with a warning.
 - The frontmatter is the lines between a first line `---` and the next `---`, read by a hand-written subset of YAML
   (`skills.ts`), no YAML dependency: top-level `key: value` with plain, single- or double-quoted, or `>` and `|` block
   values; nested maps and unknown keys are ignored. `name` follows the spec (1 to 64 of `a-z`, `0-9`, `-`, no hyphen
