@@ -2387,6 +2387,37 @@ describe("ChatController agent turn", () => {
       expect(seen.map((run) => run.skillRoots)).toEqual([[], [], []]);
     });
 
+    test("a load_skill stopped by Stop adds no folder to the next send, though its run settles ok late", async () => {
+      const seen: { call: string; skillRoots: readonly string[] }[] = [];
+      const runner: ToolRunner = {
+        tools: [...READ_TOOLS, LOAD_SKILL_TOOL],
+        run: (call, context) => {
+          seen.push({ call: call.name, skillRoots: context.skillRoots });
+          if (call.name !== "load_skill") return Promise.resolve({ status: "ok", text: "read" });
+          // [>]: Settles `ok` only once Stop aborted it, so only the controller can drop the step.
+          return new Promise((settle) =>
+            context.signal.addEventListener("abort", () => settle({ status: "ok", text: "loaded" })),
+          );
+        },
+      };
+      const { controller, state } = await scripted(
+        [{ content: loadCall("review") }, { content: readCall("/s/review/reference.md") }, { content: "Done." }],
+        runner,
+        undefined,
+        undefined,
+        discovered,
+      );
+      const turn = controller.send("review this");
+      await until(state, () => seen.length === 1);
+      controller.stop();
+      await turn;
+      await controller.send("go on");
+      expect(seen).toEqual([
+        { call: "load_skill", skillRoots: [] },
+        { call: "read_file", skillRoots: [] },
+      ]);
+    });
+
     /** A saved conversation whose one turn holds a `load_skill` step of `status`. */
     function recordWithLoad(status: "ok" | "error"): ConversationRecord {
       const call = loadCall("review");
