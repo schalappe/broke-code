@@ -1,12 +1,15 @@
 /**
  * @module chatController
- * Chat state owner: provider and model choice, model listing, streamed replies, stop, and the workspace's saved
- * conversations (new chat, reopen, delete). The conversation shown is saved when a message is sent, at most every
- * 500 ms while its reply streams, and when the reply ends, so a reload or crash loses at most the reply streaming.
- * vscode-free: host passes key store, workspace memento, mention reader, and conversation store through ports.
+ * Chat state owner: provider and model choice, model listing, agent turns (streamed replies, body tool calls, tool
+ * steps), stop, and the workspace's saved conversations (new chat, reopen, delete). The conversation shown is saved
+ * when a message is sent, at most every 500 ms while a reply streams, when a call starts, after each tool step, and
+ * when the turn ends, so a reload or crash loses at most the reply streaming.
+ * vscode-free: host passes key store, workspace memento, mention reader, conversation store, tool runner, and
+ * instruction file reader through ports.
  */
 import { type ChatMessage, listModels, type ProviderAccess, streamChat } from "./client";
 import {
+  CONVERSATION_VERSION,
   type ConversationRecord,
   type ConversationSummary,
   conversationsOverLimit,
@@ -17,9 +20,19 @@ import {
 } from "./conversation";
 import type { ConversationStore } from "./conversationStore";
 import { composeUserMessage, findMentions, type MentionReader, type MentionResult, type ReadMention } from "./mentions";
-import { type ChatEntry, type ChatState, isReplying, type ReplyStatus, type StorageProblem } from "./protocol";
+import {
+  type ChatEntry,
+  type ChatState,
+  type HaltReason,
+  isReplying,
+  type ReplyStatus,
+  type StorageProblem,
+} from "./protocol";
 import type { ParsedProviders, Provider } from "./providers";
 import { SerialQueue } from "./serialQueue";
+import { composeSystemPrompt, type InstructionFile } from "./systemPrompt";
+import { type ParsedReply, parseToolCall, type ToolSpec } from "./toolCalls";
+import type { ToolCall, ToolResult } from "./tools";
 
 /** API key lookup. `undefined` = no key; must not reject. */
 export type KeyStore = { get(provider: string): Promise<string | undefined> };
@@ -29,6 +42,38 @@ export type ChoiceStore = {
   get<T>(key: string): T | undefined;
   update(key: string, value: unknown): PromiseLike<void>;
 };
+
+/**
+ * Runs body tool calls. `tools`: what the system prompt lists and the parser accepts. `run` must not reject; `signal`
+ * is Stop, and the turn does not wait for a run that ignores it.
+ */
+export type ToolRunner = {
+  tools: readonly ToolSpec[];
+  run(call: ToolCall, signal: AbortSignal): Promise<ToolResult>;
+};
+
+/**
+ * Reads the instruction files for the system prompt, in prompt order, at each send. A missing file is left out; one
+ * that cannot be read is logged and left out. Must not reject.
+ */
+export type InstructionReader = { read(): Promise<InstructionFile[]> };
+
+/** What the controller needs from the host. `now`: clock for record times, in milliseconds since the epoch. */
+export type ChatPorts = {
+  apiKeys: KeyStore;
+  workspaceState: ChoiceStore;
+  publish: (state: ChatState) => void;
+  mentions: MentionReader;
+  store: ConversationStore;
+  tools: ToolRunner;
+  instructions: InstructionReader;
+  now?: () => number;
+};
+
+/** Tool steps per agent turn, calls and malformed calls alike, before it halts. */
+export const MAX_TOOL_STEPS = 50;
+/** Malformed calls in a row that halt an agent turn; a call that parses resets the count. */
+export const MAX_MALFORMED_IN_A_ROW = 3;
 
 const LAST_CHOICE_KEY = "brokeCode.lastChoice";
 /** Id of the conversation shown, reopened at the next window load. */
@@ -58,8 +103,9 @@ export class ChatController {
   private conversation: Conversation;
   private state: ChatState;
   /**
-   * In-flight reply: its abort handle, the provider it streams from, and `settled`, which resolves once the reply has
-   * ended and its last save has been handed to the store. After Stop it does not wait for `streamChat` to return.
+   * In-flight agent turn: its abort handle, the provider it streams from, and `settled`, which resolves once the turn
+   * has ended and its last save has been handed to the store. After Stop it waits neither for `streamChat` nor for a
+   * tool run to return.
    */
   private reply: { abort: AbortController; provider: Provider; settled: Promise<void> } | undefined;
   /** Bumped per listing request; stale listings dropped. */
@@ -80,15 +126,24 @@ export class ChatController {
    */
   private readonly modelText = new WeakMap<ChatEntry, string>();
 
-  /** `now`: clock for record times, in milliseconds since the epoch. */
-  constructor(
-    private readonly apiKeys: KeyStore,
-    private readonly workspaceState: ChoiceStore,
-    private readonly publish: (state: ChatState) => void,
-    private readonly mentions: MentionReader,
-    private readonly store: ConversationStore,
-    private readonly now: () => number = Date.now,
-  ) {
+  private readonly apiKeys: KeyStore;
+  private readonly workspaceState: ChoiceStore;
+  private readonly publish: (state: ChatState) => void;
+  private readonly mentions: MentionReader;
+  private readonly store: ConversationStore;
+  private readonly tools: ToolRunner;
+  private readonly instructions: InstructionReader;
+  private readonly now: () => number;
+
+  constructor(ports: ChatPorts) {
+    this.apiKeys = ports.apiKeys;
+    this.workspaceState = ports.workspaceState;
+    this.publish = ports.publish;
+    this.mentions = ports.mentions;
+    this.store = ports.store;
+    this.tools = ports.tools;
+    this.instructions = ports.instructions;
+    this.now = ports.now ?? Date.now;
     this.conversation = this.freshConversation();
     this.state = {
       providers: [],
@@ -239,9 +294,11 @@ export class ChatController {
   }
 
   /**
-   * Send user message with its mentions read now, and stream reply. Ignored while replying or without provider
-   * and model. `picked`: paths chosen in the menu, mentions while their `@<path>` is still in the text. A mention
-   * that cannot be read is reported to the model and in the entry; the message still goes.
+   * Send user message with its mentions read now, and run the agent turn: stream the reply, run the body tool call
+   * its answer holds, record the tool step, and request again, until a reply holds no call, a limit halts the turn,
+   * the reply fails, or Stop. Ignored while replying or without provider and model. `picked`: paths chosen in the
+   * menu, mentions while their `@<path>` is still in the text. A mention that cannot be read is reported to the
+   * model and in the entry; the message still goes.
    */
   async send(text: string, picked: readonly string[] = []): Promise<void> {
     const provider = this.currentProvider();
@@ -249,30 +306,26 @@ export class ChatController {
     const content = text.trim();
     if (!provider || !model || !content || isReplying(this.state)) return;
 
-    const history = this.toHistory();
     const conversation = this.conversation;
     conversation.provider = provider.name;
     conversation.model = model;
     const user: ChatEntry & { role: "user" } = { role: "user", content, mentions: [] };
-    const reply: ChatEntry & { role: "assistant" } = {
-      role: "assistant",
-      reasoning: "",
-      content: "",
-      status: "waiting",
-    };
+    let reply = waitingReply();
     // [>]: Published before the reads, so the panel shows a reply in flight (Stop, composer locked) while they run;
     // published again once the mentions are known.
     conversation.entries.push(user, reply);
     const abort = new AbortController();
+    const signal = abort.signal;
     let markSettled: () => void = () => {};
     const settled = new Promise<void>((resolve) => {
       markSettled = resolve;
     });
     this.reply = { abort, provider, settled };
     this.emit();
-    /** Last status of the reply, and its last save handed to the store. */
-    const settle = (status: ReplyStatus) => {
+    /** Last status of the turn, on its last reply, and its last save handed to the store. */
+    const settle = (status: ReplyStatus, haltReason?: HaltReason) => {
       reply.status = status;
+      if (haltReason !== undefined) reply.haltReason = haltReason;
       this.emit();
       void this.save(conversation);
     };
@@ -281,51 +334,124 @@ export class ChatController {
       // [>]: The message is on disk before the request goes, so a crash keeps it. A failed save is shown and the
       // reply still goes. Stop ends the wait at once, even if a read, the key lookup, or the save never settles.
       const prepared = await unlessAborted(
-        Promise.all([this.readMentions(content, picked), this.accessOf(provider), this.save(conversation)]),
-        abort.signal,
+        Promise.all([
+          this.readMentions(content, picked),
+          this.accessOf(provider),
+          this.readInstructions(),
+          this.save(conversation),
+        ]),
+        signal,
       );
       if (!prepared) return settle("stopped");
-      const [mentions, access] = prepared;
+      const [mentions, access, instructions] = prepared;
       user.mentions = mentions.map(toResult);
-      const composed = composeUserMessage(content, mentions);
-      this.modelText.set(user, composed);
-      history.push({ role: "user", content: composed });
+      this.modelText.set(user, composeUserMessage(content, mentions));
       if (mentions.length > 0) {
         this.emit();
         const saved = await unlessAborted(
           this.save(conversation).then(() => true),
-          abort.signal,
+          signal,
         );
         if (!saved) return settle("stopped");
       }
 
-      // [>]: Stop ends the reply at once, even if a step inside `streamChat` never settles (a CA file read on a FIFO):
-      // late deltas and the late outcome are dropped, so navigation never waits on work that cannot be aborted.
-      const delta = (field: "content" | "reasoning") => (text: string) => {
-        if (abort.signal.aborted) return;
-        reply[field] += text;
-        reply.status = "streaming";
+      const system: ChatMessage = { role: "system", content: composeSystemPrompt(this.tools.tools, instructions) };
+      let steps = 0;
+      let malformedInARow = 0;
+      for (;;) {
+        const messages = [system, ...this.toHistory(conversation)];
+        const outcome = await this.stream(access, model, messages, conversation, reply, signal);
+        if (!outcome) return settle("stopped");
+        if (outcome.status === "failed") reply.error = outcome.error;
+        if (outcome.status !== "done") return settle(outcome.status);
+
+        // [!]: The parser reads the answer only, never the reasoning.
+        const parsed = parseToolCall(reply.content, this.tools.tools);
+        if (parsed.kind === "none") return settle("done");
+        let step: ChatEntry & { role: "tool" };
+        if (parsed.kind === "call") {
+          const { name, args, start, end } = parsed;
+          // [>]: The reply stays `streaming` while its call runs, so the turn reads as in flight and a crash meanwhile
+          // brings it back stopped.
+          reply.call = { name, args, start, end };
+          this.emit();
+          void this.save(conversation);
+          const result = await unlessAborted(this.runTool({ name, args }, signal), signal);
+          if (!result) return settle("stopped");
+          step = { role: "tool", name, args, status: result.status, text: result.text };
+          malformedInARow = 0;
+        } else {
+          step = {
+            role: "tool",
+            name: malformedToolName(reply.content, parsed, this.tools.tools),
+            args: {},
+            status: "malformed",
+            text: parsed.message,
+          };
+          malformedInARow += 1;
+        }
+        steps += 1;
+        conversation.entries.push(step);
+        if (malformedInARow >= MAX_MALFORMED_IN_A_ROW) return settle("halted", "malformedCalls");
+        if (steps >= MAX_TOOL_STEPS) return settle("halted", "stepLimit");
+        // [>]: The step and the next reply land in one update, so the turn never reads as ended between them.
+        reply.status = "done";
+        reply = waitingReply();
+        conversation.entries.push(reply);
         this.emit();
-        this.saveSoon(conversation);
-      };
-      const outcome = await unlessAborted(
-        streamChat(access, {
-          model,
-          messages: history,
-          signal: abort.signal,
-          onContent: delta("content"),
-          onReasoning: delta("reasoning"),
-        }),
-        abort.signal,
-      );
-      if (!outcome) return settle("stopped");
-      if (outcome.status === "failed") reply.error = outcome.error;
-      settle(outcome.status);
+        void this.save(conversation);
+      }
     } finally {
-      // [>]: Also on an unexpected throw, so navigation waiting for this reply never hangs.
+      // [>]: Also on an unexpected throw, so navigation waiting for this turn never hangs.
       if (this.reply?.abort === abort) this.reply = undefined;
       markSettled();
     }
+  }
+
+  /**
+   * Stream one reply of a turn into `reply`. `undefined` once `signal` aborts: Stop ends the reply at once, even if a
+   * step inside `streamChat` never settles (a CA file read on a FIFO), and late deltas and the late outcome are
+   * dropped, so navigation never waits on work that cannot be aborted.
+   */
+  private stream(
+    access: ProviderAccess,
+    model: string,
+    messages: ChatMessage[],
+    conversation: Conversation,
+    reply: ChatEntry & { role: "assistant" },
+    signal: AbortSignal,
+  ) {
+    const delta = (field: "content" | "reasoning") => (text: string) => {
+      if (signal.aborted) return;
+      reply[field] += text;
+      reply.status = "streaming";
+      this.emit();
+      this.saveSoon(conversation);
+    };
+    return unlessAborted(
+      streamChat(access, { model, messages, signal, onContent: delta("content"), onReasoning: delta("reasoning") }),
+      signal,
+    );
+  }
+
+  /** Run `call`. A runner that rejects despite its contract gives an `error` result, logged. */
+  private runTool(call: ToolCall, signal: AbortSignal): Promise<ToolResult> {
+    return Promise.resolve()
+      .then(() => this.tools.run(call, signal))
+      .catch((error: unknown): ToolResult => {
+        console.error("broke-code: tool run failed", call.name, error);
+        return { status: "error", text: `${call.name}: the tool failed (${String(error)}).` };
+      });
+  }
+
+  /** The instruction files; a reader that rejects despite its contract gives none, logged. */
+  private readInstructions(): Promise<InstructionFile[]> {
+    return Promise.resolve()
+      .then(() => this.instructions.read())
+      .catch((error: unknown) => {
+        console.error("broke-code: could not read the instruction files", error);
+        return [];
+      });
   }
 
   stop(): void {
@@ -474,7 +600,7 @@ export class ChatController {
 
   private fromRecord(record: ConversationRecord): Conversation {
     const entries = record.entries.map((stored): ChatEntry => {
-      if (stored.role === "assistant") return stored;
+      if (stored.role !== "user") return stored;
       const { modelText, ...entry } = stored;
       this.modelText.set(entry, modelText);
       return entry;
@@ -495,7 +621,7 @@ export class ChatController {
     );
     const { id, createdAt, provider, model } = conversation;
     return {
-      version: 1,
+      version: CONVERSATION_VERSION,
       id,
       createdAt,
       updatedAt: this.now(),
@@ -583,13 +709,19 @@ export class ChatController {
   }
 
   /**
-   * Conversation sent to model: user messages as composed at send time, plus assistant answers with text (stopped
-   * and cut-off partials included). Reasoning never sent; a reply with reasoning only is left out.
+   * `conversation` as sent to the model: user messages as composed at send time, assistant answers verbatim, their
+   * call blocks included (stopped and cut-off partials too), and each tool step as a `user` message holding a
+   * `<tool_result>` tag, never the `tool` role, which needs native tool calling (ADR 0001). Reasoning never sent; a
+   * reply with reasoning only, or none yet, is left out.
    */
-  private toHistory(): ChatMessage[] {
-    return this.state.entries
-      .filter((entry) => entry.role === "user" || entry.content !== "")
-      .map((entry) => ({ role: entry.role, content: this.modelText.get(entry) ?? entry.content }));
+  private toHistory(conversation: Conversation): ChatMessage[] {
+    const messages: ChatMessage[] = [];
+    for (const entry of conversation.entries) {
+      if (entry.role === "user") messages.push({ role: "user", content: this.modelText.get(entry) ?? entry.content });
+      else if (entry.role === "tool") messages.push({ role: "user", content: toolResultMessage(entry) });
+      else if (entry.content !== "") messages.push({ role: "assistant", content: entry.content });
+    }
+    return messages;
   }
 
   private currentProvider(): Provider | undefined {
@@ -630,6 +762,25 @@ function unlessAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T | un
     signal.addEventListener("abort", onAbort, { once: true });
     work.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
   });
+}
+
+function waitingReply(): ChatEntry & { role: "assistant" } {
+  return { role: "assistant", reasoning: "", content: "", status: "waiting" };
+}
+
+/** A tool step as the model reads it. A malformed call goes back as an error. */
+function toolResultMessage(step: ChatEntry & { role: "tool" }): string {
+  const status = step.status === "malformed" ? "error" : step.status;
+  return `<tool_result tool="${step.name}" status="${status}">\n${step.text}\n</tool_result>`;
+}
+
+/**
+ * The tool a malformed block of `answer` names, or `unknown` when it names none of `tools`. [!]: Only a known name
+ * goes in the `tool` attribute, never raw model text.
+ */
+function malformedToolName(answer: string, parsed: ParsedReply & { kind: "malformed" }, tools: readonly ToolSpec[]) {
+  const name = /^<([a-z][a-z0-9_]*)>/.exec(answer.slice(parsed.start))?.[1];
+  return tools.some((tool) => tool.name === name) ? (name as string) : "unknown";
 }
 
 /** What the chat shows and keeps of a read mention: no content. */

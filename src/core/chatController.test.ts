@@ -3,14 +3,23 @@ import { copyFileSync, mkdtempSync, rmSync, unlinkSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ChatController, type ChoiceStore } from "./chatController";
+import {
+  ChatController,
+  type ChatPorts,
+  type ChoiceStore,
+  type InstructionReader,
+  MAX_TOOL_STEPS,
+  type ToolRunner,
+} from "./chatController";
 import { type ConversationRecord, newConversationId, serializeSummary } from "./conversation";
 import { type MemoryFiles, memoryFiles } from "./conversationFixture";
 import { ConversationStore } from "./conversationStore";
 import type { MentionReader, ReadMention } from "./mentions";
-import { type ChatState, isReplying } from "./protocol";
+import { type ChatEntry, type ChatState, isReplying } from "./protocol";
 import type { Provider } from "./providers";
+import { composeSystemPrompt, type InstructionFile } from "./systemPrompt";
 import { createTlsFixture } from "./tlsFixture";
+import { READ_TOOLS, runReadTool, type ToolResult } from "./tools";
 import { vllmOpening, vllmReasoningRest } from "./vllmFixture";
 
 const encoder = new TextEncoder();
@@ -27,6 +36,27 @@ const shapes: Record<string, string[]> = {
 /** Reply reasoning only, then an unclosed `<think>`: no answer. */
 const reasoningOnly = [event({ content: "<think>Plan, never closed" })];
 
+/**
+ * One scripted reply: its answer and optional reasoning, streamed whole; `hang` streams "Partial " and never ends;
+ * `fail` answers HTTP 500.
+ */
+type ScriptedReply = { content: string; reasoning?: string } | "hang" | "fail";
+/** Replies still to send, by path prefix, one per request. */
+const scripts = new Map<string, ScriptedReply[]>();
+
+function scriptedResponse(reply: ScriptedReply | undefined): Response {
+  const headers = { "content-type": "text/event-stream" };
+  if (reply === undefined) return new Response("script exhausted", { status: 500 });
+  if (reply === "fail") return new Response("model crashed", { status: 500 });
+  if (reply === "hang") {
+    return new Response(new ReadableStream({ start: (controller) => controller.enqueue(chunk("Partial ")) }), {
+      headers,
+    });
+  }
+  const reasoning = reply.reasoning ? [event({ content: "", reasoning: reply.reasoning })] : [];
+  return new Response(`${[...reasoning, event({ content: reply.content })].join("")}data: [DONE]\n\n`, { headers });
+}
+
 /** Body of each chat request, by path prefix. */
 const requests = new Map<string, unknown[]>();
 /** Number of model listings, by path prefix. */
@@ -35,7 +65,7 @@ const listings = new Map<string, number>();
 // Provider that lists one model. Path `/a/` and `/b/` stream "Partial ", then finish only when `finishReply` is
 // called; `/shape-<name>/` streams that shape whole; `/unclosed/` streams `reasoningOnly`; `/vllm/` sends the vLLM
 // opening chunk, then the rest of its reasoning reply only when `releaseVllm` is called; `/mentions/` streams the
-// `reasoning` shape whole.
+// `reasoning` shape whole; a prefix with a script in `scripts` answers each request with its next scripted reply.
 let finishReply: () => void = () => {};
 let releaseVllm: () => void = () => {};
 const server = Bun.serve({
@@ -49,6 +79,8 @@ const server = Bun.serve({
     }
     requests.set(prefix, [...(requests.get(prefix) ?? []), await request.json()]);
     if (prefix === "fails") return new Response("model crashed", { status: 500 });
+    const script = scripts.get(prefix);
+    if (script) return scriptedResponse(script.shift());
     if (prefix === "late-flush") {
       // [>]: Ends inside a closing `</think>` tag, then stays open: Stop makes the splitter flush the held `</thi`.
       const body = new ReadableStream<Uint8Array>({
@@ -108,6 +140,23 @@ async function until(state: () => ChatState, predicate: (state: ChatState) => bo
   }
 }
 
+/** The text of a user or assistant entry; `undefined` for a tool step or no entry. */
+const contentOf = (entry: ChatEntry | undefined) => (entry && entry.role !== "tool" ? entry.content : undefined);
+
+/** The system message of a turn with the read tools and no instruction file. */
+const SYSTEM = { role: "system", content: composeSystemPrompt(READ_TOOLS, []) };
+
+/** Agent ports for replies without a call: the read tools listed, any run fails the test, no instruction file. */
+const noTools: Pick<ChatPorts, "tools" | "instructions"> = {
+  tools: {
+    tools: READ_TOOLS,
+    run: async (call) => {
+      throw new Error(`unexpected tool call ${call.name}`);
+    },
+  },
+  instructions: { read: async () => [] },
+};
+
 /** Reader for conversations that mention nothing: any read fails the test. */
 const noMentions: MentionReader = {
   read: async (path) => {
@@ -121,13 +170,14 @@ async function ready(
   mentions: MentionReader = noMentions,
   publish: (state: ChatState) => void = () => {},
 ) {
-  const controller = new ChatController(
-    { get: async () => undefined },
-    memoryStore(),
+  const controller = new ChatController({
+    apiKeys: { get: async () => undefined },
+    workspaceState: memoryStore(),
     publish,
     mentions,
-    new ConversationStore(undefined),
-  );
+    store: new ConversationStore(undefined),
+    ...noTools,
+  });
   const state = () => controller.snapshot;
   controller.setProviders({ providers: [provider], skipped: [] });
   await until(state, (s) => s.model === "m");
@@ -138,7 +188,7 @@ async function ready(
 async function replying() {
   const { controller, state } = await ready();
   const sent = controller.send("Hi");
-  await until(state, (s) => s.entries.at(-1)?.role === "assistant" && s.entries.at(-1)?.content === "Partial ");
+  await until(state, (s) => s.entries.at(-1)?.role === "assistant" && contentOf(s.entries.at(-1)) === "Partial ");
   return { controller, state, sent };
 }
 
@@ -210,13 +260,14 @@ describe("ChatController settings reapplied", () => {
 
 describe("ChatController CA file change", () => {
   test("relists the models when the active provider's CA file changes, without a retry", async () => {
-    const controller = new ChatController(
-      { get: async () => undefined },
-      memoryStore(),
-      () => {},
-      noMentions,
-      new ConversationStore(undefined),
-    );
+    const controller = new ChatController({
+      apiKeys: { get: async () => undefined },
+      workspaceState: memoryStore(),
+      publish: () => {},
+      mentions: noMentions,
+      store: new ConversationStore(undefined),
+      ...noTools,
+    });
     const state = () => controller.snapshot;
     controller.setProviders({ providers: [{ ...ollama, caFile: "relative.pem" }], skipped: [] });
     await until(state, (s) => s.models.status === "failed");
@@ -243,6 +294,7 @@ describe("ChatController reasoning", () => {
       await controller.send("And then?");
       expect(requests.get(prefix)?.[1]).toMatchObject({
         messages: [
+          SYSTEM,
           { role: "user", content: "Hi" },
           { role: "assistant", content: "Answer" },
           { role: "user", content: "And then?" },
@@ -254,16 +306,17 @@ describe("ChatController reasoning", () => {
 
   test("keeps a vLLM reply waiting after its opening chunk, then holds reasoning and answer apart", async () => {
     const published: unknown[] = [];
-    const controller = new ChatController(
-      { get: async () => undefined },
-      memoryStore(),
-      (s) => {
+    const controller = new ChatController({
+      apiKeys: { get: async () => undefined },
+      workspaceState: memoryStore(),
+      publish: (s) => {
         const last = s.entries.at(-1);
         if (last?.role === "assistant") published.push(structuredClone(last));
       },
-      noMentions,
-      new ConversationStore(undefined),
-    );
+      mentions: noMentions,
+      store: new ConversationStore(undefined),
+      ...noTools,
+    });
     const state = () => controller.snapshot;
     controller.setProviders({
       providers: [{ name: "vLLM", baseUrl: `http://localhost:${server.port}/vllm/v1` }],
@@ -296,6 +349,7 @@ describe("ChatController reasoning", () => {
     await until(state, () => requests.get("vllm")?.length === 2);
     expect(requests.get("vllm")?.[1]).toMatchObject({
       messages: [
+        SYSTEM,
         { role: "user", content: "Hi" },
         { role: "assistant", content: "Hello! How can I help?" },
         { role: "user", content: "And then?" },
@@ -318,10 +372,7 @@ describe("ChatController reasoning", () => {
     await controller.send("Again");
     expect(controller.snapshot.entries).toHaveLength(4);
     expect(requests.get("unclosed")?.[1]).toMatchObject({
-      messages: [
-        { role: "user", content: "Hi" },
-        { role: "user", content: "Again" },
-      ],
+      messages: [SYSTEM, { role: "user", content: "Hi" }, { role: "user", content: "Again" }],
     });
   });
 });
@@ -396,6 +447,7 @@ describe("ChatController mentions", () => {
     await controller.send("And then?");
 
     expect(lastRequest().messages).toEqual([
+      SYSTEM,
       composed!,
       { role: "assistant", content: "Answer" },
       { role: "user", content: "And then?" },
@@ -466,7 +518,7 @@ describe("ChatController mentions", () => {
     const dropped = controller.send("read @slow.ts");
     await controller.newChat();
     const next = controller.send("Hi");
-    await until(state, (s) => s.entries.at(-1)?.content === "Partial ");
+    await until(state, (s) => contentOf(s.entries.at(-1)) === "Partial ");
     release();
     await dropped;
     // [>]: A lost abort handle makes this Stop a no-op, and `next` never settles: the test times out.
@@ -529,14 +581,15 @@ describe("ChatController conversations", () => {
     ws: Workspace,
     options: { provider?: Provider; mentions?: MentionReader; apiKey?: string; now?: () => number } = {},
   ) {
-    const controller = new ChatController(
-      { get: async () => options.apiKey },
-      ws.memento,
-      () => {},
-      options.mentions ?? noMentions,
-      new ConversationStore(ws.files),
-      options.now,
-    );
+    const controller = new ChatController({
+      apiKeys: { get: async () => options.apiKey },
+      workspaceState: ws.memento,
+      publish: () => {},
+      mentions: options.mentions ?? noMentions,
+      store: new ConversationStore(ws.files),
+      now: options.now,
+      ...noTools,
+    });
     const state = () => controller.snapshot;
     controller.setProviders({ providers: [options.provider ?? ollama], skipped: [] });
     await controller.restore();
@@ -619,12 +672,12 @@ describe("ChatController conversations", () => {
     const { controller, state } = await load(ws);
     const sent = controller.send("Hi");
     const id = state().conversationId;
-    await until(state, (s) => s.entries.at(-1)?.content === "Partial ");
+    await until(state, (s) => contentOf(s.entries.at(-1)) === "Partial ");
     await Bun.sleep(50);
     expect(writes).toBe(1);
     expect(raw(ws, id)?.entries[1]).toMatchObject({ content: "", status: "waiting" });
 
-    await eventually(() => raw(ws, id)?.entries[1]?.content === "Partial ", "the streaming save");
+    await eventually(() => contentOf(raw(ws, id)?.entries[1]) === "Partial ", "the streaming save");
     expect(writes).toBe(2);
     expect(raw(ws, id)?.entries[1]).toMatchObject({ status: "streaming" });
 
@@ -666,6 +719,7 @@ describe("ChatController conversations", () => {
     expect(state().entries).toEqual(first.state().entries);
     await controller.send("And then?");
     expect(lastRequest("saved").messages).toEqual([
+      SYSTEM,
       composed,
       { role: "assistant", content: "Answer" },
       { role: "user", content: "And then?" },
@@ -691,6 +745,7 @@ describe("ChatController conversations", () => {
     expect(state()).toMatchObject({ conversationId: firstId, entries: [{ content: "First" }, { content: "Answer" }] });
     await controller.send("More");
     expect(lastRequest("saved").messages).toEqual([
+      SYSTEM,
       { role: "user", content: "First" },
       { role: "assistant", content: "Answer" },
       { role: "user", content: "More" },
@@ -704,7 +759,7 @@ describe("ChatController conversations", () => {
     const { controller, state } = await load(ws);
     const one = controller.send("One");
     const oneId = state().conversationId;
-    await until(state, (s) => s.entries.at(-1)?.content === "Partial ");
+    await until(state, (s) => contentOf(s.entries.at(-1)) === "Partial ");
     await controller.newChat();
     await one;
     await eventually(() => savedReply(ws, oneId)?.status === "stopped", "one stopped");
@@ -712,7 +767,7 @@ describe("ChatController conversations", () => {
 
     const two = controller.send("Two");
     const twoId = state().conversationId;
-    await until(state, (s) => s.entries.at(-1)?.content === "Partial ");
+    await until(state, (s) => contentOf(s.entries.at(-1)) === "Partial ");
     await controller.openConversation(oneId);
     await two;
     expect(state()).toMatchObject({ conversationId: oneId, entries: [{ content: "One" }, { status: "stopped" }] });
@@ -746,7 +801,7 @@ describe("ChatController conversations", () => {
     const { controller, state } = await load(ws);
     const sent = controller.send("Hi");
     const id = state().conversationId;
-    await until(state, (s) => s.entries.at(-1)?.content === "Partial ");
+    await until(state, (s) => contentOf(s.entries.at(-1)) === "Partial ");
     await controller.deleteConversation(id);
     await sent;
     await Bun.sleep(600);
@@ -758,7 +813,7 @@ describe("ChatController conversations", () => {
     const seeded = Array.from(
       { length: 50 },
       (_, index): ConversationRecord => ({
-        version: 1,
+        version: 2,
         id: newConversationId(),
         createdAt: index + 1,
         updatedAt: index + 1,
@@ -849,7 +904,7 @@ describe("ChatController conversations", () => {
 
   test("never prunes a record of an unsupported version listed from its summary, and prunes the oldest valid one", async () => {
     const { seeded, files } = seededWithSummaries((record) =>
-      record.updatedAt === 1 ? ({ ...record, version: 2 } as unknown as ConversationRecord) : record,
+      record.updatedAt === 1 ? ({ ...record, version: 3 } as unknown as ConversationRecord) : record,
     );
     const [unsupported, oldestValid] = [seeded[0]!, seeded[1]!];
     const ws = workspace(files);
@@ -862,7 +917,7 @@ describe("ChatController conversations", () => {
       expect(files.files.has(`${oldestValid.id}.json`)).toBe(false);
       expect(files.files.has(`${unsupported.id}.json`)).toBe(true);
       expect(files.files.has(`${unsupported.id}.summary.json`)).toBe(true);
-      expect(JSON.parse(files.files.get(`${unsupported.id}.json`)!)).toMatchObject({ version: 2 });
+      expect(JSON.parse(files.files.get(`${unsupported.id}.json`)!)).toMatchObject({ version: 3 });
       expect(state().conversations.map((c) => c.id)).toContain(unsupported.id);
       expect(state().storageProblem).toBeUndefined();
     } finally {
@@ -923,7 +978,7 @@ describe("ChatController conversations", () => {
     const seeded = Array.from(
       { length: 51 },
       (_, index): ConversationRecord => ({
-        version: 1,
+        version: 2,
         id: newConversationId(),
         createdAt: index + 1,
         updatedAt: index + 1,
@@ -940,7 +995,7 @@ describe("ChatController conversations", () => {
 
   test("starts a new conversation when the saved current one is unreadable, and lists the valid ones", async () => {
     const valid: ConversationRecord = {
-      version: 1,
+      version: 2,
       id: newConversationId(),
       createdAt: 1,
       updatedAt: 1,
@@ -964,7 +1019,7 @@ describe("ChatController conversations", () => {
   test("shows a saved conversation it cannot read as a listing failure, and lists the others", async () => {
     const [good, locked] = [newConversationId(), newConversationId()];
     const saved = (id: string): ConversationRecord => ({
-      version: 1,
+      version: 2,
       id,
       createdAt: 1,
       updatedAt: 1,
@@ -991,13 +1046,14 @@ describe("ChatController conversations", () => {
   });
 
   test("without a storage directory, chats in memory with an empty list and no error", async () => {
-    const controller = new ChatController(
-      { get: async () => undefined },
-      memoryStore(),
-      () => {},
-      noMentions,
-      new ConversationStore(undefined),
-    );
+    const controller = new ChatController({
+      apiKeys: { get: async () => undefined },
+      workspaceState: memoryStore(),
+      publish: () => {},
+      mentions: noMentions,
+      store: new ConversationStore(undefined),
+      ...noTools,
+    });
     const state = () => controller.snapshot;
     controller.setProviders({ providers: [reasoningProvider], skipped: [] });
     await controller.restore();
@@ -1058,7 +1114,7 @@ describe("ChatController conversations", () => {
       "updatedAt",
       "version",
     ]);
-    expect(saved).toMatchObject({ version: 1, provider: "Saved", model: "m" });
+    expect(saved).toMatchObject({ version: 2, provider: "Saved", model: "m" });
   });
 
   /** Files whose writes, reads, or removes wait for `release` while held. */
@@ -1134,7 +1190,7 @@ describe("ChatController conversations", () => {
     const { controller, state } = await load(ws);
     const sent = controller.send("First");
     const id = state().conversationId;
-    await until(state, (s) => s.entries.at(-1)?.content === "Partial ");
+    await until(state, (s) => contentOf(s.entries.at(-1)) === "Partial ");
     await controller.newChat();
     await controller.openConversation(id);
     await sent;
@@ -1149,7 +1205,7 @@ describe("ChatController conversations", () => {
     const { controller, state } = await load(ws);
     const sent = controller.send("First");
     const id = state().conversationId;
-    await until(state, (s) => s.entries.at(-1)?.content === "Partial ");
+    await until(state, (s) => contentOf(s.entries.at(-1)) === "Partial ");
     writes.hold();
     await controller.newChat();
     await sent;
@@ -1159,7 +1215,7 @@ describe("ChatController conversations", () => {
     expect(state().entries.at(-1)).toMatchObject({ content: "Partial ", status: "stopped" });
 
     const next = controller.send("Follow-up");
-    await until(state, (s) => s.entries.at(-1)?.content === "Partial " && s.entries.length === 4);
+    await until(state, (s) => contentOf(s.entries.at(-1)) === "Partial " && s.entries.length === 4);
     finishReply();
     await next;
     await eventually(() => raw(ws, id)?.entries.length === 4 && savedReply(ws, id) !== undefined, "the next turn");
@@ -1168,7 +1224,7 @@ describe("ChatController conversations", () => {
 
   /** One saved conversation `content`, updated at `time`. */
   const savedRecord = (content: string, time = 1): ConversationRecord => ({
-    version: 1,
+    version: 2,
     id: newConversationId(),
     createdAt: time,
     updatedAt: time,
@@ -1259,7 +1315,7 @@ describe("ChatController conversations", () => {
     const { controller, state } = await load(ws);
     const sent = controller.send("Hi");
     const id = state().conversationId;
-    await until(state, (s) => s.entries.at(-1)?.content === "Partial ");
+    await until(state, (s) => contentOf(s.entries.at(-1)) === "Partial ");
     removes.hold();
     const deleting = controller.deleteConversation(id);
     await sent;
@@ -1329,13 +1385,14 @@ describe("ChatController conversations", () => {
   /** Controller on `ws` with `current` as the conversation to reopen, not yet restored. */
   async function unrestored(ws: Workspace, current: string) {
     await ws.memento.update("brokeCode.currentConversation", current);
-    const controller = new ChatController(
-      { get: async () => undefined },
-      ws.memento,
-      () => {},
-      noMentions,
-      new ConversationStore(ws.files),
-    );
+    const controller = new ChatController({
+      apiKeys: { get: async () => undefined },
+      workspaceState: ws.memento,
+      publish: () => {},
+      mentions: noMentions,
+      store: new ConversationStore(ws.files),
+      ...noTools,
+    });
     return { controller, state: () => controller.snapshot };
   }
 
@@ -1517,7 +1574,7 @@ describe("ChatController conversations", () => {
     const ws = workspace(filesOf(other));
     const { controller, state } = await load(ws);
     const sent = controller.send("Hi");
-    await until(state, (s) => s.entries.at(-1)?.content === "Partial ");
+    await until(state, (s) => contentOf(s.entries.at(-1)) === "Partial ");
     await controller.deleteConversation(other.id);
     expect(ws.files.files.has(`${other.id}.json`)).toBe(false);
     expect(state().entries.at(-1)).toMatchObject({ status: "streaming" });
@@ -1531,7 +1588,7 @@ describe("ChatController conversations", () => {
     const ws = workspace(filesOf(...seeded));
     const { controller, state } = await load(ws, { now: () => 1000 });
     const sent = controller.send("Newest");
-    await until(state, (s) => s.entries.at(-1)?.content === "Partial ");
+    await until(state, (s) => contentOf(s.entries.at(-1)) === "Partial ");
     await eventually(() => !ws.files.files.has(`${seeded[0]!.id}.json`), "the prune");
     expect(state().entries.at(-1)).toMatchObject({ status: "streaming" });
     finishReply();
@@ -1643,5 +1700,329 @@ describe("ChatController conversations", () => {
     const stopped = { role: "assistant" as const, reasoning: "Plan.", content: "", status: "stopped" as const };
     expect(state().entries.at(-1)).toEqual(stopped);
     expect(savedReply(ws, id)).toEqual(stopped);
+  });
+});
+
+describe("ChatController agent turn", () => {
+  let scriptCount = 0;
+  const readCall = (path: string) => `<read_file>\n<path>${path}</path>\n</read_file>`;
+  /** An unclosed known tag: the parser reports it malformed. */
+  const malformedReply = { content: "<read_file>\n<path>a.ts</path>" };
+
+  /** Runner over `READ_TOOLS` that answers each call with `result`, recording the calls. */
+  function fakeRunner(result: (call: { name: string; args: Record<string, string> }) => Promise<ToolResult>) {
+    const calls: { name: string; args: Record<string, string> }[] = [];
+    const signals: AbortSignal[] = [];
+    const runner: ToolRunner = {
+      tools: READ_TOOLS,
+      run: (call, signal) => {
+        calls.push(call);
+        signals.push(signal);
+        return result(call);
+      },
+    };
+    return { runner, calls, signals };
+  }
+
+  const okRunner = () => fakeRunner(async (call) => ({ status: "ok", text: `read ${call.args.path}` }));
+
+  /**
+   * Controller on a fresh in-memory workspace whose provider answers with `script`, one reply per request. Returns the
+   * requests' bodies, the conversation files, and the controller.
+   */
+  async function scripted(
+    script: ScriptedReply[],
+    runner: ToolRunner = okRunner().runner,
+    instructions: InstructionReader = { read: async () => [] },
+  ) {
+    const prefix = `script-${scriptCount++}`;
+    scripts.set(prefix, [...script]);
+    const files = memoryFiles();
+    const controller = new ChatController({
+      apiKeys: { get: async () => undefined },
+      workspaceState: memoryStore(),
+      publish: () => {},
+      mentions: noMentions,
+      store: new ConversationStore(files),
+      tools: runner,
+      instructions,
+    });
+    const state = () => controller.snapshot;
+    controller.setProviders({
+      providers: [{ name: "Agent", baseUrl: `http://localhost:${server.port}/${prefix}/v1` }],
+      skipped: [],
+    });
+    await until(state, (s) => s.model === "m");
+    const sent = () => (requests.get(prefix) ?? []) as { messages: { role: string; content: string }[] }[];
+    /** The record saved for the conversation shown. */
+    const saved = () => {
+      const text = files.files.get(`${state().conversationId}.json`);
+      return text === undefined ? undefined : (JSON.parse(text) as ConversationRecord);
+    };
+    return { controller, state, sent, saved };
+  }
+
+  async function settledSave(saved: () => ConversationRecord | undefined, entries: number): Promise<void> {
+    for (let waited = 0; ; waited += 5) {
+      const last = saved()?.entries.at(-1);
+      const settled = saved()?.entries.length === entries && !(last?.role === "assistant" && isInFlight(last.status));
+      if (settled) return;
+      if (waited > 2000) throw new Error(`timed out; saved: ${JSON.stringify(saved())}`);
+      await Bun.sleep(5);
+    }
+  }
+  const isInFlight = (status: string) => status === "waiting" || status === "streaming";
+
+  test("runs the call and sends the reply verbatim and its result back, without the reasoning", async () => {
+    const answer = `I will read it.\n${readCall("README.md")}`;
+    const { runner, calls } = okRunner();
+    const { controller, state, sent } = await scripted(
+      [{ reasoning: "Plan.", content: answer }, { content: "It is a demo." }],
+      runner,
+    );
+    await controller.send("what does this repository do?");
+
+    expect(calls).toEqual([{ name: "read_file", args: { path: "README.md" } }]);
+    expect(sent()).toHaveLength(2);
+    expect(sent()[1]!.messages).toEqual([
+      SYSTEM,
+      { role: "user", content: "what does this repository do?" },
+      { role: "assistant", content: answer },
+      { role: "user", content: '<tool_result tool="read_file" status="ok">\nread README.md\n</tool_result>' },
+    ]);
+    expect(JSON.stringify(sent()[1])).not.toContain("Plan.");
+    expect(state().entries).toEqual([
+      { role: "user", content: "what does this repository do?", mentions: [] },
+      {
+        role: "assistant",
+        reasoning: "Plan.",
+        content: answer,
+        status: "done",
+        call: { name: "read_file", args: { path: "README.md" }, start: 16, end: answer.length },
+      },
+      { role: "tool", name: "read_file", args: { path: "README.md" }, status: "ok", text: "read README.md" },
+      { role: "assistant", reasoning: "", content: "It is a demo.", status: "done" },
+    ]);
+  });
+
+  test("a path outside the workspace gives an error step whose text reaches the model", async () => {
+    const workspaceDir = mkdtempSync(join(tmpdir(), "broke-code-agent-"));
+    try {
+      const runner: ToolRunner = {
+        tools: READ_TOOLS,
+        run: (call, signal) =>
+          runReadTool(call, [{ name: "ws", path: workspaceDir }], { ripgrepCandidates: [] }, signal),
+      };
+      const { controller, state, sent } = await scripted(
+        [{ content: readCall("../secret.txt") }, { content: "I cannot read it." }],
+        runner,
+      );
+      await controller.send("read the secret");
+
+      const refusal = "read_file: ../secret.txt: the path is outside the workspace folders.";
+      expect(state().entries[2]).toEqual({
+        role: "tool",
+        name: "read_file",
+        args: { path: "../secret.txt" },
+        status: "error",
+        text: refusal,
+      });
+      expect(sent()[1]!.messages.at(-1)).toEqual({
+        role: "user",
+        content: `<tool_result tool="read_file" status="error">\n${refusal}\n</tool_result>`,
+      });
+    } finally {
+      rmSync(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
+  test("three malformed replies in a row halt the turn without a fourth request", async () => {
+    const { controller, state, sent, saved } = await scripted([
+      malformedReply,
+      { content: "<nope>x</nope>" },
+      malformedReply,
+      { content: "never sent" },
+    ]);
+    await controller.send("go");
+
+    expect(sent()).toHaveLength(3);
+    const [, , unknownTool] = sent().at(-1)!.messages.slice(-3);
+    expect(unknownTool?.content).toStartWith(
+      '<tool_result tool="unknown" status="error">\n<nope> is not a known tool.',
+    );
+    expect(sent()[1]!.messages.at(-1)?.content).toStartWith(
+      '<tool_result tool="read_file" status="error">\nThe <read_file> tag never closes',
+    );
+    expect(state().entries.at(-2)).toMatchObject({ role: "assistant", status: "halted", haltReason: "malformedCalls" });
+    expect(state().entries.at(-1)).toMatchObject({ role: "tool", name: "read_file", status: "malformed" });
+    expect(isReplying(state())).toBe(false);
+    await settledSave(saved, 7);
+    expect(saved()?.entries.at(-2)).toMatchObject({ status: "halted", haltReason: "malformedCalls" });
+  });
+
+  test("a call that parses between malformed ones resets the count", async () => {
+    const { controller, state, sent } = await scripted([
+      malformedReply,
+      malformedReply,
+      { content: readCall("a.ts") },
+      malformedReply,
+      malformedReply,
+      { content: "Done." },
+    ]);
+    await controller.send("go");
+
+    expect(sent()).toHaveLength(6);
+    expect(state().entries.at(-1)).toEqual({ role: "assistant", reasoning: "", content: "Done.", status: "done" });
+    expect(state().entries.filter((entry) => entry.role === "tool")).toHaveLength(5);
+  });
+
+  test(`${MAX_TOOL_STEPS} tool steps halt the turn on the step limit`, async () => {
+    const calls = Array.from({ length: MAX_TOOL_STEPS + 1 }, (_, index) => ({ content: readCall(`f${index}.ts`) }));
+    const { controller, state, sent } = await scripted(calls);
+    await controller.send("read everything");
+
+    expect(MAX_TOOL_STEPS).toBe(50);
+    expect(sent()).toHaveLength(50);
+    expect(state().entries.filter((entry) => entry.role === "tool")).toHaveLength(50);
+    expect(state().entries.at(-2)).toMatchObject({ role: "assistant", status: "halted", haltReason: "stepLimit" });
+    expect(state().entries.at(-1)).toMatchObject({ role: "tool", args: { path: "f49.ts" }, status: "ok" });
+  });
+
+  test("Stop during a streaming reply after a step ends the turn at once and saves the entries so far", async () => {
+    const { controller, state, sent, saved } = await scripted([
+      { content: readCall("a.ts") },
+      "hang",
+      { content: "x" },
+    ]);
+    const turn = controller.send("go");
+    await until(state, (s) => contentOf(s.entries.at(-1)) === "Partial ");
+    expect(isReplying(state())).toBe(true);
+    controller.stop();
+    await turn;
+
+    expect(state().entries).toMatchObject([
+      { role: "user" },
+      { role: "assistant", status: "done", call: { name: "read_file" } },
+      { role: "tool", status: "ok" },
+      { role: "assistant", content: "Partial ", status: "stopped" },
+    ]);
+    await Bun.sleep(30);
+    expect(sent()).toHaveLength(2);
+    await settledSave(saved, 4);
+    expect(saved()?.entries.at(-1)).toMatchObject({ content: "Partial ", status: "stopped" });
+  });
+
+  test("Stop while a tool runs ends the turn at once, though the runner never settles, and sends nothing more", async () => {
+    const { runner, signals } = fakeRunner(() => new Promise(() => {}));
+    const { controller, state, sent, saved } = await scripted(
+      [{ content: readCall("a.ts") }, { content: "x" }],
+      runner,
+    );
+    const turn = controller.send("go");
+    await until(state, () => signals.length === 1);
+    expect(isReplying(state())).toBe(true);
+    expect(state().entries.at(-1)).toMatchObject({ role: "assistant", call: { name: "read_file" } });
+    controller.stop();
+    await turn;
+
+    expect(signals[0]!.aborted).toBe(true);
+    expect(isReplying(state())).toBe(false);
+    expect(state().entries).toMatchObject([
+      { role: "user" },
+      { role: "assistant", status: "stopped", call: { name: "read_file" } },
+    ]);
+    await Bun.sleep(30);
+    expect(sent()).toHaveLength(1);
+    await settledSave(saved, 2);
+    expect(saved()?.entries.at(-1)).toMatchObject({ status: "stopped", call: { name: "read_file" } });
+  });
+
+  test("New chat while a tool runs waits for the whole turn to settle and saves it stopped in its own record", async () => {
+    const { runner, signals } = fakeRunner(() => new Promise(() => {}));
+    const { controller, state, saved } = await scripted([{ content: readCall("a.ts") }], runner);
+    const turn = controller.send("go");
+    const turnId = state().conversationId;
+    await until(state, () => signals.length === 1);
+    await controller.newChat();
+    await turn;
+
+    expect(state().conversationId).not.toBe(turnId);
+    expect(state().conversations.map((c) => c.id)).toContain(turnId);
+    await controller.openConversation(turnId);
+    await settledSave(saved, 2);
+    expect(saved()?.entries.at(-1)).toMatchObject({ status: "stopped" });
+  });
+
+  test("a failed reply after a step ends the turn failed", async () => {
+    const { controller, state } = await scripted([{ content: readCall("a.ts") }, "fail"]);
+    await controller.send("go");
+    expect(state().entries.at(-1)).toMatchObject({
+      role: "assistant",
+      status: "failed",
+      error: { kind: "rejected", status: 500 },
+    });
+  });
+
+  test("a runner that rejects gives an error step, logged, and the turn goes on", async () => {
+    const { runner } = fakeRunner(async () => {
+      throw new Error("bug");
+    });
+    const { controller, state, sent } = await scripted([{ content: readCall("a.ts") }, { content: "ok" }], runner);
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await controller.send("go");
+      expect(logged).toHaveBeenCalled();
+    } finally {
+      logged.mockRestore();
+    }
+    expect(state().entries[2]).toMatchObject({
+      role: "tool",
+      status: "error",
+      text: "read_file: the tool failed (Error: bug).",
+    });
+    expect(sent()).toHaveLength(2);
+  });
+
+  test("the system message holds the instruction files' texts in order, read at each send", async () => {
+    const files: InstructionFile[] = [
+      { label: "~/.agents/AGENTS.md", text: "Home rules." },
+      { label: "AGENTS.md", text: "Workspace rules." },
+    ];
+    let reads = 0;
+    const { controller, sent } = await scripted([{ content: "a" }, { content: "b" }], okRunner().runner, {
+      read: async () => {
+        reads += 1;
+        return files;
+      },
+    });
+    await controller.send("hi");
+    await controller.send("again");
+
+    const system = sent()[0]!.messages[0]!;
+    expect(system).toEqual({ role: "system", content: composeSystemPrompt(READ_TOOLS, files) });
+    expect(system.content.indexOf("Home rules.")).toBeLessThan(system.content.indexOf("Workspace rules."));
+    expect(system.content).toStartWith(SYSTEM.content);
+    expect(reads).toBe(2);
+  });
+
+  test("without instruction files the system message is the prompt alone", async () => {
+    const { controller, sent } = await scripted([{ content: "a" }]);
+    await controller.send("hi");
+    expect(sent()[0]!.messages[0]).toEqual(SYSTEM);
+    expect(SYSTEM.content).not.toContain("# Instructions from");
+  });
+
+  test("a later message resends the earlier steps as tool results", async () => {
+    const { controller, sent } = await scripted([{ content: readCall("a.ts") }, { content: "A." }, { content: "B." }]);
+    await controller.send("first");
+    await controller.send("second");
+    expect(sent()[2]!.messages.map((message) => message.role)).toEqual([
+      "system",
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+      "user",
+    ]);
   });
 });

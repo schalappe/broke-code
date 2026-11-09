@@ -1,14 +1,17 @@
 /**
  * @module extension
- * Activation entry point: wires settings, API keys, mentions, file index, saved conversations, chat controller, chat
- * view, and `broke-code.setApiKey`.
+ * Activation entry point: wires settings, API keys, mentions, read tools, instruction files, file index, saved
+ * conversations, chat controller, chat view, and `broke-code.setApiKey`.
  */
+import { homedir } from "node:os";
 import * as vscode from "vscode";
-import { ChatController } from "../core/chatController";
+import { ChatController, type InstructionReader, type ToolRunner } from "../core/chatController";
 import { directoryFiles } from "../core/conversationFiles";
 import { ConversationStore } from "../core/conversationStore";
+import { readInstructionFiles } from "../core/instructions";
 import { type MentionReader, readMention } from "../core/mentions";
 import { parseProviders } from "../core/providers";
+import { READ_TOOLS, ripgrepCandidates, runReadTool } from "../core/tools";
 import type { WorkspaceRoot } from "../core/workspaceFiles";
 import { ApiKeys } from "./apiKeys";
 import { CHAT_VIEW_ID, ChatView } from "./chatView";
@@ -24,17 +27,25 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // [>]: Roots read at each mention, since folders can be added or removed while the window is open.
   const mentions: MentionReader = { read: (path) => readMention(workspaceRoots(), path) };
+  const toolEnv = { ripgrepCandidates: ripgrepCandidates(vscode.env.appRoot, process.env.PATH) };
+  const tools: ToolRunner = {
+    tools: READ_TOOLS,
+    run: (call, signal) => runReadTool(call, workspaceRoots(), toolEnv, signal),
+  };
+  const instructions: InstructionReader = { read: () => readInstructionFiles(homedir(), workspaceRoots()) };
 
   // [>]: `storageUri` is a `file:` URI in the desktop extension host, and only with a folder or workspace open.
   const conversations = new ConversationStore(directoryFiles(context.storageUri?.fsPath));
   let view: ChatView | undefined;
-  const controller = new ChatController(
+  const controller = new ChatController({
     apiKeys,
-    context.workspaceState,
-    (state) => view?.publish(state),
+    workspaceState: context.workspaceState,
+    publish: (state) => view?.publish(state),
     mentions,
-    conversations,
-  );
+    store: conversations,
+    tools,
+    instructions,
+  });
   const fileIndex = new WorkspaceFileIndex();
   view = new ChatView(context.extensionUri, controller, { setApiKey, queryFiles: (query) => fileIndex.query(query) });
 
