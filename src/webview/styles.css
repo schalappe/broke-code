@@ -24,10 +24,25 @@ body {
   gap: 8px;
 }
 
+/* The buttons wrap below the pickers once the pickers would fall under 16em, so model names stay readable. */
 .header {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   align-items: center;
+}
+
+.pickers {
+  display: flex;
+  flex: 1 1 16em;
+  gap: 6px;
+  min-width: 0;
+}
+
+.actions {
+  display: flex;
+  flex: none;
+  gap: 6px;
 }
 
 select,
@@ -46,7 +61,7 @@ select {
   border-color: var(--vscode-dropdown-border, transparent);
 }
 
-.header select {
+.pickers select {
   flex: 1 1 0;
   min-width: 0;
 }

@@ -73,26 +73,28 @@ export function Header({
   return (
     <header className="header">
       {state.providers.length > 0 && <Pickers state={state} />}
-      <button
-        type="button"
-        className="secondary"
-        disabled={state.entries.length === 0}
-        onClick={() => {
-          if (historyOpen) toggleHistory();
-          post({ type: "newChat" });
-        }}
-      >
-        {l10n.t("New chat")}
-      </button>
-      <button
-        type="button"
-        className="secondary"
-        aria-expanded={historyOpen}
-        aria-controls={historyOpen ? HISTORY_ID : undefined}
-        onClick={toggleHistory}
-      >
-        {l10n.t("History")}
-      </button>
+      <div className="actions">
+        <button
+          type="button"
+          className="secondary"
+          disabled={state.entries.length === 0}
+          onClick={() => {
+            if (historyOpen) toggleHistory();
+            post({ type: "newChat" });
+          }}
+        >
+          {l10n.t("New chat")}
+        </button>
+        <button
+          type="button"
+          className="secondary"
+          aria-expanded={historyOpen}
+          aria-controls={historyOpen ? HISTORY_ID : undefined}
+          onClick={toggleHistory}
+        >
+          {l10n.t("History")}
+        </button>
+      </div>
     </header>
   );
 }
@@ -101,7 +103,7 @@ function Pickers({ state }: { state: ChatState }) {
   const replying = isReplying(state);
   const { models } = state;
   return (
-    <>
+    <div className="pickers">
       <select
         aria-label={l10n.t("Provider")}
         value={state.provider ?? ""}
@@ -130,7 +132,7 @@ function Pickers({ state }: { state: ChatState }) {
           <option value="">{modelPlaceholder(state)}</option>
         )}
       </select>
-    </>
+    </div>
   );
 }
 
