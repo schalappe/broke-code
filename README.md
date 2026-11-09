@@ -6,11 +6,12 @@ Some services speak the OpenAI chat API but reject the `tools` request field, so
 it fail against them. In broke-code, the model writes each tool call in the text of its reply, and the
 extension reads and runs it. broke-code never sends `tools`, even to a service that supports them.
 
-The current version is a chat agent that reads your workspace: pick a model, ask a question with files and folders
-attached, and the model reads files, lists folders, and searches the workspace until it can answer. You can follow
-each step, stop the agent at any time, read the model's reasoning collapsed above its answer, and come back to past
-conversations. The model also sees the name and description of each of your skills. Write tools, commands, loading
-skills, and slash commands come next.
+The current version is a chat agent that reads and changes your workspace: pick a model, ask a question or a change
+with files and folders attached, and the model reads files, lists folders, searches the workspace, and creates or edits
+files until it is done. Each change opens as a diff and waits for your **Accept** or **Reject** in the chat, unless
+you turn on auto-approval in your user settings. You can follow each step, stop the agent at any time, read the model's
+reasoning collapsed above its answer, and come back to past conversations. The model also sees the name and
+description of each of your skills. Commands, loading skills, and slash commands come next.
 
 ## Requirements
 

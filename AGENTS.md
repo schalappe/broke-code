@@ -10,13 +10,12 @@ tool call in the text of its reply, and the extension parses and runs the call. 
 covers the agent loop over the reply text, skills, and slash commands, in a minimal chat panel styled after
 twinny.
 
-The code so far covers the extension skeleton, a streaming chat with a provider, and the harness with the read tools:
-a message starts an agent turn that runs `read_file`, `list_files`, and `search` until the model answers without a
-call. Each send discovers the skills and lists them to the model. `bun run eval` measures that loop on local Ollama
-models. `write_file` and `edit_file` run in the extension behind the approval (a diff and Accept or Reject in the
-chat, ADR 0002); the eval applies each change at once. `run_command`, `load_skill`, and slash commands are not built
-yet. Read
-`GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the decisions behind the design, starting with
+The code so far covers the extension skeleton, a streaming chat with a provider, and the harness with the read and
+write tools: a message starts an agent turn that runs `read_file`, `list_files`, `search`, `write_file`, and
+`edit_file` until the model answers without a call. Each write waits behind the approval (a diff and Accept or Reject
+in the chat, ADR 0002) unless the user setting auto-approves it. Each send discovers the skills and lists them to the
+model. `bun run eval` measures that loop on local Ollama models and applies each change at once. `run_command`,
+`load_skill`, and slash commands are not built yet. Read `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the decisions behind the design, starting with
 `docs/adr/0001-body-tool-calls.md`.
 
 ## Structure
