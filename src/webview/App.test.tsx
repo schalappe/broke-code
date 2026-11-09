@@ -380,6 +380,37 @@ describe("approval", () => {
       expect(html).toContain('placeholder="Reason for rejecting (optional)"');
     });
 
+    test("the command controls are labelled for assistive technology; a write's keep their own label", () => {
+      expect(commandTurn([running], commandApproval)).toContain(
+        '<fieldset class="approval" aria-label="Run or reject this command">',
+      );
+      expect(turn([writing])).toContain('<fieldset class="approval" aria-label="Approve write_file on src/a.ts">');
+    });
+
+    test("pending and finished command rows carry the command class; other tools' rows do not", () => {
+      const done = { ...running, status: "done" } as const;
+      const ran: ChatEntry = {
+        role: "tool",
+        name: "run_command",
+        args: { command },
+        status: "ok",
+        text: "exit code 0",
+      };
+      expect(commandTurn([running], commandApproval)).toContain('<div class="step-row command">');
+      expect(commandTurn([done, ran])).toContain('<summary class="step-row command">');
+      const written: ChatEntry = {
+        role: "tool",
+        name: "write_file",
+        args: { path: "src/a.ts" },
+        status: "ok",
+        text: "ok",
+      };
+      const writeRows = turn([writing]) + turn([{ ...writing, status: "done" }, written], false);
+      expect(writeRows).toContain('<div class="step-row">');
+      expect(writeRows).toContain('<summary class="step-row">');
+      expect(writeRows).not.toContain("step-row command");
+    });
+
     test("a command run in another folder names it in its row", () => {
       const elsewhere = { ...running, call: { ...running.call!, args: { command, cwd: "lib/sub" } } };
       expect(commandTurn([elsewhere], commandApproval)).toContain('<span class="step-arg">in lib/sub</span>');
