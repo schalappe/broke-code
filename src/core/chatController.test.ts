@@ -895,6 +895,30 @@ describe("ChatController conversations", () => {
     expect(state().storageProblem).toMatchObject({ cause: expect.stringContaining("EACCES") });
   });
 
+  test("keeps the failed delete of the oldest conversation shown after the prune deletes the next oldest", async () => {
+    const { seeded, files } = seededWithSummaries();
+    const ws = workspace(files);
+    const { controller, state } = await load(ws, { provider: reasoningProvider, now: () => 1000 });
+    const remove = files.remove;
+    files.remove = async (name) => {
+      if (name.startsWith(seeded[0]!.id)) throw new Error("EBUSY: resource busy");
+      return remove(name);
+    };
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await controller.send("Newest");
+      await eventually(() => !files.files.has(`${seeded[1]!.id}.json`), "the prune of the next oldest");
+      await eventually(() => state().storageProblem?.kind === "deleteFailed", "the failed delete shown");
+    } finally {
+      logged.mockRestore();
+    }
+    expect(files.files.has(`${seeded[0]!.id}.json`)).toBe(true);
+    expect(recordCount(files)).toBe(50);
+    expect(state().conversations).toHaveLength(50);
+    expect(state().conversations.map((c) => c.id)).toContain(seeded[0]!.id);
+    expect(state().storageProblem).toMatchObject({ cause: expect.stringContaining("EBUSY") });
+  });
+
   test("prunes at restore the conversations left past 50 by a stop before the prune", async () => {
     const seeded = Array.from(
       { length: 51 },

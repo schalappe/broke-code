@@ -411,15 +411,16 @@ export class ChatController {
    */
   private async prune(): Promise<void> {
     const tried = new Set<string>();
-    let checkFailure: StorageProblem | undefined;
+    let lastFailure: StorageProblem | undefined;
     for (;;) {
       // [>]: A tried row is kept like the shown one, so the excess is still counted over every row and the next
       // oldest untried one is picked. Each pass adds to `tried` or settles a row's time, so the loop ends.
       const id = conversationsOverLimit(this.state.conversations, [this.conversation.id, ...tried])[0];
       if (id === undefined) {
-        // [>]: A later successful delete clears a `deleteFailed` problem, which would hide this failed check.
-        if (checkFailure && this.state.storageProblem === undefined) {
-          this.state.storageProblem = checkFailure;
+        // [>]: A later successful delete clears a `deleteFailed` problem, which would hide an earlier failed check or
+        // failed delete.
+        if (lastFailure && this.state.storageProblem === undefined) {
+          this.state.storageProblem = lastFailure;
           this.emit();
         }
         return;
@@ -431,8 +432,8 @@ export class ChatController {
         record = await this.store.load(id);
       } catch (error) {
         tried.add(id);
-        checkFailure = { kind: "deleteFailed", cause: String(error) };
-        this.report(checkFailure, "could not check a conversation to prune", error);
+        lastFailure = { kind: "deleteFailed", cause: String(error) };
+        this.report(lastFailure, "could not check a conversation to prune", error);
         continue;
       }
       if (!record) {
@@ -450,7 +451,7 @@ export class ChatController {
         continue;
       }
       tried.add(id);
-      await this.remove(id);
+      lastFailure = (await this.remove(id)) ?? lastFailure;
     }
   }
 
@@ -544,15 +545,21 @@ export class ChatController {
     );
   }
 
-  /** Delete `id` from disk, then from the list. A failed delete keeps the row and is reported. */
-  private async remove(id: string): Promise<void> {
+  /**
+   * Delete `id` from disk, then from the list. A failed delete keeps the row, is reported, and is returned; a success
+   * returns nothing.
+   */
+  private async remove(id: string): Promise<StorageProblem | undefined> {
     try {
       await this.store.remove(id);
     } catch (error) {
-      return this.report({ kind: "deleteFailed", cause: String(error) }, "could not delete a conversation", error);
+      const problem: StorageProblem = { kind: "deleteFailed", cause: String(error) };
+      this.report(problem, "could not delete a conversation", error);
+      return problem;
     }
     if (this.state.storageProblem?.kind === "deleteFailed") this.state.storageProblem = undefined;
     this.setConversations(this.state.conversations.filter((summary) => summary.id !== id));
+    return undefined;
   }
 
   /** Newest first. */
