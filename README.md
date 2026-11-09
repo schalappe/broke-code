@@ -218,7 +218,7 @@ runs of each task, with the bar at nine. The bench has four tasks:
 - **Create**: create a file whose text holds double quotes, backslashes, tags, and a code block, exactly as asked.
 - **Skill**: answer a question that a personal skill covers, by loading the skill and reading a file in its folder.
 
-Both models pass the read, edit, and create tasks, 10 runs of 10 each. When a model thinks, then stops without a
+Both models pass the four tasks: 10 runs of 10 each, except `gemma4:26b-a4b-it-qat` at 9 of 10 on the skill task. When a model thinks, then stops without a
 word, broke-code tells it so and asks again. Contributors run the bench with `bun run eval`.
 
 ## Privacy

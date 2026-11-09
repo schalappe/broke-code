@@ -461,10 +461,11 @@ local Ollama models and applies each change at once. `run_command` and slash com
   and the applier's status), and `changes` (each file that differs from the fixture after the run, with its text,
   `null` when removed) as JSON Lines, to read the
   failing replies; an incomplete last line left by an interrupted run is removed, with a notice, before the first
-  append. A full run took 34 min 04 s on the maintainer's Mac on b1049a2, the first run of each model including its load;
-  about 16 min without one `gemma4` run of 18 min whose reasoning ran on for about 98,000 characters (the bench has no
-  time limit per run); that run predates the `skill` scenario. It runs locally on demand and never in CI. On b1049a2
-  every model met the bar on the three earlier scenarios (ADR 0001, amendment of 2026-11-09 on empty replies).
+  append. A full run of the four scenarios took 20 min 24 s on the maintainer's Mac on 9a67dd7, the first run of each
+  model including its load; the bench has no time limit per run, and one `gemma4` run whose reasoning ran on for about
+  98,000 characters once took 18 min on its own (b1049a2). It runs locally on demand and never in CI. On 9a67dd7 every
+  model met the bar on every scenario: 10/10 everywhere but `gemma4` on `skill`, 9/10 (one `wrongTool`: it listed the
+  skill folder and answered without reading the reference file).
   Scenarios for commands come with `run_command` (#9), and for slash commands with #11.
 - v1 supports macOS only. Windows and Linux are planned for v2.
 
