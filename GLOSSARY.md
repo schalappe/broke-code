@@ -22,6 +22,11 @@ _Avoid_: agent mode, simulated agentic mode, runner
 One user request and every tool call and tool result it triggers, up to the model's final answer.
 _Avoid_: run, task, iteration
 
+**Tool step**:
+One body tool call inside an agent turn and the result sent back to the model; a malformed call and the message
+saying what is wrong count as a step too. The chat shows each step as a compact row.
+_Avoid_: tool use, action, iteration
+
 **Conversation**:
 One thread of messages in the chat panel, saved per workspace and listed in its history; a new chat starts a new
 one.

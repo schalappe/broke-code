@@ -6,9 +6,10 @@ Some services speak the OpenAI chat API but reject the `tools` request field, so
 it fail against them. In broke-code, the model writes each tool call in the text of its reply, and the
 extension reads and runs it. broke-code never sends `tools`, even to a service that supports them.
 
-The current version is a streaming chat with a provider: pick a model, send a message with files and folders
-attached, stop a reply, read the model's reasoning collapsed above its answer, and come back to past conversations.
-The agent loop, skills, and slash commands come next.
+The current version is a chat agent that reads your workspace: pick a model, ask a question with files and folders
+attached, and the model reads files, lists folders, and searches the workspace until it can answer. You can follow
+each step, stop the agent at any time, read the model's reasoning collapsed above its answer, and come back to past
+conversations. Write tools, commands, skills, and slash commands come next.
 
 ## Requirements
 
@@ -78,6 +79,29 @@ inside `node_modules`, `.git`, `dist`, `out`, or `build` folders. It lists at mo
 menu says the index is limited, and you can still type the path of a file it does not show. New and deleted
 files show up in the menu without reloading the window.
 
+## How the agent works
+
+Each message starts an agent turn. The model may answer at once, or write a tool call in its reply; broke-code runs
+the tool, sends the result back, and asks again, until the model answers without a call. The agent has three read
+tools, which run without asking you, inside the workspace folders only:
+
+- **read_file** reads a file, with the same limits as a mention: binary files and files over 1 MiB are refused, and
+  a file over 2,000 lines is cut to its first 2,000.
+- **list_files** lists the direct children of a folder.
+- **search** searches the workspace with ripgrep, the copy your editor ships or the `rg` on your `PATH`. It skips
+  hidden files, files ignored by `.gitignore`, and symlinks, and stops after 30 seconds.
+
+Each tool call shows as a compact row under the model's text: the tool, its main argument (a path or a search
+pattern), and whether it worked with the size of its result. Click the row to see the result the model received.
+A path outside the workspace is refused, and the model is told why.
+
+The agent turn ends when the model answers without a tool call. It also ends when you click **Stop**, at any step;
+after three malformed tool calls in a row, with a message saying so; and after 50 tool steps, with a message saying
+the step limit was reached. A malformed call is sent back to the model with what is wrong, so it can try again.
+
+broke-code adds your instructions to every request: `~/.agents/AGENTS.md`, then the `AGENTS.md` at the root of each
+workspace folder, when they exist. Each is read under the same limits as a mention. `CLAUDE.md` is never read.
+
 ## Past conversations
 
 broke-code saves each conversation of a workspace, so closing or reloading the window keeps it. **History** in the
@@ -87,8 +111,8 @@ last change; the one shown is marked. Click a conversation to reopen it and cont
 without a provider too; sending a message needs one. A workspace keeps its 50 most recent conversations; older ones
 are deleted.
 
-A reopened conversation resends your earlier messages as they were sent, with the files and folders attached then;
-broke-code does not read them again. A reply that was still streaming when the window closed comes back stopped,
+A reopened conversation resends your earlier messages as they were sent, with the files and folders attached then,
+and the tool results the model received; broke-code does not read them again. A reply that was still streaming when the window closed comes back stopped,
 with the text received so far. Conversations stay on your machine, in the editor's storage for that workspace, and
 never hold an API key. A window with no folder open keeps its conversation in memory only.
 
