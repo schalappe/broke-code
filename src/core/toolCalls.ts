@@ -34,8 +34,10 @@ export const GENERIC_CALL_SHAPE = "<tool_name>\n<argument_name>value</argument_n
 /**
  * The first call-shaped block of `answer`, read against `tools`. A block is call-shaped when its opening tag
  * `<name>` (snake_case, no attributes) starts a line, after nothing but spaces or tabs, outside Markdown code, and a
- * `</name>` follows it; an opening tag that never closes is call-shaped only when it names a known tool. The block
- * ends at the first `</name>`. Anything after the first block is ignored.
+ * `</name>` follows it; an opening tag that never closes is call-shaped only when it names a known tool. A known
+ * tool's block ends at the `</name>` that follows its last argument value (see `readArgs`), so a value may hold
+ * `</name>` itself; an unknown tool's block, or a malformed one, ends at the first `</name>` after the problem found.
+ * Anything after the first block is ignored.
  */
 export function parseToolCall(answer: string, tools: readonly ToolSpec[]): ParsedReply {
   const masked = maskCode(answer);
@@ -52,26 +54,28 @@ export function parseToolCall(answer: string, tools: readonly ToolSpec[]): Parse
       if (!tool) continue;
       return malformed(`The <${name}> tag never closes: end the call with </${name}>.`, tool, start, answer.length);
     }
-    const end = close + `</${name}>`.length;
     if (!tool) {
       const known = tools.map((tool) => tool.name).join(", ");
       return {
         kind: "malformed",
         message: `<${name}> is not a known tool. The known tools are: ${known}.\nA call looks like this:\n${GENERIC_CALL_SHAPE}`,
         start,
-        end,
+        end: close + `</${name}>`.length,
       };
     }
-    const read = readArgs(answer.slice(bodyStart, close), tool);
-    if (typeof read === "string") return malformed(read, tool, start, end);
+    const read = readArgs(answer, tool, bodyStart);
+    if ("problem" in read) {
+      const end = answer.indexOf(`</${name}>`, read.at);
+      return malformed(read.problem, tool, start, end === -1 ? answer.length : end + `</${name}>`.length);
+    }
     const missing = tool.args
-      .filter((arg) => arg.required && !Object.hasOwn(read, arg.name))
+      .filter((arg) => arg.required && !Object.hasOwn(read.args, arg.name))
       .map((arg) => `<${arg.name}>`);
     if (missing.length > 0) {
       const problem = `<${name}> is missing the required argument${missing.length > 1 ? "s" : ""} ${missing.join(", ")}.`;
-      return malformed(problem, tool, start, end);
+      return malformed(problem, tool, start, read.end);
     }
-    return { kind: "call", name, args: read, start, end };
+    return { kind: "call", name, args: read.args, start, end: read.end };
   }
   return { kind: "none" };
 }
@@ -87,62 +91,82 @@ export function describeTool(tool: ToolSpec): string {
 }
 
 /**
- * The argument values in `body`, the text between the outer tags, or the first problem found. A value ends at the
- * first closing tag of its argument that closes no `<name>` opened inside the value and is followed only by
- * whitespace, then the end of the body or the opening tag of an argument of the tool, its own included. So a value
- * may hold angle brackets, code fences, other tools' tags, the tags of another argument, its own tags in pairs, and
- * its own closing tag followed by anything else, while an argument written twice, closed or not, is reported. When
- * no closing tag qualifies, the value ends at the last one, and the text after it is reported.
+ * The argument values of the call to `tool` whose body starts at `bodyStart` in `answer`, and where its block ends,
+ * past the `</tool>` after the last value; or the first problem found and where. A value ends at the first closing
+ * tag of its argument that closes no `<name>` opened inside the value and is followed only by whitespace, then the
+ * call's closing tag or the opening tag of an argument of the tool, its own included. So a value may hold angle
+ * brackets, code fences, other tools' tags, the call's own closing tag, the tags of another argument, its own tags in
+ * pairs, and its own closing tag followed by anything else, while an argument written twice, closed or not, is
+ * reported. When no closing tag qualifies that way, the value ends at the first one followed by such a tag; failing
+ * that, at the last one before the next `</tool>`, and the text after it is reported.
  */
-function readArgs(body: string, tool: ToolSpec): Record<string, string> | string {
+function readArgs(
+  answer: string,
+  tool: ToolSpec,
+  bodyStart: number,
+): { args: Record<string, string>; end: number } | { problem: string; at: number } {
+  const callClose = `</${tool.name}>`;
   const args: Record<string, string> = {};
-  let index = skipWhitespace(body, 0);
-  while (index < body.length) {
-    const name = argOpeningAt(body, index);
+  let index = skipWhitespace(answer, bodyStart);
+  while (!answer.startsWith(callClose, index)) {
+    const name = argOpeningAt(answer, index);
     if (name === undefined) {
-      const quoted = excerpt(body.slice(index, index + EXCERPT_LENGTH + 1));
-      return `Unexpected text inside <${tool.name}>: "${quoted}". Put only argument tags in it.`;
+      const quoted = excerpt(answer.slice(index, index + EXCERPT_LENGTH + 1));
+      return {
+        problem: `Unexpected text inside <${tool.name}>: "${quoted}". Put only argument tags in it.`,
+        at: index,
+      };
     }
-    if (!tool.args.some((arg) => arg.name === name)) return `<${tool.name}> has no argument <${name}>.`;
-    if (Object.hasOwn(args, name)) return `<${name}> appears twice in <${tool.name}>.`;
+    if (!tool.args.some((arg) => arg.name === name)) {
+      return { problem: `<${tool.name}> has no argument <${name}>.`, at: index };
+    }
+    if (Object.hasOwn(args, name)) return { problem: `<${name}> appears twice in <${tool.name}>.`, at: index };
     const valueStart = index + `<${name}>`.length;
-    const valueEnd = valueEndOf(body, tool, name, valueStart);
-    if (valueEnd === -1) return `The <${name}> argument tag never closes: end its value with </${name}>.`;
-    args[name] = trimLineBreaks(body.slice(valueStart, valueEnd));
-    index = skipWhitespace(body, valueEnd + `</${name}>`.length);
+    const valueEnd = valueEndOf(answer, tool, name, valueStart);
+    if (valueEnd === -1) {
+      return { problem: `The <${name}> argument tag never closes: end its value with </${name}>.`, at: index };
+    }
+    args[name] = trimLineBreaks(answer.slice(valueStart, valueEnd));
+    index = skipWhitespace(answer, valueEnd + `</${name}>`.length);
   }
-  return args;
+  return { args, end: index + callClose.length };
 }
 
 /**
  * Where the value of argument `name` opened at `valueStart` ends, by the rule of `readArgs`, or -1 when no
- * `</name>` follows. [>]: Opening and closing tags are each found once, in order, and the scan stops at the first
- * qualifying close; the next argument starts after it, and a name read twice stops the reading, so the body is read
- * at most once per argument of the tool.
+ * `</name>` stands before the next `</tool>`. [>]: Opening and closing tags are each found once, in order, and the
+ * scan stops at the first qualifying close; the next argument starts after it, and a name read twice stops the
+ * reading, so the answer is read at most once per argument of the tool.
  */
-function valueEndOf(body: string, tool: ToolSpec, name: string, valueStart: number): number {
+function valueEndOf(answer: string, tool: ToolSpec, name: string, valueStart: number): number {
   const openTag = `<${name}>`;
   const closeTag = `</${name}>`;
-  let nextOpen = body.indexOf(openTag, valueStart);
+  const callClose = `</${tool.name}>`;
+  const nextCallClose = answer.indexOf(callClose, valueStart);
+  let nextOpen = answer.indexOf(openTag, valueStart);
   let depth = 0;
-  let last = -1;
+  let firstFollowed = -1;
+  let lastBeforeCallClose = -1;
   for (
-    let close = body.indexOf(closeTag, valueStart);
+    let close = answer.indexOf(closeTag, valueStart);
     close !== -1;
-    close = body.indexOf(closeTag, close + closeTag.length)
+    close = answer.indexOf(closeTag, close + closeTag.length)
   ) {
-    for (; nextOpen !== -1 && nextOpen < close; nextOpen = body.indexOf(openTag, nextOpen + openTag.length)) depth++;
-    last = close;
+    for (; nextOpen !== -1 && nextOpen < close; nextOpen = answer.indexOf(openTag, nextOpen + openTag.length)) {
+      depth++;
+    }
+    if (close < nextCallClose) lastBeforeCallClose = close;
+    const next = skipWhitespace(answer, close + closeTag.length);
+    const following = argOpeningAt(answer, next);
+    const followed = answer.startsWith(callClose, next) || tool.args.some((arg) => arg.name === following);
+    if (followed && firstFollowed === -1) firstFollowed = close;
     if (depth > 0) {
       depth--;
       continue;
     }
-    const next = skipWhitespace(body, close + closeTag.length);
-    if (next === body.length) return close;
-    const following = argOpeningAt(body, next);
-    if (tool.args.some((arg) => arg.name === following)) return close;
+    if (followed) return close;
   }
-  return last;
+  return firstFollowed !== -1 ? firstFollowed : lastBeforeCallClose;
 }
 
 /** The first index at or after `index` that is not whitespace. */
