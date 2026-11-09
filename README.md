@@ -7,8 +7,8 @@ it fail against them. In broke-code, the model writes each tool call in the text
 extension reads and runs it. broke-code never sends `tools`, even to a service that supports them.
 
 The current version is a streaming chat with a provider: pick a model, send a message with files and folders
-attached, stop a reply, and read the model's reasoning collapsed above its answer. The agent loop, skills, and slash
-commands come next.
+attached, stop a reply, read the model's reasoning collapsed above its answer, and come back to past conversations.
+The agent loop, skills, and slash commands come next.
 
 ## Requirements
 
@@ -77,6 +77,20 @@ The menu lists files from the workspace folders, except those hidden by your `fi
 inside `node_modules`, `.git`, `dist`, `out`, or `build` folders. It lists at most 5,000 files; past that, the
 menu says the index is limited, and you can still type the path of a file it does not show. New and deleted
 files show up in the menu without reloading the window.
+
+## Past conversations
+
+broke-code saves each conversation of a workspace, so closing or reloading the window keeps it. **History** in the
+panel header lists the workspace's conversations, newest first, each with its first message and the date of its
+last change; the one shown is marked. Click a conversation to reopen it and continue where you left off, or
+**Delete** it. **New chat** starts a new conversation and keeps the previous one in the list. History works
+without a provider too; sending a message needs one. A workspace keeps its 50 most recent conversations; older ones
+are deleted.
+
+A reopened conversation resends your earlier messages as they were sent, with the files and folders attached then;
+broke-code does not read them again. A reply that was still streaming when the window closed comes back stopped,
+with the text received so far. Conversations stay on your machine, in the editor's storage for that workspace, and
+never hold an API key. A window with no folder open keeps its conversation in memory only.
 
 ## Privacy
 

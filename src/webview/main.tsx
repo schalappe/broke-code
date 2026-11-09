@@ -27,7 +27,7 @@ function Root() {
     return () => window.removeEventListener("message", onMessage);
   }, []);
 
-  return state ? <App state={state} /> : null;
+  return state ? <App state={state} language={document.documentElement.lang} /> : null;
 }
 
 const root = document.getElementById("root");

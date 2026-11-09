@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { describeProviderError } from "./text";
+import { describeProviderError, describeStorageProblem, formatConversationDate } from "./text";
 
 describe("describeProviderError", () => {
   test("names the model list, not a reply, when the list download is cut off", () => {
@@ -88,6 +88,34 @@ describe("describeProviderError", () => {
   test("names an unsupported compression instead of a wrong base URL, in listing and chat alike", () => {
     expect(describeProviderError({ kind: "invalidResponse", provider: "Corp", detail: "", encoding: "zstd" })).toEqual({
       message: "Corp answered with a compression that broke-code cannot read (Content-Encoding: zstd).",
+    });
+  });
+});
+
+describe("formatConversationDate", () => {
+  const noon = new Date(2026, 10, 8, 12).getTime();
+
+  test("writes the date in the display language", () => {
+    expect(formatConversationDate(noon, "en")).toContain("Nov 8, 2026");
+    expect(formatConversationDate(noon, "fr")).toContain("8 nov. 2026");
+  });
+
+  test("falls back to the runtime's language for a tag it cannot use", () => {
+    expect(formatConversationDate(noon, "not a tag!")).toContain("2026");
+  });
+});
+
+describe("describeStorageProblem", () => {
+  test("says what failed, with the runtime cause as detail", () => {
+    expect(describeStorageProblem({ kind: "saveFailed", cause: "Error: ENOSPC" })).toEqual({
+      message: "Could not save the conversation.",
+      detail: "Error: ENOSPC",
+    });
+  });
+
+  test("says a conversation to open is gone, with no detail", () => {
+    expect(describeStorageProblem({ kind: "notFound" })).toEqual({
+      message: "This conversation is missing or unreadable; it was removed from the list.",
     });
   });
 });

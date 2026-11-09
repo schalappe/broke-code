@@ -1,9 +1,10 @@
 /**
  * @module text
- * Localized panel text for provider errors, skipped providers, and mentions.
+ * Localized panel text for provider errors, skipped providers, mentions, and saved conversations.
  */
 import * as l10n from "@vscode/l10n";
 import type { MentionResult } from "../core/mentions";
+import type { StorageProblem } from "../core/protocol";
 import type { ProviderError } from "../core/providerError";
 import type { SkippedProvider } from "../core/providers";
 
@@ -130,5 +131,33 @@ export function describeMention(mention: MentionResult): string {
       return l10n.t("over 1 MiB, not attached");
     case "unreadable":
       return l10n.t("could not be read");
+  }
+}
+
+/** Date and time of a saved conversation in `language` (BCP 47), or the runtime's language if it cannot be used. */
+export function formatConversationDate(time: number, language: string): string {
+  const options: Intl.DateTimeFormatOptions = { dateStyle: "medium", timeStyle: "short" };
+  try {
+    return new Intl.DateTimeFormat(language, options).format(time);
+  } catch {
+    // [>]: A tag Intl rejects (RangeError) still gets a readable date.
+    return new Intl.DateTimeFormat(undefined, options).format(time);
+  }
+}
+
+export function describeListFailure(failure: { cause: string }): ErrorText {
+  return { message: l10n.t("Could not list the past conversations."), detail: failure.cause };
+}
+
+export function describeStorageProblem(problem: StorageProblem): ErrorText {
+  switch (problem.kind) {
+    case "saveFailed":
+      return { message: l10n.t("Could not save the conversation."), detail: problem.cause };
+    case "deleteFailed":
+      return { message: l10n.t("Could not delete the conversation."), detail: problem.cause };
+    case "openFailed":
+      return { message: l10n.t("Could not open the conversation."), detail: problem.cause };
+    case "notFound":
+      return { message: l10n.t("This conversation is missing or unreadable; it was removed from the list.") };
   }
 }

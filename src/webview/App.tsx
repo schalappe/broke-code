@@ -1,25 +1,47 @@
 import * as l10n from "@vscode/l10n";
-import { type KeyboardEvent, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type KeyboardEvent, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
+import type { ConversationSummary } from "../core/conversation";
 import { type ChatEntry, type ChatState, type HostMessage, isReplying } from "../core/protocol";
 import type { ProviderError } from "../core/providerError";
 import type { MentionToken, Suggestion } from "../core/suggestions";
 import { composerKeyAction, type MenuAnswer, menuToken, menuView, openMenuToken, pickedInText } from "./composer";
 import { moveHighlight, optionId, SuggestionMenu } from "./SuggestionMenu";
-import { describeMention, describeProviderError, describeSkippedProvider } from "./text";
+import {
+  describeListFailure,
+  describeMention,
+  describeProviderError,
+  describeSkippedProvider,
+  describeStorageProblem,
+  type ErrorText,
+  formatConversationDate,
+} from "./text";
 import { post } from "./vscodeApi";
 
-export function App({ state }: { state: ChatState }) {
+/** `language`: BCP 47 tag of the VS Code display language, for dates. */
+export function App({ state, language }: { state: ChatState; language: string }) {
   const configured = state.providers.length > 0;
+  const [historyOpen, setHistoryOpen] = useState(false);
   return (
     <main className="panel">
-      {configured ? <Header state={state} /> : <EmptyState />}
+      {/* Saved conversations are local: History works without a provider; only the composer needs one. */}
+      <Header state={state} historyOpen={historyOpen} toggleHistory={() => setHistoryOpen(!historyOpen)} />
+      {!configured && <EmptyState />}
       <Warnings state={state} />
+      {state.listFailed && <TextBlock text={describeListFailure(state.listFailed)} />}
+      {state.storageProblem && <TextBlock text={describeStorageProblem(state.storageProblem)} />}
       {state.models.status === "failed" && (
         <ErrorBlock error={state.models.error} retry={() => post({ type: "retryModels" })} />
       )}
-      {/* Without providers, an earlier conversation stays readable and a reply in flight keeps its Stop. */}
-      {(configured || state.entries.length > 0) && <Conversation entries={state.entries} />}
+      {historyOpen ? (
+        <HistoryPanel state={state} language={language} close={() => setHistoryOpen(false)} />
+      ) : (
+        // Without providers, an earlier conversation stays readable and a reply in flight keeps its Stop.
+        (configured || state.entries.length > 0) && (
+          // [>]: Keyed by conversation: another one starts with fresh scroll and collapsed reasoning blocks.
+          <Conversation key={state.conversationId} entries={state.entries} />
+        )
+      )}
       {(configured || isReplying(state)) && <Composer state={state} />}
     </main>
   );
@@ -36,11 +58,52 @@ function EmptyState() {
   );
 }
 
-function Header({ state }: { state: ChatState }) {
+const HISTORY_ID = "history";
+
+/** Provider and model pickers (with a provider configured), New chat, and the History toggle. */
+export function Header({
+  state,
+  historyOpen,
+  toggleHistory,
+}: {
+  state: ChatState;
+  historyOpen: boolean;
+  toggleHistory: () => void;
+}) {
+  return (
+    <header className="header">
+      {state.providers.length > 0 && <Pickers state={state} />}
+      <div className="actions">
+        <button
+          type="button"
+          className="secondary"
+          disabled={state.entries.length === 0}
+          onClick={() => {
+            if (historyOpen) toggleHistory();
+            post({ type: "newChat" });
+          }}
+        >
+          {l10n.t("New chat")}
+        </button>
+        <button
+          type="button"
+          className="secondary"
+          aria-expanded={historyOpen}
+          aria-controls={historyOpen ? HISTORY_ID : undefined}
+          onClick={toggleHistory}
+        >
+          {l10n.t("History")}
+        </button>
+      </div>
+    </header>
+  );
+}
+
+function Pickers({ state }: { state: ChatState }) {
   const replying = isReplying(state);
   const { models } = state;
   return (
-    <header className="header">
+    <div className="pickers">
       <select
         aria-label={l10n.t("Provider")}
         value={state.provider ?? ""}
@@ -69,15 +132,7 @@ function Header({ state }: { state: ChatState }) {
           <option value="">{modelPlaceholder(state)}</option>
         )}
       </select>
-      <button
-        type="button"
-        className="secondary"
-        disabled={state.entries.length === 0}
-        onClick={() => post({ type: "newChat" })}
-      >
-        {l10n.t("New chat")}
-      </button>
-    </header>
+    </div>
   );
 }
 
@@ -105,12 +160,20 @@ function Warnings({ state }: { state: ChatState }) {
   );
 }
 
-function ErrorBlock({ error, retry }: { error: ProviderError; retry?: () => void }) {
-  const text = describeProviderError(error);
+/** Alert with a message and its optional technical detail. */
+function TextBlock({ text, children }: { text: ErrorText; children?: ReactNode }) {
   return (
     <div className="error" role="alert">
       <p>{text.message}</p>
       {text.detail && <pre className="detail">{text.detail}</pre>}
+      {children}
+    </div>
+  );
+}
+
+function ErrorBlock({ error, retry }: { error: ProviderError; retry?: () => void }) {
+  return (
+    <TextBlock text={describeProviderError(error)}>
       <div className="actions">
         {error.kind === "invalidKey" && (
           <button type="button" onClick={() => post({ type: "setApiKey", provider: error.provider })}>
@@ -128,7 +191,78 @@ function ErrorBlock({ error, retry }: { error: ProviderError; retry?: () => void
           </button>
         )}
       </div>
-    </div>
+    </TextBlock>
+  );
+}
+
+/**
+ * History list wired to the host: a pick closes it and asks to open that conversation, even the one shown, since a
+ * pending open may be about to replace it; the controller skips an open of the conversation shown when it runs.
+ * Delete deletes.
+ */
+export function HistoryPanel({ state, language, close }: { state: ChatState; language: string; close: () => void }) {
+  return (
+    <ConversationList
+      conversations={state.conversations}
+      currentId={state.conversationId}
+      language={language}
+      onOpen={(id) => {
+        close();
+        post({ type: "openConversation", id });
+      }}
+      onDelete={(id) => post({ type: "deleteConversation", id })}
+    />
+  );
+}
+
+/**
+ * Saved conversations of the workspace, in the order given (newest first). A row's title reopens it; the one shown
+ * is marked `aria-current`.
+ */
+export function ConversationList({
+  conversations,
+  currentId,
+  language,
+  onOpen,
+  onDelete,
+}: {
+  conversations: ConversationSummary[];
+  currentId: string;
+  language: string;
+  onOpen: (id: string) => void;
+  onDelete: (id: string) => void;
+}) {
+  if (conversations.length === 0) {
+    return (
+      <section id={HISTORY_ID} className="history empty">
+        <p>{l10n.t("No past conversations.")}</p>
+      </section>
+    );
+  }
+  return (
+    <section id={HISTORY_ID} className="history" aria-label={l10n.t("History")}>
+      <ul>
+        {conversations.map((conversation) => {
+          const current = conversation.id === currentId;
+          return (
+            <li key={conversation.id} className={current ? "current" : undefined}>
+              <button
+                type="button"
+                className="history-open"
+                aria-current={current ? "true" : undefined}
+                onClick={() => onOpen(conversation.id)}
+              >
+                <span className="history-title">{conversation.title}</span>
+                <span className="history-date">{formatConversationDate(conversation.updatedAt, language)}</span>
+              </button>
+              <button type="button" className="secondary" onClick={() => onDelete(conversation.id)}>
+                {l10n.t("Delete")}
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
   );
 }
 
@@ -136,11 +270,6 @@ function Conversation({ entries }: { entries: ChatEntry[] }) {
   const end = useRef<HTMLDivElement>(null);
   const list = useRef<HTMLElement>(null);
   const [pinned, setPinned] = useState(true);
-
-  // New chat must not inherit the scroll-away of the conversation it replaced.
-  useEffect(() => {
-    if (entries.length === 0) setPinned(true);
-  }, [entries.length]);
 
   // Follow stream only while user stays at bottom.
   useLayoutEffect(() => {
@@ -165,13 +294,13 @@ function Conversation({ entries }: { entries: ChatEntry[] }) {
     >
       {entries.map((entry, index) =>
         entry.role === "user" ? (
-          // biome-ignore lint/suspicious/noArrayIndexKey: entries are only appended or cleared, never reordered or removed.
+          // biome-ignore lint/suspicious/noArrayIndexKey: a conversation's entries are only appended; another one remounts the list.
           <div key={index} className="message user">
             {entry.content}
             {entry.mentions.length > 0 && <Mentions entry={entry} />}
           </div>
         ) : (
-          // biome-ignore lint/suspicious/noArrayIndexKey: entries are only appended or cleared, never reordered or removed.
+          // biome-ignore lint/suspicious/noArrayIndexKey: a conversation's entries are only appended; another one remounts the list.
           <div key={index} className="message assistant">
             {entry.reasoning !== "" && <Reasoning key="reasoning" entry={entry} />}
             {entry.content !== "" && <Markdown>{entry.content}</Markdown>}

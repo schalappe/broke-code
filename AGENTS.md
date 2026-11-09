@@ -21,16 +21,21 @@ The code so far covers the extension skeleton and a streaming chat with a provid
 - `docs/adr/`: architecture decision records.
 - `src/core/`: modules that import nothing from `vscode`: settings parsing, the API key shape check, the provider
   HTTP client, the CA trust and certificate error classification (`tls.ts`), the SSE reader, the typed provider
-  errors, the chat controller (conversation state, streaming, Stop), the dialog queue, the host-webview message
+  errors, the chat controller (conversation state, streaming, Stop, saving, reopen, delete), the conversation record
+  (`conversation.ts`: version 1, its validation on load, title, id), its store (`conversationStore.ts`: one file
+  per conversation, reads, writes, and deletes in call order), and the store's file access (`conversationFiles.ts`:
+  the file port, and its implementation over a local directory with `node:fs`: missing versus failed, regular files
+  only, atomic writes, leftover temporary files), the dialog queue, the host-webview message
   protocol and its validation, workspace file access (`workspaceFiles.ts`: the inside-workspace check, capped reads,
   one-level listings, line truncation, with `node:fs`), mentions (`mentions.ts`: token detection, picked and typed
   mentions merged, reading, and the text the model receives), where a message holds Markdown code
   (`markdownCode.ts`), the mention menu logic (`suggestions.ts`: the `@` token at the caret, index entries,
   filtering, the index exclusions), and the menu's file index (`fileIndex.ts`: one scan shared until a file
-  changes, behind a scan port). `markdownCode.ts` and `suggestions.ts` import nothing from `node:`, since the
-  webview loads them. Unit tests sit next to them as `*.test.ts`, because `bun test` cannot load `vscode`. `tlsFixture.ts`
+  changes, behind a scan port). `markdownCode.ts`, `suggestions.ts`, and `conversation.ts` import nothing from
+  `node:`, since the webview loads them. Unit tests sit next to them as `*.test.ts`, because `bun test` cannot load `vscode`. `tlsFixture.ts`
   generates test certificates with `/usr/bin/openssl` at test time; no private key is committed.
-- `src/extension/`: the extension host glue (activation, webview view, API keys in `SecretStorage`, and the
+  `conversationFixture.ts` is the in-memory conversation file port for tests.
+- `src/extension/`: the extension host glue (activation, webview view, API keys in `SecretStorage`, the
   file index's `findFiles` scan and watcher in `fileIndex.ts`).
 - `src/webview/`: the React chat panel and its CSS. `SuggestionMenu.tsx` is the autocomplete list the `@` menu
   uses and the `/` menu (#11) is meant to reuse.
@@ -162,7 +167,45 @@ The code so far covers the extension skeleton and a streaming chat with a provid
   workspace only, which the mention resolver accepts. A file watcher marks the index stale on create and delete
   outside the excluded folders, and so does a workspace folder or `files.exclude` change; the next query rebuilds it, and queries
   during a build share it. At 5,000 files the menu's last line says the index is limited.
-- Conversations are saved per workspace.
+- Conversations are saved per workspace, as one JSON file per conversation in the extension's per-workspace storage
+  directory (`ExtensionContext.storageUri`), never in the memento: the memento serializes every key on each update
+  and VS Code warns from about 500 KB. A write goes to a uniquely named temporary file, flushed to disk, then a
+  `rename(2)` over the final one with `node:fs`, never `workspace.fs`: its rename with overwrite deletes the
+  destination first, so a crash between the two steps would lose the conversation. The first listing deletes
+  temporary files left by a crash. Reads, writes, and deletes run one at a time in
+  call order, so a read sees every write and delete asked before it. The workspace memento holds only the last
+  provider and model choice and the id of the conversation shown. The list is derived from the directory, newest
+  first, conversations without entries left out; 50 conversations are kept: a save past the limit, and the window load, queue a prune
+  with the navigation (below), which deletes the oldest by update time, oldest first, never the one shown when it
+  runs.
+- The record is versioned (`version: 1`) and holds the displayed entries, each user entry with the text the model
+  received (`modelText`), so a reopened conversation resends exactly what was sent and never reads its mentions
+  again. It holds no API key and nothing else of `ProviderAccess`; a failed reply's error keeps the provider's base
+  URL for display, since it is user settings, not a secret. Times are whole milliseconds within the `Date` range. A
+  file that fails validation or has an unknown version is logged and skipped; a file that cannot be read is shown as
+  a listing failure. On load, a reply still `waiting` or `streaming` becomes `stopped`.
+- A conversation is saved when a message is sent, and the request waits for that save (a failed save is shown and the
+  request still goes), then at most every 500 ms while the reply streams, and when the reply ends (done, stopped,
+  failed, or cut off). A reply's saves go to the record it was sent
+  in, also after New chat or opening another one, and a deleted conversation is never written again. A conversation
+  without entries is never written.
+- Navigation runs one operation at a time, in request order: restore, New chat (and `/new`, #11, through the same
+  `newChat` method), open, delete, and prune. The operations that change the conversation shown (New chat, open,
+  deleting the one shown) stop the reply in flight at request time and wait until it settles, its last save handed to
+  the store, so a later read sees that save. Restore stops nothing: no reply exists at activation. Deleting another row
+  and pruning leave the reply running; a reply's own save triggers the prune. The conversation shown is therefore the
+  result of the last request, never one deleted or pruned before it: an open queued after a delete or prune of its id
+  reads it as missing and says so. Each user request clears the open or not-found error it supersedes; its own failure
+  is shown. A listing error has its own field in the panel state (`listFailed`), apart from the error of the
+  conversation shown and the user's actions (`storageProblem`: save, delete, open, not found), so the panel can show
+  both and neither hides or clears the other; it is cleared only by the next listing that succeeds. Stop ends a reply at
+  once even when a step it waits on cannot be aborted (such as a CA file read on a FIFO): the reply is stopped and
+  saved, and late reply text or outcome is dropped. A row is dropped only once its delete has succeeded. Deleting the
+  conversation shown shows a new one first. `send` is not navigation: its saves go straight to the store. Accepted cost:
+  a request waits behind a slow disk operation already queued. Reopening restores the entries only; it does not switch
+  the provider or model. History works without a provider: past conversations can be read, reopened, and deleted; only
+  the composer needs one. Without a folder or workspace open, there is no storage directory: the conversation stays in
+  memory and the list is empty. A failed save, delete, listing, or open is logged and shown in the panel.
 
 ### Skills and slash commands
 

@@ -1,23 +1,36 @@
-import { describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
+import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ChatEntry, ChatState } from "../core/protocol";
 import type { ProviderError } from "../core/providerError";
 import type { Suggestion } from "../core/suggestions";
 
 // [&]: `vscodeApi` calls the webview global on import -> stub it before App loads.
+/** Messages the panel posted to the host. */
+const posted: unknown[] = [];
 (globalThis as { acquireVsCodeApi?: () => { postMessage(message: unknown): void } }).acquireVsCodeApi = () => ({
-  postMessage() {},
+  postMessage: (message) => posted.push(message),
 });
-const { App, MentionMenu } = await import("./App");
+const { App, ConversationList, Header, HistoryPanel, MentionMenu } = await import("./App");
 const { moveHighlight } = await import("./SuggestionMenu");
 
 type Reply = ChatEntry & { role: "assistant" };
+
+const CONVERSATION_ID = "0b0d4c1e-8f9a-4c3b-9d2e-1a2b3c4d5e6f";
+/** Conversation fields of a state with nothing saved. */
+const unsaved = {
+  conversationId: CONVERSATION_ID,
+  conversations: [],
+  listFailed: undefined,
+  storageProblem: undefined,
+};
 
 /** Panel markup for a conversation of one question and `reply`, English strings. */
 function render(reply: Omit<Reply, "role">): string {
   const state: ChatState = {
     providers: ["P"],
     skipped: [],
+    ...unsaved,
     provider: "P",
     models: { status: "loaded", models: ["m"] },
     model: "m",
@@ -26,7 +39,7 @@ function render(reply: Omit<Reply, "role">): string {
       { role: "assistant", ...reply },
     ],
   };
-  return renderToStaticMarkup(<App state={state} />);
+  return renderToStaticMarkup(<App state={state} language="en" />);
 }
 
 describe("reasoning block", () => {
@@ -81,12 +94,13 @@ describe("error actions", () => {
     const state: ChatState = {
       providers: ["P"],
       skipped: [],
+      ...unsaved,
       provider: "P",
       models: { status: "failed", error },
       model: undefined,
       entries: [],
     };
-    return renderToStaticMarkup(<App state={state} />);
+    return renderToStaticMarkup(<App state={state} language="en" />);
   }
 
   test("offers the provider settings for a certificate error and an unusable CA file", () => {
@@ -110,12 +124,13 @@ describe("mentions", () => {
     const state: ChatState = {
       providers: ["P"],
       skipped: [],
+      ...unsaved,
       provider: "P",
       models: { status: "loaded", models: ["m"] },
       model: "m",
       entries: [{ role: "user", content: "look", mentions }],
     };
-    return renderToStaticMarkup(<App state={state} />);
+    return renderToStaticMarkup(<App state={state} language="en" />);
   }
 
   test("shows no mention list for a message without mentions", () => {
@@ -206,5 +221,235 @@ describe("moveHighlight", () => {
     expect(moveHighlight(2, 1, 3)).toBe(0);
     expect(moveHighlight(0, -1, 3)).toBe(2);
     expect(moveHighlight(0, 1, 0)).toBe(0);
+  });
+});
+
+type Props = { children?: unknown; onClick?: () => void; [name: string]: unknown };
+
+/** Host elements of `node` (a tree of hook-free components already called), depth first. */
+function elements(node: unknown): ReactElement<Props>[] {
+  if (Array.isArray(node)) return node.flatMap(elements);
+  if (typeof node !== "object" || node === null || !("props" in node)) return [];
+  const element = node as ReactElement<Props>;
+  return [element, ...elements(element.props.children)];
+}
+
+/** The button whose text is `label`. */
+function button(tree: unknown, label: string): ReactElement<Props> {
+  const found = elements(tree).find((element) => element.type === "button" && element.props.children === label);
+  if (!found) throw new Error(`no ${label} button`);
+  return found;
+}
+
+/** State with providers configured (or not) and `entries`. */
+function stateWith(configured: boolean, overrides: Partial<ChatState> = {}): ChatState {
+  return {
+    providers: configured ? ["P"] : [],
+    skipped: [],
+    ...unsaved,
+    provider: configured ? "P" : undefined,
+    models: configured ? { status: "loaded", models: ["m"] } : { status: "noProvider" },
+    model: configured ? "m" : undefined,
+    entries: [],
+    ...overrides,
+  };
+}
+
+const hi: ChatEntry[] = [
+  { role: "user", content: "Hi", mentions: [] },
+  { role: "assistant", reasoning: "", content: "Hello", status: "done" },
+];
+
+beforeEach(() => {
+  posted.length = 0;
+});
+
+describe("conversation history", () => {
+  const OTHER_ID = "1b0d4c1e-8f9a-4c3b-9d2e-1a2b3c4d5e6f";
+  const list = (conversations: { id: string; title: string; updatedAt: number }[]) =>
+    renderToStaticMarkup(
+      <ConversationList
+        conversations={conversations}
+        currentId={CONVERSATION_ID}
+        language="en"
+        onOpen={() => {}}
+        onDelete={() => {}}
+      />,
+    );
+
+  test("has a History toggle in the header, closed at first", () => {
+    const html = render({ reasoning: "", content: "Hello", status: "done" });
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).toContain(">History<");
+    expect(html).not.toContain('class="history"');
+  });
+
+  test("lists each conversation in the order given with its title and date, the current one marked", () => {
+    const noon = new Date(2026, 10, 8, 12).getTime();
+    const html = list([
+      { id: CONVERSATION_ID, title: "Newest", updatedAt: noon },
+      { id: OTHER_ID, title: "Older", updatedAt: noon - 86_400_000 },
+    ]);
+    expect(html.indexOf("Newest")).toBeLessThan(html.indexOf("Older"));
+    expect(html).toContain("Nov 8, 2026");
+    expect(html).toContain("Nov 7, 2026");
+    expect(html.match(/aria-current="true"/g)).toHaveLength(1);
+    expect(html).toMatch(/aria-current="true"[^>]*>.*Newest/);
+    expect(html.match(/<li class="current">/g)).toHaveLength(1);
+    expect(html).toMatch(/<li class="current"><button[^>]*aria-current="true"/);
+    expect(html).toContain("<li><button");
+    expect(html.match(/<button type="button" class="secondary">Delete<\/button>/g)).toHaveLength(2);
+    expect(html).not.toContain("No past conversations.");
+  });
+
+  test("says when there is no past conversation", () => {
+    expect(list([])).toContain("No past conversations.");
+  });
+
+  test("shows a storage problem as an alert", () => {
+    const state: ChatState = {
+      providers: ["P"],
+      skipped: [],
+      ...unsaved,
+      storageProblem: { kind: "deleteFailed", cause: "Error: EACCES" },
+      provider: "P",
+      models: { status: "loaded", models: ["m"] },
+      model: "m",
+      entries: [],
+    };
+    const html = renderToStaticMarkup(<App state={state} language="en" />);
+    expect(html).toContain("Could not delete the conversation.");
+    expect(html).toContain("Error: EACCES");
+  });
+
+  test("shows a listing failure and an action error at once", () => {
+    const state = stateWith(true, {
+      listFailed: { cause: "Error: EACCES: listing denied" },
+      storageProblem: { kind: "openFailed", cause: "Error: EIO" },
+    });
+    const html = renderToStaticMarkup(<App state={state} language="en" />);
+    expect(html).toContain("Could not list the past conversations.");
+    expect(html).toContain("Error: EACCES: listing denied");
+    expect(html).toContain("Could not open the conversation.");
+    expect(html.match(/role="alert"/g)).toHaveLength(2);
+  });
+});
+
+describe("history without a provider", () => {
+  test("keeps the History toggle and the provider explanation", () => {
+    const html = renderToStaticMarkup(<App state={stateWith(false)} language="en" />);
+    expect(html).toContain(">History<");
+    expect(html).toContain("No provider is configured.");
+    expect(html).not.toContain("<select");
+  });
+
+  test("shows a reopened conversation read-only: no composer", () => {
+    const html = renderToStaticMarkup(<App state={stateWith(false, { entries: hi })} language="en" />);
+    expect(html).toContain("Hello");
+    expect(html).not.toContain("<textarea");
+  });
+});
+
+describe("composer", () => {
+  test("shows with a provider, and without one only while a reply is in flight", () => {
+    const replying: ChatEntry[] = [hi[0]!, { role: "assistant", reasoning: "", content: "", status: "waiting" }];
+    expect(renderToStaticMarkup(<App state={stateWith(true)} language="en" />)).toContain("<textarea");
+    expect(renderToStaticMarkup(<App state={stateWith(false)} language="en" />)).not.toContain("<textarea");
+    expect(renderToStaticMarkup(<App state={stateWith(false, { entries: replying })} language="en" />)).toContain(
+      "<textarea",
+    );
+  });
+});
+
+describe("header actions", () => {
+  test("the History toggle points at the list only while it is open", () => {
+    const open = renderToStaticMarkup(<Header state={stateWith(true)} historyOpen={true} toggleHistory={() => {}} />);
+    const closed = renderToStaticMarkup(
+      <Header state={stateWith(true)} historyOpen={false} toggleHistory={() => {}} />,
+    );
+    expect(open).toContain('aria-expanded="true" aria-controls="history"');
+    expect(closed).toContain('aria-expanded="false"');
+    expect(closed).not.toContain("aria-controls");
+  });
+
+  test("New chat is disabled for an empty conversation only, with or without a provider", () => {
+    const newChat = (configured: boolean, entries: ChatEntry[]) =>
+      renderToStaticMarkup(
+        <Header state={stateWith(configured, { entries })} historyOpen={false} toggleHistory={() => {}} />,
+      ).match(/<button[^>]*>New chat<\/button>/)?.[0];
+    for (const configured of [true, false]) {
+      expect(newChat(configured, [])).toContain("disabled");
+      expect(newChat(configured, hi)).not.toContain("disabled");
+    }
+  });
+
+  test("New chat closes an open History and starts a new chat; a closed one stays closed", () => {
+    let toggles = 0;
+    const toggle = () => {
+      toggles += 1;
+    };
+    const state = stateWith(true, { entries: hi });
+    button(Header({ state, historyOpen: true, toggleHistory: toggle }), "New chat").props.onClick!();
+    expect(toggles).toBe(1);
+    button(Header({ state, historyOpen: false, toggleHistory: toggle }), "New chat").props.onClick!();
+    expect(toggles).toBe(1);
+    expect(posted).toEqual([{ type: "newChat" }, { type: "newChat" }]);
+  });
+});
+
+describe("history panel", () => {
+  const OTHER_ID = "1b0d4c1e-8f9a-4c3b-9d2e-1a2b3c4d5e6f";
+  const conversations = [
+    { id: CONVERSATION_ID, title: "Shown", updatedAt: 2 },
+    { id: OTHER_ID, title: "Other", updatedAt: 1 },
+  ];
+
+  /** The list the panel renders, with its handlers; closing counted. */
+  function panel() {
+    let closed = 0;
+    const list = HistoryPanel({
+      state: stateWith(true, { conversations }),
+      language: "en",
+      close: () => {
+        closed += 1;
+      },
+    }) as ReactElement<{ onOpen(id: string): void; onDelete(id: string): void }>;
+    return { list, closed: () => closed };
+  }
+
+  test("a click on another conversation closes the list and asks to open it", () => {
+    const { list, closed } = panel();
+    list.props.onOpen(OTHER_ID);
+    expect(closed()).toBe(1);
+    expect(posted).toEqual([{ type: "openConversation", id: OTHER_ID }]);
+  });
+
+  test("a click on the conversation shown still asks to open it, so it supersedes a pending open", () => {
+    const { list, closed } = panel();
+    list.props.onOpen(CONVERSATION_ID);
+    expect(closed()).toBe(1);
+    expect(posted).toEqual([{ type: "openConversation", id: CONVERSATION_ID }]);
+  });
+
+  test("Delete asks to delete that conversation", () => {
+    const { list } = panel();
+    list.props.onDelete(OTHER_ID);
+    expect(posted).toEqual([{ type: "deleteConversation", id: OTHER_ID }]);
+  });
+
+  test("each row's buttons call back with that row's id", () => {
+    const opened: string[] = [];
+    const deleted: string[] = [];
+    const tree = ConversationList({
+      conversations,
+      currentId: CONVERSATION_ID,
+      language: "en",
+      onOpen: (id) => opened.push(id),
+      onDelete: (id) => deleted.push(id),
+    });
+    const buttons = elements(tree).filter((element) => element.type === "button");
+    for (const element of buttons) element.props.onClick!();
+    expect(opened).toEqual([CONVERSATION_ID, OTHER_ID]);
+    expect(deleted).toEqual([CONVERSATION_ID, OTHER_ID]);
   });
 });
