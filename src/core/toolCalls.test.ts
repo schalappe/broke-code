@@ -326,6 +326,29 @@ describe("parseToolCall argument values", () => {
     });
   });
 
+  test("hold their own tags in pairs, even followed by another argument's opening tag", () => {
+    const content = "<content>x</content>\n<path>icon.svg</path>";
+    const answer = `<write_file>\n<path>a.xml</path>\n<content>\n${content}\n</content>\n</write_file>`;
+    expect(callArgs(answer)).toEqual({ path: "a.xml", content });
+    const repeated = "<content>x</content>\n<content>y</content>";
+    const twice = `<write_file>\n<path>a.xml</path>\n<content>\n${repeated}\n</content>\n</write_file>`;
+    expect(callArgs(twice)).toEqual({ path: "a.xml", content: repeated });
+  });
+
+  test("hold their own opening tag without its pair, ending at the last closing tag", () => {
+    const content = 'const tag = "<content>";';
+    const answer = `<write_file>\n<content>\n${content}\n</content>\n<path>a.ts</path>\n</write_file>`;
+    expect(callArgs(answer)).toEqual({ path: "a.ts", content });
+  });
+
+  test("stay fast on a body with many nested opening and closing tags", () => {
+    const content = `${"<content>".repeat(100000)}x${"</content>\n<path>p</path>".repeat(100000)}`;
+    const answer = `<write_file>\n<path>a</path>\n<content>${content}</content>\n</write_file>`;
+    const started = performance.now();
+    expect(callArgs(answer).content).toBe(content);
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+
   test("stay fast on a body with many repeated closing tags that never parses", () => {
     const body = `<path>${"x</path>y".repeat(200000)}</path>\n`;
     const started = performance.now();
