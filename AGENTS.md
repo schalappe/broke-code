@@ -34,7 +34,7 @@ yet. Read
   the file port, and its implementation over a local directory with `node:fs`: missing versus failed, regular files
   only, atomic writes, leftover temporary files), the dialog queue, the host-webview message
   protocol and its validation, workspace file access (`workspaceFiles.ts`: the inside-workspace check, capped reads,
-  one-level listings, line truncation, the write boundary and in-place writes, with `node:fs`), mentions (`mentions.ts`: token detection, picked and typed
+  one-level listings, line truncation, the write boundary and atomic writes, with `node:fs`), mentions (`mentions.ts`: token detection, picked and typed
   mentions merged, reading, and the text the model receives), where a message holds Markdown code
   (`markdownCode.ts`), the mention menu logic (`suggestions.ts`: the `@` token at the caret, index entries,
   filtering, the index exclusions), the menu's file index (`fileIndex.ts`: one scan shared until a file
@@ -138,11 +138,16 @@ yet. Read
   call per reply, calls inside code fences are ignored, a malformed call goes back to the model as a precise
   error, three malformed calls in a row stop the agent turn, and a reply without a call is the final answer.
   Change these rules only on evidence from the Ollama eval.
-- A known tool's call ends at the `</tool_name>` after its last argument value, not at the first one, and a value
-  ends at the first `</argument>` followed by nothing but whitespace and then another argument tag of the tool or the
-  call's closing tag (its own tags in pairs are kept). A value may therefore hold `</write_file>`, `</content>`, other
-  tools' tags, and code fences. The parser drops one leading and one trailing line break of a value that sits on its
-  own lines, so `write_file` writes its content followed by one line break unless the content is empty.
+- A known tool's call ends at the `</tool_name>` after its last argument value, not at the first one. A value ends at
+  the first `</argument>` that closes no `<argument>` opened inside the value and is followed by nothing but
+  whitespace and then another argument tag of the tool or the call's closing tag: an inner `<argument>` …
+  `</argument>` pair is kept, so a value can hold a whole example call. When the tags never balance, the value ends
+  at the first `</argument>` so followed, pairs ignored; failing that, at the last `</argument>` before the next
+  `</tool_name>`. A value may therefore hold `</write_file>`, `</content>`, other tools' tags, and code fences. Known
+  cost, kept by maintainer decision: a value holding an unpaired `<argument>` pairs it with the real closing tag, so
+  it runs on into the text after the call when that text holds `</argument>` then `</tool_name>`. The parser drops
+  one leading and one trailing line break of a value that sits on its own lines, so `write_file` writes its content
+  followed by one line break unless the content is empty.
 - The v1 tools are `read_file`, `list_files`, `search` (ripgrep), `write_file`, `edit_file`, `run_command`,
   and `load_skill`.
 - `edit_file` replaces exact text only, compared byte for byte, line endings included. If the text matches zero
@@ -151,10 +156,20 @@ yet. Read
   path that exists nowhere going to the first workspace folder that may hold it. The deepest existing folder above
   the file must resolve inside a workspace folder; missing folders are created at apply. The file itself must not
   be a symlink, and an existing one must be a UTF-8 text file within the read caps (binary or over 1 MiB refused, as
-  for reads); content over 1 MiB is refused. The applier checks the path again, writes only when the file still holds
-  the planned text (already holding the new text is a success, so applying twice is harmless), and writes in place:
-  it creates the file with `O_EXCL`, or truncates and writes through an `O_NOFOLLOW` handle checked to be the file
-  at the checked path. Nothing is written in any error case.
+  for reads); content over 1 MiB is refused. The applier checks the path again and writes only when the file still
+  holds the planned text (already holding the new text is a success, so applying twice is harmless).
+- A write is atomic: the file holds its old text or the new one, never a mix or nothing, even after a crash. The new
+  text goes to a temporary file `.<name>.broke-code-<random>.tmp` in the target's own folder, flushed to disk, with
+  the old file's permission bits (`rwx` for owner, group, and others) or the default ones for a new file. A last
+  check then reads the target again: its folder must still resolve to the same place inside the workspace, the
+  target must not be a symlink, and it must still hold the planned text (or already the new text: a success).
+  Then the temporary file takes its place: `rename(2)` over an existing file, `link(2)` for a new one, which fails
+  rather than replace a file created meanwhile (refused as changed since planned). On any failure the temporary
+  file is removed and the file stays byte-identical; the error result keeps the cause ("the file was not written
+  (ENOSPC)"), and folders created for the write stay. Accepted costs: a hard link to the file keeps the old text;
+  its owner, extended attributes, and ACLs are not kept; the folder must be writable; a crash before the swap, or a
+  folder renamed during the write, leaves the temporary file behind. Residual race, accepted as for reads: a write
+  landing between the last read and the rename is overwritten, since Node has no compare-and-swap on a path.
 - Tools act inside the open workspace only. The one exception is read-only access to the directories of skills
   loaded in the current conversation.
 - Approvals:
@@ -300,11 +315,13 @@ yet. Read
 - Skills follow the Agent Skills format (`<name>/SKILL.md` with `name` and `description` frontmatter). The
   extension reads them from two places only: `.agents/skills/` in each workspace folder and `~/.agents/skills/`. A
   workspace skill wins over a personal skill with the same name, and an earlier workspace folder over a later one; a
-  hidden skill gives no warning.
+  hidden skill gives no warning, valid or not. A skipped skill hides nothing: a valid one of its name further down
+  the order wins, and the skipped one warns.
 - Discovery runs at each send, like the instruction files, over the direct children of `~/.agents/skills/`, then of
   each workspace folder's `.agents/skills/`. A child is a skill when it is a folder holding `SKILL.md` (1 MiB cap); a
   folder without one, a stray file, and a missing skills folder pass silently. A personal skill folder follows
-  symlinks; a workspace one is held to the workspace boundary, and one linked out is skipped with a warning.
+  symlinks; a workspace one is held to its own workspace folder, and one linked out of it, into another workspace
+  folder included, is skipped with a warning.
 - The frontmatter is the lines between a first line `---` and the next `---`, read by a hand-written subset of YAML
   (`skills.ts`), no YAML dependency: top-level `key: value` with plain, single- or double-quoted, or `>` and `|` block
   values; nested maps and unknown keys are ignored. `name` follows the spec (1 to 64 of `a-z`, `0-9`, `-`, no hyphen

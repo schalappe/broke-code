@@ -151,9 +151,10 @@ next.
 
 - `name` is 1 to 64 lowercase letters, digits, and hyphens, with no hyphen at either end and no two in a row, and
   equals the skill's folder name. `description` is 1 to 1,024 characters. Other frontmatter fields are ignored.
-- A workspace skill hides a personal skill of the same name; between two workspace folders, the first one wins.
-- A personal skill folder may be a symbolic link anywhere. A workspace skill folder that links outside the workspace
-  is skipped.
+- A workspace skill hides a personal skill of the same name; between two workspace folders, the first one wins. A
+  hidden skill shows no warning. An invalid skill hides nothing: a valid skill of the same name further down counts.
+- A personal skill folder may be a symbolic link anywhere. A workspace skill folder that links outside its workspace
+  folder, even into another folder of the workspace, is skipped.
 - `disable-model-invocation: true` keeps a skill out of the list the model sees.
 
 A skill whose `SKILL.md` is invalid, unreadable, or over 1 MiB is skipped, and the chat shows a warning naming the
