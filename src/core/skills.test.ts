@@ -210,6 +210,24 @@ describe("readSkills", () => {
     });
   });
 
+  test("skips a workspace skill folder linked into another workspace folder even when its SKILL.md links back", async () => {
+    const other = join(base, "other");
+    await mkdir(join(other, "tools", "cross"), { recursive: true });
+    await mkdir(join(workspace, "docs"));
+    await writeFile(join(workspace, "docs", "cross.md"), skillText("cross", "Linked back."));
+    await symlink(join(workspace, "docs", "cross.md"), join(other, "tools", "cross", "SKILL.md"));
+    await symlink(join(other, "tools", "cross"), join(workspaceSkills(), "cross"));
+    const roots = [
+      { name: "app", path: workspace },
+      { name: "lib", path: other },
+    ];
+
+    expect(await readSkills(home, roots)).toEqual({
+      skills: [],
+      warnings: [{ path: "app/.agents/skills/cross/SKILL.md", problem: { kind: "outsideWorkspace" } }],
+    });
+  });
+
   test("reads a key with an empty head and a nested map after blank lines as no string", async () => {
     await writeSkill(personal, "nested", "---\nname: nested\ndescription:\n\n  summary: Nested.\n---\n");
     expect((await readSkills(home, [])).warnings).toEqual([

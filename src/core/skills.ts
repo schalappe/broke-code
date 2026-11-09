@@ -11,6 +11,7 @@ import type { SkillProblem, SkillWarning } from "./protocol";
 import type { Skill } from "./systemPrompt";
 import {
   compareNames,
+  locateWorkspacePath,
   readFileOutsideWorkspace,
   readWorkspaceEntryAt,
   type WorkspaceEntry,
@@ -26,8 +27,16 @@ const MAX_DESCRIPTION_LENGTH = 1024;
 /** Lowercase letters and digits in groups joined by single hyphens: no hyphen first, last, or twice in a row. */
 const NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
-/** One skills folder: `label` shows it to the user; `read` reads a `SKILL.md` under it with its boundary policy. */
-type SkillSource = { folder: string; label: string; read: (path: string) => Promise<WorkspaceEntry> };
+/**
+ * One skills folder: `label` shows it to the user; `read` reads a `SKILL.md` under it and `locate` resolves a skill
+ * folder under it, each with the folder's boundary policy. `locate` rejects on a disk error other than a missing path.
+ */
+type SkillSource = {
+  folder: string;
+  label: string;
+  read: (path: string) => Promise<WorkspaceEntry>;
+  locate: (folder: string) => Promise<{ status: "ok"; realPath: string } | { status: "missing" | "outsideWorkspace" }>;
+};
 
 /** A skipped candidate's warning with its directory name, or a skills folder's warning (no directory). */
 type SourceWarning = { directory?: string; warning: SkillWarning };
@@ -39,8 +48,8 @@ type SourceDiscovery = { skills: Skill[]; warnings: SourceWarning[] };
  * The skills of `~/.agents/skills/` under `home`, then of each of `roots`' `.agents/skills/`. A workspace skill hides
  * a personal skill of the same name, and an earlier workspace folder a later one; a hidden candidate gives no warning,
  * valid or not. A skipped candidate hides nothing: a valid one of its name from a later source is listed, and the
- * skipped one warns. A personal skill folder follows symlinks (dotfiles are often linked); a workspace one is held to
- * its own workspace folder, as instruction files are. A folder without `SKILL.md`, a stray file, and a missing skills
+ * skipped one warns. A personal skill folder follows symlinks (dotfiles are often linked); a workspace one, the folder
+ * and its `SKILL.md` alike, is held to its own workspace folder, as instruction files are. A folder without `SKILL.md`, a stray file, and a missing skills
  * folder pass silently; any other failure is a warning. Never rejects.
  */
 export async function readSkills(home: string, roots: WorkspaceRoot[]): Promise<SkillDiscovery> {
@@ -48,6 +57,14 @@ export async function readSkills(home: string, roots: WorkspaceRoot[]): Promise<
     folder: join(home, ".agents", "skills"),
     label: "~/.agents/skills",
     read: readFileOutsideWorkspace,
+    locate: (folder) =>
+      realpath(folder).then(
+        (realPath) => ({ status: "ok" as const, realPath }),
+        (error: unknown) => {
+          if (errorCode(error) === "ENOENT") return { status: "missing" as const };
+          throw error;
+        },
+      ),
   };
   const workspace = roots.map(
     (root): SkillSource => ({
@@ -55,6 +72,8 @@ export async function readSkills(home: string, roots: WorkspaceRoot[]): Promise<
       label: roots.length > 1 ? `${root.name}/.agents/skills` : ".agents/skills",
       // [>]: At its absolute path, never through folder names, as for instruction files (see `instructions.ts`).
       read: (path) => readWorkspaceEntryAt([root], path),
+      // [>]: The folder too, not only its `SKILL.md`: a folder linked out with a `SKILL.md` linked back is outside.
+      locate: (folder) => locateWorkspacePath([root], folder),
     }),
   );
   // [>]: Sources in precedence order: the first skill of a name wins.
@@ -130,7 +149,12 @@ async function readSkill(
   const parsed = validate(entry.text, directory);
   if ("problem" in parsed) return warn(parsed.problem);
   try {
-    return { kind: "skill", skill: { ...parsed, root: await realpath(folder) } };
+    const located = await source.locate(folder);
+    if (located.status !== "ok") {
+      // [>]: Gone since its `SKILL.md` was read: as a folder without one.
+      return located.status === "missing" ? undefined : warn({ kind: "outsideWorkspace" });
+    }
+    return { kind: "skill", skill: { ...parsed, root: located.realPath } };
   } catch (error) {
     return warn({ kind: "unreadable", cause: causeOf(error) });
   }
