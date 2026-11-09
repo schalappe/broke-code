@@ -11,11 +11,12 @@ covers the agent loop over the reply text, skills, and slash commands, in a mini
 twinny.
 
 The code so far covers the extension skeleton, a streaming chat with a provider, and the harness with the read and
-write tools: a message starts an agent turn that runs `read_file`, `list_files`, `search`, `write_file`, and
-`edit_file` until the model answers without a call. Each write waits behind the approval (a diff and Accept or Reject
-in the chat, ADR 0002) unless the user setting auto-approves it. Each send discovers the skills and lists them to the
-model, which loads one with `load_skill` and may then read its folder (ADR 0003). `bun run eval` measures that loop on
-local Ollama models and applies each change at once. `run_command` and slash commands are not built yet. Read `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the decisions behind the design, starting with
+write tools and commands: a message starts an agent turn that runs `read_file`, `list_files`, `search`, `write_file`,
+`edit_file`, and `run_command` until the model answers without a call. Each write waits behind the approval (a diff and
+Accept or Reject in the chat, ADR 0002) unless the user setting auto-approves it; each command waits for Run or Reject,
+always. Each send discovers the skills and lists them to the model, which loads one with `load_skill` and may then read
+its folder (ADR 0003). `bun run eval` measures that loop, without `run_command`, on local Ollama models and applies each
+change at once. Slash commands are not built yet. Read `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the decisions behind the design, starting with
 `docs/adr/0001-body-tool-calls.md`.
 
 ## Structure
@@ -40,7 +41,10 @@ local Ollama models and applies each change at once. `run_command` and slash com
   changes, behind a scan port), the body tool call parser (`toolCalls.ts`: `ToolSpec`, the first call-shaped block,
   malformed-call messages), the system prompt composer (`systemPrompt.ts`: role, call format, rules, tools,
   skills, instruction files), the turn limits (`limits.ts`: `brokeCode.maxToolSteps` and `brokeCode.contextSizes` parsing,
-  the token estimate, the context-full threshold, the typed size check), and the read tools (`tools.ts`: `read_file` and `list_files` over the mention reader, `search`
+  the token estimate, the context-full threshold, the typed size check, and `brokeCode.commandTimeoutSeconds` parsing),
+  the command tool (`commands.ts`: `RUN_COMMAND_TOOL`, `runCommandTool` checks the call and the folder and asks the
+  approval, `runCommand` runs an approved command in its own process group with an injected shell and timeout, and
+  `commandShell` picks the shell), and the read tools (`tools.ts`: `read_file` and `list_files` over the mention reader, `search`
   over ripgrep with its candidate paths, bounded `ok` or `error` results, each also reaching the loaded skills' folders
   by absolute path), the write tools (`writeTools.ts`:
   `write_file` and `edit_file` plan a change `{ path, target, before, after }` and never write; an applier port writes
@@ -49,7 +53,8 @@ local Ollama models and applies each change at once. `run_command` and slash com
   makes, the decision it gets, the rejection text, and the decisions of the editor side: which change diffs to close,
   the unsaved-editor check over the open documents, the auto-approve setting from its user value), the tool runner (`toolRunner.ts`: the read and write tools over the
   workspace folders, the read tools also over the run's `skillRoots`, each write handed to the applier the host builds
-  for the run, and `load_skill` over the run's `skills`), the instruction files
+  for the run, `run_command` with the command environment the host passes, read at each call, and `load_skill` over
+  the run's `skills`), the instruction files
   (`instructions.ts`: `~/.agents/AGENTS.md`, then each workspace folder's `AGENTS.md`, under the mention caps), and the
   skills (`skills.ts`: discovery in `~/.agents/skills/` and each workspace folder's `.agents/skills/`, the frontmatter
   subset, validation, precedence, warnings, the line the extension logs at each send; `LOAD_SKILL_TOOL`, `loadSkill`
@@ -58,9 +63,10 @@ local Ollama models and applies each change at once. `run_command` and slash com
   generates test certificates with `/usr/bin/openssl` at test time; no private key is committed.
   `conversationFixture.ts` is the in-memory conversation file port for tests.
 - `src/extension/`: the extension host glue (activation, webview view, API keys in `SecretStorage`, the
-  file index's `findFiles` scan and watcher in `fileIndex.ts`, the turn limits from the user settings and the "Set
-  context size" input box in `contextSizes.ts`, the tool runner's wiring (the ripgrep candidates from
-  `vscode.env.appRoot` and `PATH`, the write tools behind `approvalApplier`), the write approval's editor side in
+  file index's `findFiles` scan and watcher in `fileIndex.ts`, the turn limits and the command timeout from the user
+  settings and the "Set context size" input box in `contextSizes.ts`, the tool runner's wiring (the ripgrep candidates
+  from `vscode.env.appRoot` and `PATH`, the write tools behind `approvalApplier`, the command shell from
+  `vscode.env.shell`, `$SHELL`, or `/bin/sh`), the write approval's editor side in
   `approval.ts` (the diff preview over `vscode.diff` and a content provider, the tabs, documents, and
   `brokeCode.autoApproveWrites` values it feeds the core decisions), the instruction reader and the skill reader from the home folder and the workspace folders, the latter logging the
   skills of each send).
@@ -212,8 +218,8 @@ local Ollama models and applies each change at once. `run_command` and slash com
   - Reads run without asking.
   - A tool asks through its run context: `ToolContext.requestApproval(request)` settles with Accept, Reject (with the
     reason typed, trimmed, left out when blank), or Cancel. While the request is open, the reply stays `streaming` and
-    `ChatState.approval` holds `{ id, tool, summary }`; the chat renders the step row "waiting for your decision",
-    Accept, Reject, and a reason field from that state alone. The webview's `approve { id }` and
+    `ChatState.approval` holds `{ id, kind, tool, summary }`; the chat renders the step row "waiting for your decision",
+    Accept (Run for a command), Reject, and a reason field from that state alone. The webview's `approve { id }` and
     `reject { id, reason? }` are validated like the other messages, and a decision for a request no longer open is
     ignored. One request at a time, since one call runs per reply.
   - A write opens the native VS Code diff editor beside the chat, titled with the path: the planned `before` text on
@@ -224,18 +230,40 @@ local Ollama models and applies each change at once. `run_command` and slash com
     open in an editor with unsaved changes is refused before the request and again right before the write, with
     auto-approve too, as an `error` result saying so; a file changed on disk since the plan is refused by the
     applier's planned-text check.
-  - A rejection goes back to the model as an `error` tool result: "The user rejected this change.", then the reason on
-    its own line when given. It is a tool step like any other and counts toward the step limit. The step records how it
+  - A rejection goes back to the model as an `error` tool result: "The user rejected this change." ("The user rejected
+    this command." for a command), then the reason on its own line when given. It is a tool step like any other and counts toward the step limit. The step records how it
     was approved (`approval`: `accepted`, `rejected`, or `auto`), and the row says rejected or auto-approved.
   - Stop, New chat, opening another conversation, deleting the one shown, and deactivation cancel the open request:
     the diff tab closes, nothing is written, the reply ends `stopped`. An open request is never saved; a record saved
     while one waits reloads `stopped` by the in-flight rule below.
-  - `run_command` always waits for a click.
+  - `run_command` always waits for a click: it asks with a request of kind `command`, its summary the whole command,
+    which the step row shows whole, line breaks kept, with the `cwd` when given ("in <cwd>"), Run, and Reject. Nothing runs before Run, and one Run runs
+    the command once.
   - `brokeCode.autoApproveWrites` (boolean, default false, `application` scope, read from `globalValue` like the
     providers) accepts writes at once, without a diff, and is read at each write's request. The controller applies it
     to requests of kind `write` only: nothing auto-approves commands.
-- `run_command` runs in a hidden child process in the workspace folder with the user's shell, captures the
-  output, and stops after 120 seconds by default.
+- `run_command(command, cwd?)` runs `<shell> -c <command>` in a hidden child process, no login shell, the shell being
+  `vscode.env.shell`, else `$SHELL`, else `/bin/sh`. `cwd` resolves like a read tool's path and must be an existing
+  folder inside the workspace; left out, the command runs in the first workspace folder. Without a workspace folder,
+  an empty command, or a refused `cwd`, the call is an `error` before any approval. The child is spawned `detached`, so
+  it leads a process group of its own, with stdin closed (`ignore`, so a read gets end of file at once) and the host's
+  environment.
+  - The result's first line is `exit code N`, `killed by <signal>`, or `stopped after N seconds`, then a `stdout:` and
+    a `stderr:` section (`stdout: (empty)` when nothing came), each cut to its first 2,000 lines and 1 MiB (cut
+    between UTF-8 characters) with the mention truncation notice. It is `ok` only on exit code 0; a non-zero code, a
+    signal, a timeout, a spawn failure, and a rejection are `error`. The step row shows the command, then the exit code
+    (or signal, or timeout) and the result's line count.
+  - `brokeCode.commandTimeoutSeconds` (integer, default 120, at least 1, `application` scope, read from `globalValue`
+    at each command; capped at the longest timer delay, about 24 days). At the timeout, or on Stop, New chat, the other
+    navigation, and deactivation during the run, the group gets SIGTERM (`process.kill(-pid)`), then SIGKILL two
+    seconds later, sent even once the result is in. A stop during the run ends the reply `stopped`; the result waits
+    for the output pipes, at most half a second past the SIGKILL, so a process that ignores SIGTERM cannot hold the
+    turn.
+  - Once the shell exits, the output gets 200 ms to drain. A process still in the group then (a background job, its
+    output redirected or not) is stopped the same way, and the result ends with a line saying so; a process that left
+    the group (`setsid`, a daemon) is not stopped, and the result stops waiting for the pipes it holds. A Stop after
+    the shell exited keeps its exit code. macOS answers EPERM for a group of zombies, so only a group a signal 0
+    reaches counts as alive.
 - Reasoning output (`<think>` tags, `reasoning`, or `reasoning_content`) shows collapsed in the chat. The parser
   never looks for tool calls in it, and the conversation history sent back to the model drops it.
 - Each request of an agent turn sends a `system` message first, then the history: each user entry's composed text,
@@ -466,7 +494,7 @@ local Ollama models and applies each change at once. `run_command` and slash com
   98,000 characters once took 18 min on its own (b1049a2). It runs locally on demand and never in CI. On 9a67dd7 every
   model met the bar on every scenario: 10/10 everywhere but `gemma4` on `skill`, 9/10 (one `wrongTool`: it listed the
   skill folder and answered without reading the reference file).
-  Scenarios for commands come with `run_command` (#9), and for slash commands with #11.
+  Scenarios for commands come with #40, and for slash commands with #11.
 - v1 supports macOS only. Windows and Linux are planned for v2.
 
 ## Git and release workflow

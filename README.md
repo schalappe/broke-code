@@ -7,12 +7,12 @@ it fail against them. In broke-code, the model writes each tool call in the text
 extension reads and runs it. broke-code never sends `tools`, even to a service that supports them.
 
 The current version is a chat agent that reads and changes your workspace: pick a model, ask a question or a change
-with files and folders attached, and the model reads files, lists folders, searches the workspace, and creates or edits
-files until it is done. Each change opens as a diff and waits for your **Accept** or **Reject** in the chat, unless
-you turn on auto-approval in your user settings. You can follow each step, stop the agent at any time, read the model's
-reasoning collapsed above its answer, and come back to past conversations. The model also sees the name and
-description of each of your skills, and loads a skill's instructions when your task matches it. Commands and slash
-commands come next.
+with files and folders attached, and the model reads files, lists folders, searches the workspace, creates or edits
+files, and runs shell commands until it is done. Each change opens as a diff and waits for your **Accept** or **Reject**
+in the chat, unless you turn on auto-approval in your user settings; each command waits for your **Run** or **Reject**,
+always. You can follow each step, stop the agent at any time, read the model's reasoning collapsed above its answer,
+and come back to past conversations. The model also sees the name and description of each of your skills, and loads a
+skill's instructions when your task matches it. Slash commands come next.
 
 ## Requirements
 
@@ -111,11 +111,25 @@ disk since the model planned the change, or when an editor holds unsaved changes
 **Stop**, **New chat**, or opening another conversation while a change waits closes the diff and writes nothing.
 
 To apply changes without asking, set `brokeCode.autoApproveWrites` to `true` in your **user** settings: no diff opens,
-and each such step is marked auto-approved. A workspace `settings.json` cannot turn it on. Commands, once the agent
-can run them, will always ask.
+and each such step is marked auto-approved. A workspace `settings.json` cannot turn it on. Commands always ask.
 
-Each tool call shows as a compact row under the model's text: the tool, its main argument (a path or a search
-pattern), and whether it worked with the size of its result. Click the row to see the result the model received.
+The agent can also run a shell command with **run_command**, which always asks you first; no setting changes that. The
+chat shows the whole command under the call, line breaks kept, and the folder it runs in when the model names one,
+with **Run** and **Reject** and an optional reason.
+**Reject** runs nothing, and the model reads that you rejected the command, with your reason when you gave one.
+**Run** starts it with your shell (the one of your default terminal profile, else `$SHELL`, else `/bin/sh`, as
+`<shell> -c <command>`, not a login shell), without a terminal, in the first workspace folder unless the model names
+another folder of the workspace. The command cannot read input: it gets end of file at once. The model receives the
+exit code, then stdout and stderr, each cut to its first 2,000 lines and 1 MiB; a command that exits with a code other
+than 0, or is killed, is reported as an error. A command stops after 120 seconds: broke-code sends SIGTERM to it and to
+every process it started, then SIGKILL two seconds later, and the model gets the output so far. Change that limit with
+`brokeCode.commandTimeoutSeconds` (at least 1) in your **user** settings; a workspace `settings.json` cannot change
+it. **Stop**, **New chat**, or opening another conversation while a command waits runs nothing, and while it runs stops
+it the same way. Processes a command leaves running in the background are stopped once it ends, and the model is told
+so: to keep a server running, start it in your own terminal.
+
+Each tool call shows as a compact row under the model's text: the tool, its main argument (a path, a search pattern,
+or the whole command), and whether it worked with the size of its result, or for a command, its exit code. Click the row to see the result the model received.
 A path outside the workspace, and outside the folders of the loaded skills, is refused, and the model is told why.
 
 The agent turn ends when the model answers with text and no tool call. It also ends when you click **Stop**, at any step;

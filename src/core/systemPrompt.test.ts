@@ -79,6 +79,13 @@ describe("composeSystemPrompt", () => {
     expect(composeSystemPrompt(TOOLS, [], [])).not.toContain(rule);
   });
 
+  test("states that a command runs in the workspace folder with the user's shell and waits for the user, only when run_command is listed", () => {
+    const rule =
+      "- run_command runs the command with the user's shell, in the workspace folder unless cwd names another, and only once the user approves it: wait for its result.";
+    expect(composeSystemPrompt(TOOLS, [], []).split("# Tools")[0]).toContain(rule);
+    expect(composeSystemPrompt([TOOLS[0]!], [], [])).not.toContain(rule);
+  });
+
   test("never shows the format inside a code fence", () => {
     expect(composeSystemPrompt(TOOLS, [], [])).not.toContain("```");
   });

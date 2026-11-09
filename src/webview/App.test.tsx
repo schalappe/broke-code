@@ -238,7 +238,7 @@ describe("approval", () => {
     status: "streaming",
     call: { name: "write_file", args: { path: "src/a.ts", content: "x" }, start: 10, end: answer.length },
   };
-  const approval = { id: 7, tool: "write_file", summary: "src/a.ts" };
+  const approval = { id: 7, kind: "write" as const, tool: "write_file", summary: "src/a.ts" };
   const turn = (entries: ChatEntry[], open = true) =>
     renderToStaticMarkup(
       <App
@@ -345,6 +345,90 @@ describe("approval", () => {
     } finally {
       GlobalRegistrator.unregister();
     }
+  });
+
+  describe("commands", () => {
+    const command = "ls -1 | wc -l\necho <done>";
+    const commandAnswer = `Counting.\n<run_command>\n<command>\n${command}\n</command>\n</run_command>`;
+    const running: ChatEntry = {
+      role: "assistant",
+      reasoning: "",
+      content: commandAnswer,
+      status: "streaming",
+      call: { name: "run_command", args: { command }, start: 10, end: commandAnswer.length },
+    };
+    const commandApproval = { id: 8, kind: "command" as const, tool: "run_command", summary: command };
+    const commandTurn = (entries: ChatEntry[], open?: typeof commandApproval) =>
+      renderToStaticMarkup(
+        <App
+          state={stateWith(true, {
+            entries: [{ role: "user", content: "Hi", mentions: [] }, ...entries],
+            ...(open ? { approval: open } : {}),
+          })}
+          language="en"
+        />,
+      );
+    const commandBlock = '<code class="step-command">ls -1 | wc -l\necho &lt;done&gt;</code>';
+
+    test("an open request shows the whole command, line breaks kept, with Run and Reject", () => {
+      const html = commandTurn([running], commandApproval);
+      expect(html).toContain(commandBlock);
+      expect(html).toContain("waiting for your decision");
+      expect(html).toContain(">Run<");
+      expect(html).toContain(">Reject<");
+      expect(html).not.toContain(">Accept<");
+      expect(html).toContain('placeholder="Reason for rejecting (optional)"');
+    });
+
+    test("a command run in another folder names it in its row", () => {
+      const elsewhere = { ...running, call: { ...running.call!, args: { command, cwd: "lib/sub" } } };
+      expect(commandTurn([elsewhere], commandApproval)).toContain('<span class="step-arg">in lib/sub</span>');
+      expect(commandTurn([running], commandApproval)).not.toContain('class="step-arg"');
+    });
+
+    test("Run posts the request id", () => {
+      button(ApprovalControls({ approval: commandApproval, reason: "", setReason: () => {} }), "Run").props.onClick!();
+      expect(posted).toEqual([{ type: "approve", id: 8 }]);
+    });
+
+    test("a finished command shows the command, its exit code, and the result's size", () => {
+      const step = (status: "ok" | "error", text: string): ChatEntry => ({
+        role: "tool",
+        name: "run_command",
+        args: { command },
+        status,
+        text,
+        approval: "accepted",
+      });
+      const done = { ...running, status: "done" } as const;
+      const ok = commandTurn([done, step("ok", "exit code 0\nstdout:\n12\nstderr: (empty)")]);
+      expect(ok).toContain(commandBlock);
+      expect(ok).toContain('<span class="step-status">exit code 0, 4 lines</span>');
+      const failed = commandTurn([done, step("error", "exit code 3\nstdout: (empty)\nstderr:\nno such file")]);
+      expect(failed).toContain('<span class="step-status failed">exit code 3, 4 lines</span>');
+      const killed = commandTurn([done, step("error", "killed by SIGKILL\nstdout: (empty)\nstderr: (empty)")]);
+      expect(killed).toContain("killed by SIGKILL, 3 lines");
+      const late = commandTurn([done, step("error", "stopped after 120 seconds\nstdout: (empty)\nstderr: (empty)")]);
+      expect(late).toContain("stopped after 120 seconds, 3 lines");
+      const refused = commandTurn([done, step("error", "run_command: src: the path is not a folder.")]);
+      expect(refused).toContain("error, 1 line");
+    });
+
+    test("a rejected command says rejected", () => {
+      const html = commandTurn([
+        { ...running, status: "done" },
+        {
+          role: "tool",
+          name: "run_command",
+          args: { command },
+          status: "error",
+          text: "The user rejected this command.",
+          approval: "rejected",
+        },
+      ]);
+      expect(html).toContain(commandBlock);
+      expect(html).toContain(">rejected<");
+    });
   });
 
   test("a rejected step says so; an auto-approved one says so beside its status", () => {

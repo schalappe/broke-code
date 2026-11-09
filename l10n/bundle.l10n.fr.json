@@ -114,7 +114,14 @@
   "Reason for rejecting (optional)": "Motif du refus (facultatif)",
   "Accept": "Accepter",
   "Reject": "Refuser",
+  "Run": "Exécuter",
+  "Run or reject this command": "Exécuter ou refuser cette commande",
+  "in {0}": "dans {0}",
   "rejected": "refusé",
   "auto-approved, {0}": "approuvé automatiquement, {0}",
+  "{0}, {1}": "{0}, {1}",
+  "exit code {0}": "code de sortie {0}",
+  "killed by {0}": "tué par {0}",
+  "stopped after {0} seconds": "arrêtée après {0} secondes",
   "{0} (proposed change)": "{0} (modification proposée)"
 }

@@ -461,7 +461,7 @@ function ToolStep(props: { result: ChatEntry & { role: "tool" } } | PendingCall)
     const { call, outcome } = props;
     return (
       <div className="step">
-        <div className="step-row">
+        <div className={stepRowClass(call.name)}>
           <StepHead name={call.name} args={call.args} />
           {outcome === "running" ? (
             <span className="step-status loading" role="status">
@@ -484,7 +484,7 @@ function ToolStep(props: { result: ChatEntry & { role: "tool" } } | PendingCall)
   const malformed = result.status === "malformed";
   return (
     <details className="step">
-      <summary className="step-row">
+      <summary className={stepRowClass(result.name)}>
         {malformed ? <span className="step-tool">{l10n.t("malformed call")}</span> : <StepHead {...result} />}
         <span className={result.status === "ok" ? "step-status" : "step-status failed"}>
           {describeToolStep(result)}
@@ -495,6 +495,14 @@ function ToolStep(props: { result: ChatEntry & { role: "tool" } } | PendingCall)
       </pre>
     </details>
   );
+}
+
+/** The tool whose step row shows its whole command. */
+const RUN_COMMAND = "run_command";
+
+/** A step row's class: a command's row wraps, so its command block takes a line of its own. */
+function stepRowClass(tool: string): string {
+  return tool === RUN_COMMAND ? "step-row command" : "step-row";
 }
 
 /** The open approval request's controls, holding the reason typed until the user decides. */
@@ -517,12 +525,18 @@ export function ApprovalControls({
   setReason: (reason: string) => void;
 }) {
   const { id } = approval;
+  const command = approval.kind === "command";
   const reject = () => {
     const trimmed = reason.trim();
     post(trimmed === "" ? { type: "reject", id } : { type: "reject", id, reason: trimmed });
   };
   return (
-    <fieldset className="approval" aria-label={l10n.t("Approve {0} on {1}", approval.tool, approval.summary)}>
+    <fieldset
+      className="approval"
+      aria-label={
+        command ? l10n.t("Run or reject this command") : l10n.t("Approve {0} on {1}", approval.tool, approval.summary)
+      }
+    >
       <input
         type="text"
         className="approval-reason"
@@ -538,7 +552,7 @@ export function ApprovalControls({
       />
       <div className="actions">
         <button type="button" onClick={() => post({ type: "approve", id })}>
-          {l10n.t("Accept")}
+          {command ? l10n.t("Run") : l10n.t("Accept")}
         </button>
         <button type="button" className="secondary" onClick={reject}>
           {l10n.t("Reject")}
@@ -548,8 +562,21 @@ export function ApprovalControls({
   );
 }
 
-/** The tool name and its main argument, at the start of a step row. */
+/**
+ * The tool name and its main argument, at the start of a step row. A command shows whole, its line breaks kept, on
+ * its own line under the row's first line (`stepRowClass`), since the user approves exactly that text, and the folder
+ * it runs in when the model named one.
+ */
 function StepHead({ name, args }: { name: string; args: Record<string, string> }) {
+  if (name === RUN_COMMAND && args.command !== undefined) {
+    return (
+      <>
+        <span className="step-tool">{name}</span>
+        {args.cwd && <span className="step-arg">{l10n.t("in {0}", args.cwd)}</span>}
+        <code className="step-command">{args.command}</code>
+      </>
+    );
+  }
   const argument = mainArgument(args);
   return (
     <>

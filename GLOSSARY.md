@@ -29,9 +29,9 @@ the message saying what is wrong count as a step too. The chat shows each step a
 _Avoid_: tool use, action, iteration
 
 **Approval**:
-The user's Accept or Reject of a tool call that changes the workspace or runs a command, given in the chat while the
-agent turn waits; a rejection, with its optional reason, goes back to the model as the call's result. A setting can
-approve writes without asking, never commands.
+The user's Accept (Run, for a command) or Reject of a tool call that changes the workspace or runs a command, given in
+the chat while the agent turn waits; a rejection, with its optional reason, goes back to the model as the call's
+result. A setting can approve writes without asking, never commands.
 _Avoid_: confirmation, permission, consent
 
 **Conversation**:
