@@ -11,7 +11,8 @@ with files and folders attached, and the model reads files, lists folders, searc
 files until it is done. Each change opens as a diff and waits for your **Accept** or **Reject** in the chat, unless
 you turn on auto-approval in your user settings. You can follow each step, stop the agent at any time, read the model's
 reasoning collapsed above its answer, and come back to past conversations. The model also sees the name and
-description of each of your skills. Commands, loading skills, and slash commands come next.
+description of each of your skills, and loads a skill's instructions when your task matches it. Commands and slash
+commands come next.
 
 ## Requirements
 
@@ -85,7 +86,8 @@ files show up in the menu without reloading the window.
 
 Each message starts an agent turn. The model may answer at once, or write a tool call in its reply; broke-code runs
 the tool, sends the result back, and asks again, until the model answers with text and no call. The agent has three read
-tools, which run without asking you, inside the workspace folders only:
+tools, which run without asking you, inside the workspace folders and the folders of the skills loaded in the
+conversation (see [Skills](#skills)):
 
 - **read_file** reads a file, with the same limits as a mention: binary files and files over 1 MiB are refused, and
   a file over 2,000 lines is cut to its first 2,000.
@@ -93,7 +95,8 @@ tools, which run without asking you, inside the workspace folders only:
 - **search** searches the workspace with ripgrep, the copy your editor ships or the `rg` on your `PATH`. It skips
   hidden files, files ignored by `.gitignore`, and symlinks, and stops after 30 seconds.
 
-The agent also has two write tools, which ask you first, inside the workspace folders only:
+The agent also has two write tools, which ask you first, inside the workspace folders only, never in a skill folder
+outside them:
 
 - **write_file** creates a file, or replaces a whole file.
 - **edit_file** replaces one exact passage of a file; a passage found zero times or more than once is refused, never
@@ -113,7 +116,7 @@ can run them, will always ask.
 
 Each tool call shows as a compact row under the model's text: the tool, its main argument (a path or a search
 pattern), and whether it worked with the size of its result. Click the row to see the result the model received.
-A path outside the workspace is refused, and the model is told why.
+A path outside the workspace, and outside the folders of the loaded skills, is refused, and the model is told why.
 
 The agent turn ends when the model answers with text and no tool call. It also ends when you click **Stop**, at any step;
 after three malformed tool calls in a row, with a message saying so; after 50 tool steps (or the limit you set), with
@@ -165,8 +168,7 @@ description: Write release notes from the commits since the last tag. Use when a
 broke-code reads skills from two places only: your personal skills in `~/.agents/skills/`, and the skills of each
 workspace folder in `.agents/skills/`. It never reads `.claude/`, `.codex/`, or another tool's folder. The skills
 are read again at each message, so a skill you add or edit counts from your next message. Every request lists each
-skill's name and description to the model; the instructions themselves stay out until a skill is loaded, which comes
-next.
+skill's name and description to the model; the instructions themselves stay out until the model loads the skill.
 
 - `name` is 1 to 64 lowercase letters, digits, and hyphens, with no hyphen at either end and no two in a row, and
   equals the skill's folder name. `description` is 1 to 1,024 characters. Other frontmatter fields are ignored.
@@ -174,7 +176,16 @@ next.
   hidden skill shows no warning. An invalid skill hides nothing: a valid skill of the same name further down counts.
 - A personal skill folder may be a symbolic link anywhere. A workspace skill folder that links outside its workspace
   folder, even into another folder of the workspace, is skipped.
-- `disable-model-invocation: true` keeps a skill out of the list the model sees.
+- `disable-model-invocation: true` keeps a skill out of the list the model sees, and the model cannot load it.
+
+When a task matches a skill's description, the model calls **load_skill** with its name and receives the
+instructions, without the frontmatter, cut to their first 2,000 lines, together with the real path of the skill's
+folder. From then on, for the rest of the conversation, the model may read the files of that folder with
+**read_file**, **list_files**, and **search**, by that absolute path, even for a personal skill outside the workspace.
+It cannot change them, and before the load it cannot read them. A file in the skill's folder that is a symbolic link
+to somewhere outside that folder is refused, and so is a `SKILL.md` that links outside it: such a skill is listed but
+cannot be loaded. A skill loaded in a past conversation is loaded again when you reopen it, as long as it is still
+there. `load_skill` is offered to the model only while a skill is listed to it.
 
 A skill whose `SKILL.md` is invalid, unreadable, or over 1 MiB is skipped, and the chat shows a warning naming the
 file and the problem; the other skills still count. broke-code reads at most 200 entries of each skills folder, the

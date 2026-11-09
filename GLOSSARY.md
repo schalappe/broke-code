@@ -63,6 +63,11 @@ A named set of instructions, stored as a `SKILL.md` file, that the model or the 
 conversation.
 _Avoid_: plugin, prompt template, custom command
 
+**Loaded skill**:
+A skill the model loaded in this conversation: the conversation holds its instructions, and the read tools may read
+its folder, never change it, until the conversation ends.
+_Avoid_: active skill, enabled skill
+
 **Personal skill**:
 A skill in `~/.agents/skills/`, available in every workspace; a workspace skill of the same name hides it.
 _Avoid_: global skill, user skill
