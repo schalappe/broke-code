@@ -594,6 +594,99 @@ describe("ripgrepCandidates", () => {
   });
 });
 
+describe("a loaded skill's folder", () => {
+  // [>]: A personal skill outside the workspace, read by the real path its load result gives.
+  let skillRoot: string;
+  let sibling: string;
+  beforeAll(async () => {
+    const skills = await mkdirp(join(base, "skills"));
+    await mkdirp(join(skills, "review", "sub"));
+    await mkdirp(join(skills, "other"));
+    await writeFile(join(skills, "review", "SKILL.md"), "---\nname: review\ndescription: d\n---\nBody.\n");
+    await writeFile(join(skills, "review", "reference.md"), "skill needle\n");
+    await writeFile(join(skills, "review", "sub", "deep.md"), "deep\n");
+    await writeFile(join(skills, "other", "secret.md"), "secret needle\n");
+    await symlink(join(base, "outside.txt"), join(skills, "review", "escape.md"));
+    await symlink(join(skills, "other"), join(skills, "review", "escape-dir"));
+    skillRoot = await realpath(join(skills, "review"));
+    sibling = await realpath(join(skills, "other"));
+  });
+
+  function runLoaded(name: string, args: Record<string, string>, roots = [app]): Promise<ToolResult> {
+    return runReadTool({ name, args }, roots, env, new AbortController().signal, { skillRoots: [skillRoot] });
+  }
+
+  test("read_file reads a file by its absolute path once the skill is loaded", async () => {
+    const path = join(skillRoot, "reference.md");
+    expect(await runLoaded("read_file", { path })).toEqual({
+      status: "ok",
+      text: `@${path} (file, 1 line)\n\`\`\`\nskill needle\n\`\`\``,
+    });
+  });
+
+  test("list_files lists the folder and a subfolder once the skill is loaded", async () => {
+    expect(await runLoaded("list_files", { path: skillRoot })).toEqual({
+      status: "ok",
+      text: `@${skillRoot} (folder, 5 entries)\n\`\`\`\nSKILL.md\nescape-dir/\nescape.md\nreference.md\nsub/\n\`\`\``,
+    });
+    expect((await runLoaded("list_files", { path: join(skillRoot, "sub") })).status).toBe("ok");
+  });
+
+  test("search with a path inside the folder prints absolute paths, never through a symlink out", async () => {
+    const result = await runLoaded("search", { pattern: "needle", path: skillRoot });
+    expect(result).toEqual({ status: "ok", text: `${join(skillRoot, "reference.md")}:1:skill needle` });
+  });
+
+  test("refuses the same file before the load, for every read tool", async () => {
+    const file = join(skillRoot, "reference.md");
+    expect(await run("read_file", { path: file })).toEqual({
+      status: "error",
+      text: `read_file: ${file}: the path is outside the workspace folders.`,
+    });
+    expect((await run("list_files", { path: skillRoot })).text).toContain("outside the workspace folders");
+    expect((await run("search", { pattern: "needle", path: file })).text).toContain("outside the workspace folders");
+  });
+
+  test("refuses a sibling folder, by its path and by ../ from the skill folder", async () => {
+    for (const path of [join(sibling, "secret.md"), `${skillRoot}/../other/secret.md`]) {
+      const read = await runLoaded("read_file", { path });
+      expect(read).toEqual({ status: "error", text: `read_file: ${path}: the path is outside the workspace folders.` });
+    }
+    expect((await runLoaded("list_files", { path: sibling })).text).toContain("outside the workspace folders");
+    expect((await runLoaded("search", { pattern: "needle", path: sibling })).text).toContain(
+      "outside the workspace folders",
+    );
+  });
+
+  test("refuses a symlink from the skill folder to elsewhere, for every read tool", async () => {
+    for (const path of [join(skillRoot, "escape.md"), join(skillRoot, "escape-dir", "secret.md")]) {
+      const read = await runLoaded("read_file", { path });
+      expect(read).toEqual({ status: "error", text: `read_file: ${path}: the path is outside the workspace folders.` });
+      expect(read.text).not.toContain("secret needle");
+    }
+    expect((await runLoaded("list_files", { path: join(skillRoot, "escape-dir") })).text).toContain(
+      "outside the workspace folders",
+    );
+    const search = await runLoaded("search", { pattern: "needle", path: join(skillRoot, "escape.md") });
+    expect(search).toEqual({
+      status: "error",
+      text: `search: ${join(skillRoot, "escape.md")}: the path is outside the workspace folders.`,
+    });
+  });
+
+  test("reads the folder with no workspace folder open; a relative path is still refused", async () => {
+    expect((await runLoaded("read_file", { path: join(skillRoot, "reference.md") }, [])).status).toBe("ok");
+    expect(await runLoaded("read_file", { path: "reference.md" }, [])).toEqual({
+      status: "error",
+      text: "read_file: reference.md: the path is outside the workspace folders.",
+    });
+  });
+
+  test("still reads the workspace by relative path while a skill is loaded", async () => {
+    expect((await runLoaded("read_file", { path: "ten.txt" })).status).toBe("ok");
+  });
+});
+
 describe("runReadTool", () => {
   test("ends read_file and list_files as stopped when the signal aborts during the read, never a late ok", async () => {
     const calls: ToolCall[] = [
@@ -623,9 +716,11 @@ describe("runReadTool", () => {
       });
       const controller = new AbortController();
       const running = runReadTool(call, [app], env, controller.signal, {
-        beforeOpen: () => {
-          entered();
-          return held;
+        seam: {
+          beforeOpen: () => {
+            entered();
+            return held;
+          },
         },
       });
       await reachedRead;

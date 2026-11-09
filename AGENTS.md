@@ -14,8 +14,8 @@ The code so far covers the extension skeleton, a streaming chat with a provider,
 write tools: a message starts an agent turn that runs `read_file`, `list_files`, `search`, `write_file`, and
 `edit_file` until the model answers without a call. Each write waits behind the approval (a diff and Accept or Reject
 in the chat, ADR 0002) unless the user setting auto-approves it. Each send discovers the skills and lists them to the
-model. `bun run eval` measures that loop on local Ollama models and applies each change at once. `run_command`,
-`load_skill`, and slash commands are not built yet. Read `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the decisions behind the design, starting with
+model, which loads one with `load_skill` and may then read its folder (ADR 0003). `bun run eval` measures that loop on
+local Ollama models and applies each change at once. `run_command` and slash commands are not built yet. Read `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the decisions behind the design, starting with
 `docs/adr/0001-body-tool-calls.md`.
 
 ## Structure
@@ -32,8 +32,8 @@ model. `bun run eval` measures that loop on local Ollama models and applies each
   and deletes in call order), and the store's file access (`conversationFiles.ts`:
   the file port, and its implementation over a local directory with `node:fs`: missing versus failed, regular files
   only, atomic writes, leftover temporary files), the dialog queue, the host-webview message
-  protocol and its validation, workspace file access (`workspaceFiles.ts`: the inside-workspace check, capped reads,
-  one-level listings, line truncation, the write boundary and atomic writes, with `node:fs`), mentions (`mentions.ts`: token detection, picked and typed
+  protocol and its validation, workspace file access (`workspaceFiles.ts`: the inside-workspace check and its read-only
+  roots (the loaded skills' folders outside the workspace, for reads only), capped reads, one-level listings, line truncation, the write boundary and atomic writes, with `node:fs`), mentions (`mentions.ts`: token detection, picked and typed
   mentions merged, reading, and the text the model receives), where a message holds Markdown code
   (`markdownCode.ts`), the mention menu logic (`suggestions.ts`: the `@` token at the caret, index entries,
   filtering, the index exclusions), the menu's file index (`fileIndex.ts`: one scan shared until a file
@@ -41,16 +41,19 @@ model. `bun run eval` measures that loop on local Ollama models and applies each
   malformed-call messages), the system prompt composer (`systemPrompt.ts`: role, call format, rules, tools,
   skills, instruction files), the turn limits (`limits.ts`: `brokeCode.maxToolSteps` and `brokeCode.contextSizes` parsing,
   the token estimate, the context-full threshold, the typed size check), and the read tools (`tools.ts`: `read_file` and `list_files` over the mention reader, `search`
-  over ripgrep with its candidate paths, bounded `ok` or `error` results), the write tools (`writeTools.ts`:
+  over ripgrep with its candidate paths, bounded `ok` or `error` results, each also reaching the loaded skills' folders
+  by absolute path), the write tools (`writeTools.ts`:
   `write_file` and `edit_file` plan a change `{ path, target, before, after }` and never write; an applier port writes
   it, `fileApplier` straight to disk for the tests and the eval, `approvalApplier` around it in the extension: the
   unsaved-editor check, the approval request, then the write), the approval seam (`approval.ts`: the request a tool
   makes, the decision it gets, the rejection text, and the decisions of the editor side: which change diffs to close,
   the unsaved-editor check over the open documents, the auto-approve setting from its user value), the tool runner (`toolRunner.ts`: the read and write tools over the
-  workspace folders, each write handed to the applier the host builds for the run), the instruction files
+  workspace folders, the read tools also over the run's `skillRoots`, each write handed to the applier the host builds
+  for the run, and `load_skill` over the run's `skills`), the instruction files
   (`instructions.ts`: `~/.agents/AGENTS.md`, then each workspace folder's `AGENTS.md`, under the mention caps), and the
   skills (`skills.ts`: discovery in `~/.agents/skills/` and each workspace folder's `.agents/skills/`, the frontmatter
-  subset, validation, precedence, warnings, the line the extension logs at each send). `markdownCode.ts`, `suggestions.ts`, and `conversation.ts` import nothing from
+  subset, validation, precedence, warnings, the line the extension logs at each send; `LOAD_SKILL_TOOL`, `loadSkill`
+  for the model's call, and `loadSkillText`, the load result whoever loads, for `/<name>` too). `markdownCode.ts`, `suggestions.ts`, and `conversation.ts` import nothing from
   `node:`, since the webview loads them. Unit tests sit next to them as `*.test.ts`, because `bun test` cannot load `vscode`. `tlsFixture.ts`
   generates test certificates with `/usr/bin/openssl` at test time; no private key is committed.
   `conversationFixture.ts` is the in-memory conversation file port for tests.
@@ -71,11 +74,12 @@ model. `bun run eval` measures that loop on local Ollama models and applies each
   bundle (`dist/webview/`).
 - `scripts/next-version.ts`: computes the next release version from the commits since the last `v*` tag. The
   release workflow runs it as a CLI. Its tests sit next to it.
-- `eval/`: the Ollama eval bench (`bun run eval`). `scenarios.ts` holds each scenario (fixture files, message, the
-  files it must write with their exact text, an optional check of a turn that ended `done`) and `judge`, the verdict
-  and failure category of a run, which compares the workspace after the run with the fixture plus those writes; `run.ts` plays one run through
-  the `ChatController` ports, with the read and write tools over a copy of the fixture under the system temporary
-  directory, each write applied at once by `fileApplier` and recorded for the dump;
+- `eval/`: the Ollama eval bench (`bun run eval`). `scenarios.ts` holds each scenario (fixture files, an optional
+  fixture home folder, message, the files it must write with their exact text, an optional check of a turn that ended
+  `done`) and `judge`, the verdict and failure category of a run, which compares the workspace after the run with the
+  fixture plus those writes; `run.ts` plays one run through the `ChatController` ports, with the read and write tools
+  and `load_skill` over a copy of the fixture under the system temporary directory, each write applied at once by
+  `fileApplier` and recorded for the dump, and the skills discovered in a copy of the fixture home, never the real one;
   `report.ts` formats the scores; `bench.ts` is the CLI, guarded by `import.meta.main` so `bun test` never starts it.
   Its unit tests sit next to them and need no Ollama.
 - `biome.jsonc`: the Biome linter and formatter settings. Markdown is excluded, because Biome's Markdown formatter
@@ -186,7 +190,24 @@ model. `bun run eval` measures that loop on local Ollama models and applies each
   path), and a missing parent folder swapped for a symlink out after the check makes `mkdir` create an empty folder
   outside before the write is refused.
 - Tools act inside the open workspace only. The one exception is read-only access to the directories of skills
-  loaded in the current conversation.
+  loaded in the current conversation that lie outside the workspace (ADR 0003):
+  - A skill is loaded when the conversation holds an `ok` `load_skill` step for its name; an `error` step, a step
+    dropped by Stop, and a malformed call load nothing. Before each call the controller maps those names to folders
+    through the current send's discovery (`ToolContext.skillRoots`, beside `ToolContext.skills`, the send's skills),
+    so a load earlier in the turn counts at the next call, a reopened conversation keeps its loaded skills with no
+    record change, and a skill gone since is no longer readable.
+  - `read_file`, `list_files`, and `search` also accept an absolute path inside a loaded skill's real folder, the path
+    its load result gives. The shared read boundary (`readWorkspaceEntry`, `locateWorkspacePath`) takes the folders
+    as read-only roots. An absolute path written inside one is read as written, never rerouted through a multi-root
+    folder name (a folder named `/private` included). For a folder outside the workspace, the path must resolve inside
+    the deepest loaded folder that holds it, symlinks resolved, and the open handle must match it by device and
+    inode, as for workspace reads. A symlink out of it, into another loaded folder (its outer one included) or the
+    workspace, is `outsideWorkspace`. The folder is matched by the real path discovery gave, never resolved again.
+    `search` with a `path` in such a folder prints absolute paths.
+  - Mentions never get the exception, and the write boundary never takes the read-only roots: a planned write into a
+    skill folder outside the workspace is refused `outsideWorkspace`. A workspace skill's folder is ordinary
+    workspace (maintainer decision): writable with approval, its symlinks may resolve anywhere in the workspace, and
+    `search` prints its paths relative to the workspace.
 - Approvals (ADR 0002):
   - Reads run without asking.
   - A tool asks through its run context: `ToolContext.requestApproval(request)` settles with Accept, Reject (with the
@@ -247,7 +268,10 @@ model. `bun run eval` measures that loop on local Ollama models and applies each
   request goes.
   v1 has no automatic summarization.
 - After the tools, the system prompt has a "Skills" section, one `- <name>: <description>` line per skill listed to
-  the model, telling it to call `load_skill` first; without such a skill the section is absent.
+  the model, telling it to call `load_skill` first; without such a skill the section is absent, and so are the
+  `load_skill` tool and its rule (reading a loaded skill's files by the absolute path the result gives, read-only
+  outside the workspace): the
+  controller offers the runner's tools less `load_skill` (`offeredTools`), so its call is then malformed.
 - The system prompt includes `~/.agents/AGENTS.md`, then each workspace folder's `AGENTS.md` (labelled with its
   folder name in a multi-root workspace), read at each send under the mention caps (1 MiB, 2,000 lines). A missing
   file is left out; an unreadable one is logged and left out. The home file follows symlinks; a workspace file is
@@ -360,7 +384,10 @@ model. `bun run eval` measures that loop on local Ollama models and applies each
   each workspace folder's `.agents/skills/`. A child is a skill when it is a folder holding `SKILL.md` (1 MiB cap); a
   folder without one, a stray file, and a missing skills folder pass silently. A personal skill folder follows
   symlinks; a workspace one, the folder and its `SKILL.md` alike, is held to its own workspace folder, and one linked
-  out of it, into another workspace folder included, is skipped with a warning.
+  out of it, into another workspace folder included, is skipped with a warning (`outsideWorkspace`). Every file of a
+  skill lies in its own folder: for a personal or a workspace skill, a `SKILL.md` that resolves outside the skill
+  folder's real path (the folder's own link resolved) is skipped with an `outsideSkillFolder` warning, so the folder a
+  loaded skill's files are read from holds all of it.
 - A repository controls its skills folder, and each `SKILL.md` read holds a 1 MiB buffer and a file descriptor, so
   discovery reads one `SKILL.md` at a time, folder after folder, and only the first `MAX_SKILL_ENTRIES` (200) entries of
   each skills folder by name. A folder holding more gives one `tooManyEntries` warning naming it; an entry past the cap
@@ -374,6 +401,14 @@ model. `bun run eval` measures that loop on local Ollama models and applies each
   `load_skill`; it stays discovered for `/<name>`.
 - Do not read `.claude/`, `.codex/`, or any other tool's directory. The `.agents` convention is the only one.
 - The system prompt lists each skill's name and description only. `load_skill` or `/<name>` loads the body.
+- `load_skill(name)` loads a skill of the send's discovery that is listed to the model. Its `ok` result is
+  `Skill <name> loaded; its files live in <real folder path>; read them by that absolute path.`, a blank line, then the
+  `SKILL.md` body without its frontmatter and the blank lines after it, cut to 2,000 lines with the mention notice
+  (`SKILL.md` is read under the 1 MiB cap, inside the skill's real folder like its other files: discovery already
+  skipped one linked out, so this check only catches a swap since, as `its SKILL.md could not be read (it links outside
+  the skill's folder)`). A skill already loaded gives `ok`, `Skill <name> is already loaded; its files live in ...`,
+  without the body. An unknown name, a skipped skill, and one kept from the model give an `error` naming the skills the
+  model may load.
 - In `/<name> args`, the text after the name replaces `$ARGUMENTS` in the skill body. If the body has no
   `$ARGUMENTS`, the text follows the skill as a user message.
 - Skip a skill whose frontmatter lacks `name` or `description`, whose `name` breaks the spec or differs from its
@@ -398,32 +433,40 @@ model. `bun run eval` measures that loop on local Ollama models and applies each
   (VSCodium is the maintainer's editor). Rebuild and reload the window after each change.
 - `bun run eval` plays each scenario 10 times per model against the local Ollama at `http://localhost:11434/v1`,
   on `qwen3.8:27b` then `gemma4:26b-a4b-it-qat`, all runs of one model before the next. Each run drives the
-  chat controller with the read and write tools over a throwaway copy of the scenario's fixture, each write applied
-  at once, no instruction file, no skill, and a
-  step limit of 10. Three scenarios, each judged on the turn ending `done` and on the workspace after it: every file
-  the scenario writes holds its exact expected text, byte for byte, and every other file is unchanged.
+  chat controller with the read and write tools and `load_skill` over a throwaway copy of the scenario's fixture,
+  each write applied at once, no instruction file, and a step limit of 10. Skills are discovered as the extension
+  does, but with a throwaway copy of the scenario's home fixture as the home folder, so the bench never reads the real
+  `~/.agents`; a scenario without one gets no skill, and its prompt has neither the Skills section nor `load_skill`.
+  Four scenarios, each judged on the turn ending `done` and on the workspace after it: every file the scenario writes
+  holds its exact expected text, byte for byte, and every other file is unchanged.
   - `read`: the model must read a setting it cannot guess and answer with its value. Passes when a tool step got the
     value, the answer holds it, and no file changed.
   - `edit`: rename a function named once in `src/pricing.py`. Passes when exactly that line changed.
   - `create`: create `docs/call-format.md` with a text stated in the message that holds double quotes, backslashes,
     `<content>...</content>`, `</write_file>`, and a fenced code block. Passes when the file is exactly that text
     plus one line break.
+  - `skill`: the home fixture holds one personal skill, `depot-codes`, whose description matches the message (the
+    dispatch code of a depot) and whose body sends the model to `reference/depots.md` in its folder, the only file
+    holding the code. The message names neither the skill nor the tool. Passes when an `ok` `load_skill` step ran, a
+    read step got the code, the answer holds it, and no file changed; without an `ok` `load_skill` step it is
+    `wrongTool`.
 
   A failed run shows one category and a one-line detail: `malformed`, `wrongTool`, `wrongAnswer`, `stepLimit`,
   `contextFull`, `providerError`, `wrongEdit` (a file the scenario writes is missing or holds other text, with the
   first differing line), or `workspaceChanged` (the written files are right, or none was asked for, but another file
   changed). The bar is 9 runs of 10 per model and scenario; the bench exits 1 when a model is under it, and before
-  any run when Ollama is unreachable or does not list a model. `--model <name>` (repeatable) and `--runs <n>` shorten
-  a local iteration; `--dump <file>` appends each run's entries (tool steps with their call's arguments), verdict,
+  any run when Ollama is unreachable or does not list a model. `--model <name>`, `--scenario <name>` (both
+  repeatable; an unknown scenario exits 1 naming the others), and `--runs <n>` shorten a local iteration; `--dump <file>` appends each run's entries (tool steps with their call's arguments), verdict,
   `planned` (each change handed to the applier, in call order: tool, path, `before` (`null` for a new file), `after`,
   and the applier's status), and `changes` (each file that differs from the fixture after the run, with its text,
   `null` when removed) as JSON Lines, to read the
   failing replies; an incomplete last line left by an interrupted run is removed, with a notice, before the first
-  append. A full run took 34 min 04 s on the maintainer's Mac on b1049a2, the first run of each model including its load;
-  about 16 min without one `gemma4` run of 18 min whose reasoning ran on for about 98,000 characters (the bench has no
-  time limit per run). It runs locally on demand and never in CI. On b1049a2 every model met the bar on every
-  scenario (ADR 0001, amendment of 2026-11-09 on empty replies). Scenarios for commands and skills come with
-  `run_command` (#9) and skills (#10).
+  append. A full run of the four scenarios took 20 min 24 s on the maintainer's Mac on 9a67dd7, the first run of each
+  model including its load; the bench has no time limit per run, and one `gemma4` run whose reasoning ran on for about
+  98,000 characters once took 18 min on its own (b1049a2). It runs locally on demand and never in CI. On 9a67dd7 every
+  model met the bar on every scenario: 10/10 everywhere but `gemma4` on `skill`, 9/10 (one `wrongTool`: it listed the
+  skill folder and answered without reading the reference file).
+  Scenarios for commands come with `run_command` (#9), and for slash commands with #11.
 - v1 supports macOS only. Windows and Linux are planned for v2.
 
 ## Git and release workflow

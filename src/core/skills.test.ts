@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describeSkillDiscovery, MAX_SKILL_ENTRIES, readSkills } from "./skills";
+import { describeSkillDiscovery, LOAD_SKILL_TOOL, loadSkill, MAX_SKILL_ENTRIES, readSkills } from "./skills";
 import type { WorkspaceEntry } from "./workspaceFiles";
 
 let base: string;
@@ -300,6 +300,29 @@ describe("readSkills", () => {
     expect(warnings).toEqual([{ path: ".agents/skills/escape/SKILL.md", problem: { kind: "outsideWorkspace" } }]);
   });
 
+  test("skips a personal skill whose SKILL.md links out of its folder, with a warning, and keeps the others", async () => {
+    await mkdir(join(personal, "linked"));
+    await writeFile(join(base, "linked.md"), skillText("linked", "Lives elsewhere."));
+    await symlink(join(base, "linked.md"), join(personal, "linked", "SKILL.md"));
+    await writeSkill(personal, "notes", skillText("notes", "Notes."));
+
+    const { skills, warnings } = await readSkills(home, []);
+    expect(skills.map((skill) => skill.name)).toEqual(["notes"]);
+    expect(warnings).toEqual([{ path: "~/.agents/skills/linked/SKILL.md", problem: { kind: "outsideSkillFolder" } }]);
+  });
+
+  test("skips a workspace skill whose SKILL.md links elsewhere in its workspace folder; it hides nothing", async () => {
+    await mkdir(join(workspaceSkills(), "review"));
+    await mkdir(join(workspace, "docs"));
+    await writeFile(join(workspace, "docs", "review.md"), skillText("review", "Workspace review."));
+    await symlink(join(workspace, "docs", "review.md"), join(workspaceSkills(), "review", "SKILL.md"));
+    await writeSkill(personal, "review", skillText("review", "Personal review."));
+
+    const { skills, warnings } = await readSkills(home, single());
+    expect(skills.map((skill) => skill.description)).toEqual(["Personal review."]);
+    expect(warnings).toEqual([{ path: ".agents/skills/review/SKILL.md", problem: { kind: "outsideSkillFolder" } }]);
+  });
+
   test("keeps a disable-model-invocation skill out of the model's list, but discovered", async () => {
     await writeSkill(personal, "manual", skillText("manual", "By hand only.", "disable-model-invocation: true\n"));
     await writeSkill(personal, "auto", skillText("auto", "Any time.", "disable-model-invocation: false\n"));
@@ -325,6 +348,33 @@ describe("readSkills", () => {
       { path: "~/.agents/skills/locked/SKILL.md", problem: { kind: "unreadable", cause: "EACCES" } },
       { path: "~/.agents/skills/nested/SKILL.md", problem: { kind: "unreadable", cause: "not a file" } },
     ]);
+  });
+
+  /** A discovery seam that runs `change` once, right after the one skill's `SKILL.md` was read whole. */
+  const afterRead = (change: () => Promise<void>) => async (read: () => Promise<WorkspaceEntry>) => {
+    const entry = await read();
+    expect(entry.status).toBe("ok");
+    await change();
+    return entry;
+  };
+
+  test("a SKILL.md deleted after its read, before its real path check, is no skill and no warning", async () => {
+    const gone = await writeSkill(personal, "gone", skillText("gone", "Gone."));
+    const aroundRead = afterRead(() => unlink(join(gone, "SKILL.md")));
+    expect(await readSkills(home, [], { aroundRead })).toEqual({ skills: [], warnings: [] });
+  });
+
+  test("a SKILL.md whose real path check fails otherwise after its read warns with the cause", async () => {
+    const looped = await writeSkill(personal, "looped", skillText("looped", "Looped."));
+    const file = join(looped, "SKILL.md");
+    const aroundRead = afterRead(async () => {
+      await unlink(file);
+      await symlink(file, file);
+    });
+    expect(await readSkills(home, [], { aroundRead })).toEqual({
+      skills: [],
+      warnings: [{ path: "~/.agents/skills/looped/SKILL.md", problem: { kind: "unreadable", cause: "ELOOP" } }],
+    });
   });
 
   test("reads a block scalar of 200,000 lines under 1 MiB, in an unknown field or the description", async () => {
@@ -421,5 +471,105 @@ describe("describeSkillDiscovery", () => {
     expect(describeSkillDiscovery({ skills: [], warnings: [] })).toBe(
       "broke-code: skills listed to the model: none; kept from the model: none; skipped: 0",
     );
+  });
+});
+
+describe("LOAD_SKILL_TOOL", () => {
+  test("says only a skill folder outside the workspace is read-only", () => {
+    expect(LOAD_SKILL_TOOL.description).toContain("; a skill folder outside the workspace is read-only.");
+    expect(LOAD_SKILL_TOOL.description).not.toContain("cannot be changed");
+  });
+});
+
+describe("loadSkill", () => {
+  const header = (name: string, root: string) =>
+    `Skill ${name} loaded; its files live in ${root}; read them by that absolute path.`;
+
+  test("returns the header with the real folder path, then the body without its frontmatter", async () => {
+    const root = await writeSkill(
+      personal,
+      "review",
+      "---\nname: review\ndescription: Review.\n---\n\n# Steps\n\nRead reference.md.\n",
+    );
+    const { skills } = await readSkills(home, []);
+    expect(await loadSkill("review", skills, [])).toEqual({
+      status: "ok",
+      text: `${header("review", root)}\n\n# Steps\n\nRead reference.md.\n`,
+    });
+  });
+
+  test("an unknown name, or a skill kept from the model, gives an error listing the names the model may load", async () => {
+    await writeSkill(personal, "review", skillText("review", "Review."));
+    await writeSkill(personal, "deploy", skillText("deploy", "Deploy.", "disable-model-invocation: true\n"));
+    await writeSkill(personal, "release", skillText("release", "Release."));
+    await writeSkill(personal, "broken", "---\nname: other\ndescription: Mismatched.\n---\n");
+    const { skills } = await readSkills(home, []);
+    for (const name of ["nope", "deploy", "broken"]) {
+      expect(await loadSkill(name, skills, [])).toEqual({
+        status: "error",
+        text: `load_skill: ${name}: no skill of that name can be loaded. Skills you can load: release, review.`,
+      });
+    }
+  });
+
+  test("says when no skill can be loaded at all", async () => {
+    expect(await loadSkill("review", [], [])).toEqual({
+      status: "error",
+      text: "load_skill: review: no skill of that name can be loaded. No skill can be loaded.",
+    });
+  });
+
+  test("a skill already loaded gives ok, saying so, without the body", async () => {
+    const root = await writeSkill(personal, "review", skillText("review", "Review."));
+    const { skills } = await readSkills(home, []);
+    expect(await loadSkill("review", skills, [root])).toEqual({
+      status: "ok",
+      text: `Skill review is already loaded; its files live in ${root}; read them by that absolute path.`,
+    });
+  });
+
+  test("cuts a body over 2,000 lines to its first 2,000, with the mention notice", async () => {
+    const lines = Array.from({ length: 2500 }, (_, index) => `step ${index + 1}`).join("\n");
+    const root = await writeSkill(personal, "long", `---\nname: long\ndescription: Long.\n---\n${lines}\n`);
+    const { skills } = await readSkills(home, []);
+    const result = await loadSkill("long", skills, []);
+    expect(result.status).toBe("ok");
+    expect(result.text).toStartWith(`${header("long", root)}\n\nstep 1\n`);
+    expect(result.text).toEndWith("\nstep 2000\n[truncated: 500 more lines not shown]");
+  });
+
+  test("counts CR-only line breaks toward the 2,000-line cut", async () => {
+    const lines = Array.from({ length: 2500 }, (_, index) => `step ${index + 1}`).join("\r");
+    await writeSkill(personal, "classic", `---\rname: classic\rdescription: CR lines.\r---\r${lines}\r`);
+    const { skills } = await readSkills(home, []);
+    const result = await loadSkill("classic", skills, []);
+    expect(result.status).toBe("ok");
+    expect(result.text).toEndWith("\rstep 2000\n[truncated: 500 more lines not shown]");
+  });
+
+  test("an unreadable SKILL.md at load gives an error with its cause", async () => {
+    const root = await writeSkill(personal, "review", skillText("review", "Review."));
+    const { skills } = await readSkills(home, []);
+    await chmod(join(root, "SKILL.md"), 0o000);
+    expect(await loadSkill("review", skills, [])).toEqual({
+      status: "error",
+      text: "load_skill: review: its SKILL.md could not be read (the path could not be read (EACCES)).",
+    });
+  });
+
+  test("refuses a SKILL.md gone since discovery, or swapped for a link out of its folder", async () => {
+    const root = await writeSkill(personal, "review", skillText("review", "Review."));
+    await writeFile(join(base, "outside.md"), skillText("review", "Elsewhere."));
+    const { skills } = await readSkills(home, []);
+    await unlink(join(root, "SKILL.md"));
+    expect(await loadSkill("review", skills, [])).toEqual({
+      status: "error",
+      text: "load_skill: review: its SKILL.md could not be read (no such file).",
+    });
+    await symlink(join(base, "outside.md"), join(root, "SKILL.md"));
+    expect(await loadSkill("review", skills, [])).toEqual({
+      status: "error",
+      text: "load_skill: review: its SKILL.md could not be read (it links outside the skill's folder).",
+    });
   });
 });

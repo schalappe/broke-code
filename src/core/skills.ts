@@ -3,17 +3,25 @@
  * Skill discovery: the direct children of `~/.agents/skills/` and of each workspace folder's `.agents/skills/` that
  * hold a `SKILL.md`, read at each send. A skill is valid when its frontmatter holds a `name` and a `description` that
  * follow the Agent Skills specification (agentskills.io/specification); any other skill is skipped with a warning.
- * No other tool's folder (`.claude/`, `.codex/`) is ever read.
+ * No other tool's folder (`.claude/`, `.codex/`) is ever read. Also skill loading: the `load_skill` tool and the text a
+ * loaded skill gives the model. Model-facing text is English and never localized.
  */
 import { readdir, realpath } from "node:fs/promises";
 import { join } from "node:path";
+import { accessFailureReason, MAX_MENTION_LINES, truncationNotice } from "./mentions";
 import type { SkillProblem, SkillWarning } from "./protocol";
 import type { Skill } from "./systemPrompt";
+import type { ToolSpec } from "./toolCalls";
+import { excerpt, type ToolResult } from "./tools";
 import {
+  type AccessFailure,
   compareNames,
+  isInside,
   locateWorkspacePath,
   readFileOutsideWorkspace,
+  readWorkspaceEntry,
   readWorkspaceEntryAt,
+  truncateLines,
   type WorkspaceEntry,
   type WorkspaceRoot,
 } from "./workspaceFiles";
@@ -60,7 +68,8 @@ type SourceDiscovery = { skills: Skill[]; warnings: SourceWarning[] };
  * a personal skill of the same name, and an earlier workspace folder a later one; a hidden candidate gives no warning,
  * valid or not. A skipped candidate hides nothing: a valid one of its name from a later source is listed, and the
  * skipped one warns. A personal skill folder follows symlinks (dotfiles are often linked); a workspace one, the folder
- * and its `SKILL.md` alike, is held to its own workspace folder, as instruction files are. A folder without `SKILL.md`, a stray file, and a missing skills
+ * and its `SKILL.md` alike, is held to its own workspace folder, as instruction files are. Either way `SKILL.md` must
+ * resolve inside the skill folder's real path, the one folder a loaded skill's files are read from. A folder without `SKILL.md`, a stray file, and a missing skills
  * folder pass silently; any other failure is a warning. Only the first `MAX_SKILL_ENTRIES` entries of a skills folder
  * are read, and one `SKILL.md` at a time, so the files a repository holds cannot multiply the reads of a send. Never
  * rejects.
@@ -173,14 +182,22 @@ async function readSkill(
   if (entry.kind !== "file") return warn({ kind: "unreadable", cause: "not a file" });
 
   try {
-    // [>]: Inside the `try`, so a parser bug skips this skill with a warning rather than the whole discovery.
-    const parsed = validate(entry.text, directory);
-    if ("problem" in parsed) return warn(parsed.problem);
     const located = await source.locate(folder);
     if (located.status !== "ok") {
       // [>]: Gone since its `SKILL.md` was read: as a folder without one.
       return located.status === "missing" ? undefined : warn({ kind: "outsideWorkspace" });
     }
+    // [!]: Every file of a skill lies in its own folder, `SKILL.md` included, so the folder the model may read once
+    // the skill is loaded holds all of it. The folder itself may be a link (its real path is the root).
+    const file = await realpath(join(located.realPath, FILE_NAME)).catch((error: unknown) => {
+      if (errorCode(error) === "ENOENT") return undefined;
+      throw error;
+    });
+    if (file === undefined) return undefined;
+    if (!isInside(located.realPath, file)) return warn({ kind: "outsideSkillFolder" });
+    // [>]: Inside the `try`, so a parser bug skips this skill with a warning rather than the whole discovery.
+    const parsed = validate(entry.text, directory);
+    if ("problem" in parsed) return warn(parsed.problem);
     return { kind: "skill", skill: { ...parsed, root: located.realPath } };
   } catch (error) {
     return warn({ kind: "unreadable", cause: causeOf(error) });
@@ -221,13 +238,11 @@ const FIELDS = new Set(["name", "description", "disable-model-invocation"]);
  * A YAML subset by design: a skill needs two strings, and a YAML library would be a dependency for that alone.
  */
 function parseFrontmatter(text: string): Map<string, string | null> | undefined {
-  const lines = text.replace(/^﻿/, "").split(/\r\n|\r|\n/);
-  if (lines[0]?.trimEnd() !== "---") return undefined;
-  const end = lines.findIndex((line, index) => index > 0 && line.trimEnd() === "---");
-  if (end === -1) return undefined;
+  const split = splitFrontmatter(text);
+  if (split === undefined) return undefined;
 
   const fields = new Map<string, string | null>();
-  const body = lines.slice(1, end);
+  const body = split.frontmatter;
   let index = 0;
   while (index < body.length) {
     // [!]: `s`, so `.` takes U+2028 and U+2029 too: without it, a whitespace run before one backtracks quadratically.
@@ -273,6 +288,22 @@ function scalarValue(head: string, rest: string[]): string | null | undefined {
   if (/^[{[]/.test(first === "" ? (continuation.find((line) => line !== "") ?? "") : first)) return undefined;
   while (continuation.at(-1) === "") continuation.pop();
   return fold([first, ...continuation]).trim();
+}
+
+/**
+ * The lines between a first line `---` and the next line `---`, and the text after that closing line, its line breaks
+ * kept as written; `undefined` when there is no frontmatter. A byte order mark before the first line is dropped.
+ */
+function splitFrontmatter(text: string): { frontmatter: string[]; rest: string } | undefined {
+  // [>]: Lines at even indexes, each followed by the line break that ends it at the next odd index.
+  const parts = text.replace(/^\ufeff/, "").split(/(\r\n|\r|\n)/);
+  if (parts[0]?.trimEnd() !== "---") return undefined;
+  for (let index = 2; index < parts.length; index += 2) {
+    if (parts[index]!.trimEnd() !== "---") continue;
+    const frontmatter = parts.filter((_, part) => part % 2 === 0).slice(1, index / 2);
+    return { frontmatter, rest: parts.slice(index + 2).join("") };
+  }
+  return undefined;
 }
 
 /** Folded lines: a line break between two lines becomes a space; each blank line, a line break. */
@@ -343,6 +374,70 @@ function doubleQuoted(head: string): string | null {
     }
   }
   return null;
+}
+
+/** The `load_skill` tool as the model sees it: for the system prompt and the body tool call parser. */
+export const LOAD_SKILL_TOOL: ToolSpec = {
+  name: "load_skill",
+  description:
+    "Load a skill listed under Skills: returns its instructions and the absolute path of its folder. Read the other files of a loaded skill with read_file, list_files, or search, by the absolute path the result gives; a skill folder outside the workspace is read-only. Load a skill once per conversation.",
+  args: [{ name: "name", required: true, description: "The skill's name, as listed under Skills." }],
+};
+
+/**
+ * The model's `load_skill` of `name`: the skill of that name among `skills` (the send's discovery) that is listed to
+ * the model. A skill whose folder is in `loadedRoots` (the real folders of the skills loaded in the conversation) is
+ * already loaded: `ok`, saying so, without the body. An unknown name, a skipped skill, and one kept from the model give
+ * an `error` naming the skills the model may load. Never rejects.
+ */
+export async function loadSkill(
+  name: string,
+  skills: readonly Skill[],
+  loadedRoots: readonly string[],
+): Promise<ToolResult> {
+  const loadable = skills.filter((skill) => skill.listedToModel);
+  const skill = loadable.find((candidate) => candidate.name === name);
+  if (skill === undefined) {
+    const names = loadable.map((candidate) => candidate.name).sort(compareNames);
+    const choice = names.length > 0 ? `Skills you can load: ${names.join(", ")}.` : "No skill can be loaded.";
+    return { status: "error", text: `load_skill: ${excerpt(name)}: no skill of that name can be loaded. ${choice}` };
+  }
+  if (loadedRoots.includes(skill.root)) {
+    return { status: "ok", text: `Skill ${skill.name} is already loaded; ${whereFilesLive(skill)}` };
+  }
+  return loadSkillText(skill);
+}
+
+/**
+ * What loading `skill` gives the model, whoever loads it: a header naming the real path of its folder, then its
+ * `SKILL.md` body, frontmatter and the blank lines after it removed, cut to the mention caps (1 MiB, 2,000 lines) with
+ * the usual notice. `SKILL.md` is read as the files of a loaded skill are: inside the skill's real folder, symlinks
+ * resolved. An `error` when it cannot be read. Never rejects.
+ */
+export async function loadSkillText(skill: Skill): Promise<ToolResult> {
+  // [>]: Discovery already refused a `SKILL.md` linked out; this read is the boundary, should it be swapped since.
+  const entry = await readWorkspaceEntry([], join(skill.root, FILE_NAME), {}, [skill.root]);
+  if (entry.status !== "ok" || entry.kind !== "file") {
+    const reason =
+      entry.status === "ok" ? "it is a folder" : skillFileFailure(entry.status, "cause" in entry ? entry.cause : "");
+    return { status: "error", text: `load_skill: ${skill.name}: its ${FILE_NAME} could not be read (${reason}).` };
+  }
+  const body = (splitFrontmatter(entry.text)?.rest ?? entry.text).replace(/^(?:[ \t]*(?:\r\n|\r|\n))+/, "");
+  const header = `Skill ${skill.name} loaded; ${whereFilesLive(skill)}`;
+  if (body === "") return { status: "ok", text: header };
+  const cut = truncateLines(body, MAX_MENTION_LINES);
+  const notice = cut.omitted > 0 ? `\n${truncationNotice(cut.omitted)}` : "";
+  return { status: "ok", text: `${header}\n\n${cut.text}${notice}` };
+}
+
+function whereFilesLive(skill: Skill): string {
+  return `its files live in ${skill.root}; read them by that absolute path.`;
+}
+
+function skillFileFailure(failure: AccessFailure, cause: string): string {
+  if (failure === "outsideWorkspace") return "it links outside the skill's folder";
+  if (failure === "missing") return "no such file";
+  return accessFailureReason(failure, cause);
 }
 
 function errorCode(error: unknown): string | undefined {

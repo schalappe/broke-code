@@ -20,7 +20,7 @@ import { parseLimits } from "./limits";
 import type { MentionReader, ReadMention } from "./mentions";
 import { type ChatEntry, type ChatState, isReplying } from "./protocol";
 import type { Provider } from "./providers";
-import type { SkillDiscovery } from "./skills";
+import { LOAD_SKILL_TOOL, type SkillDiscovery } from "./skills";
 import { composeSystemPrompt, type InstructionFile, type Skill } from "./systemPrompt";
 import { createTlsFixture, removeTlsFixture } from "./tlsFixture";
 import { READ_TOOLS, runReadTool, type ToolResult } from "./tools";
@@ -2199,11 +2199,11 @@ describe("ChatController agent turn", () => {
   test("an unexpected throw inside the turn ends the reply failed with an internal error, logged and saved", async () => {
     let reads = 0;
     const throwing: ToolRunner = {
-      // [>]: Read once for the prompt the usage display counts before a send, once for the system prompt, then by the
-      // parser: the third read throws, as a bug would.
+      // [>]: Read once for the prompt the usage display counts before a send, then once by the send for its system
+      // prompt and parser: that second read throws, as a bug would.
       get tools() {
         reads += 1;
-        if (reads > 2) throw new Error("tool list broke");
+        if (reads > 1) throw new Error("tool list broke");
         return READ_TOOLS;
       },
       run: async () => ({ status: "ok", text: "" }),
@@ -2310,6 +2310,173 @@ describe("ChatController agent turn", () => {
     }
     expect(sent()[0]!.messages[0]).toEqual(SYSTEM);
     expect(state().entries.at(-1)).toMatchObject({ status: "done", content: "a" });
+  });
+
+  describe("loaded skills", () => {
+    const review: Skill = { name: "review", description: "Review.", root: "/s/review", listedToModel: true };
+    const release: Skill = { name: "release", description: "Release.", root: "/s/release", listedToModel: true };
+    const loadCall = (name: string) => `<load_skill>\n<name>${name}</name>\n</load_skill>`;
+    const discovered: SkillReader = { read: async () => ({ skills: [review, release], warnings: [] }) };
+
+    /** Runner that answers every call `ok` but those `failing` names, recording each run's skill fields. */
+    function contextRunner(failing: string[] = []) {
+      const seen: { call: string; skills: readonly Skill[]; skillRoots: readonly string[] }[] = [];
+      const runner: ToolRunner = {
+        tools: [...READ_TOOLS, LOAD_SKILL_TOOL],
+        run: async (call, context) => {
+          seen.push({ call: call.name, skills: context.skills, skillRoots: context.skillRoots });
+          const status = failing.includes(call.args.name ?? "") ? "error" : "ok";
+          return { status, text: `${call.name} ${status}` };
+        },
+      };
+      return { runner, seen };
+    }
+
+    test("offers load_skill only while a skill is listed to the model; otherwise its call is malformed", async () => {
+      const hidden: Skill = { ...review, listedToModel: false };
+      const { runner, seen } = contextRunner();
+      const finds = [[review], [hidden]];
+      const { controller, state, sent } = await scripted(
+        [{ content: "a" }, { content: loadCall("review") }, { content: "b" }],
+        runner,
+        undefined,
+        undefined,
+        { read: async () => ({ skills: finds.shift() ?? [], warnings: [] }) },
+      );
+      await controller.send("hi");
+      await controller.send("again");
+      expect(sent()[0]!.messages[0]!.content).toBe(composeSystemPrompt([...READ_TOOLS, LOAD_SKILL_TOOL], [], [review]));
+      expect(sent()[1]!.messages[0]).toEqual(SYSTEM);
+      expect(seen).toEqual([]);
+      expect(state().entries[4]).toMatchObject({ role: "tool", name: "load_skill", status: "malformed" });
+    });
+
+    test("a load earlier in the turn reaches the next call's context, with the send's discovery", async () => {
+      const { runner, seen } = contextRunner();
+      const { controller } = await scripted(
+        [{ content: loadCall("review") }, { content: readCall("/s/review/reference.md") }, { content: "Done." }],
+        runner,
+        undefined,
+        undefined,
+        discovered,
+      );
+      await controller.send("review this");
+      expect(seen).toEqual([
+        { call: "load_skill", skills: [review, release], skillRoots: [] },
+        { call: "read_file", skills: [review, release], skillRoots: ["/s/review"] },
+      ]);
+    });
+
+    test("an error load, a load of a skill gone since, and a malformed call add no folder", async () => {
+      const { runner, seen } = contextRunner(["release"]);
+      const gone = `<load_skill>\n<name>gone</name>\n</load_skill>`;
+      const { controller } = await scripted(
+        [
+          { content: loadCall("release") },
+          { content: "<load_skill>\n<name>review</name>" },
+          { content: gone },
+          { content: readCall("a.ts") },
+          { content: "Done." },
+        ],
+        runner,
+        undefined,
+        undefined,
+        discovered,
+      );
+      await controller.send("go");
+      expect(seen.map((run) => run.skillRoots)).toEqual([[], [], []]);
+    });
+
+    test("a load_skill stopped by Stop adds no folder to the next send, though its run settles ok late", async () => {
+      const seen: { call: string; skillRoots: readonly string[] }[] = [];
+      const runner: ToolRunner = {
+        tools: [...READ_TOOLS, LOAD_SKILL_TOOL],
+        run: (call, context) => {
+          seen.push({ call: call.name, skillRoots: context.skillRoots });
+          if (call.name !== "load_skill") return Promise.resolve({ status: "ok", text: "read" });
+          // [>]: Settles `ok` only once Stop aborted it, so only the controller can drop the step.
+          return new Promise((settle) =>
+            context.signal.addEventListener("abort", () => settle({ status: "ok", text: "loaded" })),
+          );
+        },
+      };
+      const { controller, state } = await scripted(
+        [{ content: loadCall("review") }, { content: readCall("/s/review/reference.md") }, { content: "Done." }],
+        runner,
+        undefined,
+        undefined,
+        discovered,
+      );
+      const turn = controller.send("review this");
+      await until(state, () => seen.length === 1);
+      controller.stop();
+      await turn;
+      await controller.send("go on");
+      expect(seen).toEqual([
+        { call: "load_skill", skillRoots: [] },
+        { call: "read_file", skillRoots: [] },
+      ]);
+    });
+
+    /** A saved conversation whose one turn holds a `load_skill` step of `status`. */
+    function recordWithLoad(status: "ok" | "error"): ConversationRecord {
+      const call = loadCall("review");
+      return {
+        version: 2,
+        id: newConversationId(),
+        createdAt: 1,
+        updatedAt: 2,
+        entries: [
+          { role: "user", content: "review", mentions: [], modelText: "review" },
+          {
+            role: "assistant",
+            reasoning: "",
+            content: call,
+            status: "done",
+            call: { name: "load_skill", args: { name: "review" }, start: 0, end: call.length },
+          },
+          { role: "tool", name: "load_skill", args: { name: "review" }, status, text: "loaded or not" },
+          { role: "assistant", reasoning: "", content: "Loaded.", status: "done" },
+        ],
+      };
+    }
+
+    for (const [status, roots] of [
+      ["ok", ["/s/review"]],
+      ["error", []],
+    ] as const) {
+      test(`a reopened conversation with an earlier ${status} load_skill step gives the folders ${JSON.stringify(roots)}`, async () => {
+        const { runner, seen } = contextRunner();
+        const { controller, files } = await scripted(
+          [{ content: readCall("/s/review/reference.md") }, { content: "Done." }],
+          runner,
+          undefined,
+          undefined,
+          discovered,
+        );
+        const record = recordWithLoad(status);
+        files.files.set(`${record.id}.json`, JSON.stringify(record));
+        await controller.openConversation(record.id);
+        await controller.send("go on");
+        expect(seen).toEqual([{ call: "read_file", skills: [review, release], skillRoots: roots }]);
+      });
+    }
+
+    test("a reopened load of a skill no longer discovered gives no folder", async () => {
+      const { runner, seen } = contextRunner();
+      const { controller, files } = await scripted(
+        [{ content: readCall("/s/review/reference.md") }, { content: "Done." }],
+        runner,
+        undefined,
+        undefined,
+        { read: async () => ({ skills: [release], warnings: [] }) },
+      );
+      const record = recordWithLoad("ok");
+      files.files.set(`${record.id}.json`, JSON.stringify(record));
+      await controller.openConversation(record.id);
+      await controller.send("go on");
+      expect(seen.map((run) => run.skillRoots)).toEqual([[]]);
+    });
   });
 
   test("without instruction files the system message is the prompt alone", async () => {

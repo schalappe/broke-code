@@ -35,7 +35,7 @@ import {
 import type { ParsedProviders, Provider } from "./providers";
 import { SerialQueue } from "./serialQueue";
 import type { SkillDiscovery } from "./skills";
-import { composeSystemPrompt, type InstructionFile } from "./systemPrompt";
+import { composeSystemPrompt, type InstructionFile, type Skill } from "./systemPrompt";
 import { type ParsedReply, parseToolCall, type ToolSpec } from "./toolCalls";
 import type { ToolCall, ToolResult } from "./tools";
 
@@ -54,11 +54,21 @@ export type ChoiceStore = {
  * The request shows in `ChatState.approval` with its preview open until the user decides; Stop, and the navigation
  * that stops the reply, cancel it and close the preview. A write is accepted at once, without a preview, while the
  * auto-approve setting is on; a command always waits. Rejects only when the preview cannot open, or when another
- * request of the run is still open.
+ * request of the run is still open. `skills`: the valid skills the send discovered. `skillRoots`: the real folders of
+ * the skills loaded in the conversation, the ones the read tools may also read, derived at each call (see
+ * `loadedSkillRoots`), so a load earlier in the turn counts.
  */
-export type ToolContext = { signal: AbortSignal; requestApproval: (request: ApprovalRequest) => Promise<Decision> };
+export type ToolContext = {
+  signal: AbortSignal;
+  requestApproval: (request: ApprovalRequest) => Promise<Decision>;
+  skills: readonly Skill[];
+  skillRoots: readonly string[];
+};
 
-/** Runs body tool calls. `tools`: what the system prompt lists and the parser accepts. `run` must not reject. */
+/**
+ * Runs body tool calls. `tools`: what the system prompt lists and the parser accepts, but `load_skill`, offered only
+ * while a skill is listed to the model (see `offeredTools`). `run` must not reject.
+ */
 export type ToolRunner = {
   tools: readonly ToolSpec[];
   run(call: ToolCall, context: ToolContext): Promise<ToolResult>;
@@ -192,7 +202,7 @@ export class ChatController {
     this.autoApproveWrites = ports.autoApproveWrites ?? (() => false);
     this.now = ports.now ?? Date.now;
     // [>]: Instruction files and skills are read only at a send, never just to refresh the display.
-    this.systemPrompt = composeSystemPrompt(this.tools.tools, [], []);
+    this.systemPrompt = composeSystemPrompt(offeredTools(this.tools.tools, []), [], []);
     this.conversation = this.freshConversation();
     this.state = {
       providers: [],
@@ -422,7 +432,8 @@ export class ChatController {
         if (!saved) return settle("stopped");
       }
 
-      const system = composeSystemPrompt(this.tools.tools, instructions, discovery.skills);
+      const tools = offeredTools(this.tools.tools, discovery.skills);
+      const system = composeSystemPrompt(tools, instructions, discovery.skills);
       this.systemPrompt = system;
       // [>]: The display counts the instruction files and skills now, not at the first reply delta.
       this.emit();
@@ -440,7 +451,7 @@ export class ChatController {
         if (outcome.status !== "done") return settle(outcome.status);
 
         // [!]: The parser reads the answer only, never the reasoning.
-        const parsed = parseToolCall(reply.content, this.tools.tools);
+        const parsed = parseToolCall(reply.content, tools);
         if (parsed.kind === "none") return settle("done");
         let step: ChatEntry & { role: "tool" };
         if (parsed.kind === "call") {
@@ -458,6 +469,8 @@ export class ChatController {
               approval = answer.approval ?? approval;
               return answer.decision;
             },
+            skills: discovery.skills,
+            skillRoots: loadedSkillRoots(conversation.entries, discovery.skills),
           };
           const result = await unlessAborted(this.runTool({ name, args }, context), signal);
           if (!result) return settle("stopped");
@@ -961,6 +974,29 @@ function closePreview(preview: Preview | undefined): void {
 
 function waitingReply(): ChatEntry & { role: "assistant" } {
   return { role: "assistant", reasoning: "", content: "", status: "waiting" };
+}
+
+/**
+ * The tools of a send: `load_skill` only while a skill is listed to the model, like the Skills section of the system
+ * prompt, so a workspace without skills spends no prompt on a tool that cannot load anything.
+ */
+function offeredTools(tools: readonly ToolSpec[], skills: readonly Skill[]): readonly ToolSpec[] {
+  if (skills.some((skill) => skill.listedToModel)) return tools;
+  return tools.filter((tool) => tool.name !== "load_skill");
+}
+
+/**
+ * The real folders of the skills loaded in `entries`: each `ok` `load_skill` step's name, found in `discovered` (the
+ * send's skills). A step that failed, or was stopped, loaded nothing; a skill no longer discovered is no longer
+ * readable. Derived from the steps, so a reopened conversation keeps its loaded skills with no field of its own.
+ */
+function loadedSkillRoots(entries: readonly ChatEntry[], discovered: readonly Skill[]): string[] {
+  const names = new Set(
+    entries.flatMap((entry) =>
+      entry.role === "tool" && entry.name === "load_skill" && entry.status === "ok" ? [entry.args.name] : [],
+    ),
+  );
+  return discovered.filter((skill) => names.has(skill.name)).map((skill) => skill.root);
 }
 
 /** A tool step as the model reads it. A malformed call goes back as an error. */

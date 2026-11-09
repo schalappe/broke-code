@@ -1,25 +1,31 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { composeSystemPrompt } from "../src/core/systemPrompt";
 import { READ_TOOLS } from "../src/core/tools";
 import { WRITE_TOOLS } from "../src/core/writeTools";
 import { playScenario } from "./run";
-import { CREATE_SCENARIO, EDIT_SCENARIO, judge, READ_SCENARIO, type Scenario } from "./scenarios";
+import { CREATE_SCENARIO, EDIT_SCENARIO, judge, READ_SCENARIO, type Scenario, SKILL_SCENARIO } from "./scenarios";
 
 const event = (content: string) => `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`;
 const READ_CALL = "<read_file>\n<path>config/settings.toml</path>\n</read_file>";
 
-/** Chat request bodies, in order. Each request gets the next of `replies`. */
-const requests: { model: string; messages: { role: string; content: string }[] }[] = [];
-let replies: string[] = [];
+type ChatRequest = { model: string; messages: { role: string; content: string }[] };
+/**
+ * Chat request bodies, in order. Each request gets the next of `replies`: a text, or a function of the request when
+ * the reply depends on what the run sent, such as a path under the run's temporary folder.
+ */
+const requests: ChatRequest[] = [];
+let replies: (string | ((request: ChatRequest) => string))[] = [];
 const server = Bun.serve({
   port: 0,
   async fetch(request) {
     if (new URL(request.url).pathname.endsWith("/models")) return Response.json({ data: [{ id: "m" }, { id: "n" }] });
-    requests.push(await request.json());
-    const content = replies.shift() ?? "script exhausted";
+    const body: ChatRequest = await request.json();
+    requests.push(body);
+    const next = replies.shift() ?? "script exhausted";
+    const content = typeof next === "string" ? next : next(body);
     return new Response(`${event(content)}data: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
   },
 });
@@ -51,6 +57,29 @@ describe("playScenario", () => {
       role: "system",
       content: composeSystemPrompt([...READ_TOOLS, ...WRITE_TOOLS], [], []),
     });
+  });
+
+  test("discovers the skills of a copy of the scenario's home fixture, never the real home, and removes the copy", async () => {
+    requests.length = 0;
+    const lastText = (request: ChatRequest) => request.messages.at(-1)?.content ?? "";
+    replies = [
+      "<load_skill>\n<name>depot-codes</name>\n</load_skill>",
+      (request) => {
+        const root = /its files live in (\S+);/.exec(lastText(request))?.[1] ?? "no root";
+        return `<read_file>\n<path>${root}/reference/depots.md</path>\n</read_file>`;
+      },
+      "The Lyon dispatch code is LYN-7Q42-ORCA.",
+    ];
+    const { entries, after } = await playScenario(SKILL_SCENARIO, { baseUrl, model: "m", maxToolSteps: 6 }, parent);
+
+    expect(requests[0]?.messages[0]?.content).toContain("\n- depot-codes: Look up the dispatch code");
+    const loaded = entries[2];
+    expect(loaded).toMatchObject({ role: "tool", name: "load_skill", status: "ok" });
+    const text = loaded?.role === "tool" ? loaded.text : "";
+    expect(text).toContain(`${realpathSync(parent)}/`);
+    expect(text).not.toContain(homedir());
+    expect(judge(SKILL_SCENARIO, entries, after)).toEqual({ pass: true });
+    expect(readdirSync(parent)).toEqual([]);
   });
 
   test("applies a write_file call to the copy of the fixture at once", async () => {

@@ -1,8 +1,9 @@
 /**
  * @module bench
- * `bun run eval`: plays every scenario `--runs` times on each model against the local Ollama, all runs of one model
- * before the next so each model loads once, then prints the report and exits 1 when a model is under the bar. A model
- * Ollama does not list, or Ollama unreachable, exits 1 before any run. Runs locally on demand, never in CI.
+ * `bun run eval`: plays every scenario, or those `--scenario` names, `--runs` times on each model against the local
+ * Ollama, all runs of one model before the next so each model loads once, then prints the report and exits 1 when a
+ * model is under the bar. A model Ollama does not list, or Ollama unreachable, exits 1 before any run. Runs locally on
+ * demand, never in CI.
  */
 
 import { rmSync } from "node:fs";
@@ -25,14 +26,22 @@ const MAX_TOOL_STEPS = 10;
 
 /**
  * `models`: `--model`, repeatable, else both bench models; a name given twice is played once, since the report scores
- * a model's runs together against the bar of one batch. `runs`: `--runs`, else 10. `dump`: `--dump <file>`, a JSON
- * Lines file each run's `dumpLine` is appended to, for reading failed replies and writes. Throws on any other flag.
+ * a model's runs together against the bar of one batch. `scenarios`: those `--scenario` names, repeatable, in the
+ * order of `SCENARIOS`, each once, else every scenario. `runs`: `--runs`, else 10. `dump`: `--dump <file>`, a JSON
+ * Lines file each run's `dumpLine` is appended to, for reading failed replies and writes. Throws on an unknown
+ * scenario and on any other flag.
  */
-export function parseBenchArgs(args: string[]): { models: string[]; runs: number; dump: string | undefined } {
+export function parseBenchArgs(args: string[]): {
+  models: string[];
+  scenarios: readonly Scenario[];
+  runs: number;
+  dump: string | undefined;
+} {
   const { values } = parseArgs({
     args,
     options: {
       model: { type: "string", multiple: true },
+      scenario: { type: "string", multiple: true },
       runs: { type: "string" },
       dump: { type: "string" },
     },
@@ -43,7 +52,14 @@ export function parseBenchArgs(args: string[]): { models: string[]; runs: number
   if (!/^\d+$/.test(values.runs ?? "10") || !Number.isSafeInteger(runs) || runs < 1) {
     throw new Error(`--runs takes a whole number of at least 1, not ${JSON.stringify(values.runs)}.`);
   }
-  return { models: [...new Set(values.model ?? BENCH_MODELS)], runs, dump: values.dump };
+  const names = SCENARIOS.map((scenario) => scenario.name);
+  const unknown = values.scenario?.find((name) => !names.includes(name));
+  if (unknown !== undefined) {
+    throw new Error(`--scenario takes one of ${names.join(", ")}, not ${JSON.stringify(unknown)}.`);
+  }
+  const chosen = values.scenario;
+  const scenarios = chosen === undefined ? SCENARIOS : SCENARIOS.filter((scenario) => chosen.includes(scenario.name));
+  return { models: [...new Set(values.model ?? BENCH_MODELS)], scenarios, runs, dump: values.dump };
 }
 
 /**
@@ -105,7 +121,7 @@ export function dumpLine(run: {
 }
 
 async function main(): Promise<number> {
-  const { models, runs, dump } = parseBenchArgs(process.argv.slice(2));
+  const { models, scenarios, runs, dump } = parseBenchArgs(process.argv.slice(2));
 
   const listing = await listModels({ provider: { name: "Ollama", baseUrl: OLLAMA_URL }, apiKey: undefined });
   const problem = modelsProblem(listing, models, OLLAMA_URL);
@@ -130,7 +146,7 @@ async function main(): Promise<number> {
   const results: RunResult[] = [];
   try {
     for (const model of models) {
-      for (const scenario of SCENARIOS) {
+      for (const scenario of scenarios) {
         for (let run = 0; run < runs; run += 1) {
           const runStarted = performance.now();
           const target = { baseUrl: OLLAMA_URL, model, maxToolSteps: MAX_TOOL_STEPS };

@@ -1,9 +1,10 @@
 /**
  * @module run
  * One run of a scenario: the chat controller the extension runs, hosted through its ports with the read and write tools
- * over a throwaway copy of the fixture under the system temporary directory, each write applied at once and recorded, no
- * instruction file, no skill, an in-memory conversation store, and the bench's step limit. The copy is removed when
- * the run ends, also when it throws.
+ * and `load_skill` over a throwaway copy of the fixture under the system temporary directory, each write applied at once
+ * and recorded, the skills discovered as the extension does but in a throwaway copy of the scenario's home fixture
+ * (never the real home), no instruction file, an in-memory conversation store, and the bench's step limit. The copies
+ * are removed when the run ends, also when it throws.
  */
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -12,6 +13,7 @@ import { ChatController, type ChoiceStore } from "../src/core/chatController";
 import { ConversationStore } from "../src/core/conversationStore";
 import { DEFAULT_CONTEXT_SIZE, parseLimits } from "../src/core/limits";
 import type { ChatEntry } from "../src/core/protocol";
+import { readSkills } from "../src/core/skills";
 import { workspaceToolRunner } from "../src/core/toolRunner";
 import { ripgrepCandidates } from "../src/core/tools";
 import { type ChangeApplier, fileApplier, type PlannedChange } from "../src/core/writeTools";
@@ -39,14 +41,17 @@ export type AppliedChange = Omit<PlannedChange, "target" | "before"> & {
 export type RunOutcome = { entries: ChatEntry[]; planned: AppliedChange[]; after: WorkspaceFiles };
 
 /**
- * Play `scenario` once on `target`: copy its fixture under `tmpRoot`, send its message, and wait for the agent turn to
- * end. Throws when the provider does not list the model, or the copy cannot be made or read back.
+ * Play `scenario` once on `target`: copy its workspace and home fixtures under `tmpRoot`, send its message, and wait
+ * for the agent turn to end. Throws when the provider does not list the model, or a copy cannot be made or read back.
  */
 export async function playScenario(scenario: Scenario, target: RunTarget, tmpRoot = tmpdir()): Promise<RunOutcome> {
-  const copy = await mkdtemp(join(tmpRoot, "broke-code-eval-"));
+  const runFolder = await mkdtemp(join(tmpRoot, "broke-code-eval-"));
+  const copy = join(runFolder, "workspace");
+  const home = join(runFolder, "home");
   const planned: AppliedChange[] = [];
   try {
     await writeWorkspace(copy, scenario.files);
+    await writeWorkspace(home, scenario.home ?? {});
     // [>]: The tools compare resolved paths; on macOS the temporary directory sits behind the /var symlink.
     const root = { name: basename(copy), path: await realpath(copy) };
     const toolEnv = { ripgrepCandidates: ripgrepCandidates(undefined, process.env.PATH) };
@@ -71,7 +76,8 @@ export async function playScenario(scenario: Scenario, target: RunTarget, tmpRoo
         (roots) => recording(fileApplier(roots), planned),
       ),
       instructions: { read: async () => [] },
-      skills: { read: async () => ({ skills: [], warnings: [] }) },
+      // [!]: Never `homedir()`: the maintainer's own skills would change the prompt between runs and machines.
+      skills: { read: () => readSkills(home, [root]) },
       limits: { read: () => limits },
     });
 
@@ -88,7 +94,7 @@ export async function playScenario(scenario: Scenario, target: RunTarget, tmpRoo
     await controller.send(scenario.message);
     return { entries: controller.snapshot.entries, planned, after: await readWorkspace(copy) };
   } finally {
-    await rm(copy, { recursive: true, force: true });
+    await rm(runFolder, { recursive: true, force: true });
   }
 }
 
@@ -102,7 +108,9 @@ function recording(apply: ChangeApplier, planned: AppliedChange[]): ChangeApplie
   };
 }
 
+/** Writes `files` under `directory`, creating it even when `files` is empty. */
 async function writeWorkspace(directory: string, files: WorkspaceFiles): Promise<void> {
+  await mkdir(directory, { recursive: true });
   for (const [path, text] of Object.entries(files)) {
     const file = join(directory, path);
     await mkdir(dirname(file), { recursive: true });

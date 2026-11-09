@@ -1,6 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import type { ChatEntry } from "../src/core/protocol";
-import { CREATE_SCENARIO, EDIT_SCENARIO, judge, READ_SCENARIO, SCENARIOS, workspaceChanges } from "./scenarios";
+import {
+  CREATE_SCENARIO,
+  EDIT_SCENARIO,
+  fileAt,
+  judge,
+  READ_SCENARIO,
+  SCENARIOS,
+  SKILL_SCENARIO,
+  workspaceChanges,
+} from "./scenarios";
 
 const VALUE = "kestrel-4471-vanta";
 const user: ChatEntry = { role: "user", content: READ_SCENARIO.message, mentions: [] };
@@ -308,8 +317,86 @@ describe("judge on the create scenario", () => {
   });
 });
 
-test("SCENARIOS holds read, edit, and create, in that order", () => {
-  expect(SCENARIOS.map((scenario) => scenario.name)).toEqual(["read", "edit", "create"]);
+const DISPATCH_CODE = "LYN-7Q42-ORCA";
+const SKILL_FILE = ".agents/skills/depot-codes/SKILL.md";
+const SKILL_ROOT = "/tmp/home/.agents/skills/depot-codes";
+const skillHome = SKILL_SCENARIO.home ?? {};
+const skillUser: ChatEntry = { role: "user", content: SKILL_SCENARIO.message, mentions: [] };
+const loadCall: Reply = {
+  role: "assistant",
+  reasoning: "",
+  content: "<load_skill>\n<name>depot-codes</name>\n</load_skill>",
+  status: "done",
+  call: { name: "load_skill", args: { name: "depot-codes" }, start: 0, end: 0 },
+};
+const loadStep = (status: "ok" | "error" = "ok"): ChatEntry => ({
+  role: "tool",
+  name: "load_skill",
+  args: { name: "depot-codes" },
+  status,
+  text: `Skill depot-codes loaded; its files live in ${SKILL_ROOT}; read them by that absolute path.`,
+});
+const depotsPath = `${SKILL_ROOT}/reference/depots.md`;
+const depotsRead = [
+  callReply("read_file", depotsPath),
+  step(
+    "read_file",
+    depotsPath,
+    `@${depotsPath} (file)\n${fileAt(skillHome, ".agents/skills/depot-codes/reference/depots.md")}`,
+  ),
+];
+const skillUntouched = { ...SKILL_SCENARIO.files };
+
+describe("skill scenario fixture", () => {
+  test("holds one personal skill whose reference file alone holds the value", () => {
+    const holders = Object.entries({ ...SKILL_SCENARIO.files, ...skillHome })
+      .filter(([, text]) => text.includes(DISPATCH_CODE))
+      .map(([path]) => path);
+    expect(holders).toEqual([".agents/skills/depot-codes/reference/depots.md"]);
+    expect(SKILL_SCENARIO.message).not.toContain(DISPATCH_CODE);
+    expect(fileAt(skillHome, SKILL_FILE)).toStartWith("---\nname: depot-codes\ndescription: ");
+  });
+
+  test("never names the tool or the skill's folder in the message", () => {
+    for (const hint of ["load_skill", "skill", "depots.md", ".agents"])
+      expect(SKILL_SCENARIO.message).not.toContain(hint);
+  });
+});
+
+describe("judge on the skill scenario", () => {
+  test("passes a turn that loaded the skill, read its reference file, and answered with the value", () => {
+    const entries = [skillUser, loadCall, loadStep(), ...depotsRead, answer(`The Lyon code is ${DISPATCH_CODE}.`)];
+    expect(judge(SKILL_SCENARIO, entries, skillUntouched)).toEqual({ pass: true });
+  });
+
+  test("wrongTool: the turn read the value without an ok load_skill step", () => {
+    const failedLoad = [skillUser, loadCall, loadStep("error"), ...depotsRead, answer(DISPATCH_CODE)];
+    const verdict = judge(SKILL_SCENARIO, failedLoad, skillUntouched);
+    expect(verdict).toMatchObject({ pass: false, category: "wrongTool" });
+    expect(verdict).toMatchObject({ detail: expect.stringContaining("load_skill(name=depot-codes) error") });
+    const noLoad = [skillUser, ...depotsRead, answer(DISPATCH_CODE)];
+    expect(judge(SKILL_SCENARIO, noLoad, skillUntouched)).toMatchObject({ pass: false, category: "wrongTool" });
+  });
+
+  test("wrongTool: the turn loaded the skill but no read step got the value", () => {
+    const entries = [skillUser, loadCall, loadStep(), answer(DISPATCH_CODE)];
+    expect(judge(SKILL_SCENARIO, entries, skillUntouched)).toMatchObject({ pass: false, category: "wrongTool" });
+  });
+
+  test("wrongAnswer: the turn loaded the skill and read the file but the answer lacks the value", () => {
+    const entries = [skillUser, loadCall, loadStep(), ...depotsRead, answer("The Lyon code is LYN-7Q42.")];
+    expect(judge(SKILL_SCENARIO, entries, skillUntouched)).toMatchObject({ pass: false, category: "wrongAnswer" });
+  });
+
+  test("workspaceChanged: the turn passed the check but changed a workspace file", () => {
+    const entries = [skillUser, loadCall, loadStep(), ...depotsRead, answer(DISPATCH_CODE)];
+    const changed = { ...skillUntouched, "notes.txt": DISPATCH_CODE };
+    expect(judge(SKILL_SCENARIO, entries, changed)).toMatchObject({ pass: false, category: "workspaceChanged" });
+  });
+});
+
+test("SCENARIOS holds read, edit, create, and skill, in that order", () => {
+  expect(SCENARIOS.map((scenario) => scenario.name)).toEqual(["read", "edit", "create", "skill"]);
 });
 
 describe("workspaceChanges", () => {

@@ -6,6 +6,7 @@ import {
   mkdtemp,
   readdir,
   readFile,
+  realpath,
   rename,
   rm,
   stat,
@@ -14,7 +15,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   compareNames,
   locateWriteTarget,
@@ -167,6 +168,124 @@ describe("readWorkspaceEntry in one folder", () => {
 
   test("refuses everything when no folder is open", async () => {
     expect(await readWorkspaceEntry([], "src/main.ts")).toEqual({ status: "outsideWorkspace", kind: "file" });
+  });
+});
+
+describe("readWorkspaceEntry with read-only roots", () => {
+  // [>]: Two loaded skills' folders outside the workspace, given by their real paths as discovery gives them.
+  let one: string;
+  let two: string;
+  beforeAll(async () => {
+    await mkdir(join(base, "skills", "one"), { recursive: true });
+    await mkdir(join(base, "skills", "two"));
+    await writeFile(join(base, "skills", "one", "a.md"), "one\n");
+    await writeFile(join(base, "skills", "two", "b.md"), "two\n");
+    await symlink(join(base, "skills", "two", "b.md"), join(base, "skills", "one", "to-two.md"));
+    await symlink(join(app.path, "src", "main.ts"), join(base, "skills", "one", "to-workspace.ts"));
+    one = await realpath(join(base, "skills", "one"));
+    two = await realpath(join(base, "skills", "two"));
+  });
+
+  test("reads a file of a read-only root by its absolute path, never by a relative one", async () => {
+    expect(await readWorkspaceEntry([app], join(one, "a.md"), {}, [one, two])).toEqual({
+      status: "ok",
+      kind: "file",
+      text: "one\n",
+    });
+    expect(await readWorkspaceEntry([], "a.md", {}, [one])).toEqual({ status: "outsideWorkspace", kind: "file" });
+  });
+
+  test("reads a file of a read-only root with no workspace folder open", async () => {
+    expect(await readWorkspaceEntry([], join(one, "a.md"), {}, [one])).toEqual({
+      status: "ok",
+      kind: "file",
+      text: "one\n",
+    });
+  });
+
+  test("reads the literal path inside a read-only root, never one a folder name reroutes it to", async () => {
+    // [>]: A multi-root folder named after the root's first component (`/private` on macOS) would reroute the path.
+    const name = `/${one.split("/")[1]}`;
+    const decoyRoot: WorkspaceRoot = { name, path: join(base, "decoy") };
+    const decoy = join(decoyRoot.path, one.slice(name.length + 1), "a.md");
+    await mkdir(dirname(decoy), { recursive: true });
+    await writeFile(decoy, "decoy\n");
+    expect(await readWorkspaceEntry([decoyRoot, lib], join(one, "a.md"), {}, [one])).toEqual({
+      status: "ok",
+      kind: "file",
+      text: "one\n",
+    });
+  });
+
+  test("an absolute path in no read-only root still goes through a folder name that prefixes it", async () => {
+    const named: WorkspaceRoot = { name: "/private", path: join(base, "named") };
+    await mkdir(named.path, { recursive: true });
+    await writeFile(join(named.path, "named.txt"), "named\n");
+    expect(await readWorkspaceEntry([named, lib], "/private/named.txt", {}, [one])).toEqual({
+      status: "ok",
+      kind: "file",
+      text: "named\n",
+    });
+  });
+
+  test("holds a path to the deepest read-only root that holds it, the outer root listed first", async () => {
+    const outer = join(one, "outer");
+    const inner = join(outer, "inner");
+    await mkdir(inner, { recursive: true });
+    await writeFile(join(outer, "other.md"), "outer\n");
+    await symlink(join(outer, "other.md"), join(inner, "escape.md"));
+    expect(await readWorkspaceEntry([], join(inner, "escape.md"), {}, [outer, inner])).toEqual({
+      status: "outsideWorkspace",
+      kind: "file",
+    });
+    expect(await readWorkspaceEntry([], join(outer, "other.md"), {}, [outer, inner])).toMatchObject({ status: "ok" });
+  });
+
+  test("refuses a symlink out of its own root, into another read-only root or into the workspace", async () => {
+    for (const name of ["to-two.md", "to-workspace.ts"]) {
+      expect(await readWorkspaceEntry([app], join(one, name), {}, [one, two])).toEqual({
+        status: "outsideWorkspace",
+        kind: "file",
+      });
+    }
+  });
+
+  test("a read-only root inside a workspace opened through a symlink follows the workspace rules", async () => {
+    // [>]: `app.path` sits under /var, its real path under /private/var; discovery gives the skill's real folder.
+    const folder = join(app.path, ".agents", "skills", "inside");
+    await mkdir(folder, { recursive: true });
+    await symlink(join(app.path, "src", "main.ts"), join(folder, "reference.ts"));
+    await symlink(join(base, "outside.txt"), join(folder, "out.txt"));
+    const skill = await realpath(folder);
+    expect(await readWorkspaceEntry([app], join(skill, "reference.ts"), {}, [skill])).toEqual({
+      status: "ok",
+      kind: "file",
+      text: "export {};\n",
+    });
+    expect(await readWorkspaceEntry([app], join(skill, "out.txt"), {}, [skill])).toEqual({
+      status: "outsideWorkspace",
+      kind: "file",
+    });
+  });
+
+  test("a written path under the root's unresolved path is outside: the root is matched as given", async () => {
+    // [>]: `base` sits under /var, the real path under /private/var: only the real path reaches the root.
+    expect(await readWorkspaceEntry([], join(base, "skills", "one", "a.md"), {}, [one])).toEqual({
+      status: "outsideWorkspace",
+      kind: "file",
+    });
+  });
+
+  test("refuses a file swapped for a symlink out after the check", async () => {
+    await writeFile(join(one, "swapped.md"), "inside\n");
+    const swap = async () => {
+      await unlink(join(one, "swapped.md"));
+      await symlink(join(base, "outside.txt"), join(one, "swapped.md"));
+    };
+    expect(await readWorkspaceEntry([], join(one, "swapped.md"), { beforeOpen: swap }, [one])).toEqual({
+      status: "outsideWorkspace",
+      kind: "file",
+    });
   });
 });
 
@@ -461,5 +580,11 @@ describe("truncateLines", () => {
     expect(cut.omitted).toBe(1);
     expect(cut.text.split("\n")).toHaveLength(2000);
     expect(cut.text.endsWith("line 2000")).toBe(true);
+  });
+
+  test("counts CR, LF, and CRLF as line breaks, and keeps each kept break as written", () => {
+    expect(truncateLines("a\rb\r\nc\nd\r", 9)).toEqual({ text: "a\rb\r\nc\nd\r", lines: 4, omitted: 0 });
+    expect(truncateLines("a\rb\r\nc\nd\r", 2)).toEqual({ text: "a\rb", lines: 2, omitted: 2 });
+    expect(truncateLines("a\r\nb\r\nc\r\n", 2)).toEqual({ text: "a\r\nb", lines: 2, omitted: 1 });
   });
 });
