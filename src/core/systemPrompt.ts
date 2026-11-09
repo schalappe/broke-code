@@ -4,7 +4,7 @@
  * files. Composed from data only; the host reads the files. No `node:` or `vscode` import. Model-facing text is
  * English and never localized.
  */
-import { describeTool, type ToolSpec } from "./toolCalls";
+import { describeTool, GENERIC_CALL_SHAPE, type ToolSpec } from "./toolCalls";
 
 /** An instruction file, such as an `AGENTS.md`: `label` names it in the prompt, `text` goes in verbatim. */
 export type InstructionFile = { label: string; text: string };
@@ -19,9 +19,7 @@ const FORMAT = [
   "",
   "To use a tool, write a tool call in your reply: a tag named after the tool, holding one tag per argument. Write each value as raw text, with no escaping. Start the call at the beginning of a line. For example:",
   "",
-  "<tool_name>",
-  "<argument_name>value</argument_name>",
-  "</tool_name>",
+  GENERIC_CALL_SHAPE,
 ].join("\n");
 
 const RULES = [

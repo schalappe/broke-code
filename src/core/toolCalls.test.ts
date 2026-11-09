@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseToolCall, type ToolSpec } from "./toolCalls";
+import { GENERIC_CALL_SHAPE, parseToolCall, type ToolSpec } from "./toolCalls";
 
 const TOOLS: ToolSpec[] = [
   {
@@ -104,6 +104,13 @@ describe("parseToolCall", () => {
     const answer = "<p>\nReading it.\n<read_file>\n<path>a</path>\n</read_file>";
     expect(parseToolCall(answer, TOOLS)).toMatchObject({ kind: "call", start: answer.indexOf("<read_file>") });
   });
+
+  test("stays fast on many line-start unknown tags that never close, before a call", () => {
+    const answer = `${"<p>\n".repeat(262144)}<read_file>\n<path>a</path>\n</read_file>`;
+    const started = performance.now();
+    expect(parseToolCall(answer, TOOLS)).toMatchObject({ kind: "call", args: { path: "a" } });
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
 });
 
 /** The message of a malformed result, failing the test on any other kind. */
@@ -131,6 +138,7 @@ describe("parseToolCall on a malformed call", () => {
     const message = malformedMessage(answer);
     expect(message).toContain("<delete_file>");
     expect(message).toContain("read_file, write_file");
+    expect(message).toContain(GENERIC_CALL_SHAPE);
   });
 
   test("reports a closed HTML-looking block at a line start as an unknown tool", () => {
@@ -139,14 +147,13 @@ describe("parseToolCall on a malformed call", () => {
 
   test("reports a missing required argument, naming it", () => {
     const message = malformedMessage("<write_file>\n<path>a.txt</path>\n</write_file>");
-    expect(message).toContain("<content>");
-    expect(message).toContain("missing");
+    expect(message).toContain("missing the required argument <content>.");
     expect(message).toContain("<write_file>\n<path>…</path>\n<content>…</content>\n</write_file>");
   });
 
   test("names every missing required argument", () => {
     const message = malformedMessage("<write_file>\n</write_file>");
-    expect(message).toContain("<path>, <content>");
+    expect(message).toContain("missing the required arguments <path>, <content>.");
   });
 
   test("accepts a call without its optional arguments", () => {
@@ -170,14 +177,24 @@ describe("parseToolCall on a malformed call", () => {
     expect(malformedMessage("<read_file>\n<Path>a</Path>\n</read_file>")).toContain("<Path>");
   });
 
+  test("quotes at most 40 characters of the unexpected text, marking a cut with …", () => {
+    const forty = "a".repeat(40);
+    expect(malformedMessage(`<read_file>\n${forty}\n</read_file>`)).toContain(`"${forty}"`);
+    expect(malformedMessage(`<read_file>\n${forty}bcd\n</read_file>`)).toContain(`"${forty}…"`);
+  });
+
   test("reports an argument tag that never closes, naming it", () => {
     const message = malformedMessage("<read_file>\n<path>a.txt\n</read_file>");
     expect(message).toContain("<path>");
     expect(message).toContain("never closes");
   });
 
-  test("reports an argument opened again after it closed as never closing", () => {
-    expect(malformedMessage("<read_file>\n<path>a</path>\n<path>b\n</read_file>")).toContain("never closes");
+  test("reports an argument read a second time, naming it and the tool", () => {
+    const message = malformedMessage("<read_file>\n<path>a</path>\n<path>b\n</read_file>");
+    expect(message).toContain("<path> appears twice in <read_file>.");
+    expect(message).toContain(READ_FILE_SHAPE);
+    const interleaved = "<read_file>\n<path>a</path>\n<start_line>1</start_line>\n<path>b\n</read_file>";
+    expect(malformedMessage(interleaved)).toContain("<path> appears twice in <read_file>.");
   });
 
   test("reports the first problem: an unclosed outer tag before an unknown argument", () => {
@@ -251,14 +268,14 @@ describe("parseToolCall argument values", () => {
     expect(callArgs(answer).content).toBe("x</content>y");
   });
 
-  test("hold the tags of an earlier argument, ending at the latest closing tag that lets the rest parse", () => {
+  test("hold the tags of an earlier argument, ending at the latest closing tag before another argument", () => {
     const content = "<read_file>\n<path>x</path>\n</read_file>";
     const answer = `<write_file>\n<path>a.md</path>\n<content>\n${content}\n</content>\n</write_file>`;
     expect(callArgs(answer)).toEqual({ path: "a.md", content });
   });
 
   test("stay fast on a body with many repeated closing tags that never parses", () => {
-    const body = "<path>x</path>\n".repeat(2000);
+    const body = "<path>x</path>\n".repeat(32000);
     const started = performance.now();
     expect(malformedMessage(`<read_file>\n${body}stray text\n</read_file>`)).toContain("stray text");
     expect(performance.now() - started).toBeLessThan(1000);
@@ -270,8 +287,8 @@ describe("parseToolCall argument values", () => {
   });
 });
 
-test("toolCalls imports nothing from vscode or node:", async () => {
-  const source = await Bun.file(`${import.meta.dir}/toolCalls.ts`).text();
+test.each(["toolCalls.ts", "systemPrompt.ts"])("%s imports nothing from vscode or node:", async (file) => {
+  const source = await Bun.file(`${import.meta.dir}/${file}`).text();
   const specifiers = [...source.matchAll(/(?:from|import)\s+"([^"]+)"/g)].map((match) => match[1]);
   expect(specifiers.length).toBeGreaterThan(0);
   expect(specifiers.filter((specifier) => specifier === "vscode" || specifier!.startsWith("node:"))).toEqual([]);

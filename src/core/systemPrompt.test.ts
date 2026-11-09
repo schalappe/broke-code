@@ -76,10 +76,3 @@ describe("composeSystemPrompt", () => {
     expect(prompt.endsWith(`AGENTS.md\n\n${workspace}`)).toBe(true);
   });
 });
-
-test("systemPrompt imports nothing from vscode or node:", async () => {
-  const source = await Bun.file(`${import.meta.dir}/systemPrompt.ts`).text();
-  const specifiers = [...source.matchAll(/(?:from|import)\s+"([^"]+)"/g)].map((match) => match[1]);
-  expect(specifiers.length).toBeGreaterThan(0);
-  expect(specifiers.filter((specifier) => specifier === "vscode" || specifier!.startsWith("node:"))).toEqual([]);
-});

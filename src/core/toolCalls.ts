@@ -27,6 +27,9 @@ const ARG_OPENING_TAG = /<([a-z][a-z0-9_]*)>/y;
 const WHITESPACE = /\s*/y;
 const EXCERPT_LENGTH = 40;
 
+/** The shape of any call, with placeholder names: for the system prompt and when the tool is unknown. */
+export const GENERIC_CALL_SHAPE = "<tool_name>\n<argument_name>value</argument_name>\n</tool_name>";
+
 /**
  * The first call-shaped block of `answer`, read against `tools`. A block is call-shaped when its opening tag
  * `<name>` (snake_case, no attributes) starts a line, after nothing but spaces or tabs, outside Markdown code, and a
@@ -35,17 +38,24 @@ const EXCERPT_LENGTH = 40;
  */
 export function parseToolCall(answer: string, tools: readonly ToolSpec[]): ParsedReply {
   const masked = maskCode(answer);
+  // [>]: A name with no close after an earlier tag has none after a later one either, so the answer is searched once
+  // per name, not once per tag.
+  const neverClosed = new Set<string>();
   for (const match of answer.matchAll(OPENING_TAG)) {
     const start = match.index;
     if (!startsLine(answer, start)) continue;
     if (masked[start] === MASK) continue;
     const name = match[1]!;
+    if (neverClosed.has(name)) continue;
     const tool = tools.find((tool) => tool.name === name);
     const bodyStart = start + match[0].length;
     // [>]: Searched in the raw answer, not the masked one, so a value holding a code fence still closes.
     const close = answer.indexOf(`</${name}>`, bodyStart);
     if (close === -1) {
-      if (!tool) continue;
+      if (!tool) {
+        neverClosed.add(name);
+        continue;
+      }
       return malformed(`The <${name}> tag never closes: end the call with </${name}>.`, tool, start, answer.length);
     }
     const end = close + `</${name}>`.length;
@@ -53,7 +63,7 @@ export function parseToolCall(answer: string, tools: readonly ToolSpec[]): Parse
       const known = tools.map((tool) => tool.name).join(", ");
       return {
         kind: "malformed",
-        message: `<${name}> is not a known tool. The known tools are: ${known}.`,
+        message: `<${name}> is not a known tool. The known tools are: ${known}.\nA call looks like this:\n${GENERIC_CALL_SHAPE}`,
         start,
         end,
       };
@@ -82,71 +92,58 @@ export function describeTool(tool: ToolSpec): string {
   return [...shape, ...args].join("\n");
 }
 
-/** Argument values by name, or the problem to report. */
-type ReadArgs = Record<string, string> | string;
-
-/** One body being read: the reads memoized by body position, and each argument's closing tag positions. */
-type ArgsReader = { body: string; tool: ToolSpec; reads: Map<number, ReadArgs>; closes: Map<string, number[]> };
+/**
+ * The argument values in `body`, the text between the outer tags, or the first problem found. A value ends at the
+ * latest closing tag of its argument followed only by whitespace, then the end of the body or the opening tag of
+ * another argument of the tool, so it may hold angle brackets, code fences, other tools' tags, and the tags of an
+ * earlier argument. When no closing tag qualifies, the value ends at the last one, and the text after it is reported.
+ */
+function readArgs(body: string, tool: ToolSpec): Record<string, string> | string {
+  const args: Record<string, string> = {};
+  let index = skipWhitespace(body, 0);
+  while (index < body.length) {
+    const name = argOpeningAt(body, index);
+    if (name === undefined) {
+      const quoted = excerpt(body.slice(index, index + EXCERPT_LENGTH + 1));
+      return `Unexpected text inside <${tool.name}>: "${quoted}". Put only argument tags in it.`;
+    }
+    if (!tool.args.some((arg) => arg.name === name)) return `<${tool.name}> has no argument <${name}>.`;
+    if (Object.hasOwn(args, name)) return `<${name}> appears twice in <${tool.name}>.`;
+    const valueStart = index + `<${name}>`.length;
+    const valueEnd = valueEndOf(body, tool, name, valueStart);
+    if (valueEnd === -1) return `The <${name}> argument tag never closes: end its value with </${name}>.`;
+    args[name] = trimLineBreaks(body.slice(valueStart, valueEnd));
+    index = skipWhitespace(body, valueEnd + `</${name}>`.length);
+  }
+  return args;
+}
 
 /**
- * The argument values in `body`, the text between the outer tags, or the problem to report. A value ends at the
- * latest closing tag of its argument that still lets the rest of the body parse, tried from last to first, so it may
- * hold angle brackets, code fences, other tools' tags, and the tags of an earlier argument. When no closing tag
- * works, the problem reported is the one found after the last.
+ * Where the value of argument `name` opened at `valueStart` ends, by the rule of `readArgs`, or -1 when no
+ * `</name>` follows. Each argument is read once, so the backward scan keeps the body's reading about linear.
  */
-function readArgs(body: string, tool: ToolSpec): ReadArgs {
-  return readArgsFrom({ body, tool, reads: new Map(), closes: new Map() }, 0);
-}
-
-/** `readArgs` from `from` on. [>]: Memoized on the position, so repeated closing tags stay polynomial. */
-function readArgsFrom(reader: ArgsReader, from: number): ReadArgs {
-  let read = reader.reads.get(from);
-  if (read === undefined) {
-    read = readArgsAt(reader, from);
-    reader.reads.set(from, read);
+function valueEndOf(body: string, tool: ToolSpec, name: string, valueStart: number): number {
+  const tag = `</${name}>`;
+  const last = body.lastIndexOf(tag);
+  for (let close = last; close >= valueStart; close = body.lastIndexOf(tag, close - 1)) {
+    const next = skipWhitespace(body, close + tag.length);
+    if (next === body.length) return close;
+    const following = argOpeningAt(body, next);
+    if (following !== name && tool.args.some((arg) => arg.name === following)) return close;
   }
-  return read;
+  return last < valueStart ? -1 : last;
 }
 
-function readArgsAt(reader: ArgsReader, from: number): ReadArgs {
-  const { body, tool } = reader;
-  WHITESPACE.lastIndex = from;
-  const index = from + WHITESPACE.exec(body)![0].length;
-  if (index === body.length) return {};
+/** The first index at or after `index` that is not whitespace. */
+function skipWhitespace(text: string, index: number): number {
+  WHITESPACE.lastIndex = index;
+  return index + WHITESPACE.exec(text)![0].length;
+}
+
+/** The name of the argument opening tag at `index`, if one stands there. */
+function argOpeningAt(text: string, index: number): string | undefined {
   ARG_OPENING_TAG.lastIndex = index;
-  const opening = ARG_OPENING_TAG.exec(body);
-  if (!opening) {
-    const quoted = excerpt(body.slice(index, index + EXCERPT_LENGTH + 1));
-    return `Unexpected text inside <${tool.name}>: "${quoted}". Put only argument tags in it.`;
-  }
-  const name = opening[1]!;
-  if (!tool.args.some((arg) => arg.name === name)) return `<${tool.name}> has no argument <${name}>.`;
-  const valueStart = index + opening[0].length;
-  const candidates = closesOf(reader, name).filter((close) => close >= valueStart);
-  if (candidates.length === 0) return `The <${name}> argument tag never closes: end its value with </${name}>.`;
-  let problem: string | undefined;
-  for (const valueEnd of candidates.reverse()) {
-    const rest = readArgsFrom(reader, valueEnd + `</${name}>`.length);
-    if (typeof rest === "string") problem ??= rest;
-    // [>]: A rest holding the same argument fails this close: an earlier one may still read it once.
-    else if (!Object.hasOwn(rest, name)) return { [name]: trimLineBreaks(body.slice(valueStart, valueEnd)), ...rest };
-  }
-  // [>]: Reached only when the last close failed, which set it: after that close, `<name>` cannot close again.
-  return problem!;
-}
-
-/** Where each `</name>` stands in the body, in order, found once per argument name. */
-function closesOf(reader: ArgsReader, name: string): number[] {
-  let closes = reader.closes.get(name);
-  if (closes === undefined) {
-    closes = [];
-    const tag = `</${name}>`;
-    for (let close = reader.body.indexOf(tag); close !== -1; close = reader.body.indexOf(tag, close + tag.length)) {
-      closes.push(close);
-    }
-    reader.closes.set(name, closes);
-  }
-  return closes;
+  return ARG_OPENING_TAG.exec(text)?.[1];
 }
 
 /** True when only spaces or tabs stand between the start of its line and `index`. */
