@@ -350,6 +350,23 @@ describe("readSkills", () => {
     ]);
   });
 
+  test("a SKILL.md gone after its read is no skill; one whose path fails otherwise warns with the cause", async () => {
+    const gone = await writeSkill(personal, "gone", skillText("gone", "Gone."));
+    const looped = await writeSkill(personal, "looped", skillText("looped", "Looped."));
+    const aroundRead = async (read: () => Promise<WorkspaceEntry>) => {
+      const entry = await read();
+      // [>]: After the read, before the real path check: one file deleted, the other swapped for a link to itself.
+      await unlink(join(gone, "SKILL.md")).catch(() => {});
+      await unlink(join(looped, "SKILL.md")).catch(() => {});
+      await symlink(join(looped, "SKILL.md"), join(looped, "SKILL.md")).catch(() => {});
+      return entry;
+    };
+    expect(await readSkills(home, [], { aroundRead })).toEqual({
+      skills: [],
+      warnings: [{ path: "~/.agents/skills/looped/SKILL.md", problem: { kind: "unreadable", cause: "ELOOP" } }],
+    });
+  });
+
   test("reads a block scalar of 200,000 lines under 1 MiB, in an unknown field or the description", async () => {
     const block = `|\n${"  x\n".repeat(200_000)}`;
     await writeSkill(personal, "notes", skillText("notes", "Has notes.", `notes: ${block}`));
@@ -511,6 +528,16 @@ describe("loadSkill", () => {
     const result = await loadSkill("classic", skills, []);
     expect(result.status).toBe("ok");
     expect(result.text).toEndWith("\rstep 2000\n[truncated: 500 more lines not shown]");
+  });
+
+  test("an unreadable SKILL.md at load gives an error with its cause", async () => {
+    const root = await writeSkill(personal, "review", skillText("review", "Review."));
+    const { skills } = await readSkills(home, []);
+    await chmod(join(root, "SKILL.md"), 0o000);
+    expect(await loadSkill("review", skills, [])).toEqual({
+      status: "error",
+      text: "load_skill: review: its SKILL.md could not be read (the path could not be read (EACCES)).",
+    });
   });
 
   test("refuses a SKILL.md gone since discovery, or swapped for a link out of its folder", async () => {
