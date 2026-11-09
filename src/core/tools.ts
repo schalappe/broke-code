@@ -84,23 +84,33 @@ export const READ_TOOLS: ToolSpec[] = [
 ];
 
 /**
- * Run read tool `call` inside `roots`. Never rejects: an unknown tool, a refused path, and a failed or stopped run
- * all come back as an `error` result for the model. `signal` (Stop) gives the stopped error at once, even while a
- * disk step that cannot be aborted still runs, and its late outcome is dropped; a running ripgrep is killed first,
- * and the result waits for its exit, which SIGKILL bounds. `seam`: for tests, see `readWorkspaceEntry`.
+ * What a read tool may reach besides the workspace. `skillRoots`: the real paths of the folders of the skills loaded in
+ * the conversation, read by absolute path, read-only (see `readWorkspaceEntry`). `seam`: for tests, see
+ * `readWorkspaceEntry`.
+ */
+export type ReadToolOptions = { skillRoots?: readonly string[]; seam?: RaceSeam };
+
+/**
+ * Run read tool `call` inside `roots` and the loaded skills' folders. Never rejects: an unknown tool, a refused path,
+ * and a failed or stopped run all come back as an `error` result for the model. `signal` (Stop) gives the stopped
+ * error at once, even while a disk step that cannot be aborted still runs, and its late outcome is dropped; a running
+ * ripgrep is killed first, and the result waits for its exit, which SIGKILL bounds.
  */
 export async function runReadTool(
   call: ToolCall,
   roots: WorkspaceRoot[],
   env: ReadToolEnv,
   signal: AbortSignal,
-  seam: RaceSeam = {},
+  options: ReadToolOptions = {},
 ): Promise<ToolResult> {
   if (!READ_TOOLS.some((tool) => tool.name === call.name)) {
     return { status: "error", text: `${excerpt(call.name)} is not a read tool.` };
   }
   if (signal.aborted) return stopped(call.name);
-  if (roots.length === 0) return { status: "error", text: `${call.name}: no workspace folder is open.` };
+  const access: ReadAccess = { roots, skillRoots: options.skillRoots ?? [], seam: options.seam ?? {} };
+  if (roots.length === 0 && access.skillRoots.length === 0) {
+    return { status: "error", text: `${call.name}: no workspace folder is open.` };
+  }
 
   const ripgrepRuns: Promise<unknown>[] = [];
   let onAbort = () => {};
@@ -110,7 +120,7 @@ export async function runReadTool(
   signal.addEventListener("abort", onAbort, { once: true });
   try {
     // [>]: The race subscribes to the tool's promise, so an outcome dropped after Stop never rejects unhandled.
-    const result = await Promise.race([runTool(call, roots, env, signal, seam, ripgrepRuns), aborted]);
+    const result = await Promise.race([runTool(call, access, env, signal, ripgrepRuns), aborted]);
     if (result !== "aborted" && !signal.aborted) return result;
     await Promise.all(ripgrepRuns);
     return stopped(call.name);
@@ -119,19 +129,21 @@ export async function runReadTool(
   }
 }
 
+/** What one read tool run may read: the workspace folders and the loaded skills' folders. */
+type ReadAccess = { roots: WorkspaceRoot[]; skillRoots: readonly string[]; seam: RaceSeam };
+
 /** Never rejects. `ripgrepRuns`: gets each ripgrep run `search` starts, settled once its process has exited. */
 async function runTool(
   call: ToolCall,
-  roots: WorkspaceRoot[],
+  access: ReadAccess,
   env: ReadToolEnv,
   signal: AbortSignal,
-  seam: RaceSeam,
   ripgrepRuns: Promise<unknown>[],
 ): Promise<ToolResult> {
   try {
-    if (call.name === "read_file") return await readFileTool(roots, call.args.path ?? "", seam);
-    if (call.name === "list_files") return await listFilesTool(roots, call.args.path, seam);
-    return await searchTool(roots, call.args.pattern ?? "", call.args.path, env, signal, ripgrepRuns);
+    if (call.name === "read_file") return await readFileTool(access, call.args.path ?? "");
+    if (call.name === "list_files") return await listFilesTool(access, call.args.path);
+    return await searchTool(access, call.args.pattern ?? "", call.args.path, env, signal, ripgrepRuns);
   } catch (error) {
     // [!]: The tools catch what they expect; this keeps a bug from rejecting into the agent loop.
     const message = error instanceof Error ? error.message : String(error);
@@ -139,8 +151,8 @@ async function runTool(
   }
 }
 
-async function readFileTool(roots: WorkspaceRoot[], path: string, seam: RaceSeam): Promise<ToolResult> {
-  const mention = await readMention(roots, path, seam);
+async function readFileTool({ roots, skillRoots, seam }: ReadAccess, path: string): Promise<ToolResult> {
+  const mention = await readMention(roots, path, seam, skillRoots);
   const failure = failureOf(mention);
   if (failure) return refused("read_file", path, failure, mention.cause);
   if (mention.kind === "folder") {
@@ -150,11 +162,11 @@ async function readFileTool(roots: WorkspaceRoot[], path: string, seam: RaceSeam
   return { status: "ok", text: formatMention({ ...mention, path: displayPath(path) }) };
 }
 
-async function listFilesTool(roots: WorkspaceRoot[], path: string | undefined, seam: RaceSeam): Promise<ToolResult> {
+async function listFilesTool({ roots, skillRoots, seam }: ReadAccess, path: string | undefined): Promise<ToolResult> {
   const wholeWorkspace = path === undefined || path === "" || path === ".";
   if (wholeWorkspace && roots.length > 1) return { status: "ok", text: formatMention(rootListing(roots)) };
   const shown = wholeWorkspace ? "." : path;
-  const mention = await readMention(roots, shown, seam);
+  const mention = await readMention(roots, shown, seam, skillRoots);
   const failure = failureOf(mention);
   // [>]: A binary or oversized file is still known to be a file: the reason to give is the tool to use.
   if (mention.kind === "file" && (!failure || failure === "binary" || failure === "tooLarge")) {
@@ -282,7 +294,7 @@ type SearchScope = {
 };
 
 async function searchTool(
-  roots: WorkspaceRoot[],
+  access: ReadAccess,
   pattern: string,
   path: string | undefined,
   env: ReadToolEnv,
@@ -290,7 +302,7 @@ async function searchTool(
   ripgrepRuns: Promise<unknown>[],
 ): Promise<ToolResult> {
   if (pattern === "") return { status: "error", text: "search: the pattern is empty." };
-  const scope = await searchScope(roots, path);
+  const scope = await searchScope(access, path);
   if ("status" in scope) return scope;
   const ripgrep = await findRipgrep(env.ripgrepCandidates);
   if (ripgrep === undefined) {
@@ -304,13 +316,17 @@ async function searchTool(
 
 /**
  * The real paths `search` may give ripgrep: every workspace folder when `path` is left out, empty, or `.`, otherwise
- * `path` once it passed the check `read_file` makes. Never a path that did not pass.
+ * `path` once it passed the check `read_file` makes. Never a path that did not pass. Output under a workspace folder
+ * shows as a mention resolves it; output under a loaded skill's folder keeps its absolute path, the one to read it by.
  *
  * [!]: ripgrep opens the path by name after the check, so a folder swapped for a symlink out between the two, or a
  * subfolder swapped during the walk, is searched. Accepted, as for mentions: a process that can swap workspace files
  * already runs with the user's rights and can read the outside files itself.
  */
-async function searchScope(roots: WorkspaceRoot[], path: string | undefined): Promise<SearchScope | ToolResult> {
+async function searchScope(
+  { roots, skillRoots }: ReadAccess,
+  path: string | undefined,
+): Promise<SearchScope | ToolResult> {
   const { resolved: usable, unresolved } = await resolveWorkspaceRoots(roots);
   const prefixes = usable
     .map(({ root, realRoot }) => ({ realRoot, shown: roots.length > 1 ? `${root.name}/` : "" }))
@@ -332,7 +348,7 @@ async function searchScope(roots: WorkspaceRoot[], path: string | undefined): Pr
   }
 
   try {
-    const located = await locateWorkspacePath(roots, path);
+    const located = await locateWorkspacePath(roots, path, skillRoots);
     if (located.status !== "ok") return refused("search", path, located.status);
     // [!]: A FIFO or device given to ripgrep could block until the timeout or read without end.
     const info = await stat(located.realPath);

@@ -6,6 +6,7 @@ import {
   mkdtemp,
   readdir,
   readFile,
+  realpath,
   rename,
   rm,
   stat,
@@ -167,6 +168,60 @@ describe("readWorkspaceEntry in one folder", () => {
 
   test("refuses everything when no folder is open", async () => {
     expect(await readWorkspaceEntry([], "src/main.ts")).toEqual({ status: "outsideWorkspace", kind: "file" });
+  });
+});
+
+describe("readWorkspaceEntry with read-only roots", () => {
+  // [>]: Two loaded skills' folders outside the workspace, given by their real paths as discovery gives them.
+  let one: string;
+  let two: string;
+  beforeAll(async () => {
+    await mkdir(join(base, "skills", "one"), { recursive: true });
+    await mkdir(join(base, "skills", "two"));
+    await writeFile(join(base, "skills", "one", "a.md"), "one\n");
+    await writeFile(join(base, "skills", "two", "b.md"), "two\n");
+    await symlink(join(base, "skills", "two", "b.md"), join(base, "skills", "one", "to-two.md"));
+    await symlink(join(app.path, "src", "main.ts"), join(base, "skills", "one", "to-workspace.ts"));
+    one = await realpath(join(base, "skills", "one"));
+    two = await realpath(join(base, "skills", "two"));
+  });
+
+  test("reads a file of a read-only root by its absolute path, never by a relative one", async () => {
+    expect(await readWorkspaceEntry([app], join(one, "a.md"), {}, [one, two])).toEqual({
+      status: "ok",
+      kind: "file",
+      text: "one\n",
+    });
+    expect(await readWorkspaceEntry([], "a.md", {}, [one])).toEqual({ status: "outsideWorkspace", kind: "file" });
+  });
+
+  test("refuses a symlink out of its own root, into another read-only root or into the workspace", async () => {
+    for (const name of ["to-two.md", "to-workspace.ts"]) {
+      expect(await readWorkspaceEntry([app], join(one, name), {}, [one, two])).toEqual({
+        status: "outsideWorkspace",
+        kind: "file",
+      });
+    }
+  });
+
+  test("a written path under the root's unresolved path is outside: the root is matched as given", async () => {
+    // [>]: `base` sits under /var, the real path under /private/var: only the real path reaches the root.
+    expect(await readWorkspaceEntry([], join(base, "skills", "one", "a.md"), {}, [one])).toEqual({
+      status: "outsideWorkspace",
+      kind: "file",
+    });
+  });
+
+  test("refuses a file swapped for a symlink out after the check", async () => {
+    await writeFile(join(one, "swapped.md"), "inside\n");
+    const swap = async () => {
+      await unlink(join(one, "swapped.md"));
+      await symlink(join(base, "outside.txt"), join(one, "swapped.md"));
+    };
+    expect(await readWorkspaceEntry([], join(one, "swapped.md"), { beforeOpen: swap }, [one])).toEqual({
+      status: "outsideWorkspace",
+      kind: "file",
+    });
   });
 });
 

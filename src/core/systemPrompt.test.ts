@@ -71,6 +71,14 @@ describe("composeSystemPrompt", () => {
     expect(readOnly).not.toContain(write);
   });
 
+  test("states how to read a loaded skill's files only when load_skill is listed", () => {
+    const rule =
+      "- A loaded skill's files live outside the workspace: read them with read_file, list_files, or search by the absolute path the load_skill result gives. They cannot be changed.";
+    const rules = composeSystemPrompt([...TOOLS, toolNamed("load_skill")], [], []).split("# Tools")[0]!;
+    expect(rules).toContain(rule);
+    expect(composeSystemPrompt(TOOLS, [], [])).not.toContain(rule);
+  });
+
   test("never shows the format inside a code fence", () => {
     expect(composeSystemPrompt(TOOLS, [], [])).not.toContain("```");
   });

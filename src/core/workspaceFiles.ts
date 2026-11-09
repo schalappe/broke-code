@@ -41,9 +41,20 @@ const UNRESOLVED_LINK_CODES = new Set(["ENOENT", "ENOTDIR", "ELOOP", "EACCES", "
  * Read `path` inside `roots`. With several roots, a path starting with a root's name and `/` resolves against that
  * root only; any other relative path resolves against each root in turn, the first that holds it winning. Never
  * rejects. The kind of a path that could not be inspected is a guess: `folder` when it ends with `/`.
+ *
+ * `readOnlyRoots`: real paths of folders outside the workspace that reads may also enter, such as the folders of the
+ * skills loaded in a conversation. Only an absolute path reaches them, and the path, symlinks resolved, must stay in
+ * the folder it is written in: a symlink to another of them, or to the workspace, is outside. The write boundary
+ * (`locateWriteTarget`) never takes them.
  */
-export function readWorkspaceEntry(roots: WorkspaceRoot[], path: string, seam: RaceSeam = {}): Promise<WorkspaceEntry> {
-  return readEntryAmong(roots, candidatePaths(roots, path), path.endsWith("/") ? "folder" : "file", seam);
+export function readWorkspaceEntry(
+  roots: WorkspaceRoot[],
+  path: string,
+  seam: RaceSeam = {},
+  readOnlyRoots: readonly string[] = [],
+): Promise<WorkspaceEntry> {
+  const guessed = path.endsWith("/") ? "folder" : "file";
+  return readEntryAmong(roots, candidatePaths(roots, path, readOnlyRoots), guessed, seam, readOnlyRoots);
 }
 
 /**
@@ -53,7 +64,7 @@ export function readWorkspaceEntry(roots: WorkspaceRoot[], path: string, seam: R
  * could not be inspected is `file`. Never rejects.
  */
 export function readWorkspaceEntryAt(roots: WorkspaceRoot[], absolutePath: string): Promise<WorkspaceEntry> {
-  return readEntryAmong(roots, [resolve(absolutePath)], "file", {});
+  return readEntryAmong(roots, [resolve(absolutePath)], "file", {}, []);
 }
 
 /** `readWorkspaceEntry` over absolute `candidates`, the first that exists winning. */
@@ -62,9 +73,10 @@ async function readEntryAmong(
   candidates: string[],
   guessedKind: EntryKind,
   seam: RaceSeam,
+  readOnlyRoots: readonly string[],
 ): Promise<WorkspaceEntry> {
   try {
-    const located = await locateCandidates(roots, candidates);
+    const located = await locateCandidates(roots, candidates, readOnlyRoots);
     if (located.status !== "ok") return { status: located.status, kind: guessedKind };
     // [!]: Opening a FIFO or device could block forever or read without end.
     if (!isFileOrFolder(await stat(located.realPath))) return notFileOrFolder;
@@ -143,39 +155,57 @@ export function truncateLines(text: string, max: number): { text: string; lines:
   return { text: lines.slice(0, max).join("\n"), lines: max, omitted: lines.length - max };
 }
 
-/** A path that passed the boundary check: its real path, the real paths of all roots, and the first that holds it. */
+/**
+ * A path that passed the boundary check: its real path, the real roots it must stay in (every workspace folder's, or
+ * the one read-only root it is written in), and the first of them that holds it.
+ */
 export type LocatedPath = { status: "ok"; realPath: string; realRoots: string[]; realRoot: string };
 
 /**
- * Real path of `path`, resolved as `readWorkspaceEntry` resolves it and checked twice: lexically first, so a path
- * outside is refused without touching the disk (and without telling whether it exists), then after resolving
- * symlinks. Rejects on a disk error other than a missing path, such as `EACCES`.
+ * Real path of `path`, resolved as `readWorkspaceEntry` resolves it, `readOnlyRoots` included, and checked twice:
+ * lexically first, so a path outside is refused without touching the disk (and without telling whether it exists),
+ * then after resolving symlinks. Rejects on a disk error other than a missing path, such as `EACCES`.
  */
 export function locateWorkspacePath(
   roots: WorkspaceRoot[],
   path: string,
+  readOnlyRoots: readonly string[] = [],
 ): Promise<LocatedPath | { status: "missing" | "outsideWorkspace" }> {
-  return locateCandidates(roots, candidatePaths(roots, path));
+  return locateCandidates(roots, candidatePaths(roots, path, readOnlyRoots), readOnlyRoots);
 }
 
-/** `locateWorkspacePath` over absolute `candidates`, the first that exists winning. */
+/**
+ * `locateWorkspacePath` over absolute `candidates`, the first that exists winning. A candidate written inside a
+ * workspace folder must resolve inside one; a candidate written inside a read-only root, inside that same root.
+ */
 async function locateCandidates(
   roots: WorkspaceRoot[],
   candidates: string[],
+  readOnlyRoots: readonly string[],
 ): Promise<LocatedPath | { status: "missing" | "outsideWorkspace" }> {
-  const inside = lexicallyInside(roots, candidates);
+  const inside = candidates.flatMap((candidate) => {
+    const workspace = roots.some((root) => isInside(resolve(root.path), candidate));
+    const readOnlyRoot = readOnlyRoots.find((root) => isInside(root, candidate));
+    return workspace || readOnlyRoot !== undefined ? [{ candidate, workspace, readOnlyRoot }] : [];
+  });
   if (inside.length === 0) return { status: "outsideWorkspace" };
 
   // [>]: A path under a root that cannot be resolved fails its own `realpath`, so it reads as missing or unreadable.
   const realRoots = await realRootPaths(roots);
-  for (const candidate of inside) {
+  for (const { candidate, workspace, readOnlyRoot } of inside) {
     const realPath = await realpath(candidate).catch((error: unknown) => {
       if (MISSING_CODES.has(errorCode(error) ?? "")) return undefined;
       throw error;
     });
     if (realPath === undefined) continue;
-    const realRoot = realRoots.find((root) => isInside(root, realPath));
-    return realRoot === undefined ? { status: "outsideWorkspace" } : { status: "ok", realPath, realRoots, realRoot };
+    const realRoot = workspace ? realRoots.find((root) => isInside(root, realPath)) : undefined;
+    if (realRoot !== undefined) return { status: "ok", realPath, realRoots, realRoot };
+    // [!]: The read-only root as given, never resolved again: a loaded skill's folder swapped for a symlink since its
+    // discovery leads elsewhere, and what lies there stays outside.
+    if (readOnlyRoot !== undefined && isInside(readOnlyRoot, realPath)) {
+      return { status: "ok", realPath, realRoots: [readOnlyRoot], realRoot: readOnlyRoot };
+    }
+    return { status: "outsideWorkspace" };
   }
   return { status: "missing" };
 }
@@ -215,8 +245,18 @@ export async function resolveWorkspaceRoots(roots: WorkspaceRoot[]): Promise<{
   return { resolved, unresolved };
 }
 
-/** A custom folder name may hold `/` (`libs/core`): the longest name that prefixes the path wins. */
-function candidatePaths(roots: WorkspaceRoot[], path: string): string[] {
+/**
+ * The absolute paths `path` may stand for, in order. A custom folder name may hold `/` (`libs/core`): the longest
+ * name that prefixes the path wins. With `readOnlyRoots`, an absolute path also stands for itself, so a folder name
+ * that prefixes it (`/var`) never hides a read-only root.
+ */
+function candidatePaths(roots: WorkspaceRoot[], path: string, readOnlyRoots: readonly string[] = []): string[] {
+  const workspace = workspaceCandidates(roots, path);
+  if (readOnlyRoots.length === 0 || !isAbsolute(path)) return workspace;
+  return [...new Set([...workspace, resolve(path)])];
+}
+
+function workspaceCandidates(roots: WorkspaceRoot[], path: string): string[] {
   const named =
     roots.length > 1
       ? roots

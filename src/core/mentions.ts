@@ -120,10 +120,16 @@ function plural(count: number, one: string, many: string): string {
 
 /**
  * Read mentioned `path` inside `roots`: whole or truncated content, or the reason nothing is attached. `seam`: for
- * tests, see `readWorkspaceEntry`.
+ * tests, see `readWorkspaceEntry`. `readOnlyRoots`: for the read tools only, see `readWorkspaceEntry`; a mention never
+ * gets them.
  */
-export async function readMention(roots: WorkspaceRoot[], path: string, seam: RaceSeam = {}): Promise<ReadMention> {
-  const entry = await readWorkspaceEntry(roots, path, seam);
+export async function readMention(
+  roots: WorkspaceRoot[],
+  path: string,
+  seam: RaceSeam = {},
+  readOnlyRoots: readonly string[] = [],
+): Promise<ReadMention> {
+  const entry = await readWorkspaceEntry(roots, path, seam, readOnlyRoots);
   if (entry.status !== "ok") {
     const cause = entry.status === "unreadable" ? { cause: entry.cause } : {};
     return { path, kind: entry.kind, status: entry.status, content: "", omitted: 0, ...cause };
