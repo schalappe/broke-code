@@ -47,7 +47,7 @@ yet. Read
   it, `fileApplier` straight to disk for the tests and the eval), the instruction files
   (`instructions.ts`: `~/.agents/AGENTS.md`, then each workspace folder's `AGENTS.md`, under the mention caps), and the
   skills (`skills.ts`: discovery in `~/.agents/skills/` and each workspace folder's `.agents/skills/`, the frontmatter
-  subset, validation, precedence, warnings). `markdownCode.ts`, `suggestions.ts`, and `conversation.ts` import nothing from
+  subset, validation, precedence, warnings, the line the extension logs at each send). `markdownCode.ts`, `suggestions.ts`, and `conversation.ts` import nothing from
   `node:`, since the webview loads them. Unit tests sit next to them as `*.test.ts`, because `bun test` cannot load `vscode`. `tlsFixture.ts`
   generates test certificates with `/usr/bin/openssl` at test time; no private key is committed.
   `conversationFixture.ts` is the in-memory conversation file port for tests.
