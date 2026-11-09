@@ -235,6 +235,34 @@ describe("readSkills", () => {
     ]);
   });
 
+  test("reads a key whose head or first line is only a comment, then a nested map, as no string", async () => {
+    await writeSkill(personal, "head", "---\nname: head\ndescription: # comment\n  summary: Nested.\n---\n");
+    await writeSkill(personal, "line", "---\nname: line\ndescription:\n  # comment\n  summary: Nested.\n---\n");
+    await writeSkill(personal, "text", "---\nname: text\ndescription: # comment\n  Plain text.\n---\n");
+
+    const { skills, warnings } = await readSkills(home, []);
+    expect(skills.map(({ name, description }) => ({ name, description }))).toEqual([
+      { name: "text", description: "Plain text." },
+    ]);
+    expect(warnings).toEqual([
+      { path: "~/.agents/skills/head/SKILL.md", problem: { kind: "missingDescription" } },
+      { path: "~/.agents/skills/line/SKILL.md", problem: { kind: "missingDescription" } },
+    ]);
+  });
+
+  test("parses long whitespace runs without a comment in linear time", async () => {
+    // [>]: 200,000 characters: the backtracking regexes took tens of seconds here, and a 1 MiB file, minutes.
+    const spaces = " ".repeat(200_000);
+    await writeSkill(personal, "stall", skillText("stall", `a${spaces}b`));
+    await writeSkill(personal, "separator", skillText("separator", "Kept.", `notes:${spaces} \n`));
+
+    const started = performance.now();
+    const { skills, warnings } = await readSkills(home, []);
+    expect(performance.now() - started).toBeLessThan(1000);
+    expect(skills.map((skill) => skill.name)).toEqual(["separator"]);
+    expect(warnings).toEqual([{ path: "~/.agents/skills/stall/SKILL.md", problem: { kind: "descriptionTooLong" } }]);
+  });
+
   test("skips a workspace skill folder linked out of the workspace, and follows a linked personal one", async () => {
     const outside = join(base, "outside");
     await writeSkill(outside, "escape", skillText("escape", "Outside."));

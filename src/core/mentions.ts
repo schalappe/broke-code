@@ -33,7 +33,19 @@ export type ReadMention = MentionResult & { content: string; omitted: number; ca
 /** Reads a mentioned path at send time. Must not reject. */
 export type MentionReader = { read(path: string): Promise<ReadMention> };
 
-const TRAILING_PUNCTUATION = /[.,;:!?)]+$/;
+const TRAILING_PUNCTUATION = ".,;:!?)";
+
+/**
+ * `token` less its trailing `.,;:!?)`.
+ *
+ * [!]: A loop, not `/[.,;:!?)]+$/`: that regex backtracks quadratically over a long punctuation run that does not end
+ * the token, such as one in pasted text.
+ */
+function withoutTrailingPunctuation(token: string): string {
+  let end = token.length;
+  while (end > 0 && TRAILING_PUNCTUATION.includes(token[end - 1]!)) end -= 1;
+  return token.slice(0, end);
+}
 
 /**
  * Paths mentioned in `text`, in order of first appearance, each once. A mention is `@` at the start of the text
@@ -45,7 +57,7 @@ const TRAILING_PUNCTUATION = /[.,;:!?)]+$/;
 export function findMentions(text: string, picked: readonly string[] = []): string[] {
   const { masked, picked: found } = maskMessage(text, picked);
   const typed = [...masked.matchAll(/(?<=^|\s)@(\S+)/g)].map((match) => ({
-    path: match[1]!.split(MASK)[0]!.replace(TRAILING_PUNCTUATION, ""),
+    path: withoutTrailingPunctuation(match[1]!.split(MASK)[0]!),
     index: match.index,
   }));
   const mentions = [...found, ...typed.filter((mention) => mention.path !== "")];

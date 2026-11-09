@@ -204,7 +204,8 @@ function parseFrontmatter(text: string): Map<string, string | null> | undefined 
   const body = lines.slice(1, end);
   let index = 0;
   while (index < body.length) {
-    const match = /^([A-Za-z0-9_.-]+)[ \t]*:(?:[ \t]+(.*))?$/.exec(body[index]!);
+    // [!]: `s`, so `.` takes U+2028 and U+2029 too: without it, a whitespace run before one backtracks quadratically.
+    const match = /^([A-Za-z0-9_.-]+)[ \t]*:(?:[ \t]+(.*))?$/s.exec(body[index]!);
     index += 1;
     if (!match) continue;
     // [>]: The indented lines that follow belong to this key: a block scalar, a continuation, or a nested map.
@@ -236,13 +237,13 @@ function scalarValue(head: string, rest: string[]): string | null | undefined {
     const match = /^'((?:[^']|'')*)'[ \t]*(?:#.*)?$/.exec(head);
     return match ? match[1]!.replaceAll("''", "'") : null;
   }
-  // [>]: An empty head followed by `key:` or `- item` lines opens a nested map or list: not a string.
-  const continuation = rest.map((line) => line.trim());
-  if (head === "" && /^(?:[^\s:#][^:]*:(?:\s|$)|-(?:\s|$))/.test(continuation.find((line) => line !== "") ?? "")) {
+  const [first = "", ...continuation] = [head, ...rest].map((line) => withoutComment(line.trim()));
+  // [>]: A head empty but for a comment, followed by `key:` or `- item` lines, opens a nested map or list: not a string.
+  if (first === "" && /^(?:[^\s:#][^:]*:(?:\s|$)|-(?:\s|$))/.test(continuation.find((line) => line !== "") ?? "")) {
     return undefined;
   }
   while (continuation.at(-1) === "") continuation.pop();
-  return fold([head, ...continuation].map(withoutComment)).trim();
+  return fold([first, ...continuation]).trim();
 }
 
 /** Folded lines: a line break between two lines becomes a space; each blank line, a line break. */
@@ -261,8 +262,19 @@ function fold(lines: string[]): string {
   return text;
 }
 
+/**
+ * `line` cut at its comment: a `#` that starts the line or follows a space or tab, through the end of the line.
+ *
+ * [!]: A loop, not `/[ \t]+#.*$/`: that regex backtracks quadratically over a long whitespace run without `#`, and a
+ * repository's `SKILL.md` would freeze the extension host at each send.
+ */
 function withoutComment(line: string): string {
-  return line.startsWith("#") ? "" : line.replace(/[ \t]+#.*$/, "");
+  for (let index = 0; index < line.length; index += 1) {
+    if (line[index] === "#" && (index === 0 || line[index - 1] === " " || line[index - 1] === "\t")) {
+      return line.slice(0, index).trimEnd();
+    }
+  }
+  return line;
 }
 
 const ESCAPES: Record<string, string> = {
