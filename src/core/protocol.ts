@@ -18,12 +18,16 @@ export type ModelsState =
 /**
  * `waiting`: request sent, no reasoning or answer yet (model may still be loading). `streaming`: either has started,
  * and a reply whose call is running stays `streaming` until its tool step is recorded. `halted`: the agent turn ended
- * on a limit after this reply's tool step (see `HaltReason`).
+ * on a limit (see `HaltReason`): after this reply's tool step, or, when the context is full, before this reply's
+ * request was sent.
  */
 export type ReplyStatus = "waiting" | "streaming" | "done" | "stopped" | "failed" | "halted";
 
-/** `malformedCalls`: three malformed calls in a row. `stepLimit`: the turn reached its tool step limit. */
-export type HaltReason = "malformedCalls" | "stepLimit";
+/**
+ * `malformedCalls`: three malformed calls in a row. `stepLimit`: the turn reached its tool step limit. `contextFull`:
+ * the next request's estimate left less than one eighth of the model's context for the reply, so it was not sent.
+ */
+export type HaltReason = "malformedCalls" | "stepLimit" | "contextFull";
 
 /** The body tool call a reply's answer holds: tool name, raw argument values, and where its block sits in `content`. */
 export type ReplyCall = { name: string; args: Record<string, string>; start: number; end: number };
@@ -64,6 +68,12 @@ export type StorageProblem =
   | { kind: "saveFailed" | "deleteFailed" | "openFailed"; cause: string }
   | { kind: "notFound" };
 
+/**
+ * The next request's estimated size against the selected model's context size, both in tokens. `known`: the model is
+ * in `brokeCode.contextSizes`; else `size` is 32,768.
+ */
+export type ContextUsage = { used: number; size: number; known: boolean };
+
 export type ChatState = {
   providers: string[];
   skipped: SkippedProvider[];
@@ -81,6 +91,8 @@ export type ChatState = {
    */
   listFailed: { cause: string } | undefined;
   storageProblem: StorageProblem | undefined;
+  /** Usage of the conversation shown under the current settings; recomputed at each update. */
+  context: ContextUsage;
 };
 
 /** L10n bundle as `vscode.l10n.bundle`: absent in English. */
@@ -110,6 +122,8 @@ export type WebviewMessage =
   | { type: "openConversation"; id: string }
   | { type: "deleteConversation"; id: string }
   | { type: "setApiKey"; provider: string }
+  /** Ask the user for `model`'s context size and save it to `brokeCode.contextSizes`. */
+  | { type: "setContextSize"; model: string }
   | { type: "openSettings" };
 
 /** Chat state carried by `message`; `undefined` for a message that must leave the panel's state alone. */
@@ -151,6 +165,11 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | undefined {
     case "selectModel": {
       const model = text("model");
       return model === undefined ? undefined : { type: "selectModel", model };
+    }
+    case "setContextSize": {
+      // [!]: The name becomes a key of a user setting: an empty one is refused.
+      const model = text("model");
+      return model ? { type: "setContextSize", model } : undefined;
     }
     case "send": {
       const value = text("text");

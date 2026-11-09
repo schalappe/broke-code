@@ -137,7 +137,7 @@ export function conversationsOverLimit(summaries: readonly ConversationSummary[]
 }
 
 const REPLY_STATUSES: readonly ReplyStatus[] = ["waiting", "streaming", "done", "stopped", "failed", "halted"];
-const HALT_REASONS: readonly HaltReason[] = ["malformedCalls", "stepLimit"];
+const HALT_REASONS: readonly HaltReason[] = ["malformedCalls", "stepLimit", "contextFull"];
 const TOOL_STEP_STATUSES: readonly ToolStepStatus[] = ["ok", "error", "malformed"];
 const MENTION_KINDS: readonly string[] = ["file", "folder"];
 const MENTION_STATUSES: readonly string[] = [

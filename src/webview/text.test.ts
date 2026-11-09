@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { describeProviderError, describeStorageProblem, formatConversationDate } from "./text";
+import { describeContextUsage, describeProviderError, describeStorageProblem, formatConversationDate } from "./text";
 
 describe("describeProviderError", () => {
   test("names the model list, not a reply, when the list download is cut off", () => {
@@ -117,5 +117,18 @@ describe("describeStorageProblem", () => {
     expect(describeStorageProblem({ kind: "notFound" })).toEqual({
       message: "This conversation is missing or unreadable; it was removed from the list.",
     });
+  });
+});
+
+describe("describeContextUsage", () => {
+  test("writes the estimate, the size, and the share used, in the display language", () => {
+    expect(describeContextUsage({ used: 12345, size: 32768, known: true }, "en")).toBe("12,345 / 32,768 tokens (38%)");
+    expect(describeContextUsage({ used: 12345, size: 32768, known: true }, "fr")).toBe(
+      "12\u202f345 / 32\u202f768 tokens (38\u00a0%)",
+    );
+  });
+
+  test("falls back to the runtime's language for a tag it cannot use", () => {
+    expect(describeContextUsage({ used: 0, size: 1000, known: false }, "not a tag!")).toContain("0%");
   });
 });

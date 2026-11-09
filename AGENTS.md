@@ -24,7 +24,7 @@ call. Write tools, `run_command`, skills, and slash commands are not built yet. 
 - `src/core/`: modules that import nothing from `vscode`: settings parsing, the API key shape check, the provider
   HTTP client, the CA trust and certificate error classification (`tls.ts`), the SSE reader, the typed provider
   errors, the chat controller (conversation state, the agent turn loop with its tool runner and instruction reader
-  ports and step limits, streaming, Stop, saving, reopen, delete), the conversation record
+  ports, its limits source and step limits, the context budget check, streaming, Stop, saving, reopen, delete), the conversation record
   (`conversation.ts`: version 2, its validation on load, title, id, the summary file's shape), its store
   (`conversationStore.ts`: a record and a summary file per conversation, the list from the summaries, reads, writes,
   and deletes in call order), and the store's file access (`conversationFiles.ts`:
@@ -37,14 +37,16 @@ call. Write tools, `run_command`, skills, and slash commands are not built yet. 
   filtering, the index exclusions), the menu's file index (`fileIndex.ts`: one scan shared until a file
   changes, behind a scan port), the body tool call parser (`toolCalls.ts`: `ToolSpec`, the first call-shaped block,
   malformed-call messages), the system prompt composer (`systemPrompt.ts`: role, call format, rules, tools,
-  instruction files), and the read tools (`tools.ts`: `read_file` and `list_files` over the mention reader, `search`
+  instruction files), the turn limits (`limits.ts`: `brokeCode.maxToolSteps` and `brokeCode.contextSizes` parsing,
+  the token estimate, the context-full threshold, the typed size check), and the read tools (`tools.ts`: `read_file` and `list_files` over the mention reader, `search`
   over ripgrep with its candidate paths, bounded `ok` or `error` results), and the instruction files
   (`instructions.ts`: `~/.agents/AGENTS.md`, then each workspace folder's `AGENTS.md`, under the mention caps). `markdownCode.ts`, `suggestions.ts`, and `conversation.ts` import nothing from
   `node:`, since the webview loads them. Unit tests sit next to them as `*.test.ts`, because `bun test` cannot load `vscode`. `tlsFixture.ts`
   generates test certificates with `/usr/bin/openssl` at test time; no private key is committed.
   `conversationFixture.ts` is the in-memory conversation file port for tests.
 - `src/extension/`: the extension host glue (activation, webview view, API keys in `SecretStorage`, the
-  file index's `findFiles` scan and watcher in `fileIndex.ts`, the read tool runner with the ripgrep candidates from
+  file index's `findFiles` scan and watcher in `fileIndex.ts`, the turn limits from the user settings and the "Set
+  context size" input box in `contextSizes.ts`, the read tool runner with the ripgrep candidates from
   `vscode.env.appRoot` and `PATH`, the instruction reader from the home folder and the workspace folders).
 - `src/webview/`: the React chat panel and its CSS, tool step rows included. `SuggestionMenu.tsx` is the autocomplete list the `@` menu
   uses and the `/` menu (#11) is meant to reuse.
@@ -93,8 +95,11 @@ call. Write tools, `run_command`, skills, and slash commands are not built yet. 
 - Requests never follow HTTP redirects; a redirect is reported as an error. Provider response bodies are read
   under size caps that cancel the download when exceeded. Responses may be compressed with gzip, deflate, or br;
   the caps count decoded bytes, and any other `Content-Encoding` is reported as an error.
-- The API does not report a model's context size. A settings table maps model names to sizes, and unknown
-  models default to 32k. When the user picks an unknown model, the chat shows a link to set its size.
+- The API does not report a model's context size. The `brokeCode.contextSizes` user setting (`application` scope,
+  read from `globalValue` like the providers) maps model names to sizes in tokens; a model absent from it, or with an
+  entry that is not a positive integer, uses 32,768. While such a model is selected, the chat shows "Unknown context
+  size, using 32k" with a link: the host asks for the size in an input box and merges it into the user value of the
+  setting. The header shows the next request's estimated size against the model's size.
 - Every provider request goes through Node's `http`/`https` modules. VS Code patches them in place in the
   extension host, adding its proxy support and, to requests without a `ca` option, the OS certificate store. A
   provider without a CA file sends no `ca`, so it trusts exactly what VS Code trusts.
@@ -144,13 +149,22 @@ call. Write tools, `run_command`, skills, and slash commands are not built yet. 
   turn's abort signal, a tool step entry records its name, arguments, status, and text, and the loop requests again.
   A malformed call: a step entry with the message, and the loop requests again. The reply stays `streaming` while its
   call runs, and the step and the next reply are appended together, so `isReplying` holds across the whole turn.
-- An agent turn has a Stop button and stops after 50 tool steps (`MAX_TOOL_STEPS`, calls and malformed calls alike)
-  as `halted` with reason `stepLimit`; three malformed calls in a row (`MAX_MALFORMED_IN_A_ROW`) halt it with reason
+- An agent turn has a Stop button and stops after `brokeCode.maxToolSteps` tool steps (a user setting, `application`
+  scope, default 50, at least 1; calls and malformed calls alike) as `halted` with reason `stepLimit`; three malformed calls in a row (`MAX_MALFORMED_IN_A_ROW`) halt it with reason
   `malformedCalls`, and a call that parses resets that count. Stop ends the turn at once, during a reply or a tool
   run: the step in flight is dropped, nothing later runs, and the record is saved as it stands. A failed reply ends
   the turn `failed`; so does an unexpected exception inside the turn (a bug), with an `internal` error giving its
-  message, logged with its stack, so the composer never stays locked. Truncate tool results longer than about 2,000 lines and say so in the result. When the context
-  is full, stop the turn with a clear message. v1 has no automatic summarization.
+  message, logged with its stack, so the composer never stays locked. Truncate tool results longer than about 2,000 lines and say so in the result.
+- Before each request of an agent turn, the first included, the controller estimates its size as the characters of the
+  system prompt and of each history message's content (as `toHistory` builds it, reasoning excluded) divided by 4,
+  rounded up. Above `floor(size * 7 / 8)` of the model's context size, no request is sent and the reply that would
+  have carried it ends `halted` with reason `contextFull`, saved like the other halts; it is never a `ProviderError`,
+  which means a request was sent. A turn reads the step limit and context sizes once, when it starts; a settings
+  change reaches the usage display at once (`limitsChanged`) and the turns from the next send. The display counts the
+  system prompt the last send composed, in any conversation shown, since instruction files are the workspace's; before
+  the first send of the session, the one without instruction files. It updates once a send has composed it, before the
+  request goes.
+  v1 has no automatic summarization.
 - The system prompt includes `~/.agents/AGENTS.md`, then each workspace folder's `AGENTS.md` (labelled with its
   folder name in a multi-root workspace), read at each send under the mention caps (1 MiB, 2,000 lines). A missing
   file is left out; an unreadable one is logged and left out. The home file follows symlinks; a workspace file is

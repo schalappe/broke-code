@@ -89,6 +89,16 @@ describe("read_file", () => {
     expect(result.text).not.toContain("line 2001");
   });
 
+  test("cuts a 10,000-line file to its first 2,000 lines, then says 8,000 more were not shown", async () => {
+    // [>]: Written here and removed after, so the listings of the workspace folder stay as the other tests expect.
+    await writeFile(join(app.path, "huge.txt"), numberedLines(10000));
+    const result = await run("read_file", { path: "huge.txt" }).finally(() => rm(join(app.path, "huge.txt")));
+    expect(result.status).toBe("ok");
+    expect(result.text).toBe(
+      `@huge.txt (file, 2000 lines, truncated)\n\`\`\`\n${numberedLines(2000)}\`\`\`\n[truncated: 8000 more lines not shown]`,
+    );
+  });
+
   test("shows a normalized single-line path in the header of a path that normalizes to a short one", async () => {
     const path = `${"discard\n/../".repeat(3000)}ten.txt`;
     expect(await run("read_file", { path })).toEqual({

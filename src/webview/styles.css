@@ -184,6 +184,21 @@ button.history-open:hover:not(:disabled) {
   font-size: 0.9em;
 }
 
+.usage {
+  flex: none;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.9em;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.notice {
+  margin: 0;
+  padding: 6px 8px;
+  border-left: 2px solid var(--vscode-editorWarning-foreground);
+  background: var(--vscode-inputValidation-warningBackground);
+}
+
 .warnings {
   margin: 0;
   padding: 6px 8px 6px 24px;

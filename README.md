@@ -96,8 +96,32 @@ pattern), and whether it worked with the size of its result. Click the row to se
 A path outside the workspace is refused, and the model is told why.
 
 The agent turn ends when the model answers without a tool call. It also ends when you click **Stop**, at any step;
-after three malformed tool calls in a row, with a message saying so; and after 50 tool steps, with a message saying
-the step limit was reached. A malformed call is sent back to the model with what is wrong, so it can try again.
+after three malformed tool calls in a row, with a message saying so; after 50 tool steps (or the limit you set), with
+a message saying the step limit was reached; and before a request that would fill the model's context, with a
+message asking you to start a new chat. A malformed call is sent back to the model with what is wrong, so it can try
+again.
+
+## Context size and step limit
+
+The panel header shows, next to the model picker, how much of the model's context the next request would use, in
+tokens and as a percentage. It is an estimate: the characters of everything the request sends (the instructions,
+your messages with their attachments, the model's answers, and the tool results, but not its reasoning) divided by
+4. Before each request of an agent turn, broke-code checks that estimate: when it leaves less than one eighth of the
+context for the reply, the turn stops without sending the request, and the chat asks you to start a new chat with
+**New chat**. broke-code never shortens or summarizes the conversation by itself.
+
+LLM services do not report a model's context size, so broke-code reads it from the `brokeCode.contextSizes` table
+in your **user** settings, by model name as the provider lists it. A model absent from the table uses 32,768 tokens,
+and the chat says so with a **Set context size** link: enter the size and broke-code saves it to the table. Set the
+tool step limit of an agent turn with `brokeCode.maxToolSteps` (default 50, at least 1):
+
+```json
+"brokeCode.contextSizes": { "gemma-4": 262144, "qwen3:8b": 40960 },
+"brokeCode.maxToolSteps": 30
+```
+
+An entry that is not a whole number of at least 1 is ignored. A change applies from the next message; an agent turn
+in flight keeps the limits it started with. Like the providers, both settings are read from user settings only.
 
 broke-code adds your instructions to every request: `~/.agents/AGENTS.md`, then the `AGENTS.md` at the root of each
 workspace folder, when they exist. Each is read under the same limits as a mention. `CLAUDE.md` is never read.

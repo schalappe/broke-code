@@ -11,7 +11,7 @@ const posted: unknown[] = [];
 (globalThis as { acquireVsCodeApi?: () => { postMessage(message: unknown): void } }).acquireVsCodeApi = () => ({
   postMessage: (message) => posted.push(message),
 });
-const { App, ConversationList, Header, HistoryPanel, MentionMenu } = await import("./App");
+const { App, ContextNotice, ConversationList, Header, HistoryPanel, MentionMenu } = await import("./App");
 const { moveHighlight } = await import("./SuggestionMenu");
 
 type Reply = ChatEntry & { role: "assistant" };
@@ -23,6 +23,7 @@ const unsaved = {
   conversations: [],
   listFailed: undefined,
   storageProblem: undefined,
+  context: { used: 0, size: 32768, known: true },
 };
 
 /** Panel markup for a conversation of one question and `reply`, English strings. */
@@ -213,6 +214,14 @@ describe("agent turn", () => {
     const limit = renderTurn([{ ...callReply, status: "halted", haltReason: "stepLimit" }, step]);
     expect(limit).toContain("Stopped: the agent turn reached its tool step limit.");
     expect(limit).toContain(">Send<");
+  });
+
+  test("a turn halted on a full context says so and names New chat", () => {
+    const html = renderTurn([
+      { role: "assistant", reasoning: "", content: "", status: "halted", haltReason: "contextFull" },
+    ]);
+    expect(html).toContain("Stopped: the conversation fills the model&#x27;s context. Start a new chat with New chat.");
+    expect(html).not.toContain("Waiting for the reply…");
   });
 });
 
@@ -491,9 +500,11 @@ describe("composer", () => {
 
 describe("header actions", () => {
   test("the History toggle points at the list only while it is open", () => {
-    const open = renderToStaticMarkup(<Header state={stateWith(true)} historyOpen={true} toggleHistory={() => {}} />);
+    const open = renderToStaticMarkup(
+      <Header state={stateWith(true)} language="en" historyOpen={true} toggleHistory={() => {}} />,
+    );
     const closed = renderToStaticMarkup(
-      <Header state={stateWith(true)} historyOpen={false} toggleHistory={() => {}} />,
+      <Header state={stateWith(true)} language="en" historyOpen={false} toggleHistory={() => {}} />,
     );
     expect(open).toContain('aria-expanded="true" aria-controls="history"');
     expect(closed).toContain('aria-expanded="false"');
@@ -503,7 +514,12 @@ describe("header actions", () => {
   test("New chat is disabled for an empty conversation only, with or without a provider", () => {
     const newChat = (configured: boolean, entries: ChatEntry[]) =>
       renderToStaticMarkup(
-        <Header state={stateWith(configured, { entries })} historyOpen={false} toggleHistory={() => {}} />,
+        <Header
+          state={stateWith(configured, { entries })}
+          language="en"
+          historyOpen={false}
+          toggleHistory={() => {}}
+        />,
       ).match(/<button[^>]*>New chat<\/button>/)?.[0];
     for (const configured of [true, false]) {
       expect(newChat(configured, [])).toContain("disabled");
@@ -517,9 +533,9 @@ describe("header actions", () => {
       toggles += 1;
     };
     const state = stateWith(true, { entries: hi });
-    button(Header({ state, historyOpen: true, toggleHistory: toggle }), "New chat").props.onClick!();
+    button(Header({ state, language: "en", historyOpen: true, toggleHistory: toggle }), "New chat").props.onClick!();
     expect(toggles).toBe(1);
-    button(Header({ state, historyOpen: false, toggleHistory: toggle }), "New chat").props.onClick!();
+    button(Header({ state, language: "en", historyOpen: false, toggleHistory: toggle }), "New chat").props.onClick!();
     expect(toggles).toBe(1);
     expect(posted).toEqual([{ type: "newChat" }, { type: "newChat" }]);
   });
@@ -579,5 +595,44 @@ describe("history panel", () => {
     for (const element of buttons) element.props.onClick!();
     expect(opened).toEqual([CONVERSATION_ID, OTHER_ID]);
     expect(deleted).toEqual([CONVERSATION_ID, OTHER_ID]);
+  });
+});
+
+describe("context usage", () => {
+  const usage = { used: 12345, size: 32768 };
+
+  test("shows the estimate against the model's size next to the model picker", () => {
+    const html = renderToStaticMarkup(
+      <App state={stateWith(true, { context: { ...usage, known: true } })} language="en" />,
+    );
+    expect(html).toContain("12,345 / 32,768 tokens (38%)");
+    expect(html.indexOf('aria-label="Model"')).toBeLessThan(html.indexOf("12,345 / 32,768 tokens"));
+    expect(html.indexOf("12,345 / 32,768 tokens")).toBeLessThan(html.indexOf(">New chat<"));
+    expect(html).not.toContain("Unknown context size");
+  });
+
+  test("a model absent from the table shows the 32k notice with its link beside the usage", () => {
+    const html = renderToStaticMarkup(
+      <App state={stateWith(true, { context: { ...usage, known: false } })} language="en" />,
+    );
+    expect(html).toContain("Unknown context size, using 32k");
+    expect(html).toContain(">Set context size<");
+    expect(html).toContain("12,345 / 32,768 tokens (38%)");
+  });
+
+  test("with no model selected, shows neither the usage nor the notice", () => {
+    const state = stateWith(true, {
+      models: { status: "loading" },
+      model: undefined,
+      context: { ...usage, known: false },
+    });
+    const html = renderToStaticMarkup(<App state={state} language="en" />);
+    expect(html).not.toContain("tokens (");
+    expect(html).not.toContain("Unknown context size");
+  });
+
+  test("the link asks the host for the selected model's context size", () => {
+    button(ContextNotice({ model: "qwen3:8b" }), "Set context size").props.onClick!();
+    expect(posted).toEqual([{ type: "setContextSize", model: "qwen3:8b" }]);
   });
 });

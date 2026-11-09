@@ -75,6 +75,23 @@
               }
             }
           }
+        },
+        "brokeCode.contextSizes": {
+          "type": "object",
+          "scope": "application",
+          "default": {},
+          "markdownDescription": "%config.contextSizes.description%",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "brokeCode.maxToolSteps": {
+          "type": "integer",
+          "scope": "application",
+          "default": 50,
+          "minimum": 1,
+          "markdownDescription": "%config.maxToolSteps.description%"
         }
       }
     }

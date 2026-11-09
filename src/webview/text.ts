@@ -1,11 +1,11 @@
 /**
  * @module text
- * Localized panel text for provider errors, skipped providers, mentions, tool steps, halted agent turns, and saved
- * conversations.
+ * Localized panel text for provider errors, skipped providers, mentions, tool steps, halted agent turns, context
+ * usage, and saved conversations.
  */
 import * as l10n from "@vscode/l10n";
 import type { MentionResult } from "../core/mentions";
-import type { ChatEntry, HaltReason, StorageProblem } from "../core/protocol";
+import type { ChatEntry, ContextUsage, HaltReason, StorageProblem } from "../core/protocol";
 import type { ProviderError } from "../core/providerError";
 import type { SkippedProvider } from "../core/providers";
 
@@ -153,13 +153,35 @@ export function describeToolStep(step: ChatEntry & { role: "tool" }): string {
   return step.status === "ok" ? l10n.t("ok, {0}", size) : l10n.t("error, {0}", size);
 }
 
-/** Why an agent turn halted, shown after its last step. */
+/** Why an agent turn halted, shown after its last step, or on the reply whose request was not sent. */
 export function describeHalt(reason: HaltReason): string {
   switch (reason) {
     case "malformedCalls":
       return l10n.t("Stopped: the model sent three malformed tool calls in a row.");
     case "stepLimit":
       return l10n.t("Stopped: the agent turn reached its tool step limit.");
+    case "contextFull":
+      return l10n.t("Stopped: the conversation fills the model's context. Start a new chat with New chat.");
+  }
+}
+
+/** The next request's estimate against the context size, as tokens and a share, numbers in `language` (BCP 47). */
+export function describeContextUsage({ used, size }: ContextUsage, language: string): string {
+  const percent: Intl.NumberFormatOptions = { style: "percent", maximumFractionDigits: 0 };
+  const format = (locale: string | undefined) => {
+    const number = new Intl.NumberFormat(locale);
+    return l10n.t(
+      "{0} / {1} tokens ({2})",
+      number.format(used),
+      number.format(size),
+      new Intl.NumberFormat(locale, percent).format(used / size),
+    );
+  };
+  try {
+    return format(language);
+  } catch {
+    // [>]: A tag Intl rejects (RangeError) still gets readable numbers.
+    return format(undefined);
   }
 }
 
