@@ -552,4 +552,10 @@ describe("truncateLines", () => {
     expect(cut.text.split("\n")).toHaveLength(2000);
     expect(cut.text.endsWith("line 2000")).toBe(true);
   });
+
+  test("counts CR, LF, and CRLF as line breaks, and keeps each kept break as written", () => {
+    expect(truncateLines("a\rb\r\nc\nd\r", 9)).toEqual({ text: "a\rb\r\nc\nd\r", lines: 4, omitted: 0 });
+    expect(truncateLines("a\rb\r\nc\nd\r", 2)).toEqual({ text: "a\rb", lines: 2, omitted: 2 });
+    expect(truncateLines("a\r\nb\r\nc\r\n", 2)).toEqual({ text: "a\r\nb", lines: 2, omitted: 1 });
+  });
 });

@@ -148,12 +148,17 @@ async function isInsideFile(realRoots: string[], path: string, opened: Stats): P
   return named.dev === opened.dev && named.ino === opened.ino;
 }
 
-/** `text` cut to its first `max` lines. `lines`: lines kept; a final newline ends the last line, not a new one. */
+/**
+ * `text` cut to its first `max` lines, each line break (`\r\n`, `\r`, or `\n`) kept as written. `lines`: lines kept; a
+ * final line break ends the last line, not a new one.
+ */
 export function truncateLines(text: string, max: number): { text: string; lines: number; omitted: number } {
   if (text === "") return { text, lines: 0, omitted: 0 };
-  const lines = text.replace(/\n$/, "").split("\n");
-  if (lines.length <= max) return { text, lines: lines.length, omitted: 0 };
-  return { text: lines.slice(0, max).join("\n"), lines: max, omitted: lines.length - max };
+  // [>]: The capturing group keeps each break: lines at even indexes, the break after each at the odd one.
+  const parts = text.replace(/(?:\r\n|\r|\n)$/, "").split(/(\r\n|\r|\n)/);
+  const lines = (parts.length + 1) / 2;
+  if (lines <= max) return { text, lines, omitted: 0 };
+  return { text: parts.slice(0, 2 * max - 1).join(""), lines: max, omitted: lines - max };
 }
 
 /**

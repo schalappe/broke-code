@@ -504,6 +504,15 @@ describe("loadSkill", () => {
     expect(result.text).toEndWith("\nstep 2000\n[truncated: 500 more lines not shown]");
   });
 
+  test("counts CR-only line breaks toward the 2,000-line cut", async () => {
+    const lines = Array.from({ length: 2500 }, (_, index) => `step ${index + 1}`).join("\r");
+    await writeSkill(personal, "classic", `---\rname: classic\rdescription: CR lines.\r---\r${lines}\r`);
+    const { skills } = await readSkills(home, []);
+    const result = await loadSkill("classic", skills, []);
+    expect(result.status).toBe("ok");
+    expect(result.text).toEndWith("\rstep 2000\n[truncated: 500 more lines not shown]");
+  });
+
   test("refuses a SKILL.md gone since discovery, or swapped for a link out of its folder", async () => {
     const root = await writeSkill(personal, "review", skillText("review", "Review."));
     await writeFile(join(base, "outside.md"), skillText("review", "Elsewhere."));
