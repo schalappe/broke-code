@@ -88,6 +88,134 @@ describe("reasoning block", () => {
   });
 });
 
+describe("agent turn", () => {
+  /** Panel markup for one question and `entries` after it, English strings. */
+  function renderTurn(entries: ChatEntry[]): string {
+    const state: ChatState = {
+      providers: ["P"],
+      skipped: [],
+      ...unsaved,
+      provider: "P",
+      models: { status: "loaded", models: ["m"] },
+      model: "m",
+      entries: [{ role: "user", content: "Hi", mentions: [] }, ...entries],
+    };
+    return renderToStaticMarkup(<App state={state} language="en" />);
+  }
+
+  const answer = "Let me look.\n<read_file>\n<path>src/a.ts</path>\n</read_file>";
+  const callReply: ChatEntry = {
+    role: "assistant",
+    reasoning: "",
+    content: answer,
+    status: "done",
+    call: { name: "read_file", args: { path: "src/a.ts" }, start: 13, end: answer.length },
+  };
+  const step: ChatEntry = {
+    role: "tool",
+    name: "read_file",
+    args: { path: "src/a.ts" },
+    status: "ok",
+    text: "@src/a.ts (file, 3 lines)\n```\nSECRET_RESULT_TEXT\n```",
+  };
+
+  test("a step row shows the tool name, its main argument, and the result's status and size", () => {
+    const html = renderTurn([callReply, step, { role: "assistant", reasoning: "", content: "Done.", status: "done" }]);
+    expect(html).toContain('<details class="step">');
+    expect(html).toContain('<span class="step-tool">read_file</span>');
+    expect(html).toContain('<span class="step-arg">src/a.ts</span>');
+    expect(html).toContain("ok");
+    expect(html).toContain("4 lines");
+    expect(html.split('<span class="step-tool">').length - 1).toBe(1);
+  });
+
+  test("a tool step without a reply before it is still shown, once", () => {
+    const html = renderTurn([step]);
+    expect(html.split('<span class="step-tool">read_file</span>').length - 1).toBe(1);
+    expect(html).toContain("SECRET_RESULT_TEXT");
+  });
+
+  test("shows the reply's text outside the call block as Markdown, never the call itself", () => {
+    const html = renderTurn([callReply, step]);
+    expect(html).toContain("<p>Let me look.</p>");
+    expect(html).not.toContain("&lt;read_file&gt;");
+  });
+
+  test("keeps the step's result text in the collapsed row, hidden until expanded", () => {
+    const html = renderTurn([callReply, step]);
+    expect(html).not.toContain('<details class="step" open');
+    const summaryEnd = html.indexOf("</summary>", html.indexOf('<details class="step">'));
+    expect(html.indexOf("SECRET_RESULT_TEXT")).toBeGreaterThan(summaryEnd);
+  });
+
+  test("the main argument of a search is its pattern", () => {
+    const html = renderTurn([
+      {
+        ...callReply,
+        call: { name: "search", args: { pattern: "foo\\(", path: "src" }, start: 13, end: answer.length },
+      },
+      { role: "tool", name: "search", args: { pattern: "foo\\(", path: "src" }, status: "ok", text: "a:1:foo(" },
+    ]);
+    expect(html).toContain('<span class="step-arg">foo\\(</span>');
+    expect(html).toContain("1 line");
+  });
+
+  test("an error step says error and its size", () => {
+    const html = renderTurn([callReply, { ...step, status: "error", text: "read_file: gone." }]);
+    expect(html).toContain('class="step-status failed"');
+    expect(html).toContain("error, 1 line");
+  });
+
+  test("a malformed step shows its message", () => {
+    const html = renderTurn([
+      { role: "assistant", reasoning: "", content: "<read_file>", status: "done" },
+      {
+        role: "tool",
+        name: "read_file",
+        args: {},
+        status: "malformed",
+        text: "The <read_file> tag never closes: end the call with </read_file>.\nA call to read_file looks like this:",
+      },
+    ]);
+    expect(html).toContain("malformed call");
+    expect(html).toContain("The &lt;read_file&gt; tag never closes: end the call with &lt;/read_file&gt;.");
+  });
+
+  test("a call still running shows its row as running, with Stop", () => {
+    const html = renderTurn([{ ...callReply, status: "streaming" }]);
+    expect(html).toContain('<span class="step-tool">read_file</span>');
+    expect(html).toContain("running…");
+    expect(html).toContain(">Stop<");
+  });
+
+  test("a call stopped while it runs shows its row as stopped with no result, then Stopped", () => {
+    const html = renderTurn([{ ...callReply, status: "stopped" }]);
+    expect(html).toContain('<span class="step-tool">read_file</span>');
+    expect(html).toContain("stopped, no result");
+    expect(html).not.toContain("not run");
+    expect(html).toContain("Stopped");
+  });
+
+  test("a reply ended by an internal error says so with its message, and its call has no result", () => {
+    const html = renderTurn([
+      { ...callReply, status: "failed", error: { kind: "internal", message: "tool list broke" } },
+    ]);
+    expect(html).toContain("An unexpected internal error ended the reply.");
+    expect(html).toContain("tool list broke");
+    expect(html).toContain("no result");
+    expect(html).not.toContain("stopped, no result");
+  });
+
+  test("a halted turn says why, after its last step", () => {
+    const malformed = renderTurn([{ ...callReply, status: "halted", haltReason: "malformedCalls" }, step]);
+    expect(malformed).toContain("Stopped: the model sent three malformed tool calls in a row.");
+    expect(malformed.indexOf("Stopped: the model")).toBeGreaterThan(malformed.indexOf("SECRET_RESULT_TEXT"));
+    const limit = renderTurn([{ ...callReply, status: "halted", haltReason: "stepLimit" }, step]);
+    expect(limit).toContain("Stopped: the agent turn reached its tool step limit.");
+    expect(limit).toContain(">Send<");
+  });
+});
+
 describe("error actions", () => {
   /** Panel markup for a model listing that failed with `error`. */
   function failedListing(error: ProviderError): string {

@@ -28,3 +28,6 @@ there is one code path to test, and the harness behaves the same on every provid
   model as errors) are starting values. The local eval against Ollama decides changes to them, not intuition.
 - File content inside a tag is raw text. The parser must cope with content that itself contains angle
   brackets or code fences.
+- Tool results go back to the model as `user` messages that wrap the result in a
+  `<tool_result tool="<name>" status="ok|error">` tag. The OpenAI `tool` role needs a `tool_call_id`, so it
+  needs native tool calling. The assistant message before the result is the reply verbatim, call included.

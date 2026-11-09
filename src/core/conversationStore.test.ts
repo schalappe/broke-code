@@ -5,7 +5,7 @@ import { ConversationStore } from "./conversationStore";
 
 function record(updatedAt: number, text = `message at ${updatedAt}`): ConversationRecord {
   return {
-    version: 1,
+    version: 2,
     id: newConversationId(),
     createdAt: updatedAt,
     updatedAt,
@@ -35,7 +35,7 @@ describe("ConversationStore", () => {
     const names = [old.id, recent.id].flatMap((id) => [`${id}.json`, `${id}.summary.json`]);
     expect([...files.files.keys()].sort()).toEqual(names.sort());
     expect(JSON.parse(files.files.get(`${old.id}.summary.json`) ?? "")).toEqual({
-      version: 1,
+      version: 2,
       id: old.id,
       title: "old",
       updatedAt: 1000,
@@ -68,11 +68,11 @@ describe("ConversationStore", () => {
     const [corrupt, foreign, locked] = [record(1000, "corrupt"), record(2000, "foreign"), record(3000, "locked")];
     const files = memoryFiles({
       [`${corrupt.id}.json`]: JSON.stringify(corrupt),
-      [`${corrupt.id}.summary.json`]: JSON.stringify({ version: 1, id: corrupt.id, title: 7, updatedAt: 9000 }),
+      [`${corrupt.id}.summary.json`]: JSON.stringify({ version: 2, id: corrupt.id, title: 7, updatedAt: 9000 }),
       [`${foreign.id}.json`]: JSON.stringify(foreign),
-      [`${foreign.id}.summary.json`]: JSON.stringify({ version: 1, id: corrupt.id, title: "other", updatedAt: 9000 }),
+      [`${foreign.id}.summary.json`]: JSON.stringify({ version: 2, id: corrupt.id, title: "other", updatedAt: 9000 }),
       [`${locked.id}.json`]: JSON.stringify(locked),
-      [`${locked.id}.summary.json`]: JSON.stringify({ version: 1, id: locked.id, title: "stale", updatedAt: 9000 }),
+      [`${locked.id}.summary.json`]: JSON.stringify({ version: 2, id: locked.id, title: "stale", updatedAt: 9000 }),
     });
     const read = files.read;
     files.read = async (name) => {
@@ -96,21 +96,35 @@ describe("ConversationStore", () => {
   test("never lists a record of unknown version, even beside a summary of that version", async () => {
     const future = newConversationId();
     const files = memoryFiles({
-      [`${future}.json`]: JSON.stringify({ ...record(1000), id: future, version: 2 }),
-      [`${future}.summary.json`]: JSON.stringify({ version: 2, id: future, title: "future", updatedAt: 1000 }),
+      [`${future}.json`]: JSON.stringify({ ...record(1000), id: future, version: 3 }),
+      [`${future}.summary.json`]: JSON.stringify({ version: 3, id: future, title: "future", updatedAt: 1000 }),
     });
     let listed: unknown;
     const logged = await quietly(async () => {
       listed = await new ConversationStore(files).list();
     });
     expect(listed).toEqual({ conversations: [], unreadable: [] });
-    expect(String(logged.flat())).toContain("unknown version 2");
+    expect(String(logged.flat())).toContain("unknown version 3");
+  });
+
+  test("skips a version 1 conversation with a logged reason, also beside its version 1 summary", async () => {
+    const old = newConversationId();
+    const files = memoryFiles({
+      [`${old}.json`]: JSON.stringify({ ...record(1000), id: old, version: 1 }),
+      [`${old}.summary.json`]: JSON.stringify({ version: 1, id: old, title: "old", updatedAt: 1000 }),
+    });
+    let listed: unknown;
+    const logged = await quietly(async () => {
+      listed = await new ConversationStore(files).list();
+    });
+    expect(listed).toEqual({ conversations: [], unreadable: [] });
+    expect(String(logged.flat())).toContain("unknown version 1");
   });
 
   test("a summary without its record is not listed and is gone after the listing", async () => {
     const orphan = newConversationId();
     const files = memoryFiles({
-      [`${orphan}.summary.json`]: JSON.stringify({ version: 1, id: orphan, title: "orphan", updatedAt: 1000 }),
+      [`${orphan}.summary.json`]: JSON.stringify({ version: 2, id: orphan, title: "orphan", updatedAt: 1000 }),
     });
     expect(await new ConversationStore(files).list()).toEqual({ conversations: [], unreadable: [] });
     expect(files.files.size).toBe(0);
@@ -124,7 +138,7 @@ describe("ConversationStore", () => {
     const files = memoryFiles({
       [`${good.id}.json`]: JSON.stringify(good),
       [`${broken}.json`]: "{",
-      [`${future}.json`]: JSON.stringify({ ...record(3000), id: future, version: 2 }),
+      [`${future}.json`]: JSON.stringify({ ...record(3000), id: future, version: 3 }),
       "notes.txt": "hello",
       [`${good.id}.json.1234.tmp`]: "{",
       [`${empty.id}.json`]: JSON.stringify({ ...empty, entries: [] }),
@@ -140,7 +154,7 @@ describe("ConversationStore", () => {
       unreadable: [],
     });
     expect(logged).toHaveLength(2);
-    expect(String(logged.flat())).toContain("unknown version 2");
+    expect(String(logged.flat())).toContain("unknown version 3");
 
     let loaded: unknown = "unset";
     await quietly(async () => {

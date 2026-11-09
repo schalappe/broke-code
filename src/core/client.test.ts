@@ -113,6 +113,16 @@ describe("buildChatRequest", () => {
     expect("tools" in body).toBe(false);
   });
 
+  test("passes a system message through first, still with no tools key", () => {
+    const withSystem = [{ role: "system" as const, content: "You are a coding agent." }, ...messages];
+    const body = JSON.parse(String(buildChatRequest(access, "m", withSystem).body));
+    expect(body.messages).toEqual([
+      { role: "system", content: "You are a coding agent." },
+      { role: "user", content: "Hi" },
+    ]);
+    expect("tools" in body).toBe(false);
+  });
+
   test("sends no Authorization header without a key, and a bearer header with one", () => {
     const withoutKey = new Headers(buildChatRequest(access, "m", messages).headers);
     expect(withoutKey.has("authorization")).toBe(false);

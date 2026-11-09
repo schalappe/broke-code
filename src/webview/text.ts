@@ -1,10 +1,11 @@
 /**
  * @module text
- * Localized panel text for provider errors, skipped providers, mentions, and saved conversations.
+ * Localized panel text for provider errors, skipped providers, mentions, tool steps, halted agent turns, and saved
+ * conversations.
  */
 import * as l10n from "@vscode/l10n";
 import type { MentionResult } from "../core/mentions";
-import type { StorageProblem } from "../core/protocol";
+import type { ChatEntry, HaltReason, StorageProblem } from "../core/protocol";
 import type { ProviderError } from "../core/providerError";
 import type { SkippedProvider } from "../core/providers";
 
@@ -13,6 +14,8 @@ export type ErrorText = { message: string; detail?: string };
 
 export function describeProviderError(error: ProviderError): ErrorText {
   switch (error.kind) {
+    case "internal":
+      return { message: l10n.t("An unexpected internal error ended the reply."), detail: error.message };
     case "unreachable":
       return { message: l10n.t("Cannot reach {0} at {1}.", error.provider, error.baseUrl), detail: error.cause };
     case "certificate":
@@ -131,6 +134,32 @@ export function describeMention(mention: MentionResult): string {
       return l10n.t("over 1 MiB, not attached");
     case "unreadable":
       return l10n.t("could not be read");
+  }
+}
+
+/** The argument a step row shows: a search's pattern, else the path, else the first value given. */
+export function mainArgument(args: Record<string, string>): string | undefined {
+  return args.pattern ?? args.path ?? Object.values(args)[0];
+}
+
+/**
+ * Short status of a finished tool step: `ok` or `error` and the result's size in lines, or the first line of a
+ * malformed call's message, which says what is wrong. Model-facing messages are English, never localized.
+ */
+export function describeToolStep(step: ChatEntry & { role: "tool" }): string {
+  if (step.status === "malformed") return step.text.split("\n")[0] ?? "";
+  const count = step.text === "" ? 0 : step.text.replace(/\n$/, "").split("\n").length;
+  const size = count === 1 ? l10n.t("1 line") : l10n.t("{0} lines", count);
+  return step.status === "ok" ? l10n.t("ok, {0}", size) : l10n.t("error, {0}", size);
+}
+
+/** Why an agent turn halted, shown after its last step. */
+export function describeHalt(reason: HaltReason): string {
+  switch (reason) {
+    case "malformedCalls":
+      return l10n.t("Stopped: the model sent three malformed tool calls in a row.");
+    case "stepLimit":
+      return l10n.t("Stopped: the agent turn reached its tool step limit.");
   }
 }
 

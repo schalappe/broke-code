@@ -10,20 +10,22 @@ tool call in the text of its reply, and the extension parses and runs the call. 
 covers the agent loop over the reply text, skills, and slash commands, in a minimal chat panel styled after
 twinny.
 
-The code so far covers the extension skeleton and a streaming chat with a provider. The body tool call parser, the
-system prompt, and the read tools exist in `src/core/`, but no harness runs them yet. Read
+The code so far covers the extension skeleton, a streaming chat with a provider, and the harness with the read tools:
+a message starts an agent turn that runs `read_file`, `list_files`, and `search` until the model answers without a
+call. Write tools, `run_command`, skills, and slash commands are not built yet. Read
 `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the decisions behind the design, starting with
 `docs/adr/0001-body-tool-calls.md`.
 
 ## Structure
 
-- `GLOSSARY.md`: the domain terms (body tool call, harness, agent turn, provider, skill, slash command,
+- `GLOSSARY.md`: the domain terms (body tool call, harness, agent turn, tool step, provider, skill, slash command,
   mention). Code and docs use these names.
 - `docs/adr/`: architecture decision records.
 - `src/core/`: modules that import nothing from `vscode`: settings parsing, the API key shape check, the provider
   HTTP client, the CA trust and certificate error classification (`tls.ts`), the SSE reader, the typed provider
-  errors, the chat controller (conversation state, streaming, Stop, saving, reopen, delete), the conversation record
-  (`conversation.ts`: version 1, its validation on load, title, id, the summary file's shape), its store
+  errors, the chat controller (conversation state, the agent turn loop with its tool runner and instruction reader
+  ports and step limits, streaming, Stop, saving, reopen, delete), the conversation record
+  (`conversation.ts`: version 2, its validation on load, title, id, the summary file's shape), its store
   (`conversationStore.ts`: a record and a summary file per conversation, the list from the summaries, reads, writes,
   and deletes in call order), and the store's file access (`conversationFiles.ts`:
   the file port, and its implementation over a local directory with `node:fs`: missing versus failed, regular files
@@ -36,13 +38,15 @@ system prompt, and the read tools exist in `src/core/`, but no harness runs them
   changes, behind a scan port), the body tool call parser (`toolCalls.ts`: `ToolSpec`, the first call-shaped block,
   malformed-call messages), the system prompt composer (`systemPrompt.ts`: role, call format, rules, tools,
   instruction files), and the read tools (`tools.ts`: `read_file` and `list_files` over the mention reader, `search`
-  over ripgrep with its candidate paths, bounded `ok` or `error` results). `markdownCode.ts`, `suggestions.ts`, and `conversation.ts` import nothing from
+  over ripgrep with its candidate paths, bounded `ok` or `error` results), and the instruction files
+  (`instructions.ts`: `~/.agents/AGENTS.md`, then each workspace folder's `AGENTS.md`, under the mention caps). `markdownCode.ts`, `suggestions.ts`, and `conversation.ts` import nothing from
   `node:`, since the webview loads them. Unit tests sit next to them as `*.test.ts`, because `bun test` cannot load `vscode`. `tlsFixture.ts`
   generates test certificates with `/usr/bin/openssl` at test time; no private key is committed.
   `conversationFixture.ts` is the in-memory conversation file port for tests.
 - `src/extension/`: the extension host glue (activation, webview view, API keys in `SecretStorage`, the
-  file index's `findFiles` scan and watcher in `fileIndex.ts`).
-- `src/webview/`: the React chat panel and its CSS. `SuggestionMenu.tsx` is the autocomplete list the `@` menu
+  file index's `findFiles` scan and watcher in `fileIndex.ts`, the read tool runner with the ripgrep candidates from
+  `vscode.env.appRoot` and `PATH`, the instruction reader from the home folder and the workspace folders).
+- `src/webview/`: the React chat panel and its CSS, tool step rows included. `SuggestionMenu.tsx` is the autocomplete list the `@` menu
   uses and the `/` menu (#11) is meant to reuse.
 - `src/l10n.test.ts`: checks that every `l10n.t` message has a French translation and that the
   `package.nls*.json` files match.
@@ -131,11 +135,26 @@ system prompt, and the read tools exist in `src/core/`, but no harness runs them
   output, and stops after 120 seconds by default.
 - Reasoning output (`<think>` tags, `reasoning`, or `reasoning_content`) shows collapsed in the chat. The parser
   never looks for tool calls in it, and the conversation history sent back to the model drops it.
-- An agent turn has a Stop button and stops after 50 tool steps by default. Truncate tool results longer than
-  about 2,000 lines and say so in the result. When the context is full, stop the turn with a clear message.
-  v1 has no automatic summarization.
-- The system prompt includes `~/.agents/AGENTS.md`, then the workspace `AGENTS.md`, when they exist.
-  `CLAUDE.md` is not read.
+- Each request of an agent turn sends a `system` message first, then the history: each user entry's composed text,
+  each assistant answer verbatim with its call block (reasoning never), and each tool step as a `user` message
+  `<tool_result tool="<name>" status="ok|error">`, the text, then `</tool_result>`, never the OpenAI `tool` role
+  (ADR 0001). A malformed call's message goes back the same way with `status="error"`, with `tool` the tag name the block
+  opens with, a known tool or not, and `tool="unknown"` only when no tool name can be read.
+- When a reply ends, its answer goes through the parser. No call: the turn ends. A call: the tool runs with the
+  turn's abort signal, a tool step entry records its name, arguments, status, and text, and the loop requests again.
+  A malformed call: a step entry with the message, and the loop requests again. The reply stays `streaming` while its
+  call runs, and the step and the next reply are appended together, so `isReplying` holds across the whole turn.
+- An agent turn has a Stop button and stops after 50 tool steps (`MAX_TOOL_STEPS`, calls and malformed calls alike)
+  as `halted` with reason `stepLimit`; three malformed calls in a row (`MAX_MALFORMED_IN_A_ROW`) halt it with reason
+  `malformedCalls`, and a call that parses resets that count. Stop ends the turn at once, during a reply or a tool
+  run: the step in flight is dropped, nothing later runs, and the record is saved as it stands. A failed reply ends
+  the turn `failed`; so does an unexpected exception inside the turn (a bug), with an `internal` error giving its
+  message, logged with its stack, so the composer never stays locked. Truncate tool results longer than about 2,000 lines and say so in the result. When the context
+  is full, stop the turn with a clear message. v1 has no automatic summarization.
+- The system prompt includes `~/.agents/AGENTS.md`, then each workspace folder's `AGENTS.md` (labelled with its
+  folder name in a multi-root workspace), read at each send under the mention caps (1 MiB, 2,000 lines). A missing
+  file is left out; an unreadable one is logged and left out. The home file follows symlinks; a workspace file is
+  held to the workspace boundary. `CLAUDE.md` is not read.
 - A mention `@file` attaches the file content. A mention `@folder` attaches its direct children, folders suffixed
   with `/`, sorted by name; never a recursive listing.
 - A mention is `@` at the start of the message or after whitespace, up to the next whitespace, less trailing
@@ -191,8 +210,8 @@ system prompt, and the read tools exist in `src/core/`, but no harness runs them
   and fails; a failed summary delete is logged and the conversation is gone. The workspace memento holds only the last
   provider and model choice and the id of the conversation shown. The list is derived from the directory, newest
   first, conversations without entries left out. It reads a conversation's summary, or its record when the summary is
-  missing, unreadable, invalid, of another id, or of another version than 1, and parses the record only then; only a
-  record that cannot be read is a listing failure. Accepted gap: a valid version-1 summary beside a corrupt or newer
+  missing, unreadable, invalid, of another id, or of another version than 2, and parses the record only then; only a
+  record that cannot be read is a listing failure. Accepted gap: a valid version-2 summary beside a corrupt or newer
   record (a crash right after a downgrade, or disk corruption) is listed, and opening it shows the usual not-found or
   invalid error. A summary without its record is not listed and is deleted at that listing. 50 conversations are
   kept: a save past the limit, and the window load, queue a prune with the navigation (below), which deletes the
@@ -202,15 +221,17 @@ system prompt, and the read tools exist in `src/core/`, but no harness runs them
   it has validated: a missing, invalid, or newer-version record is kept on disk and in the list and is logged, never
   shown as a failure, and the prune deletes the next oldest valid conversation instead, so 50 rows remain; the user can
   still delete its row.
-- The record is versioned (`version: 1`) and holds the displayed entries, each user entry with the text the model
-  received (`modelText`), so a reopened conversation resends exactly what was sent and never reads its mentions
-  again. It holds no API key and nothing else of `ProviderAccess`; a failed reply's error keeps the provider's base
+- The record is versioned (`version: 2`) and holds the displayed entries: user entries, each with the text the model
+  received (`modelText`), assistant entries, with an optional `call` locating the call block in the answer and, when
+  `halted`, its `haltReason`, and tool steps. A reopened conversation therefore resends exactly what was sent and
+  never reads its mentions again. Version 1 files are skipped like any unknown version: no release wrote them, so
+  none is migrated. It holds no API key and nothing else of `ProviderAccess`; a failed reply's error keeps the provider's base
   URL for display, since it is user settings, not a secret. Times are whole milliseconds within the `Date` range. A
   file that fails validation or has an unknown version is logged and skipped; a file that cannot be read is shown as
   a listing failure. On load, a reply still `waiting` or `streaming` becomes `stopped`.
 - A conversation is saved when a message is sent, and the request waits for that save (a failed save is shown and the
-  request still goes), then at most every 500 ms while the reply streams, and when the reply ends (done, stopped,
-  failed, or cut off). A reply's saves go to the record it was sent
+  request still goes), then at most every 500 ms while a reply streams, when a call starts, after each tool step, and
+  when the turn ends (done, stopped, failed, halted, or cut off). A reply's saves go to the record it was sent
   in, also after New chat or opening another one, and a deleted conversation is never written again. A conversation
   without entries is never written.
 - Navigation runs one operation at a time, in request order: restore, New chat (and `/new`, #11, through the same
