@@ -79,3 +79,16 @@ file. The parser's rule (one leading and one trailing line break, both or neithe
 
 **Considered.** Dropping one trailing line break whatever the leading one does would have fixed the 5 misses of the
 first cause only, leaving `qwen3.8` at 3/10 on the same replies.
+
+**Result.** On revision 6224b01, with the rule above, 10 runs per model:
+
+| Model                   | `read` | `edit` | `create` |
+| ----------------------- | ------ | ------ | -------- |
+| `qwen3.8:27b`           | 10/10  | 9/10   | 10/10    |
+| `gemma4:26b-a4b-it-qat` | 10/10  | 6/10   | 10/10    |
+
+`create` now passes all 20 runs, which confirms the parser rule of the amendment above and this one. `edit` is under
+the bar on `gemma4`. Its 4 misses, and the one of `qwen3.8`, are not about writes: the reply holds reasoning but no
+text, so the turn ends `done` before any edit and the file stays as it was. The same reply was 1 miss in 60 runs on
+0d6ebb7 (`gemma4` `read`) and is 5 in 60 here; between the two, the prompt changed only in the `write_file`
+description, so whether that wording or chance moved it is not known yet.
