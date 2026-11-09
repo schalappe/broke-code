@@ -112,6 +112,12 @@ export class ChatView implements vscode.WebviewViewProvider {
         });
       case "openSettings":
         return void vscode.commands.executeCommand("workbench.action.openSettings", "brokeCode.providers");
+      case "approve":
+        controller.approve(message.id);
+        return;
+      case "reject":
+        controller.reject(message.id, message.reason);
+        return;
     }
   }
 }

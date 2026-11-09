@@ -5,7 +5,7 @@
  * untrusted: `parseConversation` and `parseSummary` check every field and keep only known ones.
  */
 import type { MentionResult } from "./mentions";
-import type { ChatEntry, HaltReason, ReplyCall, ReplyStatus, ToolStepStatus } from "./protocol";
+import type { ChatEntry, HaltReason, ReplyCall, ReplyStatus, StepApproval, ToolStepStatus } from "./protocol";
 import type { ProviderError } from "./providerError";
 
 /** A user entry as saved: `modelText` is the text the model received, typed text plus mention blocks. */
@@ -139,6 +139,7 @@ export function conversationsOverLimit(summaries: readonly ConversationSummary[]
 const REPLY_STATUSES: readonly ReplyStatus[] = ["waiting", "streaming", "done", "stopped", "failed", "halted"];
 const HALT_REASONS: readonly HaltReason[] = ["malformedCalls", "stepLimit", "contextFull"];
 const TOOL_STEP_STATUSES: readonly ToolStepStatus[] = ["ok", "error", "malformed"];
+const STEP_APPROVALS: readonly StepApproval[] = ["accepted", "rejected", "auto"];
 const MENTION_KINDS: readonly string[] = ["file", "folder"];
 const MENTION_STATUSES: readonly string[] = [
   "attached",
@@ -184,8 +185,17 @@ function parseEntry(raw: unknown): StoredEntry | undefined {
   if (raw.role === "tool") {
     if (!isString(raw.name) || !isString(raw.text) || !isStringRecord(raw.args)) return undefined;
     if (!TOOL_STEP_STATUSES.includes(raw.status as ToolStepStatus)) return undefined;
+    if (raw.approval !== undefined && !STEP_APPROVALS.includes(raw.approval as StepApproval)) return undefined;
     const status = raw.status as ToolStepStatus;
-    return { role: "tool", name: raw.name, args: { ...raw.args }, status, text: raw.text };
+    const approval = raw.approval as StepApproval | undefined;
+    return {
+      role: "tool",
+      name: raw.name,
+      args: { ...raw.args },
+      status,
+      text: raw.text,
+      ...(approval !== undefined ? { approval } : {}),
+    };
   }
   return undefined;
 }

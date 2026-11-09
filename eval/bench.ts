@@ -12,18 +12,21 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { listModels, type ModelListing } from "../src/core/client";
 import { formatDuration, formatReport, type RunResult } from "./report";
-import { playScenario } from "./run";
-import { describeError, judge, SCENARIOS } from "./scenarios";
+import { playScenario, type RunOutcome } from "./run";
+import { describeError, judge, SCENARIOS, type Scenario, type Verdict, workspaceChanges } from "./scenarios";
 
 export const BENCH_MODELS = ["qwen3.8:27b", "gemma4:26b-a4b-it-qat"];
 const OLLAMA_URL = "http://localhost:11434/v1";
-/** Small, so a model that loops ends as a step limit after a few requests, not after 50. */
-const MAX_TOOL_STEPS = 6;
+/**
+ * Small, so a model that loops ends as a step limit after a few requests, not after 50; room for an edit's list, read,
+ * edit, and search, and for empty replies, which count as steps (ADR 0001).
+ */
+const MAX_TOOL_STEPS = 10;
 
 /**
  * `models`: `--model`, repeatable, else both bench models; a name given twice is played once, since the report scores
  * a model's runs together against the bar of one batch. `runs`: `--runs`, else 10. `dump`: `--dump <file>`, a JSON
- * Lines file each run's entries and verdict are appended to, for reading failed replies. Throws on any other flag.
+ * Lines file each run's `dumpLine` is appended to, for reading failed replies and writes. Throws on any other flag.
  */
 export function parseBenchArgs(args: string[]): { models: string[]; runs: number; dump: string | undefined } {
   const { values } = parseArgs({
@@ -74,6 +77,33 @@ export async function trimIncompleteLine(path: string): Promise<number> {
   return content.length - keep;
 }
 
+/**
+ * One run as a line of the dump: its model, scenario, run number from 1, verdict, and whole milliseconds, then its
+ * `entries` (tool steps with the arguments of their calls), `planned` (each change handed to the applier, in call
+ * order, with its status), and `changes` (the files that differ from the fixture after the run, see `workspaceChanges`).
+ */
+export function dumpLine(run: {
+  model: string;
+  scenario: Scenario;
+  run: number;
+  verdict: Verdict;
+  ms: number;
+  outcome: RunOutcome;
+}): string {
+  const { model, scenario, verdict, ms, outcome } = run;
+  const line = {
+    model,
+    scenario: scenario.name,
+    run: run.run + 1,
+    verdict,
+    ms: Math.round(ms),
+    entries: outcome.entries,
+    planned: outcome.planned,
+    changes: workspaceChanges(scenario.files, outcome.after),
+  };
+  return `${JSON.stringify(line)}\n`;
+}
+
 async function main(): Promise<number> {
   const { models, runs, dump } = parseBenchArgs(process.argv.slice(2));
 
@@ -104,16 +134,13 @@ async function main(): Promise<number> {
         for (let run = 0; run < runs; run += 1) {
           const runStarted = performance.now();
           const target = { baseUrl: OLLAMA_URL, model, maxToolSteps: MAX_TOOL_STEPS };
-          const { entries, after } = await playScenario(scenario, target, tmpRoot);
-          const verdict = judge(scenario, entries, after);
+          const outcome = await playScenario(scenario, target, tmpRoot);
+          const verdict = judge(scenario, outcome.entries, outcome.after);
           const ms = performance.now() - runStarted;
           results.push({ model, scenario: scenario.name, run, verdict, ms });
-          const outcome = verdict.pass ? "pass" : `${verdict.category}: ${verdict.detail}`;
-          console.error(`${model} ${scenario.name} ${run + 1}/${runs} ${formatDuration(ms)} ${outcome}`);
-          if (dump) {
-            const line = { model, scenario: scenario.name, run: run + 1, verdict, ms: Math.round(ms), entries };
-            await appendFile(dump, `${JSON.stringify(line)}\n`);
-          }
+          const shown = verdict.pass ? "pass" : `${verdict.category}: ${verdict.detail}`;
+          console.error(`${model} ${scenario.name} ${run + 1}/${runs} ${formatDuration(ms)} ${shown}`);
+          if (dump) await appendFile(dump, dumpLine({ model, scenario, run, verdict, ms, outcome }));
         }
       }
     }

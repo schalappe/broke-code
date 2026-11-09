@@ -46,7 +46,8 @@ body {
 }
 
 select,
-textarea {
+textarea,
+input {
   color: var(--vscode-input-foreground);
   background: var(--vscode-input-background);
   border: 1px solid var(--vscode-input-border, transparent);
@@ -68,6 +69,7 @@ select {
 
 select:focus,
 textarea:focus,
+input:focus,
 button:focus-visible {
   outline: 1px solid var(--vscode-focusBorder);
   outline-offset: -1px;
@@ -212,6 +214,11 @@ button.history-open:hover:not(:disabled) {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+/* `display: flex` above would otherwise win over the `hidden` attribute. */
+.conversation[hidden] {
+  display: none;
 }
 
 .message {
@@ -403,6 +410,22 @@ summary.step-row:focus-visible {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--vscode-errorForeground);
+}
+
+/* Approval: the reason field and Accept / Reject under the step row of a call waiting for the user. */
+.approval {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 0;
+  padding: 0;
+  border: none;
+}
+
+.approval-reason {
+  flex: 1 1 12em;
+  min-width: 0;
+  padding: 2px 4px;
 }
 
 .message .step-result {

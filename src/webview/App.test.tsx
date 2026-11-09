@@ -11,7 +11,9 @@ const posted: unknown[] = [];
 (globalThis as { acquireVsCodeApi?: () => { postMessage(message: unknown): void } }).acquireVsCodeApi = () => ({
   postMessage: (message) => posted.push(message),
 });
-const { App, ContextNotice, ConversationList, Header, HistoryPanel, MentionMenu } = await import("./App");
+const { App, ApprovalControls, ContextNotice, ConversationList, Header, HistoryPanel, MentionMenu } = await import(
+  "./App"
+);
 const { moveHighlight } = await import("./SuggestionMenu");
 
 type Reply = ChatEntry & { role: "assistant" };
@@ -224,6 +226,159 @@ describe("agent turn", () => {
     ]);
     expect(html).toContain("Stopped: the conversation fills the model&#x27;s context. Start a new chat with New chat.");
     expect(html).not.toContain("Waiting for the reply…");
+  });
+});
+
+describe("approval", () => {
+  const answer = "Renaming.\n<write_file>\n<path>src/a.ts</path>\n<content>\nx\n</content>\n</write_file>";
+  const writing: ChatEntry = {
+    role: "assistant",
+    reasoning: "",
+    content: answer,
+    status: "streaming",
+    call: { name: "write_file", args: { path: "src/a.ts", content: "x" }, start: 10, end: answer.length },
+  };
+  const approval = { id: 7, tool: "write_file", summary: "src/a.ts" };
+  const turn = (entries: ChatEntry[], open = true) =>
+    renderToStaticMarkup(
+      <App
+        state={stateWith(true, {
+          entries: [{ role: "user", content: "Hi", mentions: [] }, ...entries],
+          ...(open ? { approval } : {}),
+        })}
+        language="en"
+      />,
+    );
+
+  test("an open request shows its row waiting for a decision, Accept, Reject, and a reason field, beside Stop", () => {
+    const html = turn([writing]);
+    expect(html).toContain("waiting for your decision");
+    expect(html).not.toContain("running…");
+    expect(html).toContain(">Accept<");
+    expect(html).toContain(">Reject<");
+    expect(html).toContain('placeholder="Reason for rejecting (optional)"');
+    expect(html).toContain(">Stop<");
+  });
+
+  test("without an open request, a running call shows no decision buttons", () => {
+    const html = turn([writing], false);
+    expect(html).toContain("running…");
+    expect(html).not.toContain(">Accept<");
+  });
+
+  test("the buttons belong to the reply in flight only, never to an earlier one", () => {
+    const html = turn([{ ...writing, status: "stopped" }]);
+    expect(html).not.toContain(">Accept<");
+    expect(html).toContain("stopped, no result");
+  });
+
+  test("Accept posts the request id; Reject posts it with the reason typed, trimmed, or none when blank", () => {
+    const controls = (reason: string) => ApprovalControls({ approval, reason, setReason: () => {} });
+    button(controls(""), "Accept").props.onClick!();
+    button(controls("  Keep the old name. "), "Reject").props.onClick!();
+    button(controls("   "), "Reject").props.onClick!();
+    expect(posted).toEqual([
+      { type: "approve", id: 7 },
+      { type: "reject", id: 7, reason: "Keep the old name." },
+      { type: "reject", id: 7 },
+    ]);
+  });
+
+  test("Enter in the reason field rejects with the reason; other keys and Enter while composing (IME) do not", () => {
+    const field = elements(ApprovalControls({ approval, reason: " Too broad. ", setReason: () => {} })).find(
+      (element) => element.type === "input",
+    );
+    if (!field) throw new Error("no reason field");
+    const onKeyDown = field.props.onKeyDown as (event: unknown) => void;
+    const prevented: string[] = [];
+    const press = (key: string, isComposing = false) =>
+      onKeyDown({ key, nativeEvent: { isComposing }, preventDefault: () => prevented.push(key) });
+
+    press("a");
+    press("Escape");
+    press("Enter", true);
+    expect(posted).toEqual([]);
+    expect(prevented).toEqual([]);
+
+    press("Enter");
+    expect(posted).toEqual([{ type: "reject", id: 7, reason: "Too broad." }]);
+    expect(prevented).toEqual(["Enter"]);
+  });
+
+  test("the reason typed survives opening and closing History, and Reject still carries it", async () => {
+    const { GlobalRegistrator } = await import("@happy-dom/global-registrator");
+    const { act, createElement } = await import("react");
+    GlobalRegistrator.register();
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    try {
+      const { createRoot } = await import("react-dom/client");
+      const host = document.createElement("div");
+      document.body.append(host);
+      const root = createRoot(host);
+      const state = stateWith(true, {
+        entries: [{ role: "user", content: "Hi", mentions: [] }, writing],
+        approval,
+      });
+      await act(async () => root.render(createElement(App, { state, language: "en" })));
+
+      const field = host.querySelector<HTMLInputElement>("input.approval-reason");
+      if (!field) throw new Error("no reason field");
+      // [&]: React tracks the value property; set it through the prototype setter so the input event registers.
+      const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      await act(async () => {
+        setValue?.call(field, "Keep the old name.");
+        field.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+
+      const click = async (label: string) => {
+        const target = [...host.querySelectorAll("button")].find((element) => element.textContent === label);
+        if (!target) throw new Error(`no ${label} button`);
+        await act(async () => target.click());
+      };
+      await click("History");
+      await click("History");
+
+      expect(host.querySelector<HTMLInputElement>("input.approval-reason")?.value).toBe("Keep the old name.");
+      await click("Reject");
+      expect(posted).toEqual([{ type: "reject", id: 7, reason: "Keep the old name." }]);
+      await act(async () => root.unmount());
+    } finally {
+      GlobalRegistrator.unregister();
+    }
+  });
+
+  test("a rejected step says so; an auto-approved one says so beside its status", () => {
+    const rejected = turn(
+      [
+        { ...writing, status: "done" },
+        {
+          role: "tool",
+          name: "write_file",
+          args: { path: "src/a.ts", content: "x" },
+          status: "error",
+          text: "The user rejected this change.\nKeep it.",
+          approval: "rejected",
+        },
+      ],
+      false,
+    );
+    expect(rejected).toContain("rejected");
+    expect(rejected).not.toContain("error, 2 lines");
+    const auto = turn(
+      [
+        { ...writing, status: "done" },
+        {
+          role: "tool",
+          name: "write_file",
+          args: { path: "src/a.ts", content: "x" },
+          status: "ok",
+          text: "write_file: replaced src/a.ts.",
+          approval: "auto",
+        },
+      ],
+      false,
+    );
+    expect(auto).toContain("auto-approved, ok, 1 line");
   });
 });
 

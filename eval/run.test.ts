@@ -6,7 +6,7 @@ import { composeSystemPrompt } from "../src/core/systemPrompt";
 import { READ_TOOLS } from "../src/core/tools";
 import { WRITE_TOOLS } from "../src/core/writeTools";
 import { playScenario } from "./run";
-import { judge, READ_SCENARIO, type Scenario } from "./scenarios";
+import { CREATE_SCENARIO, EDIT_SCENARIO, judge, READ_SCENARIO, type Scenario } from "./scenarios";
 
 const event = (content: string) => `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`;
 const READ_CALL = "<read_file>\n<path>config/settings.toml</path>\n</read_file>";
@@ -60,6 +60,70 @@ describe("playScenario", () => {
 
     expect(entries[2]).toMatchObject({ role: "tool", name: "write_file", status: "ok" });
     expect(after["notes/new.toml"]).toBe(`${content}\n`);
+  });
+
+  test("returns each change handed to the applier, in call order, with the applier's status", async () => {
+    replies = [
+      "<write_file>\n<path>notes/a.txt</path>\n<content>\none\n</content>\n</write_file>",
+      "<edit_file>\n<path>notes/a.txt</path>\n<old>one</old>\n<new>two</new>\n</edit_file>",
+      "<write_file>\n<path>notes/a.txt</path>\n<content>\none\n</content>\n</write_file>",
+      "Done.",
+    ];
+    const { planned, after } = await playScenario(READ_SCENARIO, { baseUrl, model: "m", maxToolSteps: 6 }, parent);
+
+    expect(planned).toEqual([
+      { tool: "write_file", path: "notes/a.txt", before: null, after: "one\n", status: "ok" },
+      { tool: "edit_file", path: "notes/a.txt", before: "one\n", after: "two\n", status: "ok" },
+      { tool: "write_file", path: "notes/a.txt", before: "two\n", after: "one\n", status: "ok" },
+    ]);
+    expect(after["notes/a.txt"]).toBe("one\n");
+  });
+
+  test("records no change for a call refused before planning", async () => {
+    replies = ["<edit_file>\n<path>README.md</path>\n<old>absent text</old>\n<new>x</new>\n</edit_file>", "Done."];
+    const { entries, planned } = await playScenario(READ_SCENARIO, { baseUrl, model: "m", maxToolSteps: 6 }, parent);
+
+    expect(entries[2]).toMatchObject({ role: "tool", name: "edit_file", status: "error" });
+    expect(planned).toEqual([]);
+  });
+
+  test("reads back a file named __proto__ the turn wrote, so the judge sees the unrequested file", async () => {
+    replies = ["<write_file>\n<path>__proto__</path>\n<content>\nx\n</content>\n</write_file>", "Done."];
+    const { entries, after } = await playScenario(EDIT_SCENARIO, { baseUrl, model: "m", maxToolSteps: 6 }, parent);
+
+    expect(Object.hasOwn(after, "__proto__")).toBe(true);
+    expect(judge({ ...EDIT_SCENARIO, writes: {} }, entries, after)).toEqual({
+      pass: false,
+      category: "workspaceChanged",
+      detail: "changed: __proto__",
+    });
+  });
+
+  test("passes the edit scenario on an edit_file call that renames the function", async () => {
+    const old = "def compute_surcharge_v2(distance_km):";
+    const edit = `<edit_file>\n<path>src/pricing.py</path>\n<old>${old}</old>\n<new>def distance_surcharge(distance_km):</new>\n</edit_file>`;
+    replies = [edit, "Renamed."];
+    const { entries, after } = await playScenario(EDIT_SCENARIO, { baseUrl, model: "m", maxToolSteps: 6 }, parent);
+
+    expect(entries[2]).toMatchObject({ role: "tool", name: "edit_file", status: "ok" });
+    expect(judge(EDIT_SCENARIO, entries, after)).toEqual({ pass: true });
+  });
+
+  test("passes the create scenario on a write_file call that holds the content raw, tags and fences included", async () => {
+    const [path, text] = Object.entries(CREATE_SCENARIO.writes)[0] ?? ["", ""];
+    replies = [`<write_file>\n<path>${path}</path>\n<content>\n${text}</content>\n</write_file>`, "Created."];
+    const { entries, after } = await playScenario(CREATE_SCENARIO, { baseUrl, model: "m", maxToolSteps: 6 }, parent);
+
+    expect(entries[2]).toMatchObject({ role: "tool", name: "write_file", status: "ok" });
+    expect(judge(CREATE_SCENARIO, entries, after)).toEqual({ pass: true });
+  });
+
+  test("passes the create scenario when the content opens on the tag's line and ends with an empty line", async () => {
+    const [path, text] = Object.entries(CREATE_SCENARIO.writes)[0] ?? ["", ""];
+    replies = [`<write_file>\n<path>${path}</path>\n<content>${text}\n</content>\n</write_file>`, "Created."];
+    const { entries, after } = await playScenario(CREATE_SCENARIO, { baseUrl, model: "m", maxToolSteps: 6 }, parent);
+
+    expect(judge(CREATE_SCENARIO, entries, after)).toEqual({ pass: true });
   });
 
   test("halts at the step limit it is given", async () => {

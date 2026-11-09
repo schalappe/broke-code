@@ -92,6 +92,12 @@
           "default": 50,
           "minimum": 1,
           "markdownDescription": "%config.maxToolSteps.description%"
+        },
+        "brokeCode.autoApproveWrites": {
+          "type": "boolean",
+          "scope": "application",
+          "default": false,
+          "markdownDescription": "%config.autoApproveWrites.description%"
         }
       }
     }
@@ -113,6 +119,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.6",
+    "@happy-dom/global-registrator": "21.0.4",
     "@types/bun": "1.4.4",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",

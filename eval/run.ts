@@ -1,7 +1,7 @@
 /**
  * @module run
  * One run of a scenario: the chat controller the extension runs, hosted through its ports with the read and write tools
- * over a throwaway copy of the fixture under the system temporary directory, each write applied at once, no
+ * over a throwaway copy of the fixture under the system temporary directory, each write applied at once and recorded, no
  * instruction file, no skill, an in-memory conversation store, and the bench's step limit. The copy is removed when
  * the run ends, also when it throws.
  */
@@ -12,8 +12,9 @@ import { ChatController, type ChoiceStore } from "../src/core/chatController";
 import { ConversationStore } from "../src/core/conversationStore";
 import { DEFAULT_CONTEXT_SIZE, parseLimits } from "../src/core/limits";
 import type { ChatEntry } from "../src/core/protocol";
-import { READ_TOOLS, ripgrepCandidates, runReadTool } from "../src/core/tools";
-import { fileApplier, runWriteTool, WRITE_TOOLS } from "../src/core/writeTools";
+import { workspaceToolRunner } from "../src/core/toolRunner";
+import { ripgrepCandidates } from "../src/core/tools";
+import { type ChangeApplier, fileApplier, type PlannedChange } from "../src/core/writeTools";
 import type { Scenario, WorkspaceFiles } from "./scenarios";
 
 /**
@@ -22,8 +23,20 @@ import type { Scenario, WorkspaceFiles } from "./scenarios";
  */
 export type RunTarget = { baseUrl: string; model: string; maxToolSteps: number };
 
-/** What the bench reads after a run: the conversation's entries and the workspace copy's files. */
-export type RunOutcome = { entries: ChatEntry[]; after: WorkspaceFiles };
+/**
+ * A change a write tool handed to the applier, as the dump records it: `before` is `null` for a new file, `status` the
+ * applier's result. `target` is left out: it names the throwaway copy, removed once the run ends.
+ */
+export type AppliedChange = Omit<PlannedChange, "target" | "before"> & {
+  before: string | null;
+  status: "ok" | "error";
+};
+
+/**
+ * What the bench reads after a run: the conversation's entries, each change handed to the applier in call order, and
+ * the workspace copy's files.
+ */
+export type RunOutcome = { entries: ChatEntry[]; planned: AppliedChange[]; after: WorkspaceFiles };
 
 /**
  * Play `scenario` once on `target`: copy its fixture under `tmpRoot`, send its message, and wait for the agent turn to
@@ -31,6 +44,7 @@ export type RunOutcome = { entries: ChatEntry[]; after: WorkspaceFiles };
  */
 export async function playScenario(scenario: Scenario, target: RunTarget, tmpRoot = tmpdir()): Promise<RunOutcome> {
   const copy = await mkdtemp(join(tmpRoot, "broke-code-eval-"));
+  const planned: AppliedChange[] = [];
   try {
     await writeWorkspace(copy, scenario.files);
     // [>]: The tools compare resolved paths; on macOS the temporary directory sits behind the /var symlink.
@@ -51,13 +65,11 @@ export async function playScenario(scenario: Scenario, target: RunTarget, tmpRoo
         },
       },
       store: new ConversationStore(undefined),
-      tools: {
-        tools: [...READ_TOOLS, ...WRITE_TOOLS],
-        run: (call, { signal }) =>
-          WRITE_TOOLS.some((tool) => tool.name === call.name)
-            ? runWriteTool(call, [root], fileApplier([root]), signal)
-            : runReadTool(call, [root], toolEnv, signal),
-      },
+      tools: workspaceToolRunner(
+        () => [root],
+        toolEnv,
+        (roots) => recording(fileApplier(roots), planned),
+      ),
       instructions: { read: async () => [] },
       skills: { read: async () => ({ skills: [], warnings: [] }) },
       limits: { read: () => limits },
@@ -74,10 +86,20 @@ export async function playScenario(scenario: Scenario, target: RunTarget, tmpRoo
     }
 
     await controller.send(scenario.message);
-    return { entries: controller.snapshot.entries, after: await readWorkspace(copy) };
+    return { entries: controller.snapshot.entries, planned, after: await readWorkspace(copy) };
   } finally {
     await rm(copy, { recursive: true, force: true });
   }
+}
+
+/** `apply`, appending each change it is handed and its result's status to `planned`. */
+function recording(apply: ChangeApplier, planned: AppliedChange[]): ChangeApplier {
+  return async (change) => {
+    const result = await apply(change);
+    const { tool, path, before, after } = change;
+    planned.push({ tool, path, before: before ?? null, after, status: result.status });
+    return result;
+  };
 }
 
 async function writeWorkspace(directory: string, files: WorkspaceFiles): Promise<void> {
@@ -90,7 +112,8 @@ async function writeWorkspace(directory: string, files: WorkspaceFiles): Promise
 
 /** Every regular file under `directory`, by POSIX path relative to it. */
 async function readWorkspace(directory: string): Promise<WorkspaceFiles> {
-  const files: WorkspaceFiles = {};
+  // [!]: Null prototype: a file named `__proto__` must land as a path, not reach the setter.
+  const files: WorkspaceFiles = Object.create(null);
   for (const entry of await readdir(directory, { recursive: true, withFileTypes: true })) {
     if (!entry.isFile()) continue;
     const file = join(entry.parentPath, entry.name);

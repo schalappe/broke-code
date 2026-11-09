@@ -16,9 +16,10 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { ApprovalRequest, Decision } from "./approval";
 import type { ToolResult } from "./tools";
 import type { WorkspaceRoot } from "./workspaceFiles";
-import { fileApplier, type PlannedChange, runWriteTool } from "./writeTools";
+import { approvalApplier, fileApplier, type PlannedChange, runWriteTool, type WriteApprovalHost } from "./writeTools";
 
 // [>]: `tmpdir()` sits under /var, a symlink to /private/var on macOS: every root here has a real path that differs
 // from its path, as a workspace opened through a symlink would.
@@ -87,6 +88,17 @@ describe("write_file", () => {
     expect(await readFile(join(app.path, "whole.txt"), "utf8")).toBe("new\n");
     await run("write_file", { path: "whole.txt", content: "" });
     expect(await readFile(join(app.path, "whole.txt"), "utf8")).toBe("");
+  });
+
+  test("drops every trailing line break of the content, then ends the file with exactly one", async () => {
+    await run("write_file", { path: "trail.md", content: "a\n```\n\n\n" });
+    expect(await readFile(join(app.path, "trail.md"), "utf8")).toBe("a\n```\n");
+    await run("write_file", { path: "trail-crlf.md", content: "a\r\nb\r\n\r\n" });
+    expect(await readFile(join(app.path, "trail-crlf.md"), "utf8")).toBe("a\r\nb\r\n");
+    await run("write_file", { path: "trail-crlf-cut.md", content: "a\r\nb" });
+    expect(await readFile(join(app.path, "trail-crlf-cut.md"), "utf8")).toBe("a\r\nb\r\n");
+    await run("write_file", { path: "trail-only.md", content: "\n\r\n\n" });
+    expect(await readFile(join(app.path, "trail-only.md"), "utf8")).toBe("");
   });
 
   test("refuses a binary target, a target over 1 MiB, and content over 1 MiB with the read tools' wording", async () => {
@@ -426,5 +438,124 @@ describe("fileApplier", () => {
     );
     expect(result).toEqual({ status: "error", text: "write_file: stopped before it finished." });
     expect(handed).toBe(false);
+  });
+});
+
+describe("approvalApplier", () => {
+  /**
+   * Runs write tool `name` through `approvalApplier` over `fileApplier`, answering its request with `decide`. Records
+   * each request, the previews opened, and the unsaved checks; `unsaved` answers them in order, the last one repeated.
+   */
+  async function ask(
+    name: string,
+    args: Record<string, string>,
+    decide: (request: ApprovalRequest) => Promise<Decision>,
+    unsaved: boolean[] = [false],
+  ) {
+    const requests: ApprovalRequest[] = [];
+    const previewed: PlannedChange[] = [];
+    const checked: string[] = [];
+    const host: WriteApprovalHost = {
+      preview: async (change) => {
+        previewed.push(change);
+        return { close: async () => {} };
+      },
+      hasUnsavedChanges: async (target) => {
+        checked.push(target);
+        return unsaved[Math.min(checked.length, unsaved.length) - 1] ?? false;
+      },
+    };
+    const apply = approvalApplier(fileApplier([app]), host, async (request) => {
+      requests.push(request);
+      return decide(request);
+    });
+    const result = await runWriteTool({ name, args }, [app], apply, new AbortController().signal);
+    return { result, requests, previewed, checked };
+  }
+
+  test("asks with the write's tool and path, its preview showing the planned change, and writes on Accept", async () => {
+    await writeFile(join(app.path, "asked.txt"), "old\n");
+    const { result, requests, previewed } = await ask(
+      "edit_file",
+      { path: "./asked.txt", old: "old", new: "new" },
+      async (request) => {
+        await request.preview?.();
+        return { kind: "accept" };
+      },
+    );
+    expect(requests).toMatchObject([{ kind: "write", tool: "edit_file", summary: "asked.txt" }]);
+    expect(previewed).toMatchObject([{ tool: "edit_file", before: "old\n", after: "new\n" }]);
+    expect(result).toEqual({ status: "ok", text: "edit_file: replaced the passage in asked.txt." });
+    expect(await readFile(join(app.path, "asked.txt"), "utf8")).toBe("new\n");
+  });
+
+  test("a rejection writes nothing and gives the rejection, with the reason on its own line when given", async () => {
+    await writeFile(join(app.path, "kept.txt"), "old\n");
+    const args = { path: "kept.txt", content: "new" };
+    const withReason = await ask("write_file", args, async () => ({ kind: "reject", reason: "Keep the old name." }));
+    expect(withReason.result).toEqual({
+      status: "error",
+      text: "The user rejected this change.\nKeep the old name.",
+    });
+    const without = await ask("write_file", args, async () => ({ kind: "reject" }));
+    expect(without.result).toEqual({ status: "error", text: "The user rejected this change." });
+    expect(await readFile(join(app.path, "kept.txt"), "utf8")).toBe("old\n");
+  });
+
+  test("a cancelled request writes nothing and says the tool stopped", async () => {
+    const { result } = await ask("write_file", { path: "cancelled.txt", content: "x" }, async () => ({
+      kind: "cancel",
+    }));
+    expect(result).toEqual({ status: "error", text: "write_file: stopped before it finished." });
+    expect(existsSync(join(app.path, "cancelled.txt"))).toBe(false);
+  });
+
+  test("a file with unsaved changes in an editor is refused before any request, writing nothing", async () => {
+    await writeFile(join(app.path, "dirty.txt"), "old\n");
+    const { result, requests, checked } = await ask(
+      "write_file",
+      { path: "dirty.txt", content: "new" },
+      async () => ({ kind: "accept" }),
+      [true],
+    );
+    expect(requests).toEqual([]);
+    expect(checked).toEqual([join(app.path, "dirty.txt")]);
+    expect(result).toEqual({
+      status: "error",
+      text: "write_file: dirty.txt: the file has unsaved changes in the editor. Nothing was written; ask the user to save or revert them first.",
+    });
+    expect(await readFile(join(app.path, "dirty.txt"), "utf8")).toBe("old\n");
+  });
+
+  test("a file edited in an editor while the request waits is refused on Accept, writing nothing", async () => {
+    await writeFile(join(app.path, "dirty-later.txt"), "old\n");
+    const { result, requests, checked } = await ask(
+      "write_file",
+      { path: "dirty-later.txt", content: "new" },
+      async () => ({ kind: "accept" }),
+      [false, true],
+    );
+    expect(requests).toHaveLength(1);
+    expect(checked).toHaveLength(2);
+    expect(result.status).toBe("error");
+    expect(result.text).toContain("the file has unsaved changes in the editor");
+    expect(await readFile(join(app.path, "dirty-later.txt"), "utf8")).toBe("old\n");
+  });
+
+  test("a request that fails, such as a preview that cannot open, writes nothing and says so, logged", async () => {
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { result } = await ask("write_file", { path: "unshown.txt", content: "x" }, async () => {
+        throw new Error("no editor");
+      });
+      expect(result).toEqual({
+        status: "error",
+        text: "write_file: unshown.txt: the change could not be shown for approval (Error: no editor). Nothing was written.",
+      });
+      expect(existsSync(join(app.path, "unshown.txt"))).toBe(false);
+      expect(logged).toHaveBeenCalled();
+    } finally {
+      logged.mockRestore();
+    }
   });
 });

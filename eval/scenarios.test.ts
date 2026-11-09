@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ChatEntry } from "../src/core/protocol";
-import { judge, READ_SCENARIO } from "./scenarios";
+import { CREATE_SCENARIO, EDIT_SCENARIO, judge, READ_SCENARIO, SCENARIOS, workspaceChanges } from "./scenarios";
 
 const VALUE = "kestrel-4471-vanta";
 const user: ChatEntry = { role: "user", content: READ_SCENARIO.message, mentions: [] };
@@ -140,5 +140,214 @@ describe("judge on the read scenario", () => {
   test("throws on a turn that never ended, since the bench never stops one", () => {
     const entries: ChatEntry[] = [user, { ...answer("Partial"), status: "stopped" }];
     expect(() => judge(READ_SCENARIO, entries, untouched)).toThrow("stopped");
+  });
+});
+
+const PRICING = "src/pricing.py";
+const OLD_NAME = "compute_surcharge_v2";
+const NEW_NAME = "distance_surcharge";
+const editUser: ChatEntry = { role: "user", content: EDIT_SCENARIO.message, mentions: [] };
+const editCall: Reply = {
+  role: "assistant",
+  reasoning: "",
+  content: "<edit_file>…</edit_file>",
+  status: "done",
+  call: { name: "edit_file", args: { path: PRICING, old: OLD_NAME, new: NEW_NAME }, start: 0, end: 0 },
+};
+const editStep: ChatEntry = {
+  role: "tool",
+  name: "edit_file",
+  args: { path: PRICING, old: OLD_NAME, new: NEW_NAME },
+  status: "ok",
+  text: `edit_file: replaced the passage in ${PRICING}.`,
+};
+const edited = [editUser, editCall, editStep, answer(`Renamed ${OLD_NAME} to ${NEW_NAME}.`)];
+const pricingBefore = EDIT_SCENARIO.files[PRICING] ?? "";
+const renamed = { ...EDIT_SCENARIO.files, [PRICING]: pricingBefore.replace(OLD_NAME, NEW_NAME) };
+
+describe("edit scenario fixture", () => {
+  test("names the identifier once, on one line, so exactly that line changes", () => {
+    expect(pricingBefore.split(OLD_NAME)).toHaveLength(2);
+    expect(pricingBefore).not.toContain(NEW_NAME);
+    expect(EDIT_SCENARIO.message).toContain(OLD_NAME);
+    expect(EDIT_SCENARIO.message).toContain(NEW_NAME);
+    expect(EDIT_SCENARIO.writes[PRICING]).toBe(
+      pricingBefore.replace(`def ${OLD_NAME}(distance_km):`, `def ${NEW_NAME}(distance_km):`),
+    );
+  });
+});
+
+describe("judge on the edit scenario", () => {
+  test("passes a done turn that renamed the identifier and changed nothing else", () => {
+    expect(judge(EDIT_SCENARIO, edited, renamed)).toEqual({ pass: true });
+  });
+
+  test("passes a whole-file rewrite that leaves the same bytes", () => {
+    const step: ChatEntry = { role: "tool", name: "write_file", args: {}, status: "ok", text: "write_file: replaced." };
+    expect(judge(EDIT_SCENARIO, [editUser, editCall, step, answer("Done.")], renamed)).toEqual({ pass: true });
+  });
+
+  test("wrongEdit: the line changed but another byte of the file did too, with the first differing line", () => {
+    const sloppy = { ...renamed, [PRICING]: `${renamed[PRICING]}\n` };
+    const verdict = judge(EDIT_SCENARIO, edited, sloppy);
+    expect(verdict).toMatchObject({ pass: false, category: "wrongEdit", detail: expect.stringContaining(PRICING) });
+    const reformatted = { ...renamed, [PRICING]: (renamed[PRICING] ?? "").replace("    return 0.1", "  return 0.1") };
+    expect(judge(EDIT_SCENARIO, edited, reformatted)).toMatchObject({
+      category: "wrongEdit",
+      detail: `${PRICING} line 15: expected "    return 0.1 * distance_km", got "  return 0.1 * distance_km"`,
+    });
+  });
+
+  test("wrongEdit: the file was left as it was, even when the rename went to another file", () => {
+    expect(judge(EDIT_SCENARIO, edited, EDIT_SCENARIO.files)).toMatchObject({ pass: false, category: "wrongEdit" });
+    const elsewhere = { ...EDIT_SCENARIO.files, "pricing.py": renamed[PRICING] ?? "" };
+    expect(judge(EDIT_SCENARIO, edited, elsewhere)).toMatchObject({
+      category: "wrongEdit",
+      detail: expect.stringContaining("pricing.py"),
+    });
+  });
+
+  test("workspaceChanged: the rename is right but another file changed", () => {
+    const extra = { ...renamed, "src/main.py": "" };
+    expect(judge(EDIT_SCENARIO, edited, extra)).toMatchObject({
+      pass: false,
+      category: "workspaceChanged",
+      detail: "changed: src/main.py",
+    });
+  });
+
+  test("a turn that did not end done fails on its own category, whatever the file holds", () => {
+    const halted = [...edited.slice(0, -1), { ...answer(""), status: "halted", haltReason: "stepLimit" } as Reply];
+    expect(judge(EDIT_SCENARIO, halted, renamed)).toMatchObject({ pass: false, category: "stepLimit" });
+    const failed = [...edited.slice(0, -1), { ...answer(""), status: "failed" } as Reply];
+    expect(judge(EDIT_SCENARIO, failed, renamed)).toMatchObject({ pass: false, category: "providerError" });
+  });
+
+  test("malformed: a wrong edit after a malformed call", () => {
+    const entries: ChatEntry[] = [
+      editUser,
+      answer("<edit_file>\n<path>src/pricing.py</path>"),
+      { role: "tool", name: "edit_file", args: {}, status: "malformed", text: "<edit_file> is not closed." },
+      answer("I could not edit the file."),
+    ];
+    expect(judge(EDIT_SCENARIO, entries, EDIT_SCENARIO.files)).toMatchObject({
+      pass: false,
+      category: "malformed",
+      detail: expect.stringContaining(PRICING),
+    });
+  });
+});
+
+const NOTE = "docs/call-format.md";
+const noteText = CREATE_SCENARIO.writes[NOTE] ?? "";
+const createUser: ChatEntry = { role: "user", content: CREATE_SCENARIO.message, mentions: [] };
+const writeStep: ChatEntry = {
+  role: "tool",
+  name: "write_file",
+  args: { path: NOTE, content: noteText.slice(0, -1) },
+  status: "ok",
+  text: `write_file: created ${NOTE}.`,
+};
+const created = [createUser, callReply("write_file", NOTE), writeStep, answer(`Created ${NOTE}.`)];
+const withNote = { ...CREATE_SCENARIO.files, [NOTE]: noteText };
+
+describe("create scenario fixture", () => {
+  test("asks for a new file holding quotes, backslashes, the call's own tags, and a code fence", () => {
+    expect(CREATE_SCENARIO.files[NOTE]).toBeUndefined();
+    for (const piece of ['"', "\\", "<content>", "</content>", "</write_file>", "\n```python\n"]) {
+      expect(noteText).toContain(piece);
+    }
+  });
+
+  test("states the content in the message, so the expected file is that text plus one line break", () => {
+    const fence = "````";
+    const stated = CREATE_SCENARIO.message.split(`${fence}\n`)[1]?.split(`\n${fence}`)[0];
+    expect(stated).toBeDefined();
+    expect(`${stated}\n`).toBe(noteText);
+  });
+});
+
+describe("judge on the create scenario", () => {
+  test("passes a done turn that created the file with exactly that content", () => {
+    expect(judge(CREATE_SCENARIO, created, withNote)).toEqual({ pass: true });
+  });
+
+  test("wrongEdit: the content has its backslashes doubled, with the first differing line", () => {
+    const doubled = { ...withNote, [NOTE]: noteText.replaceAll("\\", "\\\\") };
+    expect(judge(CREATE_SCENARIO, created, doubled)).toMatchObject({
+      pass: false,
+      category: "wrongEdit",
+      detail: expect.stringMatching(/^docs\/call-format\.md line \d+: expected /),
+    });
+  });
+
+  test("wrongEdit: the file is missing, or went to another path, which the detail names", () => {
+    expect(judge(CREATE_SCENARIO, created, CREATE_SCENARIO.files)).toMatchObject({
+      category: "wrongEdit",
+      detail: `${NOTE} missing`,
+    });
+    const elsewhere = { ...CREATE_SCENARIO.files, "call-format.md": noteText };
+    expect(judge(CREATE_SCENARIO, created, elsewhere)).toMatchObject({
+      category: "wrongEdit",
+      detail: `${NOTE} missing; changed: call-format.md`,
+    });
+  });
+
+  test("workspaceChanged: the file is right but a fixture file changed too", () => {
+    const extra = { ...withNote, "README.md": "# Courier\n" };
+    expect(judge(CREATE_SCENARIO, created, extra)).toMatchObject({
+      pass: false,
+      category: "workspaceChanged",
+      detail: "changed: README.md",
+    });
+  });
+
+  test("a turn that did not end done fails on its own category, whatever the file holds", () => {
+    const halted = [...created.slice(0, -1), { ...answer(""), status: "halted", haltReason: "contextFull" } as Reply];
+    expect(judge(CREATE_SCENARIO, halted, withNote)).toMatchObject({ pass: false, category: "contextFull" });
+  });
+});
+
+test("SCENARIOS holds read, edit, and create, in that order", () => {
+  expect(SCENARIOS.map((scenario) => scenario.name)).toEqual(["read", "edit", "create"]);
+});
+
+describe("workspaceChanges", () => {
+  test("gives each added or changed file its new text and each removed one null, by path", () => {
+    const fixture = { "a.txt": "a\n", "b.txt": "b\n", "c.txt": "c\n" };
+    const after = { "a.txt": "a\n", "c.txt": "C\n", "d/e.txt": "" };
+    expect(workspaceChanges(fixture, after)).toEqual({ "b.txt": null, "c.txt": "C\n", "d/e.txt": "" });
+    expect(workspaceChanges(fixture, { ...fixture })).toEqual({});
+  });
+
+  test("records a file named __proto__ like any other: added, changed, or removed", () => {
+    const withProto = JSON.parse('{"__proto__": "x\\n"}') as Record<string, string>;
+    expect(Object.entries(workspaceChanges({}, withProto))).toEqual([["__proto__", "x\n"]]);
+    expect(Object.entries(workspaceChanges(withProto, {}))).toEqual([["__proto__", null]]);
+    expect(Object.entries(workspaceChanges(withProto, { ...withProto }))).toEqual([]);
+  });
+});
+
+describe("judge on a file named __proto__", () => {
+  const done = [answer("Done.")];
+  const expected = { ...CREATE_SCENARIO.files, ...CREATE_SCENARIO.writes };
+  const proto = JSON.parse('{"__proto__": "unrequested file\\n"}') as Record<string, string>;
+
+  test("workspaceChanged: the files asked for are right but a file named __proto__ appeared", () => {
+    expect(judge(CREATE_SCENARIO, done, { ...expected, ...proto })).toMatchObject({
+      pass: false,
+      category: "workspaceChanged",
+      detail: "changed: __proto__",
+    });
+  });
+
+  test("wrongEdit: a scenario asking for a file named __proto__ that is missing", () => {
+    const scenario = { ...CREATE_SCENARIO, writes: proto };
+    expect(judge(scenario, done, CREATE_SCENARIO.files)).toMatchObject({
+      pass: false,
+      category: "wrongEdit",
+      detail: "__proto__ missing",
+    });
+    expect(judge(scenario, done, { ...CREATE_SCENARIO.files, ...proto })).toEqual({ pass: true });
   });
 });

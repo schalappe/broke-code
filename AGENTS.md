@@ -10,13 +10,12 @@ tool call in the text of its reply, and the extension parses and runs the call. 
 covers the agent loop over the reply text, skills, and slash commands, in a minimal chat panel styled after
 twinny.
 
-The code so far covers the extension skeleton, a streaming chat with a provider, and the harness with the read tools:
-a message starts an agent turn that runs `read_file`, `list_files`, and `search` until the model answers without a
-call. Each send discovers the skills and lists them to the model. `bun run eval` measures that loop on local Ollama
-models. `write_file` and `edit_file` exist in the core and the eval, which applies each change at once; the extension
-does not list them until the approval flow (#37) lands. `run_command`, `load_skill`, and slash commands are not built
-yet. Read
-`GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the decisions behind the design, starting with
+The code so far covers the extension skeleton, a streaming chat with a provider, and the harness with the read and
+write tools: a message starts an agent turn that runs `read_file`, `list_files`, `search`, `write_file`, and
+`edit_file` until the model answers without a call. Each write waits behind the approval (a diff and Accept or Reject
+in the chat, ADR 0002) unless the user setting auto-approves it. Each send discovers the skills and lists them to the
+model. `bun run eval` measures that loop on local Ollama models and applies each change at once. `run_command`,
+`load_skill`, and slash commands are not built yet. Read `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the decisions behind the design, starting with
 `docs/adr/0001-body-tool-calls.md`.
 
 ## Structure
@@ -44,7 +43,11 @@ yet. Read
   the token estimate, the context-full threshold, the typed size check), and the read tools (`tools.ts`: `read_file` and `list_files` over the mention reader, `search`
   over ripgrep with its candidate paths, bounded `ok` or `error` results), the write tools (`writeTools.ts`:
   `write_file` and `edit_file` plan a change `{ path, target, before, after }` and never write; an applier port writes
-  it, `fileApplier` straight to disk for the tests and the eval), the instruction files
+  it, `fileApplier` straight to disk for the tests and the eval, `approvalApplier` around it in the extension: the
+  unsaved-editor check, the approval request, then the write), the approval seam (`approval.ts`: the request a tool
+  makes, the decision it gets, the rejection text, and the decisions of the editor side: which change diffs to close,
+  the unsaved-editor check over the open documents, the auto-approve setting from its user value), the tool runner (`toolRunner.ts`: the read and write tools over the
+  workspace folders, each write handed to the applier the host builds for the run), the instruction files
   (`instructions.ts`: `~/.agents/AGENTS.md`, then each workspace folder's `AGENTS.md`, under the mention caps), and the
   skills (`skills.ts`: discovery in `~/.agents/skills/` and each workspace folder's `.agents/skills/`, the frontmatter
   subset, validation, precedence, warnings, the line the extension logs at each send). `markdownCode.ts`, `suggestions.ts`, and `conversation.ts` import nothing from
@@ -53,10 +56,12 @@ yet. Read
   `conversationFixture.ts` is the in-memory conversation file port for tests.
 - `src/extension/`: the extension host glue (activation, webview view, API keys in `SecretStorage`, the
   file index's `findFiles` scan and watcher in `fileIndex.ts`, the turn limits from the user settings and the "Set
-  context size" input box in `contextSizes.ts`, the read tool runner with the ripgrep candidates from
-  `vscode.env.appRoot` and `PATH`, the instruction reader and the skill reader from the home folder and the workspace folders, the latter logging the
+  context size" input box in `contextSizes.ts`, the tool runner's wiring (the ripgrep candidates from
+  `vscode.env.appRoot` and `PATH`, the write tools behind `approvalApplier`), the write approval's editor side in
+  `approval.ts` (the diff preview over `vscode.diff` and a content provider, the tabs, documents, and
+  `brokeCode.autoApproveWrites` values it feeds the core decisions), the instruction reader and the skill reader from the home folder and the workspace folders, the latter logging the
   skills of each send).
-- `src/webview/`: the React chat panel and its CSS, tool step rows included. `SuggestionMenu.tsx` is the autocomplete list the `@` menu
+- `src/webview/`: the React chat panel and its CSS, tool step rows and the approval controls included. `SuggestionMenu.tsx` is the autocomplete list the `@` menu
   uses and the `/` menu (#11) is meant to reuse.
 - `src/l10n.test.ts`: checks that every `l10n.t` message has a French translation and that the
   `package.nls*.json` files match.
@@ -66,10 +71,11 @@ yet. Read
   bundle (`dist/webview/`).
 - `scripts/next-version.ts`: computes the next release version from the commits since the last `v*` tag. The
   release workflow runs it as a CLI. Its tests sit next to it.
-- `eval/`: the Ollama eval bench (`bun run eval`). `scenarios.ts` holds each scenario (fixture files, message, check
-  of a turn that ended `done`) and `judge`, the verdict and failure category of a run; `run.ts` plays one run through
+- `eval/`: the Ollama eval bench (`bun run eval`). `scenarios.ts` holds each scenario (fixture files, message, the
+  files it must write with their exact text, an optional check of a turn that ended `done`) and `judge`, the verdict
+  and failure category of a run, which compares the workspace after the run with the fixture plus those writes; `run.ts` plays one run through
   the `ChatController` ports, with the read and write tools over a copy of the fixture under the system temporary
-  directory, each write applied at once by `fileApplier`;
+  directory, each write applied at once by `fileApplier` and recorded for the dump;
   `report.ts` formats the scores; `bench.ts` is the CLI, guarded by `import.meta.main` so `bun test` never starts it.
   Its unit tests sit next to them and need no Ollama.
 - `biome.jsonc`: the Biome linter and formatter settings. Markdown is excluded, because Biome's Markdown formatter
@@ -94,6 +100,8 @@ yet. Read
   here. Packaging and the other upload stay under Bun.
 - The webview uses React and `react-markdown`, with hand-written CSS built on VS Code theme variables. Do not
   add Tailwind or a component kit, and do not use `@vscode/webview-ui-toolkit`, which Microsoft deprecated.
+- Webview tests render static HTML with `renderToStaticMarkup`. A test that clicks or types registers a DOM with
+  `@happy-dom/global-registrator` (exact-pinned dev dependency) for its own duration and unregisters it after.
 - The UI ships in English and French and follows the VS Code display language, with English as the fallback.
 
 ## Architecture
@@ -136,8 +144,9 @@ yet. Read
 
 - Tool calls are XML tags in the reply text, with argument values written raw. Starting parsing rules: one
   call per reply, calls inside code fences are ignored, a malformed call goes back to the model as a precise
-  error, three malformed calls in a row stop the agent turn, and a reply without a call is the final answer.
-  Change these rules only on evidence from the Ollama eval.
+  error, three malformed calls in a row stop the agent turn, and a reply with text but no call is the final answer. An
+  empty reply (no text once trimmed, reasoning excluded) is no final answer: it is handled as a malformed call
+  (maintainer decision, ADR 0001). Change these rules only on evidence from the Ollama eval.
 - A known tool's call ends at the `</tool_name>` after its last argument value, not at the first one. A value ends at
   the first `</argument>` that closes no `<argument>` opened inside the value and is followed by nothing but
   whitespace and then another argument tag of the tool or the call's closing tag: an inner `<argument>` …
@@ -146,8 +155,10 @@ yet. Read
   `</tool_name>`. A value may therefore hold `</write_file>`, `</content>`, other tools' tags, and code fences. Known
   cost, kept by maintainer decision: a value holding an unpaired `<argument>` pairs it with the real closing tag, so
   it runs on into the text after the call when that text holds `</argument>` then `</tool_name>`. The parser drops
-  one leading and one trailing line break of a value that sits on its own lines, so `write_file` writes its content
-  followed by one line break unless the content is empty.
+  one leading and one trailing line break of a value that sits on its own lines (both or neither). `write_file` then
+  drops every trailing line break of its content (`\n` or `\r\n`) and ends the file with exactly one, of the kind its
+  last line break is; content left empty writes an empty file. Accepted cost, by maintainer decision (ADR 0001):
+  `write_file` cannot create a file ending with an empty line; `edit_file` can.
 - The v1 tools are `read_file`, `list_files`, `search` (ripgrep), `write_file`, `edit_file`, `run_command`,
   and `load_skill`.
 - `edit_file` replaces exact text only, compared byte for byte, line endings included. If the text matches zero
@@ -176,12 +187,32 @@ yet. Read
   outside before the write is refused.
 - Tools act inside the open workspace only. The one exception is read-only access to the directories of skills
   loaded in the current conversation.
-- Approvals:
+- Approvals (ADR 0002):
   - Reads run without asking.
-  - A write opens the native VS Code diff editor, and the user clicks Accept or Reject in the chat. A
-    rejection goes back to the model as a tool result.
+  - A tool asks through its run context: `ToolContext.requestApproval(request)` settles with Accept, Reject (with the
+    reason typed, trimmed, left out when blank), or Cancel. While the request is open, the reply stays `streaming` and
+    `ChatState.approval` holds `{ id, tool, summary }`; the chat renders the step row "waiting for your decision",
+    Accept, Reject, and a reason field from that state alone. The webview's `approve { id }` and
+    `reject { id, reason? }` are validated like the other messages, and a decision for a request no longer open is
+    ignored. One request at a time, since one call runs per reply.
+  - A write opens the native VS Code diff editor beside the chat, titled with the path: the planned `before` text on
+    the left (empty for a new file), the proposed text on the right, both from a content provider. Accept writes with
+    the atomic applier below, never through `WorkspaceEdit`; the diff tab closes on Accept, Reject, and Cancel. Closing
+    the tab by hand changes nothing: the request stays open, Accept and Reject still work, and the diff cannot be
+    reopened. A file
+    open in an editor with unsaved changes is refused before the request and again right before the write, with
+    auto-approve too, as an `error` result saying so; a file changed on disk since the plan is refused by the
+    applier's planned-text check.
+  - A rejection goes back to the model as an `error` tool result: "The user rejected this change.", then the reason on
+    its own line when given. It is a tool step like any other and counts toward the step limit. The step records how it
+    was approved (`approval`: `accepted`, `rejected`, or `auto`), and the row says rejected or auto-approved.
+  - Stop, New chat, opening another conversation, deleting the one shown, and deactivation cancel the open request:
+    the diff tab closes, nothing is written, the reply ends `stopped`. An open request is never saved; a record saved
+    while one waits reloads `stopped` by the in-flight rule below.
   - `run_command` always waits for a click.
-  - One setting auto-approves writes. Nothing auto-approves commands.
+  - `brokeCode.autoApproveWrites` (boolean, default false, `application` scope, read from `globalValue` like the
+    providers) accepts writes at once, without a diff, and is read at each write's request. The controller applies it
+    to requests of kind `write` only: nothing auto-approves commands.
 - `run_command` runs in a hidden child process in the workspace folder with the user's shell, captures the
   output, and stops after 120 seconds by default.
 - Reasoning output (`<think>` tags, `reasoning`, or `reasoning_content`) shows collapsed in the chat. The parser
@@ -190,10 +221,14 @@ yet. Read
   each assistant answer verbatim with its call block (reasoning never), and each tool step as a `user` message
   `<tool_result tool="<name>" status="ok|error">`, the text, then `</tool_result>`, never the OpenAI `tool` role
   (ADR 0001). A malformed call's message goes back the same way with `status="error"`, with `tool` the tag name the block
-  opens with, a known tool or not, and `tool="unknown"` only when no tool name can be read.
-- When a reply ends, its answer goes through the parser. No call: the turn ends. A call: the tool runs with the
-  turn's context (`ToolRunner.run(call, { signal })`, the abort signal), a tool step entry records its name, arguments, status, and text, and the loop requests again.
-  A malformed call: a step entry with the message, and the loop requests again. The reply stays `streaming` while its
+  opens with, a known tool or not, and `tool="unknown"` only when no tool name can be read, as for an empty reply. A
+  reply without text is left out of the history, unless a tool step follows it: an empty reply goes back as an
+  assistant message with `content: ""` before its step, so the roles keep alternating (Gemma's chat template requires
+  it).
+- When a reply ends, its answer goes through the parser. Text and no call: the turn ends. A call: the tool runs with the
+  turn's context (`ToolRunner.run(call, { signal, requestApproval })`, the abort signal and the approval request), a tool step entry records its name, arguments, status, text, and approval, and the loop requests again.
+  A malformed call or an empty reply: a step entry with the message (for an empty reply, "Your reply was empty. Call a
+  tool, or write your answer to the user."), and the loop requests again. The reply stays `streaming` while its
   call runs, and the step and the next reply are appended together, so `isReplying` holds across the whole turn.
 - An agent turn has a Stop button and stops after `brokeCode.maxToolSteps` tool steps (a user setting, `application`
   scope, default 50, at least 1; calls and malformed calls alike) as `halted` with reason `stepLimit`; three malformed calls in a row (`MAX_MALFORMED_IN_A_ROW`) halt it with reason
@@ -285,7 +320,7 @@ yet. Read
   still delete its row.
 - The record is versioned (`version: 2`) and holds the displayed entries: user entries, each with the text the model
   received (`modelText`), assistant entries, with an optional `call` locating the call block in the answer and, when
-  `halted`, its `haltReason`, and tool steps. A reopened conversation therefore resends exactly what was sent and
+  `halted`, its `haltReason`, and tool steps, with an optional `approval`. A reopened conversation therefore resends exactly what was sent and
   never reads its mentions again. Version 1 files are skipped like any unknown version: no release wrote them, so
   none is migrated. It holds no API key and nothing else of `ProviderAccess`; a failed reply's error keeps the provider's base
   URL for display, since it is user settings, not a secret. Times are whole milliseconds within the `Date` range. A
@@ -365,17 +400,30 @@ yet. Read
   on `qwen3.8:27b` then `gemma4:26b-a4b-it-qat`, all runs of one model before the next. Each run drives the
   chat controller with the read and write tools over a throwaway copy of the scenario's fixture, each write applied
   at once, no instruction file, no skill, and a
-  step limit of 6. The one scenario is read then answer: the model must read a setting it cannot guess and answer
-  with its value. A run passes when the turn ends `done`, a tool step got the value, the answer holds it, and no
-  fixture file changed; a failed run shows one category (`malformed`, `wrongTool`, `wrongAnswer`, `stepLimit`,
-  `contextFull`, `providerError`, `workspaceChanged`) and a one-line detail. The bar is 9 runs of 10 per model and
-  scenario; the bench exits 1 when a model is under it, and before any run when Ollama is unreachable or does not
-  list a model. `--model <name>` (repeatable) and `--runs <n>` shorten a local iteration; `--dump <file>` appends
-  each run's entries and verdict as JSON Lines, to read the failing replies; an incomplete last line left by an
-  interrupted run is removed, with a notice, before the first append. A full run took 2 min 40 s on the
-  maintainer's Mac, the first run of each model including its load. It runs locally on demand and never in CI.
-  Scenarios for edits, created files, commands, and skills come with the write eval (#38), `run_command` (#9), and
-  skills (#10).
+  step limit of 10. Three scenarios, each judged on the turn ending `done` and on the workspace after it: every file
+  the scenario writes holds its exact expected text, byte for byte, and every other file is unchanged.
+  - `read`: the model must read a setting it cannot guess and answer with its value. Passes when a tool step got the
+    value, the answer holds it, and no file changed.
+  - `edit`: rename a function named once in `src/pricing.py`. Passes when exactly that line changed.
+  - `create`: create `docs/call-format.md` with a text stated in the message that holds double quotes, backslashes,
+    `<content>...</content>`, `</write_file>`, and a fenced code block. Passes when the file is exactly that text
+    plus one line break.
+
+  A failed run shows one category and a one-line detail: `malformed`, `wrongTool`, `wrongAnswer`, `stepLimit`,
+  `contextFull`, `providerError`, `wrongEdit` (a file the scenario writes is missing or holds other text, with the
+  first differing line), or `workspaceChanged` (the written files are right, or none was asked for, but another file
+  changed). The bar is 9 runs of 10 per model and scenario; the bench exits 1 when a model is under it, and before
+  any run when Ollama is unreachable or does not list a model. `--model <name>` (repeatable) and `--runs <n>` shorten
+  a local iteration; `--dump <file>` appends each run's entries (tool steps with their call's arguments), verdict,
+  `planned` (each change handed to the applier, in call order: tool, path, `before` (`null` for a new file), `after`,
+  and the applier's status), and `changes` (each file that differs from the fixture after the run, with its text,
+  `null` when removed) as JSON Lines, to read the
+  failing replies; an incomplete last line left by an interrupted run is removed, with a notice, before the first
+  append. A full run took 34 min 04 s on the maintainer's Mac on b1049a2, the first run of each model including its load;
+  about 16 min without one `gemma4` run of 18 min whose reasoning ran on for about 98,000 characters (the bench has no
+  time limit per run). It runs locally on demand and never in CI. On b1049a2 every model met the bar on every
+  scenario (ADR 0001, amendment of 2026-11-09 on empty replies). Scenarios for commands and skills come with
+  `run_command` (#9) and skills (#10).
 - v1 supports macOS only. Windows and Linux are planned for v2.
 
 ## Git and release workflow

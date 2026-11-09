@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BENCH_MODELS, modelsProblem, parseBenchArgs, trimIncompleteLine } from "./bench";
+import { BENCH_MODELS, dumpLine, modelsProblem, parseBenchArgs, trimIncompleteLine } from "./bench";
+import { CREATE_SCENARIO } from "./scenarios";
 
 describe("parseBenchArgs", () => {
   test("defaults to both models and 10 runs", () => {
@@ -52,6 +53,38 @@ describe("modelsProblem", () => {
 
   test("finds no problem when Ollama lists every requested model", () => {
     expect(modelsProblem({ ok: true, models: ["b", "a"] }, ["a", "b"], url)).toBeUndefined();
+  });
+});
+
+describe("dumpLine", () => {
+  test("records the run, its entries, each planned change, and the files that differ from the fixture, as one JSON line", () => {
+    const entries = [{ role: "assistant" as const, reasoning: "", content: "Done.", status: "done" as const }];
+    const planned = [
+      { tool: "write_file" as const, path: "notes/a.txt", before: null, after: "one\n", status: "ok" as const },
+      { tool: "edit_file" as const, path: "README.md", before: "# Courier\n", after: "", status: "error" as const },
+    ];
+    const after = { ...CREATE_SCENARIO.files, "notes/a.txt": "one\n" };
+    const line = dumpLine({
+      model: "m",
+      scenario: CREATE_SCENARIO,
+      run: 0,
+      verdict: { pass: true },
+      ms: 12.4,
+      outcome: { entries, planned, after },
+    });
+
+    expect(line.endsWith("\n")).toBe(true);
+    expect(line.slice(0, -1)).not.toContain("\n");
+    expect(JSON.parse(line)).toEqual({
+      model: "m",
+      scenario: "create",
+      run: 1,
+      verdict: { pass: true },
+      ms: 12,
+      entries,
+      planned,
+      changes: { "notes/a.txt": "one\n" },
+    });
   });
 });
 

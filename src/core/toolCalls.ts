@@ -13,9 +13,10 @@ export type ToolSpec = {
 };
 
 /**
- * `none`: the answer holds no call, so it is the final answer. `call`: the tool name and raw argument values.
- * `malformed`: a message for the model. `start`/`end`: where the block sits in the answer, `end` past its closing
- * tag, or the answer's length when the outer tag never closes.
+ * `none`: the answer holds text but no call, so it is the final answer. `call`: the tool name and raw argument values.
+ * `malformed`: a message for the model, also for an empty answer (whitespace only), which is no final answer.
+ * `start`/`end`: where the block sits in the answer, `end` past its closing tag, or the answer's length when the
+ * outer tag never closes; both 0 for an empty answer.
  */
 export type ParsedReply =
   | { kind: "none" }
@@ -27,6 +28,7 @@ const CLOSING_TAG = /<\/([a-z][a-z0-9_]*)>/g;
 const ARG_OPENING_TAG = /<([a-z][a-z0-9_]*)>/y;
 const WHITESPACE = /\s*/y;
 const EXCERPT_LENGTH = 40;
+const EMPTY_REPLY = "Your reply was empty. Call a tool, or write your answer to the user.";
 
 /** The shape of any call, with placeholder names: for the system prompt and when the tool is unknown. */
 export const GENERIC_CALL_SHAPE = "<tool_name>\n<argument_name>value</argument_name>\n</tool_name>";
@@ -40,6 +42,8 @@ export const GENERIC_CALL_SHAPE = "<tool_name>\n<argument_name>value</argument_n
  * Anything after the first block is ignored.
  */
 export function parseToolCall(answer: string, tools: readonly ToolSpec[]): ParsedReply {
+  // [>]: Models sometimes reason, then stop with no text; ending the turn there would leave the task undone.
+  if (answer.trim() === "") return { kind: "malformed", message: EMPTY_REPLY, start: 0, end: 0 };
   const masked = maskCode(answer);
   const closes = closingTags(answer);
   for (const match of answer.matchAll(OPENING_TAG)) {

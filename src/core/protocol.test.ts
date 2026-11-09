@@ -92,6 +92,26 @@ describe("parseWebviewMessage", () => {
     expect(query({ id: 1 })).toBeUndefined();
     expect(query({ query: "a".repeat(MAX_QUERY_LENGTH + 1), id: 1 })).toBeUndefined();
   });
+
+  test("accepts an approval decision by its request id, a rejection with or without a reason", () => {
+    expect(parseWebviewMessage({ type: "approve", id: 3 })).toEqual({ type: "approve", id: 3 });
+    expect(parseWebviewMessage({ type: "reject", id: 3 })).toEqual({ type: "reject", id: 3 });
+    expect(parseWebviewMessage({ type: "reject", id: 3, reason: "Keep the old name." })).toEqual({
+      type: "reject",
+      id: 3,
+      reason: "Keep the old name.",
+    });
+  });
+
+  test("rejects an approval decision with a bad id or a reason that is not text", () => {
+    for (const id of [undefined, "3", 1.5, -1, Number.NaN]) {
+      expect(parseWebviewMessage({ type: "approve", id })).toBeUndefined();
+      expect(parseWebviewMessage({ type: "reject", id })).toBeUndefined();
+    }
+    for (const reason of [null, 3, ["no"]]) {
+      expect(parseWebviewMessage({ type: "reject", id: 3, reason })).toBeUndefined();
+    }
+  });
 });
 
 describe("chatStateOf", () => {

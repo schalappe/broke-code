@@ -107,5 +107,13 @@
   "Tokens the model accepts in one request, prompt and reply together.": "Nombre de tokens que le modèle accepte dans une requête, prompt et réponse compris.",
   "For example 131072": "Par exemple 131072",
   "Enter a whole number of tokens, at least 1.": "Saisissez un nombre entier de tokens, au moins 1.",
-  "Could not save the context size of {0}: {1}": "Impossible d'enregistrer la taille du contexte de {0} : {1}"
+  "Could not save the context size of {0}: {1}": "Impossible d'enregistrer la taille du contexte de {0} : {1}",
+  "waiting for your decision": "en attente de votre décision",
+  "Approve {0} on {1}": "Approuver {0} sur {1}",
+  "Reason for rejecting (optional)": "Motif du refus (facultatif)",
+  "Accept": "Accepter",
+  "Reject": "Refuser",
+  "rejected": "refusé",
+  "auto-approved, {0}": "approuvé automatiquement, {0}",
+  "{0} (proposed change)": "{0} (modification proposée)"
 }

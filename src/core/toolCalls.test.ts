@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { GENERIC_CALL_SHAPE, parseToolCall, type ToolSpec } from "./toolCalls";
+import { GENERIC_CALL_SHAPE, type ParsedReply, parseToolCall, type ToolSpec } from "./toolCalls";
 
 const TOOLS: ToolSpec[] = [
   {
@@ -34,7 +34,17 @@ describe("parseToolCall", () => {
 
   test("returns no call for a reply without a tag", () => {
     expect(parseToolCall("The answer is 42.", TOOLS)).toEqual({ kind: "none" });
-    expect(parseToolCall("", TOOLS)).toEqual({ kind: "none" });
+  });
+
+  test("returns a malformed reply for an empty answer, whitespace only included", () => {
+    const empty: ParsedReply = {
+      kind: "malformed",
+      message: "Your reply was empty. Call a tool, or write your answer to the user.",
+      start: 0,
+      end: 0,
+    };
+    expect(parseToolCall("", TOOLS)).toEqual(empty);
+    expect(parseToolCall(" \n\t\r\n", TOOLS)).toEqual(empty);
   });
 
   test("returns no call for a call inside a fenced block", () => {

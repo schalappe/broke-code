@@ -6,11 +6,12 @@ Some services speak the OpenAI chat API but reject the `tools` request field, so
 it fail against them. In broke-code, the model writes each tool call in the text of its reply, and the
 extension reads and runs it. broke-code never sends `tools`, even to a service that supports them.
 
-The current version is a chat agent that reads your workspace: pick a model, ask a question with files and folders
-attached, and the model reads files, lists folders, and searches the workspace until it can answer. You can follow
-each step, stop the agent at any time, read the model's reasoning collapsed above its answer, and come back to past
-conversations. The model also sees the name and description of each of your skills. Write tools, commands, loading
-skills, and slash commands come next.
+The current version is a chat agent that reads and changes your workspace: pick a model, ask a question or a change
+with files and folders attached, and the model reads files, lists folders, searches the workspace, and creates or edits
+files until it is done. Each change opens as a diff and waits for your **Accept** or **Reject** in the chat, unless
+you turn on auto-approval in your user settings. You can follow each step, stop the agent at any time, read the model's
+reasoning collapsed above its answer, and come back to past conversations. The model also sees the name and
+description of each of your skills. Commands, loading skills, and slash commands come next.
 
 ## Requirements
 
@@ -83,7 +84,7 @@ files show up in the menu without reloading the window.
 ## How the agent works
 
 Each message starts an agent turn. The model may answer at once, or write a tool call in its reply; broke-code runs
-the tool, sends the result back, and asks again, until the model answers without a call. The agent has three read
+the tool, sends the result back, and asks again, until the model answers with text and no call. The agent has three read
 tools, which run without asking you, inside the workspace folders only:
 
 - **read_file** reads a file, with the same limits as a mention: binary files and files over 1 MiB are refused, and
@@ -92,15 +93,33 @@ tools, which run without asking you, inside the workspace folders only:
 - **search** searches the workspace with ripgrep, the copy your editor ships or the `rg` on your `PATH`. It skips
   hidden files, files ignored by `.gitignore`, and symlinks, and stops after 30 seconds.
 
+The agent also has two write tools, which ask you first, inside the workspace folders only:
+
+- **write_file** creates a file, or replaces a whole file.
+- **edit_file** replaces one exact passage of a file; a passage found zero times or more than once is refused, never
+  guessed.
+
+When the model asks to change a file, the editor opens a diff beside the chat, titled with the path: the file as the
+model planned to change it on the left, the proposed text on the right. The chat shows **Accept** and **Reject** under
+the call, with an optional reason. **Accept** writes the change and closes the diff; the write is atomic, so the file
+holds either its old text or the new one, even after a crash. **Reject** closes the diff and writes nothing; the model
+reads that you rejected the change, with your reason when you gave one. Nothing is written when the file changed on
+disk since the model planned the change, or when an editor holds unsaved changes to it: save or revert them first.
+**Stop**, **New chat**, or opening another conversation while a change waits closes the diff and writes nothing.
+
+To apply changes without asking, set `brokeCode.autoApproveWrites` to `true` in your **user** settings: no diff opens,
+and each such step is marked auto-approved. A workspace `settings.json` cannot turn it on. Commands, once the agent
+can run them, will always ask.
+
 Each tool call shows as a compact row under the model's text: the tool, its main argument (a path or a search
 pattern), and whether it worked with the size of its result. Click the row to see the result the model received.
 A path outside the workspace is refused, and the model is told why.
 
-The agent turn ends when the model answers without a tool call. It also ends when you click **Stop**, at any step;
+The agent turn ends when the model answers with text and no tool call. It also ends when you click **Stop**, at any step;
 after three malformed tool calls in a row, with a message saying so; after 50 tool steps (or the limit you set), with
 a message saying the step limit was reached; and before a request that would fill the model's context, with a
 message asking you to start a new chat. A malformed call is sent back to the model with what is wrong, so it can try
-again.
+again; so is an empty reply, which counts as a malformed call.
 
 ## Context size and step limit
 
@@ -175,6 +194,18 @@ A reopened conversation resends your earlier messages as they were sent, with th
 and the tool results the model received; broke-code does not read them again. A reply that was still streaming when the window closed comes back stopped,
 with the text received so far. Conversations stay on your machine, in the editor's storage for that workspace, and
 never hold an API key. A window with no folder open keeps its conversation in memory only.
+
+## Tested models
+
+broke-code's tool calls are measured on local models with Ollama: `qwen3.8:27b` and `gemma4:26b-a4b-it-qat`, ten
+runs of each task, with the bar at nine. The bench has three tasks:
+
+- **Read**: answer with the value of a setting that only a file holds.
+- **Edit**: rename a function in a source file, changing nothing else.
+- **Create**: create a file whose text holds double quotes, backslashes, tags, and a code block, exactly as asked.
+
+Both models pass all three tasks, 10 runs of 10 each. When a model thinks, then stops without a word, broke-code
+tells it so and asks again. Contributors run the bench with `bun run eval`.
 
 ## Privacy
 
