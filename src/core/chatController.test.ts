@@ -1730,7 +1730,7 @@ describe("ChatController agent turn", () => {
     const signals: AbortSignal[] = [];
     const runner: ToolRunner = {
       tools: READ_TOOLS,
-      run: (call, signal) => {
+      run: (call, { signal }) => {
         calls.push(call);
         signals.push(signal);
         return result(call);
@@ -1827,7 +1827,7 @@ describe("ChatController agent turn", () => {
     try {
       const runner: ToolRunner = {
         tools: READ_TOOLS,
-        run: (call, signal) =>
+        run: (call, { signal }) =>
           runReadTool(call, [{ name: "ws", path: workspaceDir }], { ripgrepCandidates: [] }, signal),
       };
       const { controller, state, sent } = await scripted(

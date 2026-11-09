@@ -1,12 +1,13 @@
 /**
  * @module workspaceFiles
- * Read access to the workspace folders: the inside-workspace check, file reads under a size cap, one-level folder
- * listings, and line truncation. Mentions and the read tools (`tools.ts`) use it.
+ * Access to the workspace folders: the inside-workspace check, file reads under a size cap, one-level folder
+ * listings, line truncation, and the write boundary with in-place writes. Mentions and the read tools (`tools.ts`)
+ * read through it; the write tools (`writeTools.ts`) check and write through it.
  * Plain `node:fs`: v1 runs on local macOS folders only, and real files keep the boundary rules testable.
  */
 import { constants, type Dirent, type Stats } from "node:fs";
-import { type FileHandle, open, readdir, realpath, stat } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { type FileHandle, lstat, mkdir, open, readdir, realpath, stat } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 /** A workspace folder: its name in a multi-root workspace and its absolute path. */
 export type WorkspaceRoot = { name: string; path: string };
@@ -222,6 +223,13 @@ export function isInside(root: string, path: string): boolean {
 }
 
 async function readFile(handle: FileHandle): Promise<WorkspaceEntry> {
+  const bytes = await readTextBytes(handle);
+  if (typeof bytes === "string") return { status: bytes, kind: "file" };
+  return { status: "ok", kind: "file", text: new TextDecoder().decode(bytes) };
+}
+
+/** The bytes of a text file under the size cap, or why it is not one. */
+async function readTextBytes(handle: FileHandle): Promise<Buffer | "tooLarge" | "binary"> {
   // [>]: Read one byte past the cap rather than trust `stat`: the file may grow after it.
   const buffer = Buffer.alloc(MAX_FILE_BYTES + 1);
   let size = 0;
@@ -230,10 +238,201 @@ async function readFile(handle: FileHandle): Promise<WorkspaceEntry> {
     if (bytesRead === 0) break;
     size += bytesRead;
   }
-  if (size > MAX_FILE_BYTES) return { status: "tooLarge", kind: "file" };
+  if (size > MAX_FILE_BYTES) return "tooLarge";
   const bytes = buffer.subarray(0, size);
-  if (bytes.subarray(0, BINARY_PROBE_BYTES).includes(0)) return { status: "binary", kind: "file" };
-  return { status: "ok", kind: "file", text: new TextDecoder().decode(bytes) };
+  if (bytes.subarray(0, BINARY_PROBE_BYTES).includes(0)) return "binary";
+  return bytes;
+}
+
+/**
+ * Why a write cannot go ahead, beyond the read failures. `symlink`: the path is a symbolic link that stays inside the
+ * workspace. `folder`: the path is a folder. `notText`: the file is not valid UTF-8, so its text would not round-trip.
+ */
+export type WriteFailure = AccessFailure | "symlink" | "folder" | "notText";
+
+/**
+ * Where a write to a path lands. `path`: the absolute path that passed the check, symlinks unresolved, to give back to
+ * `writeWorkspaceFile`. `before`: the file's whole text, `undefined` when it does not exist yet.
+ */
+export type WriteTarget =
+  | { status: "ok"; path: string; before: string | undefined }
+  | { status: Exclude<WriteFailure, "unreadable"> }
+  | { status: "unreadable"; cause: string };
+
+/** A target that passed the check, with what the write needs: its real path, the folders to create, in order. */
+type CheckedTarget = {
+  status: "ok";
+  path: string;
+  before: string | undefined;
+  realPath: string;
+  realRoots: string[];
+  newFolders: string[];
+};
+
+/** Larger content is refused: a file over it could not be read back. */
+export const MAX_WRITE_BYTES = MAX_FILE_BYTES;
+
+/**
+ * Check a write to `path` inside `roots` and read what the file holds now. The path resolves as `readWorkspaceEntry`
+ * resolves it; a path that exists nowhere goes to the first folder that may hold it. The deepest existing folder
+ * above the file must resolve inside a workspace folder, the file itself must not be a symlink, and an existing file
+ * is read as `readWorkspaceEntry` reads it, its handle checked to be the file at that path. Never writes; never
+ * rejects.
+ */
+export async function locateWriteTarget(roots: WorkspaceRoot[], path: string): Promise<WriteTarget> {
+  const checked = await checkWriteTarget(roots, candidatePaths(roots, path));
+  return checked.status === "ok" ? { status: "ok", path: checked.path, before: checked.before } : checked;
+}
+
+/**
+ * Write `after` to the file at `path`, a path `locateWriteTarget` returned, once checked again: missing folders are
+ * created, then the file is created, or truncated and written in place through a handle that never follows a
+ * symlink. `alreadyWritten`: the file already holds `after`, so running twice changes nothing. `changed`: it no longer
+ * holds `before`, so nothing is written. Never rejects.
+ *
+ * [!]: The check goes by name before the open, as for reads. A component swapped for a symlink out after it is caught
+ * by the handle check before any byte is written, but a new file is created empty by then: accepted, as for reads, since
+ * such a writer already runs with the user's rights.
+ */
+export async function writeWorkspaceFile(
+  roots: WorkspaceRoot[],
+  path: string,
+  before: string | undefined,
+  after: string,
+): Promise<{ status: "written" | "alreadyWritten" | "changed" } | Exclude<WriteTarget, { status: "ok" }>> {
+  try {
+    const checked = await checkWriteTarget(roots, [resolve(path)]);
+    if (checked.status !== "ok") return checked;
+    if (checked.before === after) return { status: "alreadyWritten" };
+    if (checked.before !== before) return { status: "changed" };
+    for (const folder of checked.newFolders) {
+      await mkdir(folder).catch((error: unknown) => {
+        if (errorCode(error) !== "EEXIST") throw error;
+      });
+    }
+    const flags =
+      before === undefined
+        ? constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW
+        : constants.O_WRONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
+    const handle = await open(checked.realPath, flags).catch((error: unknown) => {
+      // [>]: Created or swapped for a symlink since the check.
+      if (errorCode(error) === "EEXIST" || errorCode(error) === "ELOOP") return undefined;
+      throw error;
+    });
+    if (handle === undefined) return { status: "changed" };
+    try {
+      const opened = await handle.stat();
+      if (!opened.isFile()) return { status: "changed" };
+      if (!(await isInsideFile(checked.realRoots, checked.realPath, opened))) return { status: "outsideWorkspace" };
+      const bytes = Buffer.from(after);
+      await handle.truncate(0);
+      let written = 0;
+      while (written < bytes.length) {
+        written += (await handle.write(bytes, written, bytes.length - written, written)).bytesWritten;
+      }
+      await handle.sync();
+      return { status: "written" };
+    } finally {
+      await handle.close();
+    }
+  } catch (error) {
+    return { status: "unreadable", cause: errorCode(error) ?? String(error) };
+  }
+}
+
+/** `locateWriteTarget` over absolute `candidates`, the first that exists winning. Never rejects. */
+async function checkWriteTarget(
+  roots: WorkspaceRoot[],
+  candidates: string[],
+): Promise<CheckedTarget | Exclude<WriteTarget, { status: "ok" }>> {
+  try {
+    const inside = candidates.filter((candidate) => roots.some((root) => isInside(resolve(root.path), candidate)));
+    if (inside.length === 0) return { status: "outsideWorkspace" };
+    const path = (await firstExisting(inside)) ?? inside[0]!;
+    if (roots.some((root) => resolve(root.path) === path)) return { status: "folder" };
+
+    const realRoots = (await resolveWorkspaceRoots(roots)).resolved.map((entry) => entry.realRoot);
+    const ancestor = await deepestFolder(dirname(path));
+    if (!realRoots.some((root) => isInside(root, ancestor.realPath))) return { status: "outsideWorkspace" };
+    if (!(await stat(ancestor.realPath)).isDirectory()) return { status: "unreadable", cause: "ENOTDIR" };
+    const newFolders = ancestor.missing.map((_, index) =>
+      join(ancestor.realPath, ...ancestor.missing.slice(0, index + 1)),
+    );
+    const realPath = join(ancestor.realPath, ...ancestor.missing, basename(path));
+    const target = { status: "ok" as const, path, realPath, realRoots, newFolders };
+    if (newFolders.length > 0) return { ...target, before: undefined };
+
+    const info = await lstat(realPath).catch((error: unknown) => {
+      if (MISSING_CODES.has(errorCode(error) ?? "")) return undefined;
+      throw error;
+    });
+    if (info === undefined) return { ...target, before: undefined };
+    if (info.isSymbolicLink()) {
+      const linked = await realpath(realPath).catch(() => undefined);
+      const stays = linked !== undefined && realRoots.some((root) => isInside(root, linked));
+      return { status: stays ? "symlink" : "outsideWorkspace" };
+    }
+    if (info.isDirectory()) return { status: "folder" };
+    if (!info.isFile()) return { status: "unreadable", cause: "not a file" };
+    const before = await readWriteTarget(realPath, realRoots);
+    return typeof before === "string" ? { ...target, before } : before;
+  } catch (error) {
+    if (MISSING_CODES.has(errorCode(error) ?? "")) return { status: "missing" };
+    return { status: "unreadable", cause: errorCode(error) ?? String(error) };
+  }
+}
+
+/** The text of the regular file at `realPath`, every byte kept, a byte order mark included. */
+async function readWriteTarget(
+  realPath: string,
+  realRoots: string[],
+): Promise<string | Exclude<WriteTarget, { status: "ok" }>> {
+  const handle = await open(realPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const opened = await handle.stat();
+    if (!(await isInsideFile(realRoots, realPath, opened))) return { status: "outsideWorkspace" };
+    if (!opened.isFile()) return { status: "unreadable", cause: "not a file" };
+    const bytes = await readTextBytes(handle);
+    if (typeof bytes === "string") return { status: bytes };
+    try {
+      return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+    } catch {
+      return { status: "notText" };
+    }
+  } finally {
+    await handle.close();
+  }
+}
+
+/** The first of `paths` that exists, symlinks not followed at its last component. */
+async function firstExisting(paths: string[]): Promise<string | undefined> {
+  for (const path of paths) {
+    const found = await lstat(path).then(
+      () => true,
+      (error: unknown) => {
+        if (MISSING_CODES.has(errorCode(error) ?? "")) return false;
+        throw error;
+      },
+    );
+    if (found) return path;
+  }
+  return undefined;
+}
+
+/** The real path of the deepest existing ancestor of absolute `folder`, itself included, and the names below it. */
+async function deepestFolder(folder: string): Promise<{ realPath: string; missing: string[] }> {
+  const missing: string[] = [];
+  let current = folder;
+  for (;;) {
+    try {
+      return { realPath: await realpath(current), missing };
+    } catch (error) {
+      const parent = dirname(current);
+      if (!MISSING_CODES.has(errorCode(error) ?? "") || parent === current) throw error;
+      missing.unshift(basename(current));
+      current = parent;
+    }
+  }
 }
 
 /**

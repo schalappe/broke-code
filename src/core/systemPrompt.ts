@@ -32,12 +32,26 @@ const RULES = [
   "- Never wrap a tool call in a code fence or inline code: it would not run.",
 ].join("\n");
 
-/** The system prompt for `tools` and the `instructions` files, in order. Without files, it ends after the tools. */
+/** Rules shown only when their tool is listed. */
+const TOOL_RULES: Record<string, string> = {
+  edit_file:
+    "- edit_file replaces an exact passage that must appear once in the file: copy it from the file, line breaks and indentation included.",
+  write_file: "- write_file replaces the whole file: give its complete content.",
+};
+
+/**
+ * The system prompt for `tools` and the `instructions` files, in order. The rules of `write_file` and `edit_file`
+ * follow the general rules when those tools are listed. Without files, it ends after the tools.
+ */
 export function composeSystemPrompt(tools: readonly ToolSpec[], instructions: readonly InstructionFile[]): string {
   const toolList = [
     "# Tools",
     ...tools.map((tool) => `## ${tool.name}\n\n${tool.description}\n\n${describeTool(tool)}`),
   ];
   const files = instructions.map((file) => `# Instructions from ${file.label}\n\n${file.text}`);
-  return [ROLE, FORMAT, RULES, ...toolList, ...files].join("\n\n");
+  const rules = [
+    RULES,
+    ...tools.flatMap((tool) => (Object.hasOwn(TOOL_RULES, tool.name) ? [TOOL_RULES[tool.name]] : [])),
+  ];
+  return [ROLE, FORMAT, rules.join("\n"), ...toolList, ...files].join("\n\n");
 }

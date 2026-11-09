@@ -18,6 +18,10 @@ const TOOLS: ToolSpec[] = [
   },
 ];
 
+function toolNamed(name: string): ToolSpec {
+  return { name, description: `${name}.`, args: [{ name: "path", required: true, description: "The file." }] };
+}
+
 describe("composeSystemPrompt", () => {
   test("lists every tool with its description, and every argument with whether it is required", () => {
     const prompt = composeSystemPrompt(TOOLS, []);
@@ -50,6 +54,20 @@ describe("composeSystemPrompt", () => {
     expect(prompt).toContain("without a tool call");
     expect(prompt).toContain("relative to the workspace folder");
     expect(prompt).toContain("code fence");
+  });
+
+  test("states that edit_file needs an exact passage that appears once and that write_file replaces the whole file", () => {
+    const edit =
+      "- edit_file replaces an exact passage that must appear once in the file: copy it from the file, line breaks and indentation included.";
+    const write = "- write_file replaces the whole file: give its complete content.";
+    const rules = composeSystemPrompt([...TOOLS, toolNamed("write_file"), toolNamed("edit_file")], []).split(
+      "# Tools",
+    )[0]!;
+    expect(rules).toContain(edit);
+    expect(rules).toContain(write);
+    const readOnly = composeSystemPrompt(TOOLS, []);
+    expect(readOnly).not.toContain(edit);
+    expect(readOnly).not.toContain(write);
   });
 
   test("never shows the format inside a code fence", () => {

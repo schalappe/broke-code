@@ -1,8 +1,9 @@
 /**
  * @module run
- * One run of a scenario: the chat controller the extension runs, hosted through its ports with the read tools over a
- * throwaway copy of the fixture under the system temporary directory, no instruction file, an in-memory conversation
- * store, and the bench's step limit. The copy is removed when the run ends, also when it throws.
+ * One run of a scenario: the chat controller the extension runs, hosted through its ports with the read and write tools
+ * over a throwaway copy of the fixture under the system temporary directory, each write applied at once, no
+ * instruction file, an in-memory conversation store, and the bench's step limit. The copy is removed when the run
+ * ends, also when it throws.
  */
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -12,6 +13,7 @@ import { ConversationStore } from "../src/core/conversationStore";
 import { DEFAULT_CONTEXT_SIZE, parseLimits } from "../src/core/limits";
 import type { ChatEntry } from "../src/core/protocol";
 import { READ_TOOLS, ripgrepCandidates, runReadTool } from "../src/core/tools";
+import { fileApplier, runWriteTool, WRITE_TOOLS } from "../src/core/writeTools";
 import type { Scenario, WorkspaceFiles } from "./scenarios";
 
 /**
@@ -49,7 +51,13 @@ export async function playScenario(scenario: Scenario, target: RunTarget, tmpRoo
         },
       },
       store: new ConversationStore(undefined),
-      tools: { tools: READ_TOOLS, run: (call, signal) => runReadTool(call, [root], toolEnv, signal) },
+      tools: {
+        tools: [...READ_TOOLS, ...WRITE_TOOLS],
+        run: (call, { signal }) =>
+          WRITE_TOOLS.some((tool) => tool.name === call.name)
+            ? runWriteTool(call, [root], fileApplier([root]), signal)
+            : runReadTool(call, [root], toolEnv, signal),
+      },
       instructions: { read: async () => [] },
       limits: { read: () => limits },
     });

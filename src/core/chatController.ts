@@ -45,13 +45,13 @@ export type ChoiceStore = {
   update(key: string, value: unknown): PromiseLike<void>;
 };
 
-/**
- * Runs body tool calls. `tools`: what the system prompt lists and the parser accepts. `run` must not reject; `signal`
- * is Stop, and the turn does not wait for a run that ignores it.
- */
+/** What a tool run gets from its turn. `signal`: Stop; the turn does not wait for a run that ignores it. */
+export type ToolContext = { signal: AbortSignal };
+
+/** Runs body tool calls. `tools`: what the system prompt lists and the parser accepts. `run` must not reject. */
 export type ToolRunner = {
   tools: readonly ToolSpec[];
-  run(call: ToolCall, signal: AbortSignal): Promise<ToolResult>;
+  run(call: ToolCall, context: ToolContext): Promise<ToolResult>;
 };
 
 /**
@@ -486,7 +486,7 @@ export class ChatController {
   /** Run `call`. A runner that rejects despite its contract gives an `error` result, logged. */
   private runTool(call: ToolCall, signal: AbortSignal): Promise<ToolResult> {
     return Promise.resolve()
-      .then(() => this.tools.run(call, signal))
+      .then(() => this.tools.run(call, { signal }))
       .catch((error: unknown): ToolResult => {
         console.error("broke-code: tool run failed", call.name, error);
         return { status: "error", text: `${call.name}: the tool failed (${String(error)}).` };

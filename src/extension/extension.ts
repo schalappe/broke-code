@@ -31,7 +31,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const toolEnv = { ripgrepCandidates: ripgrepCandidates(vscode.env.appRoot, process.env.PATH) };
   const tools: ToolRunner = {
     tools: READ_TOOLS,
-    run: (call, signal) => runReadTool(call, workspaceRoots(), toolEnv, signal),
+    run: (call, { signal }) => runReadTool(call, workspaceRoots(), toolEnv, signal),
   };
   const instructions: InstructionReader = { read: () => readInstructionFiles(homedir(), workspaceRoots()) };
 
