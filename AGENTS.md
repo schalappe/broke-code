@@ -175,7 +175,7 @@ The code so far covers the extension skeleton and a streaming chat with a provid
   temporary files left by a crash. Reads, writes, and deletes run one at a time in
   call order, so a read sees every write and delete asked before it. The workspace memento holds only the last
   provider and model choice and the id of the conversation shown. The list is derived from the directory, newest
-  first, conversations without entries left out; 50 conversations are kept: a save past the limit queues a prune
+  first, conversations without entries left out; 50 conversations are kept: a save past the limit, and the window load, queue a prune
   with the navigation (below), which deletes the oldest by update time, oldest first, never the one shown when it
   runs.
 - The record is versioned (`version: 1`) and holds the displayed entries, each user entry with the text the model

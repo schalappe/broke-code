@@ -114,7 +114,11 @@ export class ChatController {
    * activation, and one sent meanwhile keeps its conversation in front.
    */
   restore(): Promise<void> {
-    return this.navigate(() => this.restoreNow());
+    return this.navigate(async () => {
+      await this.restoreNow();
+      // [>]: A stop between the 51st save and its queued prune would leave 51 files for good.
+      await this.prune();
+    });
   }
 
   private async restoreNow(): Promise<void> {

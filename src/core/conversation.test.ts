@@ -57,10 +57,10 @@ describe("conversation record", () => {
     expect(parse({ ...record(), createdAt: 0, updatedAt: 8.64e15 })).toMatchObject({ ok: true });
   });
 
-  test("falls back to the typed text when a user entry has no model text", () => {
+  test("rejects a record whose user entry has no model text", () => {
     const { modelText: _, ...user } = record().entries[0] as ConversationRecord["entries"][0] & { modelText: string };
     const parsed = parse({ ...record(), entries: [user] });
-    expect(parsed).toMatchObject({ ok: true, record: { entries: [{ modelText: "explain @a.ts" }] } });
+    expect(parsed.ok).toBe(false);
   });
 
   test("keeps a failed reply's error and drops fields it does not know", () => {

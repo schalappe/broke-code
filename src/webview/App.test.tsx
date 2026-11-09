@@ -285,7 +285,7 @@ describe("conversation history", () => {
   });
 
   test("lists each conversation in the order given with its title and date, the current one marked", () => {
-    const noon = Date.parse("2026-11-08T12:00:00Z");
+    const noon = new Date(2026, 10, 8, 12).getTime();
     const html = list([
       { id: CONVERSATION_ID, title: "Newest", updatedAt: noon },
       { id: OTHER_ID, title: "Older", updatedAt: noon - 86_400_000 },

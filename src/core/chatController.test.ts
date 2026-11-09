@@ -774,6 +774,25 @@ describe("ChatController conversations", () => {
     expect(state().conversations.map((c) => c.id)).not.toContain(seeded[0]!.id);
   });
 
+  test("prunes at restore the conversations left past 50 by a stop before the prune", async () => {
+    const seeded = Array.from(
+      { length: 51 },
+      (_, index): ConversationRecord => ({
+        version: 1,
+        id: newConversationId(),
+        createdAt: index + 1,
+        updatedAt: index + 1,
+        entries: [{ role: "user", content: `c${index}`, mentions: [], modelText: `c${index}` }],
+      }),
+    );
+    const files = memoryFiles(
+      Object.fromEntries(seeded.map((record) => [`${record.id}.json`, JSON.stringify(record)])),
+    );
+    const { state } = await load(workspace(files));
+    await eventually(() => files.files.size === 50 && state().conversations.length === 50, "the oldest deleted");
+    expect(files.files.has(`${seeded[0]!.id}.json`)).toBe(false);
+  });
+
   test("starts a new conversation when the saved current one is unreadable, and lists the valid ones", async () => {
     const valid: ConversationRecord = {
       version: 1,

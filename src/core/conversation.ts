@@ -48,7 +48,7 @@ export function serializeConversation(record: ConversationRecord): string {
 
 /**
  * Validate a saved record. A reply still `waiting` or `streaming` was cut by a reload or crash -> `stopped`, so the
- * composer is usable. A user entry without `modelText` falls back to its typed text.
+ * composer is usable. A user entry without `modelText` makes the record invalid.
  */
 export function parseConversation(text: string): ParsedConversation {
   let value: unknown;
@@ -121,12 +121,10 @@ const MENTION_STATUSES: readonly string[] = [
 function parseEntry(raw: unknown): StoredEntry | undefined {
   if (!isObject(raw)) return undefined;
   if (raw.role === "user") {
-    if (!isString(raw.content) || !Array.isArray(raw.mentions) || !isOptional(raw.modelText, isString))
-      return undefined;
+    if (!isString(raw.content) || !Array.isArray(raw.mentions) || !isString(raw.modelText)) return undefined;
     const mentions = raw.mentions.map(parseMention);
     if (mentions.some((mention) => mention === undefined)) return undefined;
-    const modelText = (raw.modelText as string | undefined) ?? raw.content;
-    return { role: "user", content: raw.content, mentions: mentions as MentionResult[], modelText };
+    return { role: "user", content: raw.content, mentions: mentions as MentionResult[], modelText: raw.modelText };
   }
   if (raw.role === "assistant") {
     if (!isString(raw.reasoning) || !isString(raw.content)) return undefined;

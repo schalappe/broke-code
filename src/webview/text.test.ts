@@ -93,7 +93,7 @@ describe("describeProviderError", () => {
 });
 
 describe("formatConversationDate", () => {
-  const noon = Date.parse("2026-11-08T12:00:00Z");
+  const noon = new Date(2026, 10, 8, 12).getTime();
 
   test("writes the date in the display language", () => {
     expect(formatConversationDate(noon, "en")).toContain("Nov 8, 2026");
