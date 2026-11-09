@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { BENCH_MODELS, parseBenchArgs } from "./bench";
+import { BENCH_MODELS, modelsProblem, parseBenchArgs } from "./bench";
 
 describe("parseBenchArgs", () => {
   test("defaults to both models and 10 runs", () => {
@@ -25,5 +25,29 @@ describe("parseBenchArgs", () => {
     }
     expect(() => parseBenchArgs(["--model"])).toThrow();
     expect(() => parseBenchArgs(["--verbose"])).toThrow();
+  });
+});
+
+describe("modelsProblem", () => {
+  const url = "http://localhost:11434/v1";
+
+  test("names Ollama's URL and the error when the models cannot be listed", () => {
+    const listing = {
+      ok: false as const,
+      error: { kind: "unreachable" as const, provider: "Ollama", baseUrl: url, cause: "connect ECONNREFUSED" },
+    };
+    const problem = modelsProblem(listing, ["a"], url);
+    expect(problem).toContain(`Ollama at ${url}`);
+    expect(problem).toContain("unreachable");
+    expect(problem).toContain("connect ECONNREFUSED");
+  });
+
+  test("names each requested model Ollama does not list", () => {
+    const problem = modelsProblem({ ok: true, models: ["a", "c"] }, ["a", "b", "d"], url);
+    expect(problem).toBe(`Not served by Ollama at ${url}: b, d. Pull with \`ollama pull <name>\`.`);
+  });
+
+  test("finds no problem when Ollama lists every requested model", () => {
+    expect(modelsProblem({ ok: true, models: ["b", "a"] }, ["a", "b"], url)).toBeUndefined();
   });
 });

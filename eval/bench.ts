@@ -10,7 +10,7 @@ import { appendFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { listModels } from "../src/core/client";
+import { listModels, type ModelListing } from "../src/core/client";
 import { formatDuration, formatReport, type RunResult } from "./report";
 import { playScenario } from "./run";
 import { describeError, judge, SCENARIOS } from "./scenarios";
@@ -43,17 +43,24 @@ export function parseBenchArgs(args: string[]): { models: string[]; runs: number
   return { models: [...new Set(values.model ?? BENCH_MODELS)], runs, dump: values.dump };
 }
 
+/**
+ * Why the bench cannot play `models` on the provider at `baseUrl`, given its model `listing`: the listing failed, or
+ * it lacks some of them, each named. `undefined` when every model is listed.
+ */
+export function modelsProblem(listing: ModelListing, models: readonly string[], baseUrl: string): string | undefined {
+  if (!listing.ok) return `Ollama at ${baseUrl} could not list its models: ${describeError(listing.error)}`;
+  const missing = models.filter((model) => !listing.models.includes(model));
+  if (missing.length === 0) return undefined;
+  return `Not served by Ollama at ${baseUrl}: ${missing.join(", ")}. Pull with \`ollama pull <name>\`.`;
+}
+
 async function main(): Promise<number> {
   const { models, runs, dump } = parseBenchArgs(process.argv.slice(2));
 
   const listing = await listModels({ provider: { name: "Ollama", baseUrl: OLLAMA_URL }, apiKey: undefined });
-  if (!listing.ok) {
-    console.error(`Ollama at ${OLLAMA_URL} could not list its models: ${describeError(listing.error)}`);
-    return 1;
-  }
-  const missing = models.filter((model) => !listing.models.includes(model));
-  if (missing.length > 0) {
-    console.error(`Not served by Ollama at ${OLLAMA_URL}: ${missing.join(", ")}. Pull with \`ollama pull <name>\`.`);
+  const problem = modelsProblem(listing, models, OLLAMA_URL);
+  if (problem) {
+    console.error(problem);
     return 1;
   }
 

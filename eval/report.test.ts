@@ -55,6 +55,18 @@ describe("formatReport", () => {
     });
   });
 
+  test("counts each category's failed runs", () => {
+    const fail = (run: number, category: "stepLimit" | "wrongTool"): RunResult => ({
+      model: "m",
+      scenario: "read",
+      run,
+      verdict: { pass: false, category, detail: "d" },
+      ms: 1_000,
+    });
+    const results = [fail(0, "stepLimit"), fail(1, "wrongTool"), fail(2, "stepLimit")];
+    expect(formatReport(results, 3).text.split("\n").slice(2, 4)).toEqual(["    stepLimit: 2", "    wrongTool: 1"]);
+  });
+
   test("says every model met the bar", () => {
     const results = [...Array.from({ length: 9 }, () => pass("gemma", 1_000)), pass("gemma", 400)];
     expect(formatReport(results, 10)).toEqual({
