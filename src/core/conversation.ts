@@ -1,8 +1,8 @@
 /**
  * @module conversation
  * Conversation record as saved on disk (version 1), its validation on load, its title, its id, and its summary: the
- * history row saved beside the record so the list never parses the record. Files read from disk are untrusted:
- * `parseConversation` and `parseSummary` check every field and keep only known ones.
+ * history row saved beside the record, so a valid summary spares the list parsing the record. Files read from disk are
+ * untrusted: `parseConversation` and `parseSummary` check every field and keep only known ones.
  */
 import type { MentionResult } from "./mentions";
 import type { ChatEntry, ReplyStatus } from "./protocol";

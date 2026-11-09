@@ -171,23 +171,24 @@ The code so far covers the extension skeleton and a streaming chat with a provid
 - Conversations are saved per workspace, as two JSON files per conversation in the extension's per-workspace storage
   directory (`ExtensionContext.storageUri`), never in the memento: the memento serializes every key on each update
   and VS Code warns from about 500 KB. The record `<id>.json` holds the conversation; the summary
-  `<id>.summary.json` holds `{ version, id, title, updatedAt }` only, `version` being the record's, so the list never
-  parses a record that may reach megabytes. A write goes to a uniquely named temporary file, flushed to disk, then a
-  `rename(2)` over the final one with `node:fs`, never `workspace.fs`: its rename with overwrite deletes the
-  destination first, so a crash between the two steps would lose the conversation. The first listing deletes
-  temporary files of either file left by a crash. Reads, writes, and deletes run one at a time in
-  call order, so a read sees every write and delete asked before it. A save writes the record, then the summary, in
+  `<id>.summary.json` holds `{ version, id, title, updatedAt }` only, `version` being the record's, so a valid summary
+  spares the list parsing a record that may reach megabytes. A write goes to a uniquely named temporary file, flushed
+  to disk, then a `rename(2)` over the final one with `node:fs`, never `workspace.fs`: its rename with overwrite
+  deletes the destination first, so a crash between the two steps would lose the conversation. The first listing
+  deletes temporary files of either file left by a crash. Reads, writes, and deletes run one at a time in call order,
+  so a read sees every write and delete asked before it. A save writes the record, then the summary, in
   one queued operation: a failed record write fails the save; a failed summary write is logged only, and a crash
   between the two leaves the older summary, so only the row's position is stale until the next save (the title is
   fixed after the first message). A delete removes the record, then the summary: a failed record delete keeps both
   and fails; a failed summary delete is logged and the conversation is gone. The workspace memento holds only the last
   provider and model choice and the id of the conversation shown. The list is derived from the directory, newest
   first, conversations without entries left out. It reads a conversation's summary, or its record when the summary is
-  missing, unreadable, invalid, of another id, or of another version than 1, so an unknown-version record is still
-  skipped; only a record that cannot be read is a listing failure. A summary without its record is not listed and is
-  deleted at that listing. 50 conversations are kept: a save past the limit, and the window load, queue a prune
-  with the navigation (below), which deletes the oldest by update time, oldest first, never the one shown when it
-  runs.
+  missing, unreadable, invalid, of another id, or of another version than 1, and parses the record only then; only a
+  record that cannot be read is a listing failure. Accepted gap: a valid version-1 summary beside a corrupt or newer
+  record (a crash right after a downgrade, or disk corruption) is listed, and opening it shows the usual not-found or
+  invalid error. A summary without its record is not listed and is deleted at that listing. 50 conversations are
+  kept: a save past the limit, and the window load, queue a prune with the navigation (below), which deletes the
+  oldest by update time, oldest first, never the one shown when it runs.
 - The record is versioned (`version: 1`) and holds the displayed entries, each user entry with the text the model
   received (`modelText`), so a reopened conversation resends exactly what was sent and never reads its mentions
   again. It holds no API key and nothing else of `ProviderAccess`; a failed reply's error keeps the provider's base

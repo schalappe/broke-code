@@ -6,7 +6,9 @@ import {
   isConversationId,
   newConversationId,
   parseConversation,
+  parseSummary,
   serializeConversation,
+  serializeSummary,
   summarize,
 } from "./conversation";
 
@@ -142,6 +144,27 @@ describe("conversation title", () => {
 
   test("summarizes a record by id, title, and update time", () => {
     expect(summarize(record())).toEqual({ id: ID, title: "explain @a.ts", updatedAt: 2000 });
+  });
+});
+
+describe("conversation summary", () => {
+  const summary = (overrides: Record<string, unknown> = {}) =>
+    parseSummary(JSON.stringify({ version: 1, id: ID, title: "t", updatedAt: 2000, ...overrides }));
+
+  test("reads back the row it wrote, under the record's version", () => {
+    const text = serializeSummary(record());
+    expect(JSON.parse(text)).toEqual({ version: 1, id: ID, title: "explain @a.ts", updatedAt: 2000 });
+    expect(parseSummary(text)).toEqual({ id: ID, title: "explain @a.ts", updatedAt: 2000 });
+  });
+
+  test("refuses an id that is not one the store makes", () => {
+    expect(summary({ id: "../escape" })).toBeUndefined();
+  });
+
+  test("refuses a time that is not whole milliseconds within the Date range", () => {
+    for (const updatedAt of [-1, 1.5, 8.64e15 + 1, "2000"]) {
+      expect(summary({ updatedAt })).toBeUndefined();
+    }
   });
 });
 

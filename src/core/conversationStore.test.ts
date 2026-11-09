@@ -273,6 +273,23 @@ describe("ConversationStore", () => {
     expect(await store.list()).toEqual({ conversations: [], unreadable: [] });
   });
 
+  test("a save queued while a remove is pending writes neither file", async () => {
+    const files = memoryFiles();
+    const store = new ConversationStore(files);
+    const saved = record(1000);
+    await store.save(saved);
+    let release: () => void = () => {};
+    files.holdRemoves = new Promise((resolve) => {
+      release = resolve;
+    });
+    const removing = store.remove(saved.id);
+    const saving = store.save({ ...saved, updatedAt: 2000 });
+    release();
+    await removing;
+    expect(await saving).toBe(false);
+    expect(files.files.size).toBe(0);
+  });
+
   test("a save queued before a remove lands first, and the remove still wins", async () => {
     const files = memoryFiles();
     const store = new ConversationStore(files);

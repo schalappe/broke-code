@@ -1,9 +1,9 @@
 /**
  * @module conversationStore
  * Saved conversations of one workspace, in a directory the host provides: per conversation, the record `<id>.json` and
- * its summary `<id>.summary.json`, the history row. The list is derived from the directory and reads the summaries,
- * so it never parses a large record; a missing or invalid summary falls back to the record. vscode-free: the host
- * passes file access through `ConversationFiles`.
+ * its summary `<id>.summary.json`, the history row. The list is derived from the directory and reads the summaries;
+ * it parses a record only when its summary is missing or invalid. vscode-free: the host passes file access through
+ * `ConversationFiles`.
  */
 import {
   type ConversationRecord,
