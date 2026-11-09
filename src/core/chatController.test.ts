@@ -550,6 +550,11 @@ describe("ChatController conversations", () => {
     return text === undefined ? undefined : (JSON.parse(text) as ConversationRecord);
   };
 
+  const isSummaryName = (name: string) => name.endsWith(".summary.json");
+
+  /** Saved records in `files`, summaries left out. */
+  const recordCount = (files: MemoryFiles) => [...files.files.keys()].filter((name) => !isSummaryName(name)).length;
+
   /** Saved reply of conversation `id`: its second entry. */
   const savedReply = (ws: Workspace, id: string) => {
     const entry = raw(ws, id)?.entries[1];
@@ -608,7 +613,7 @@ describe("ChatController conversations", () => {
     let writes = 0;
     const write = ws.files.write;
     ws.files.write = (name, text) => {
-      writes += 1;
+      if (!isSummaryName(name)) writes += 1;
       return write(name, text);
     };
     const { controller, state } = await load(ws);
@@ -679,7 +684,7 @@ describe("ChatController conversations", () => {
     expect(state().entries).toEqual([]);
     await eventually(() => state().conversations.length === 1, "the list");
     expect(state().conversations).toMatchObject([{ id: firstId, title: "First" }]);
-    expect([...ws.files.files.keys()]).toEqual([`${firstId}.json`]);
+    expect([...ws.files.files.keys()].sort()).toEqual([`${firstId}.json`, `${firstId}.summary.json`].sort());
 
     await controller.send("Second");
     await controller.openConversation(firstId);
@@ -768,7 +773,7 @@ describe("ChatController conversations", () => {
     expect(state().conversations).toHaveLength(50);
 
     await controller.send("Newest");
-    await eventually(() => files.files.size === 50 && state().conversations.length === 50, "the oldest deleted");
+    await eventually(() => recordCount(files) === 50 && state().conversations.length === 50, "the oldest deleted");
     expect(files.files.has(`${seeded[0]!.id}.json`)).toBe(false);
     expect(state().conversations[0]).toMatchObject({ id: state().conversationId, title: "Newest" });
     expect(state().conversations.map((c) => c.id)).not.toContain(seeded[0]!.id);
@@ -789,7 +794,7 @@ describe("ChatController conversations", () => {
       Object.fromEntries(seeded.map((record) => [`${record.id}.json`, JSON.stringify(record)])),
     );
     const { state } = await load(workspace(files));
-    await eventually(() => files.files.size === 50 && state().conversations.length === 50, "the oldest deleted");
+    await eventually(() => recordCount(files) === 50 && state().conversations.length === 50, "the oldest deleted");
     expect(files.files.has(`${seeded[0]!.id}.json`)).toBe(false);
   });
 
@@ -1102,7 +1107,7 @@ describe("ChatController conversations", () => {
     const opening = controller.openConversation(oldest.id);
     writes.release();
     await Promise.all([sent, opening]);
-    await eventually(() => ws.files.files.size === 50, "the prune");
+    await eventually(() => recordCount(ws.files) === 50, "the prune");
     expect(state().conversationId).toBe(oldest.id);
     expect(ws.files.files.has(`${oldest.id}.json`)).toBe(true);
     expect(ws.files.files.has(`${seeded[1]!.id}.json`)).toBe(false);
@@ -1258,7 +1263,7 @@ describe("ChatController conversations", () => {
     const second = controller.openConversation(oldest.id);
     read.release();
     await Promise.all([first, sent, second]);
-    await eventually(() => ws.files.files.size === 50, "the prune");
+    await eventually(() => recordCount(ws.files) === 50, "the prune");
     expect(state().conversationId).toBe(oldest.id);
     expect(ws.files.files.has(`${oldest.id}.json`)).toBe(true);
     await controller.send("Still saved");
@@ -1297,6 +1302,7 @@ describe("ChatController conversations", () => {
     let writes = 0;
     let holding = false;
     ws.files.write = async (name, text) => {
+      if (isSummaryName(name)) return write(name, text);
       writes += 1;
       if (writes === 2) {
         holding = true;

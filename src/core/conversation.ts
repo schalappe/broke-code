@@ -1,7 +1,8 @@
 /**
  * @module conversation
- * Conversation record as saved on disk (version 1), its validation on load, its title, and its id.
- * Records read from disk are untrusted: `parseConversation` checks every field and keeps only known ones.
+ * Conversation record as saved on disk (version 1), its validation on load, its title, its id, and its summary: the
+ * history row saved beside the record so the list never parses the record. Files read from disk are untrusted:
+ * `parseConversation` and `parseSummary` check every field and keep only known ones.
  */
 import type { MentionResult } from "./mentions";
 import type { ChatEntry, ReplyStatus } from "./protocol";
@@ -94,6 +95,27 @@ export function conversationTitle(entries: readonly ChatEntry[]): string {
 
 export function summarize(record: ConversationRecord): ConversationSummary {
   return { id: record.id, title: conversationTitle(record.entries), updatedAt: record.updatedAt };
+}
+
+/** Summary file of `record`: its row under `version`, the version of the record it describes. */
+export function serializeSummary(record: ConversationRecord): string {
+  return JSON.stringify({ version: record.version, ...summarize(record) });
+}
+
+/**
+ * The row a summary file holds; `undefined` when invalid or when it describes a record of another version than this
+ * build reads, so the caller parses the record, which then reports its own problem.
+ */
+export function parseSummary(text: string): ConversationSummary | undefined {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  if (!isObject(value) || value.version !== 1 || !isConversationId(value.id)) return undefined;
+  if (!isString(value.title) || !isTime(value.updatedAt)) return undefined;
+  return { id: value.id, title: value.title, updatedAt: value.updatedAt };
 }
 
 /** Conversations kept per workspace. */

@@ -91,8 +91,21 @@ describe("directoryFiles", () => {
 
 describe("isTemporaryName", () => {
   test("matches only the temporary files this adapter writes", () => {
-    expect(isTemporaryName(`${ID}.json.1b0d4c1e-8f9a-4c3b-9d2e-1a2b3c4d5e6f.tmp`)).toBe(true);
-    for (const name of [`${ID}.json`, `${ID}.json.tmp`, "notes.tmp", `${ID}.json.x/../y.tmp`, `../${ID}.json.1.tmp`]) {
+    const uuid = "1b0d4c1e-8f9a-4c3b-9d2e-1a2b3c4d5e6f";
+    expect(isTemporaryName(`${ID}.json.${uuid}.tmp`)).toBe(true);
+    expect(isTemporaryName(`${ID}.summary.json.${uuid}.tmp`)).toBe(true);
+    for (const name of [
+      `${ID}.json`,
+      `${ID}.json.tmp`,
+      "notes.tmp",
+      `${ID}.json.x/../y.tmp`,
+      `../${ID}.json.1.tmp`,
+      `${ID}.summary.json`,
+      `${ID}.summary.json.tmp`,
+      `${ID}.other.json.${uuid}.tmp`,
+      `${ID}.summary.summary.json.${uuid}.tmp`,
+      `notes.summary.json.${uuid}.tmp`,
+    ]) {
       expect(isTemporaryName(name)).toBe(false);
     }
   });

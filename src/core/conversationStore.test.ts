@@ -25,14 +25,21 @@ async function quietly(work: () => Promise<unknown>): Promise<unknown[][]> {
 }
 
 describe("ConversationStore", () => {
-  test("saves one file per conversation and lists them newest first", async () => {
+  test("saves a record and its summary per conversation, and lists them newest first from the summaries", async () => {
     const files = memoryFiles();
     const store = new ConversationStore(files);
     const [old, recent] = [record(1000, "old"), record(2000, "recent")];
     expect(await store.save(old)).toBe(true);
     expect(await store.save(recent)).toBe(true);
 
-    expect([...files.files.keys()].sort()).toEqual([`${old.id}.json`, `${recent.id}.json`].sort());
+    const names = [old.id, recent.id].flatMap((id) => [`${id}.json`, `${id}.summary.json`]);
+    expect([...files.files.keys()].sort()).toEqual(names.sort());
+    expect(JSON.parse(files.files.get(`${old.id}.summary.json`) ?? "")).toEqual({
+      version: 1,
+      id: old.id,
+      title: "old",
+      updatedAt: 1000,
+    });
     expect(await store.list()).toEqual({
       conversations: [
         { id: recent.id, title: "recent", updatedAt: 2000 },
@@ -40,7 +47,73 @@ describe("ConversationStore", () => {
       ],
       unreadable: [],
     });
+    expect(files.reads.get(`${old.id}.json`)).toBeUndefined();
+    expect(files.reads.get(`${recent.id}.json`)).toBeUndefined();
     expect(await store.load(old.id)).toEqual(old);
+  });
+
+  test("lists a conversation from its record when its summary is missing", async () => {
+    const files = memoryFiles();
+    const store = new ConversationStore(files);
+    const saved = record(1000, "kept");
+    await store.save(saved);
+    files.files.delete(`${saved.id}.summary.json`);
+    expect(await new ConversationStore(files).list()).toEqual({
+      conversations: [{ id: saved.id, title: "kept", updatedAt: 1000 }],
+      unreadable: [],
+    });
+  });
+
+  test("skips a corrupt, foreign, or unreadable summary and lists the record's values", async () => {
+    const [corrupt, foreign, locked] = [record(1000, "corrupt"), record(2000, "foreign"), record(3000, "locked")];
+    const files = memoryFiles({
+      [`${corrupt.id}.json`]: JSON.stringify(corrupt),
+      [`${corrupt.id}.summary.json`]: JSON.stringify({ version: 1, id: corrupt.id, title: 7, updatedAt: 9000 }),
+      [`${foreign.id}.json`]: JSON.stringify(foreign),
+      [`${foreign.id}.summary.json`]: JSON.stringify({ version: 1, id: corrupt.id, title: "other", updatedAt: 9000 }),
+      [`${locked.id}.json`]: JSON.stringify(locked),
+      [`${locked.id}.summary.json`]: JSON.stringify({ version: 1, id: locked.id, title: "stale", updatedAt: 9000 }),
+    });
+    const read = files.read;
+    files.read = async (name) => {
+      if (name === `${locked.id}.summary.json`) throw new Error("EACCES: permission denied");
+      return read(name);
+    };
+    let listed: unknown;
+    await quietly(async () => {
+      listed = await new ConversationStore(files).list();
+    });
+    expect(listed).toEqual({
+      conversations: [
+        { id: locked.id, title: "locked", updatedAt: 3000 },
+        { id: foreign.id, title: "foreign", updatedAt: 2000 },
+        { id: corrupt.id, title: "corrupt", updatedAt: 1000 },
+      ],
+      unreadable: [],
+    });
+  });
+
+  test("never lists a record of unknown version, even beside a summary of that version", async () => {
+    const future = newConversationId();
+    const files = memoryFiles({
+      [`${future}.json`]: JSON.stringify({ ...record(1000), id: future, version: 2 }),
+      [`${future}.summary.json`]: JSON.stringify({ version: 2, id: future, title: "future", updatedAt: 1000 }),
+    });
+    let listed: unknown;
+    const logged = await quietly(async () => {
+      listed = await new ConversationStore(files).list();
+    });
+    expect(listed).toEqual({ conversations: [], unreadable: [] });
+    expect(String(logged.flat())).toContain("unknown version 2");
+  });
+
+  test("a summary without its record is not listed and is gone after the listing", async () => {
+    const orphan = newConversationId();
+    const files = memoryFiles({
+      [`${orphan}.summary.json`]: JSON.stringify({ version: 1, id: orphan, title: "orphan", updatedAt: 1000 }),
+    });
+    expect(await new ConversationStore(files).list()).toEqual({ conversations: [], unreadable: [] });
+    expect(files.files.size).toBe(0);
   });
 
   test("skips and logs a file of unknown version or broken shape, and ignores other names", async () => {
@@ -96,7 +169,13 @@ describe("ConversationStore", () => {
   test("deletes leftover temporary files when it first lists, and keeps everything else", async () => {
     const saved = record(1000);
     const leftover = `${saved.id}.json.${newConversationId()}.tmp`;
-    const files = memoryFiles({ [`${saved.id}.json`]: JSON.stringify(saved), [leftover]: "{", "notes.tmp": "x" });
+    const summaryLeftover = `${saved.id}.summary.json.${newConversationId()}.tmp`;
+    const files = memoryFiles({
+      [`${saved.id}.json`]: JSON.stringify(saved),
+      [leftover]: "{",
+      [summaryLeftover]: "{",
+      "notes.tmp": "x",
+    });
     await new ConversationStore(files).list();
     expect([...files.files.keys()].sort()).toEqual([`${saved.id}.json`, "notes.tmp"].sort());
   });
@@ -172,7 +251,7 @@ describe("ConversationStore", () => {
     expect(await new ConversationStore(memoryFiles()).load(newConversationId())).toBeUndefined();
   });
 
-  test("removes the file, and a save that comes after never brings it back", async () => {
+  test("removes the record and its summary, and a save that comes after writes neither", async () => {
     const files = memoryFiles();
     const store = new ConversationStore(files);
     const saved = record(1000);
@@ -182,6 +261,16 @@ describe("ConversationStore", () => {
     expect(files.files.size).toBe(0);
     expect(await store.save({ ...saved, updatedAt: 2000 })).toBe(false);
     expect(files.files.size).toBe(0);
+  });
+
+  test("never lists a conversation it removed, even when another store writes it back", async () => {
+    const files = memoryFiles();
+    const store = new ConversationStore(files);
+    const saved = record(1000);
+    await store.save(saved);
+    await store.remove(saved.id);
+    expect(await new ConversationStore(files).save(saved)).toBe(true);
+    expect(await store.list()).toEqual({ conversations: [], unreadable: [] });
   });
 
   test("a save queued before a remove lands first, and the remove still wins", async () => {
@@ -224,7 +313,27 @@ describe("ConversationStore", () => {
     expect(await store.save(record(2000))).toBe(true);
   });
 
-  test("after a failed remove, keeps saving the conversation", async () => {
+  test("a failed summary write after the record's still saves; the row keeps the older summary until the next save", async () => {
+    const files = memoryFiles();
+    const store = new ConversationStore(files);
+    const saved = record(1000, "first");
+    await store.save(saved);
+    const write = files.write;
+    files.write = async (name, text) => {
+      if (name.endsWith(".summary.json")) throw new Error("ENOSPC: no space left on device");
+      return write(name, text);
+    };
+    let result: unknown;
+    const logged = await quietly(async () => {
+      result = await store.save({ ...saved, updatedAt: 2000 });
+    });
+    expect(result).toBe(true);
+    expect(String(logged.flat())).toContain("ENOSPC");
+    expect(await store.load(saved.id)).toMatchObject({ updatedAt: 2000 });
+    expect((await store.list()).conversations).toEqual([{ id: saved.id, title: "first", updatedAt: 1000 }]);
+  });
+
+  test("after a failed remove, keeps both files and keeps saving the conversation", async () => {
     const files = memoryFiles();
     const store = new ConversationStore(files);
     const saved = record(1000);
@@ -233,8 +342,35 @@ describe("ConversationStore", () => {
       throw new Error("EACCES: permission denied");
     };
     await expect(store.remove(saved.id)).rejects.toThrow("EACCES");
+    expect([...files.files.keys()].sort()).toEqual([`${saved.id}.json`, `${saved.id}.summary.json`].sort());
     expect(await store.save({ ...saved, updatedAt: 2000 })).toBe(true);
     expect(await store.load(saved.id)).toMatchObject({ updatedAt: 2000 });
+    expect((await store.list()).conversations).toMatchObject([{ id: saved.id, updatedAt: 2000 }]);
+  });
+
+  test("a failed summary delete after the record's still removes the conversation", async () => {
+    const files = memoryFiles();
+    const store = new ConversationStore(files);
+    const saved = record(1000);
+    await store.save(saved);
+    const remove = files.remove;
+    files.remove = async (name) => {
+      if (name.endsWith(".summary.json")) throw new Error("EACCES: permission denied");
+      return remove(name);
+    };
+    const logged = await quietly(() => store.remove(saved.id));
+    expect(String(logged.flat())).toContain("EACCES");
+    expect(await store.save({ ...saved, updatedAt: 2000 })).toBe(false);
+    expect([...files.files.keys()]).toEqual([`${saved.id}.summary.json`]);
+    let listed: unknown;
+    const relogged = await quietly(async () => {
+      listed = await store.list();
+    });
+    expect(listed).toEqual({ conversations: [], unreadable: [] });
+    expect(String(relogged.flat())).toContain("could not delete the summary of a removed conversation");
+    files.remove = remove;
+    await store.list();
+    expect(files.files.size).toBe(0);
   });
 
   test("never writes a conversation without entries", async () => {

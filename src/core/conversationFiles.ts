@@ -20,14 +20,14 @@ export type ConversationFiles = {
   remove(name: string): Promise<void>;
 };
 
-const TEMPORARY_PATTERN = /^(.+)\.json\.([^./]+-[^./]+-[^./]+-[^./]+-[^./]+)\.tmp$/;
+const TEMPORARY_PATTERN = /^(.+?)(?:\.summary)?\.json\.([^./]+-[^./]+-[^./]+-[^./]+-[^./]+)\.tmp$/;
 
 /** Temporary file a write of `name` goes through: unique per write, never ending in `.json`. */
 function temporaryName(name: string): string {
   return `${name}.${crypto.randomUUID()}.tmp`;
 }
 
-/** True for a leftover temporary file of a conversation: `<id>.json.<uuid>.tmp`. */
+/** True for a leftover temporary file of a conversation's record or summary: `<id>[.summary].json.<uuid>.tmp`. */
 export function isTemporaryName(name: string): boolean {
   const match = TEMPORARY_PATTERN.exec(name);
   return match !== null && isConversationId(match[1]) && isConversationId(match[2]);

@@ -1,24 +1,29 @@
 /**
  * @module conversationStore
- * Saved conversations of one workspace: one `<id>.json` file per conversation in a directory the host provides.
- * The list is derived from the directory. vscode-free: the host passes file access through `ConversationFiles`.
+ * Saved conversations of one workspace, in a directory the host provides: per conversation, the record `<id>.json` and
+ * its summary `<id>.summary.json`, the history row. The list is derived from the directory and reads the summaries,
+ * so it never parses a large record; a missing or invalid summary falls back to the record. vscode-free: the host
+ * passes file access through `ConversationFiles`.
  */
 import {
   type ConversationRecord,
   type ConversationSummary,
   isConversationId,
   parseConversation,
+  parseSummary,
   serializeConversation,
+  serializeSummary,
   summarize,
 } from "./conversation";
 import { type ConversationFiles, isTemporaryName } from "./conversationFiles";
 import { SerialQueue } from "./serialQueue";
 
-const FILE_PATTERN = /^(.+)\.json$/;
+const RECORD_PATTERN = /^(.+)\.json$/;
+const SUMMARY_PATTERN = /^(.+)\.summary\.json$/;
 
 /**
- * The saved conversations, newest first, and the files that could not be read (a technical failure, apart from an
- * invalid or unknown-version file, which is logged and skipped). `cause`: runtime error text.
+ * The saved conversations, newest first, and the records that could not be read (a technical failure, apart from an
+ * invalid or unknown-version record, which is logged and skipped). `cause`: runtime error text.
  */
 export type ConversationListing = {
   conversations: ConversationSummary[];
@@ -40,8 +45,9 @@ export class ConversationStore {
   constructor(private readonly files: ConversationFiles | undefined) {}
 
   /**
-   * Conversations with at least one entry. The first listing also deletes leftover temporary files of crashed
-   * writes; queued, so no write in flight has one. Rejects when the directory cannot be listed.
+   * Conversations with at least one entry, from their summaries, or their records when the summary is missing or
+   * invalid. The first listing also deletes leftover temporary files of crashed writes; queued, so no write in flight
+   * has one. Rejects when the directory cannot be listed.
    */
   list(): Promise<ConversationListing> {
     const files = this.files;
@@ -52,12 +58,23 @@ export class ConversationStore {
         this.listed = true;
         await Promise.all(names.filter(isTemporaryName).map((name) => files.remove(name).catch(logLeftover)));
       }
+      const present = new Set(names);
+      const orphans = names.filter((name) => {
+        const id = SUMMARY_PATTERN.exec(name)?.[1];
+        return isConversationId(id) && !present.has(fileName(id));
+      });
+      await Promise.all(orphans.map((name) => files.remove(name).catch(logOrphan)));
       const ids = names.flatMap((name) => {
-        const id = FILE_PATTERN.exec(name)?.[1];
-        return isConversationId(id) ? [id] : [];
+        const id = RECORD_PATTERN.exec(name)?.[1];
+        return isConversationId(id) && !this.removed.has(id) ? [id] : [];
       });
       const listing: ConversationListing = { conversations: [], unreadable: [] };
       const reads = ids.map(async (id) => {
+        const summary = present.has(summaryName(id)) ? await this.readSummary(files, id) : undefined;
+        if (summary) {
+          listing.conversations.push(summary);
+          return;
+        }
         try {
           const record = await this.read(files, id);
           if (record && record.entries.length > 0) listing.conversations.push(summarize(record));
@@ -80,24 +97,32 @@ export class ConversationStore {
   }
 
   /**
-   * Write `record`. Resolves `false` when nothing was written: no storage, no entries, or the conversation was
-   * removed. Rejects when the write fails.
+   * Write `record`, then its summary. Resolves `false` when nothing was written: no storage, no entries, or the
+   * conversation was removed. Rejects when the record write fails; a failed summary write is logged only.
    */
   async save(record: ConversationRecord): Promise<boolean> {
     const name = fileName(record.id);
     const files = this.files;
     if (!files || record.entries.length === 0) return false;
     const text = serializeConversation(record);
+    const summary = serializeSummary(record);
     return this.queue.run(async () => {
       if (this.removed.has(record.id)) return false;
       await files.write(name, text);
+      try {
+        await files.write(summaryName(record.id), summary);
+      } catch (error) {
+        // [>]: The record landed, so the conversation is saved. An older summary only leaves the row's position stale
+        // until the next save (the title is fixed after the first message); a missing one falls back to the record.
+        console.error("broke-code: could not write a conversation summary", record.id, error);
+      }
       return true;
     });
   }
 
   /**
-   * Delete the conversation `id`; saves called after it are dropped. Rejects when the delete fails, and then later
-   * saves still land, since the file is still there.
+   * Delete the conversation `id`, record then summary; saves called after it are dropped. Rejects when the record
+   * delete fails, and then both files stay and later saves still land.
    */
   async remove(id: string): Promise<void> {
     const name = fileName(id);
@@ -105,7 +130,26 @@ export class ConversationStore {
     return this.queue.run(async () => {
       await files?.remove(name);
       this.removed.add(id);
+      await files?.remove(summaryName(id)).catch((error: unknown) => {
+        // [>]: The record is gone, so the conversation is: a summary without its record is never listed, and the
+        // next listing deletes it.
+        console.error("broke-code: could not delete a conversation summary", id, error);
+      });
     });
+  }
+
+  /** Unqueued summary read; `undefined` when missing, unreadable (logged), invalid, or not of `id`. */
+  private async readSummary(files: ConversationFiles, id: string): Promise<ConversationSummary | undefined> {
+    let text: string | undefined;
+    try {
+      text = await files.read(summaryName(id));
+    } catch (error) {
+      // [>]: The record read that follows reports the conversation if it cannot be read either.
+      console.error("broke-code: could not read a conversation summary", id, error);
+      return undefined;
+    }
+    const summary = text === undefined ? undefined : parseSummary(text);
+    return summary?.id === id ? summary : undefined;
   }
 
   /** Unqueued read; callers run it inside the queue. */
@@ -126,9 +170,19 @@ function fileName(id: string): string {
   return `${id}.json`;
 }
 
+/** Summary file of conversation `id`; callers pass an id `fileName` already checked. */
+function summaryName(id: string): string {
+  return `${id}.summary.json`;
+}
+
 function logSkipped(id: string, reason: unknown): undefined {
   console.error("broke-code: skipped saved conversation", id, reason);
   return undefined;
+}
+
+function logOrphan(error: unknown): void {
+  // [>]: A summary without its record is never listed; failing to delete it costs disk space only.
+  console.error("broke-code: could not delete the summary of a removed conversation", error);
 }
 
 function logLeftover(error: unknown): void {
