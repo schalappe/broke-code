@@ -121,16 +121,24 @@ with **Run** and **Reject** and an optional reason.
 `<shell> -c <command>`, not a login shell), without a terminal, in the first workspace folder unless the model names
 another folder of the workspace. The command cannot read input: it gets end of file at once. The model receives the
 exit code, then stdout and stderr, each cut to its first 2,000 lines and 1 MiB; a command that exits with a code other
-than 0, or is killed, is reported as an error. A command stops after 120 seconds: broke-code sends SIGTERM to it and to
-every process it started, then SIGKILL two seconds later, and the model gets the output so far. Change that limit with
+than 0, or is killed, is reported as an error. A command stops after 120 seconds: broke-code sends SIGTERM to its
+process group (the shell and the processes it started that stayed in that group), then SIGKILL two seconds later, and
+the model gets the output so far. Change that limit with
 `brokeCode.commandTimeoutSeconds` (at least 1) in your **user** settings; a workspace `settings.json` cannot change
 it. **Stop**, **New chat**, or opening another conversation while a command waits runs nothing, and while it runs stops
-it the same way. Processes a command leaves running in the background are stopped once it ends, and the model is told
-so: to keep a server running, start it in your own terminal.
+it the same way. Processes a command leaves running in the background in its process group are stopped once it ends,
+and the model is told so: to keep a server running, start it in your own terminal. A process that leaves the group
+(with `setsid`, or a daemon that detaches) is not stopped. When VS Code closes the window or reloads the extensions,
+every command still running gets SIGKILL at once.
+
+Unlike the file tools, a command is not held to the workspace: it runs with your rights, so it can read, change, or
+delete anything you can, outside the workspace too. The folder it starts in is the only part broke-code checks; your
+approval is the guard, so read the whole command before you click **Run**.
 
 Each tool call shows as a compact row under the model's text: the tool, its main argument (a path, a search pattern,
 or the whole command), and whether it worked with the size of its result, or for a command, its exit code. Click the row to see the result the model received.
-A path outside the workspace, and outside the folders of the loaded skills, is refused, and the model is told why.
+A file tool's path outside the workspace, and outside the folders of the loaded skills, is refused, and the model is
+told why.
 
 The agent turn ends when the model answers with text and no tool call. It also ends when you click **Stop**, at any step;
 after three malformed tool calls in a row, with a message saying so; after 50 tool steps (or the limit you set), with
@@ -198,7 +206,8 @@ When a task matches a skill's description, the model calls **load_skill** with i
 instructions, without the frontmatter, cut to their first 2,000 lines, together with the real path of the skill's
 folder. From then on, for the rest of the conversation, the model may read the files of that folder with
 **read_file**, **list_files**, and **search**, by that absolute path, even for a personal skill outside the workspace.
-It cannot change the files of a skill outside the workspace, and before the load it cannot read them; there, a file
+The file tools cannot change the files of a skill outside the workspace, and before the load they cannot read them
+(a command you approve can, like any file you can reach); there, a file
 that is a symbolic link to somewhere outside the skill's folder is refused. A workspace skill's folder is part of the
 workspace: the usual rules apply, so the model can change its files with your approval. A skill loaded in a past conversation is loaded again when you reopen it, as long as it is still
 there. `load_skill` is offered to the model only while a skill is listed to it.

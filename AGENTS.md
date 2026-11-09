@@ -196,8 +196,11 @@ command at once. Slash commands are not built yet. Read `GLOSSARY.md` for the do
   rights: a write landing between the last read and the rename is overwritten (Node has no compare-and-swap on a
   path), and a missing parent folder swapped for a symlink out after the check makes `mkdir` create an empty folder
   outside before the write is refused.
-- Tools act inside the open workspace only. The one exception is read-only access to the directories of skills
-  loaded in the current conversation that lie outside the workspace (ADR 0003):
+- The file tools (`read_file`, `list_files`, `search`, `write_file`, `edit_file`, and `load_skill`) act inside the open
+  workspace only. `run_command` is not confined: its `cwd` must be a workspace folder, but an approved command runs
+  with the user's rights and can read, change, or delete anything the user can, outside the workspace too; the
+  approval is the only guard. The one exception to the file tools' boundary is read-only access to the directories of
+  skills loaded in the current conversation that lie outside the workspace (ADR 0003):
   - A skill is loaded when the conversation holds an `ok` `load_skill` step for its name; an `error` step, a step
     dropped by Stop, and a malformed call load nothing. Before each call the controller maps those names to folders
     through the current send's discovery (`ToolContext.skillRoots`, beside `ToolContext.skills`, the send's skills),
@@ -257,14 +260,21 @@ command at once. Slash commands are not built yet. Read `GLOSSARY.md` for the do
   - `brokeCode.commandTimeoutSeconds` (integer, default 120, at least 1, `application` scope, read from `globalValue`
     at each command; capped at the longest timer delay, about 24 days). At the timeout, or on Stop, New chat, the other
     navigation, and deactivation during the run, the group gets SIGTERM (`process.kill(-pid)`), then SIGKILL two
-    seconds later, sent even once the result is in. A stop during the run ends the reply `stopped`; the result waits
-    for the output pipes, at most half a second past the SIGKILL, so a process that ignores SIGTERM cannot hold the
-    turn.
+    seconds later unless the group is gone by then (checked every 20 ms). The result waits until the group is gone or
+    SIGKILL was sent, so it never claims a stop that has not happened, and then for the output pipes, at most half a
+    second more, since a process that left the group may hold them. A stop during the run ends the reply `stopped`.
   - Once the shell exits, the output gets 200 ms to drain. A process still in the group then (a background job, its
-    output redirected or not) is stopped the same way, and the result ends with a line saying so; a process that left
-    the group (`setsid`, a daemon) is not stopped, and the result stops waiting for the pipes it holds. A Stop after
-    the shell exited keeps its exit code. macOS answers EPERM for a group of zombies, so only a group a signal 0
-    reaches counts as alive.
+    output redirected or not) is stopped the same way, and the result ends with a line saying what is true when it
+    settles: "were stopped" (the group is gone), "did not stop on SIGTERM; they were sent SIGKILL after 2 seconds", or
+    "could not be stopped; they may still be running" (the signals failed). A process that left the group (`setsid`, a
+    daemon) is not stopped, and the result stops waiting for the pipes it holds. A Stop after the shell exited keeps
+    its exit code. macOS answers EPERM for a group of zombies, so only a group a signal 0 reaches counts as alive.
+  - A signal that fails with ESRCH (the group is gone) or EPERM (zombies, or processes that changed user and could not
+    be stopped anyway) is ignored. Any other failure adds a line `Sending <signal> to the command's processes failed
+    (<code>).` to the result, whose status still follows the exit code.
+  - Deactivation also calls `killRunningCommands` synchronously from `deactivate`: SIGKILL at once to every group still
+    running or in its grace, since the host may exit before a scheduled SIGKILL fires. Accepted limit: a host that
+    crashes never calls it, so a process that ignores SIGTERM can then outlive it.
 - Reasoning output (`<think>` tags, `reasoning`, or `reasoning_content`) shows collapsed in the chat. The parser
   never looks for tool calls in it, and the conversation history sent back to the model drops it.
 - Each request of an agent turn sends a `system` message first, then the history: each user entry's composed text,
