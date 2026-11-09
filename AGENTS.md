@@ -149,7 +149,9 @@ system prompt, and the read tools exist in `src/core/`, but no harness runs them
   resolved again, and the open handle must be the same file (device and inode) as that inside path: this refuses a
   committed symlink out and a component swapped for one between the first check and the open. A writer swapping
   again between the later checks is out of scope: it already runs with the user's rights and can read the outside
-  file itself. Other statuses: `missing`, `binary` (NUL byte in the first 8 KiB), `tooLarge` (over 1 MiB),
+  file itself. `search` checks its `path` the same way, then ripgrep opens it by name: a folder swapped for a
+  symlink out after the check, or a subfolder swapped during the walk, is out of scope for the same reason. Other
+  statuses: `missing`, `binary` (NUL byte in the first 8 KiB), `tooLarge` (over 1 MiB),
   `unreadable` (any other failure, such as a permission error or a FIFO), `attached`, and `truncated` (cut to its
   first 2,000 lines, then `[truncated: N more lines not shown]`).
 - The model receives the user text, then one block per mention: a header `@<path> (<kind>, <count or status>)`,
