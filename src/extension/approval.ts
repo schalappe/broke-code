@@ -25,7 +25,6 @@ import type { PlannedChange } from "../core/writeTools";
 export class DiffPreviews implements vscode.TextDocumentContentProvider, vscode.Disposable {
   /** Text of each side open, by URI. */
   private readonly texts = new Map<string, string>();
-  private lastId = 0;
   private readonly registration = vscode.workspace.registerTextDocumentContentProvider(CHANGE_SCHEME, this);
 
   provideTextDocumentContent(uri: vscode.Uri): string {
@@ -34,8 +33,10 @@ export class DiffPreviews implements vscode.TextDocumentContentProvider, vscode.
 
   /** Open `change` beside the chat, titled with its path. Rejects when the diff editor cannot open. */
   async preview(change: PlannedChange): Promise<Preview> {
-    const id = ++this.lastId;
-    // [>]: The file name ends each side's path, so the diff picks the file's language.
+    // [>]: An id never reused, even by a later activation: a host crash leaves the old diffs and their documents open,
+    // and VS Code would show a reused URI's old text, not this change. The file name ends each side's path, so the
+    // diff picks the file's language.
+    const id = crypto.randomUUID();
     const side = (name: string) =>
       vscode.Uri.from({ scheme: CHANGE_SCHEME, path: `/${id}/${name}/${basename(change.target)}` });
     const before = side("planned");
