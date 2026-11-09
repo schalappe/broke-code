@@ -19,7 +19,7 @@ import type { MentionReader, ReadMention } from "./mentions";
 import { type ChatEntry, type ChatState, isReplying } from "./protocol";
 import type { Provider } from "./providers";
 import { composeSystemPrompt, type InstructionFile } from "./systemPrompt";
-import { createTlsFixture } from "./tlsFixture";
+import { createTlsFixture, removeTlsFixture } from "./tlsFixture";
 import { READ_TOOLS, runReadTool, type ToolResult } from "./tools";
 import { vllmOpening, vllmReasoningRest } from "./vllmFixture";
 
@@ -1549,7 +1549,9 @@ describe("ChatController conversations", () => {
   test("Stop ends a reply at once while its CA file read never settles, and New chat then completes", async () => {
     const dir = mkdtempSync(join(tmpdir(), "broke-code-ca-"));
     const caFile = join(dir, "ca.pem");
-    copyFileSync(createTlsFixture().ca.certPath, caFile);
+    const tls = createTlsFixture();
+    copyFileSync(tls.ca.certPath, caFile);
+    removeTlsFixture(tls);
     const provider: Provider = { name: "Hang", baseUrl: `http://localhost:${server.port}/ca-hang/v1`, caFile };
     const ws = workspace();
     const { controller, state } = await load(ws, { provider });

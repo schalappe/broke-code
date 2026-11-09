@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { type ChatOutcome, listModels, type ProviderAccess, streamChat } from "./client";
 import type { ProviderError } from "./providerError";
 import type { Provider } from "./providers";
-import { createTlsFixture, type KeyPair, type TlsFixture } from "./tlsFixture";
+import { createTlsFixture, type KeyPair, removeTlsFixture, type TlsFixture } from "./tlsFixture";
 
 let fixture: TlsFixture;
 const servers: ReturnType<typeof Bun.serve>[] = [];
@@ -45,6 +45,7 @@ beforeAll(() => {
 
 afterAll(() => {
   for (const server of servers) server.stop(true);
+  removeTlsFixture(fixture);
 });
 
 function access(name: string, baseUrl: string, caFile?: string): ProviderAccess {
