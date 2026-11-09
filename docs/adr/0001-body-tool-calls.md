@@ -129,3 +129,15 @@ rename was done, and sent three empty replies in a row (`malformed`).
 **Bench step limit.** Decided by the maintainer (schalappe) on 2026-11-09: the eval's step limit goes from 6 to 10,
 since an edit takes list, read, edit, and sometimes search, and empty replies now count as steps; on c96f1e7, `gemma4`
 `edit` run 1 halted at the limit after a correct edit. The 9/10 bar and the product default of 50 are unchanged.
+
+**Result with the limit at 10.** On revision b1049a2, 10 runs per model:
+
+| Model                   | `read` | `edit` | `create` |
+| ----------------------- | ------ | ------ | -------- |
+| `qwen3.8:27b`           | 10/10  | 10/10  | 10/10    |
+| `gemma4:26b-a4b-it-qat` | 10/10  | 10/10  | 10/10    |
+
+Every model met the bar. One reply was empty (`gemma4` `edit` run 5, its `edit_file` call written in its reasoning);
+sent back, the model called `edit_file` and passed. The same run took 18 minutes, one reply's reasoning running on for
+about 98,000 characters. `qwen3.8` twice wrote the placeholder `<tool_name>` of the format example as a call
+(`read` runs 1 and 5); each got the unknown-tool message, recovered, and passed.

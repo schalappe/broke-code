@@ -203,9 +203,8 @@ runs of each task, with the bar at nine. The bench has three tasks:
 - **Edit**: rename a function in a source file, changing nothing else.
 - **Create**: create a file whose text holds double quotes, backslashes, tags, and a code block, exactly as asked.
 
-`qwen3.8:27b` passes all three tasks. `gemma4:26b-a4b-it-qat` passes **Read** and **Create**, and is one run under
-the bar on **Edit** for now (8 of 10): it sometimes thinks, then stops without a word, and although broke-code asks it
-again, it does not always recover. Contributors run the bench with `bun run eval`.
+Both models pass all three tasks, 10 runs of 10 each. When a model thinks, then stops without a word, broke-code
+tells it so and asks again. Contributors run the bench with `bun run eval`.
 
 ## Privacy
 
