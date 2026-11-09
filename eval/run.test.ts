@@ -2,11 +2,20 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { RUN_COMMAND_TOOL } from "../src/core/commands";
 import { composeSystemPrompt } from "../src/core/systemPrompt";
 import { READ_TOOLS } from "../src/core/tools";
 import { WRITE_TOOLS } from "../src/core/writeTools";
 import { playScenario } from "./run";
-import { CREATE_SCENARIO, EDIT_SCENARIO, judge, READ_SCENARIO, type Scenario, SKILL_SCENARIO } from "./scenarios";
+import {
+  COMMAND_SCENARIO,
+  CREATE_SCENARIO,
+  EDIT_SCENARIO,
+  judge,
+  READ_SCENARIO,
+  type Scenario,
+  SKILL_SCENARIO,
+} from "./scenarios";
 
 const event = (content: string) => `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`;
 const READ_CALL = "<read_file>\n<path>config/settings.toml</path>\n</read_file>";
@@ -48,15 +57,30 @@ describe("playScenario", () => {
     expect(readdirSync(parent)).toEqual([]);
   });
 
-  test("sends the system prompt of the read and write tools without any instruction file", async () => {
+  test("sends the system prompt of the read and write tools and run_command without any instruction file", async () => {
     requests.length = 0;
     replies = ["No idea."];
     await playScenario(READ_SCENARIO, { baseUrl, model: "m", maxToolSteps: 6 }, parent);
 
     expect(requests[0]?.messages[0]).toEqual({
       role: "system",
-      content: composeSystemPrompt([...READ_TOOLS, ...WRITE_TOOLS], [], []),
+      content: composeSystemPrompt([...READ_TOOLS, ...WRITE_TOOLS, RUN_COMMAND_TOOL], [], []),
     });
+  });
+
+  test("runs a run_command call at once with /bin/sh in the copy of the fixture, its command and output in the step", async () => {
+    const command = 'find logs -type f | wc -l | tr -d " "; echo "$0"; pwd -P';
+    replies = [`<run_command>\n<command>${command}</command>\n</run_command>`, "The logs folder holds 61 files."];
+    const { entries, after } = await playScenario(COMMAND_SCENARIO, { baseUrl, model: "m", maxToolSteps: 6 }, parent);
+
+    const ran = entries[2];
+    expect(ran).toMatchObject({ role: "tool", name: "run_command", args: { command }, status: "ok" });
+    const text = ran?.role === "tool" ? ran.text : "";
+    expect(text).toStartWith("exit code 0\nstdout:\n61\n/bin/sh\n");
+    expect(text).toContain(`${realpathSync(parent)}/`);
+    expect(text).toEndWith("/workspace\nstderr: (empty)");
+    expect(judge(COMMAND_SCENARIO, entries, after)).toEqual({ pass: true });
+    expect(readdirSync(parent)).toEqual([]);
   });
 
   test("discovers the skills of a copy of the scenario's home fixture, never the real home, and removes the copy", async () => {

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ChatEntry } from "../src/core/protocol";
 import {
+  COMMAND_SCENARIO,
   CREATE_SCENARIO,
   EDIT_SCENARIO,
   fileAt,
@@ -395,8 +396,126 @@ describe("judge on the skill scenario", () => {
   });
 });
 
-test("SCENARIOS holds read, edit, create, and skill, in that order", () => {
-  expect(SCENARIOS.map((scenario) => scenario.name)).toEqual(["read", "edit", "create", "skill"]);
+const FILE_COUNT = 61;
+const commandUser: ChatEntry = { role: "user", content: COMMAND_SCENARIO.message, mentions: [] };
+const COUNT_COMMAND = "find logs -type f | wc -l";
+const commandCall: Reply = {
+  role: "assistant",
+  reasoning: "",
+  content: `<run_command>\n<command>${COUNT_COMMAND}</command>\n</run_command>`,
+  status: "done",
+  call: { name: "run_command", args: { command: COUNT_COMMAND }, start: 0, end: 0 },
+};
+const commandStep = (status: "ok" | "error", text: string): ChatEntry => ({
+  role: "tool",
+  name: "run_command",
+  args: { command: COUNT_COMMAND },
+  status,
+  text,
+});
+const counted = [commandCall, commandStep("ok", `exit code 0\nstdout:\n      ${FILE_COUNT}\nstderr: (empty)`)];
+const commandUntouched = { ...COMMAND_SCENARIO.files };
+
+describe("command scenario fixture", () => {
+  test("holds 61 files under logs/, nested two folders deep, none hidden", () => {
+    const logs = Object.keys(COMMAND_SCENARIO.files).filter((path) => path.startsWith("logs/"));
+    expect(logs).toHaveLength(FILE_COUNT);
+    expect(logs.every((path) => path.split("/").length === 4)).toBe(true);
+    expect(logs.some((path) => path.split("/").some((part) => part.startsWith(".")))).toBe(false);
+  });
+
+  test("spreads them over more folders than the step limit lets the model list one by one", () => {
+    const folders = new Set(
+      Object.keys(COMMAND_SCENARIO.files)
+        .filter((path) => path.startsWith("logs/"))
+        .flatMap((path) => [path.split("/").slice(0, 2).join("/"), path.split("/").slice(0, 3).join("/")]),
+    );
+    expect(folders.size).toBeGreaterThan(10);
+  });
+
+  test("asks for the count, subfolders included, without naming the tool or the count", () => {
+    expect(COMMAND_SCENARIO.message).toContain("logs");
+    expect(COMMAND_SCENARIO.message).toContain("subfolders");
+    for (const hint of ["run_command", String(FILE_COUNT)]) expect(COMMAND_SCENARIO.message).not.toContain(hint);
+    expect(COMMAND_SCENARIO.writes).toEqual({});
+  });
+});
+
+describe("judge on the command scenario", () => {
+  test("passes a turn that ran a command and answered with the count", () => {
+    const entries = [commandUser, ...counted, answer(`The logs folder holds ${FILE_COUNT} files.`)];
+    expect(judge(COMMAND_SCENARIO, entries, commandUntouched)).toEqual({ pass: true });
+  });
+
+  test("passes a turn whose first command failed and a later one succeeded", () => {
+    const entries = [
+      commandUser,
+      commandCall,
+      commandStep("error", "exit code 1\nstdout: (empty)\nstderr:\nfind: logz: No such file or directory"),
+      ...counted,
+      answer(String(FILE_COUNT)),
+    ];
+    expect(judge(COMMAND_SCENARIO, entries, commandUntouched)).toEqual({ pass: true });
+  });
+
+  test("wrongAnswer: the turn ran the command but answered another count, also one the right count prefixes", () => {
+    for (const wrong of ["There are 60 files.", "There are 610 files.", "There are 161 files."]) {
+      const entries = [commandUser, ...counted, answer(wrong)];
+      expect(judge(COMMAND_SCENARIO, entries, commandUntouched)).toMatchObject({
+        pass: false,
+        category: "wrongAnswer",
+        detail: `answer: ${wrong}`,
+      });
+    }
+  });
+
+  test("wrongTool: the turn answered with the count without any command step", () => {
+    const entries = [
+      commandUser,
+      callReply("list_files", "logs"),
+      step("list_files", "logs", "@logs (folder, 2 entries)\n2024/\n2025/"),
+      answer(`${FILE_COUNT} files.`),
+    ];
+    expect(judge(COMMAND_SCENARIO, entries, commandUntouched)).toMatchObject({
+      pass: false,
+      category: "wrongTool",
+      detail: "steps: list_files(path=logs) ok",
+    });
+  });
+
+  test("wrongTool: the command was rejected, with the step's first line as the detail", () => {
+    const rejected = commandStep("error", "The user rejected this command.\nToo slow.");
+    const entries = [commandUser, commandCall, rejected, answer(`${FILE_COUNT} files.`)];
+    expect(judge(COMMAND_SCENARIO, entries, commandUntouched)).toMatchObject({
+      pass: false,
+      category: "wrongTool",
+      detail: "The user rejected this command.; steps: run_command(command=find logs -type f | wc -l) error",
+    });
+  });
+
+  test("wrongTool: the command timed out, with the step's first line as the detail", () => {
+    const timedOut = commandStep("error", "stopped after 10 seconds\nstdout: (empty)\nstderr: (empty)");
+    const entries = [commandUser, commandCall, timedOut, answer("I could not count them.")];
+    expect(judge(COMMAND_SCENARIO, entries, commandUntouched)).toMatchObject({
+      pass: false,
+      category: "wrongTool",
+      detail: "stopped after 10 seconds; steps: run_command(command=find logs -type f | wc -l) error",
+    });
+  });
+
+  test("workspaceChanged: the count is right but the command left a file behind", () => {
+    const entries = [commandUser, ...counted, answer(String(FILE_COUNT))];
+    const changed = { ...commandUntouched, "count.txt": `${FILE_COUNT}\n` };
+    expect(judge(COMMAND_SCENARIO, entries, changed)).toMatchObject({
+      pass: false,
+      category: "workspaceChanged",
+      detail: "changed: count.txt",
+    });
+  });
+});
+
+test("SCENARIOS holds read, edit, create, skill, and command, in that order", () => {
+  expect(SCENARIOS.map((scenario) => scenario.name)).toEqual(["read", "edit", "create", "skill", "command"]);
 });
 
 describe("workspaceChanges", () => {

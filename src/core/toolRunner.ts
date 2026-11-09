@@ -2,7 +2,8 @@
  * @module toolRunner
  * The tool runner of the read and write tools over the workspace, of `run_command`, and of `load_skill`, shared by the
  * extension and the eval. They differ by the applier a write's planned change goes to: the extension's asks the user
- * first, the eval's writes at once; and by `run_command`, which only the extension offers so far.
+ * first, the eval's writes at once; and by the command setup they pass. A command's approval goes through the run
+ * context: the extension asks the user, the eval accepts at once.
  */
 import type { ToolContext, ToolRunner } from "./chatController";
 import { type CommandEnv, RUN_COMMAND_TOOL, runCommandTool } from "./commands";

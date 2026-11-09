@@ -15,8 +15,8 @@ write tools and commands: a message starts an agent turn that runs `read_file`, 
 `edit_file`, and `run_command` until the model answers without a call. Each write waits behind the approval (a diff and
 Accept or Reject in the chat, ADR 0002) unless the user setting auto-approves it; each command waits for Run or Reject,
 always. Each send discovers the skills and lists them to the model, which loads one with `load_skill` and may then read
-its folder (ADR 0003). `bun run eval` measures that loop, without `run_command`, on local Ollama models and applies each
-change at once. Slash commands are not built yet. Read `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the decisions behind the design, starting with
+its folder (ADR 0003). `bun run eval` measures that loop on local Ollama models, applying each change and running each
+command at once. Slash commands are not built yet. Read `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the decisions behind the design, starting with
 `docs/adr/0001-body-tool-calls.md`.
 
 ## Structure
@@ -83,9 +83,10 @@ change at once. Slash commands are not built yet. Read `GLOSSARY.md` for the dom
 - `eval/`: the Ollama eval bench (`bun run eval`). `scenarios.ts` holds each scenario (fixture files, an optional
   fixture home folder, message, the files it must write with their exact text, an optional check of a turn that ended
   `done`) and `judge`, the verdict and failure category of a run, which compares the workspace after the run with the
-  fixture plus those writes; `run.ts` plays one run through the `ChatController` ports, with the read and write tools
-  and `load_skill` over a copy of the fixture under the system temporary directory, each write applied at once by
-  `fileApplier` and recorded for the dump, and the skills discovered in a copy of the fixture home, never the real one;
+  fixture plus those writes; `run.ts` plays one run through the `ChatController` ports, with the read and write tools,
+  `run_command`, and `load_skill` over a copy of the fixture under the system temporary directory, each write applied at
+  once by `fileApplier` and recorded for the dump, each command approved at once and run with `BENCH_COMMAND_ENV`, and
+  the skills discovered in a copy of the fixture home, never the real one;
   `report.ts` formats the scores; `bench.ts` is the CLI, guarded by `import.meta.main` so `bun test` never starts it.
   Its unit tests sit next to them and need no Ollama.
 - `biome.jsonc`: the Biome linter and formatter settings. Markdown is excluded, because Biome's Markdown formatter
@@ -461,11 +462,14 @@ change at once. Slash commands are not built yet. Read `GLOSSARY.md` for the dom
   (VSCodium is the maintainer's editor). Rebuild and reload the window after each change.
 - `bun run eval` plays each scenario 10 times per model against the local Ollama at `http://localhost:11434/v1`,
   on `qwen3.8:27b` then `gemma4:26b-a4b-it-qat`, all runs of one model before the next. Each run drives the
-  chat controller with the read and write tools and `load_skill` over a throwaway copy of the scenario's fixture,
-  each write applied at once, no instruction file, and a step limit of 10. Skills are discovered as the extension
+  chat controller with the read and write tools, `run_command`, and `load_skill` over a throwaway copy of the scenario's
+  fixture, each write applied at once, each command approved at once through the run context (the bench plays the
+  model, not the user; nothing in the product auto-approves a command) and run with `/bin/sh` in the copy with a
+  10-second timeout, no instruction file, and a step limit of 10. A command inherits the bench's environment, `HOME`
+  included, so the bench confines what the tools reach, not what a command itself does. Skills are discovered as the extension
   does, but with a throwaway copy of the scenario's home fixture as the home folder, so the bench never reads the real
   `~/.agents`; a scenario without one gets no skill, and its prompt has neither the Skills section nor `load_skill`.
-  Four scenarios, each judged on the turn ending `done` and on the workspace after it: every file the scenario writes
+  Five scenarios, each judged on the turn ending `done` and on the workspace after it: every file the scenario writes
   holds its exact expected text, byte for byte, and every other file is unchanged.
   - `read`: the model must read a setting it cannot guess and answer with its value. Passes when a tool step got the
     value, the answer holds it, and no file changed.
@@ -478,6 +482,11 @@ change at once. Slash commands are not built yet. Read `GLOSSARY.md` for the dom
     holding the code. The message names neither the skill nor the tool. Passes when an `ok` `load_skill` step ran, a
     read step got the code, the answer holds it, and no file changed; without an `ok` `load_skill` step it is
     `wrongTool`.
+  - `command`: count the files under `logs/`, subfolders included: 61 files in 18 month folders under two year folders,
+    more folders than the step limit lets the model list, and none hidden. The message does not name the tool. Passes
+    when an `ok` `run_command` step ran, the answer holds 61 as a whole number, and no file changed. Without an `ok`
+    `run_command` step it is `wrongTool`, its detail led by the first line of the last command step when one ran (a
+    rejection, `stopped after 10 seconds`, an exit code).
 
   A failed run shows one category and a one-line detail: `malformed`, `wrongTool`, `wrongAnswer`, `stepLimit`,
   `contextFull`, `providerError`, `wrongEdit` (a file the scenario writes is missing or holds other text, with the
@@ -494,7 +503,7 @@ change at once. Slash commands are not built yet. Read `GLOSSARY.md` for the dom
   98,000 characters once took 18 min on its own (b1049a2). It runs locally on demand and never in CI. On 9a67dd7 every
   model met the bar on every scenario: 10/10 everywhere but `gemma4` on `skill`, 9/10 (one `wrongTool`: it listed the
   skill folder and answered without reading the reference file).
-  Scenarios for commands come with #40, and for slash commands with #11.
+  Scenarios for slash commands come with #11.
 - v1 supports macOS only. Windows and Linux are planned for v2.
 
 ## Git and release workflow

@@ -5,6 +5,8 @@
  * failed replies, format failures, and the workspace after the run against the one expected. The verdict reads the
  * entries and the workspace files after the run, never the wording of the answer beyond the value a scenario asks for.
  */
+
+import { RUN_COMMAND_TOOL } from "../src/core/commands";
 import type { ChatEntry } from "../src/core/protocol";
 import type { ProviderError } from "../src/core/providerError";
 import { READ_TOOLS } from "../src/core/tools";
@@ -215,8 +217,64 @@ export const SKILL_SCENARIO: Scenario = {
   },
 };
 
+/** Log files per month under `logs/<year>/<month>/`, uneven so the total cannot be guessed from the folder count. */
+const LOG_MONTHS: Record<string, readonly number[]> = {
+  "2024": [3, 5, 2, 4, 6, 1, 3, 4, 2, 5, 3, 4],
+  "2025": [4, 2, 5, 3, 1, 4],
+};
+
+/** One daily log per entry of `LOG_MONTHS`, days spread over the month. */
+function logFiles(): WorkspaceFiles {
+  const files: WorkspaceFiles = {};
+  for (const [year, counts] of Object.entries(LOG_MONTHS)) {
+    counts.forEach((count, index) => {
+      const month = String(index + 1).padStart(2, "0");
+      for (let file = 0; file < count; file += 1) {
+        const day = String(1 + file * Math.floor(28 / count)).padStart(2, "0");
+        files[`logs/${year}/${month}/${year}-${month}-${day}.log`] = `${year}-${month}-${day} courier: routes sent\n`;
+      }
+    });
+  }
+  return files;
+}
+
+const LOG_FILES = logFiles();
+const LOG_FILE_COUNT = Object.keys(LOG_FILES).length;
+
+/**
+ * Count with a command: how many files a folder holds, subfolders included. The files sit in 18 month folders under
+ * two year folders, more than the bench's step limit lets the model list one by one, and `list_files` counts one level
+ * only, so a shell command is the way to the count. Passes when an `ok` `run_command` step ran, the answer holds the
+ * count as a whole number, and no file changed; without such a step it is `wrongTool`, its detail led by the first line
+ * of the last `run_command` step when one ran (a rejection, a timeout, an exit code). The message never names the tool.
+ */
+export const COMMAND_SCENARIO: Scenario = {
+  name: "command",
+  files: { ...READ_FILES, ...LOG_FILES },
+  message: "How many files does the logs folder hold, counting the files in all its subfolders? Reply with the number.",
+  writes: {},
+  check(entries) {
+    const steps = entries.filter((entry) => entry.role === "tool");
+    const commands = steps.filter((step) => step.name === RUN_COMMAND_TOOL.name);
+    if (!commands.some((step) => step.status === "ok")) {
+      const last = commands.at(-1);
+      const lead = last ? `${last.text.split("\n", 1)[0]}; ` : "";
+      return { pass: false, category: "wrongTool", detail: `${lead}steps: ${describeSteps(steps)}` };
+    }
+    const answer = lastReply(entries).content;
+    if (new RegExp(`(?<!\\d)${LOG_FILE_COUNT}(?!\\d)`).test(answer)) return { pass: true };
+    return { pass: false, category: "wrongAnswer", detail: `answer: ${excerpt(answer)}` };
+  },
+};
+
 /** Every scenario the bench plays, in order. */
-export const SCENARIOS: readonly Scenario[] = [READ_SCENARIO, EDIT_SCENARIO, CREATE_SCENARIO, SKILL_SCENARIO];
+export const SCENARIOS: readonly Scenario[] = [
+  READ_SCENARIO,
+  EDIT_SCENARIO,
+  CREATE_SCENARIO,
+  SKILL_SCENARIO,
+  COMMAND_SCENARIO,
+];
 
 /**
  * The verdict of one run of `scenario`: `entries` are the conversation after `send` resolved, `after` the workspace

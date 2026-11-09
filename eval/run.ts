@@ -1,15 +1,17 @@
 /**
  * @module run
- * One run of a scenario: the chat controller the extension runs, hosted through its ports with the read and write tools
- * and `load_skill` over a throwaway copy of the fixture under the system temporary directory, each write applied at once
- * and recorded, the skills discovered as the extension does but in a throwaway copy of the scenario's home fixture
- * (never the real home), no instruction file, an in-memory conversation store, and the bench's step limit. The copies
- * are removed when the run ends, also when it throws.
+ * One run of a scenario: the chat controller the extension runs, hosted through its ports with the read and write
+ * tools, `run_command`, and `load_skill` over a throwaway copy of the fixture under the system temporary directory, each
+ * write applied at once and recorded, each command approved at once and run with `/bin/sh` in the copy, the skills
+ * discovered as the extension does but in a throwaway copy of the scenario's home fixture (never the real home), no
+ * instruction file, an in-memory conversation store, and the bench's step limit. The copies are removed when the run
+ * ends, also when it throws.
  */
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, sep } from "node:path";
-import { ChatController, type ChoiceStore } from "../src/core/chatController";
+import { ChatController, type ChoiceStore, type ToolRunner } from "../src/core/chatController";
+import type { CommandEnv } from "../src/core/commands";
 import { ConversationStore } from "../src/core/conversationStore";
 import { DEFAULT_CONTEXT_SIZE, parseLimits } from "../src/core/limits";
 import type { ChatEntry } from "../src/core/protocol";
@@ -18,6 +20,13 @@ import { workspaceToolRunner } from "../src/core/toolRunner";
 import { ripgrepCandidates } from "../src/core/tools";
 import { type ChangeApplier, fileApplier, type PlannedChange } from "../src/core/writeTools";
 import type { Scenario, WorkspaceFiles } from "./scenarios";
+
+/**
+ * How the bench runs a command: `/bin/sh`, the shell the extension falls back to, so a run reads no user profile, and
+ * 10 seconds, far above the milliseconds a command over a fixture takes, so a command that waits fails the run in
+ * seconds rather than after the extension's 120.
+ */
+export const BENCH_COMMAND_ENV: CommandEnv = { shell: "/bin/sh", timeoutMs: 10_000 };
 
 /**
  * Where and how a run plays. `baseUrl`: an OpenAI-compatible provider without a key. `maxToolSteps`: the turn's step
@@ -70,10 +79,13 @@ export async function playScenario(scenario: Scenario, target: RunTarget, tmpRoo
         },
       },
       store: new ConversationStore(undefined),
-      tools: workspaceToolRunner(
-        () => [root],
-        toolEnv,
-        (roots) => recording(fileApplier(roots), planned),
+      tools: approvingCommands(
+        workspaceToolRunner(
+          () => [root],
+          toolEnv,
+          (roots) => recording(fileApplier(roots), planned),
+          () => BENCH_COMMAND_ENV,
+        ),
       ),
       instructions: { read: async () => [] },
       // [!]: Never `homedir()`: the maintainer's own skills would change the prompt between runs and machines.
@@ -96,6 +108,18 @@ export async function playScenario(scenario: Scenario, target: RunTarget, tmpRoo
   } finally {
     await rm(runFolder, { recursive: true, force: true });
   }
+}
+
+/**
+ * `runner`, with every approval request of its runs accepted at once: the bench plays the model, not the user, and the
+ * product never auto-approves a command, so this lives in the run context the bench hands the tools, not in a setting.
+ * Only `run_command` asks; a write goes straight to the bench's applier.
+ */
+function approvingCommands(runner: ToolRunner): ToolRunner {
+  return {
+    tools: runner.tools,
+    run: (call, context) => runner.run(call, { ...context, requestApproval: async () => ({ kind: "accept" }) }),
+  };
 }
 
 /** `apply`, appending each change it is handed and its result's status to `planned`. */
