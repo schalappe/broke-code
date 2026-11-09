@@ -23,6 +23,7 @@ export type ParsedReply =
   | { kind: "malformed"; message: string; start: number; end: number };
 
 const OPENING_TAG = /<([a-z][a-z0-9_]*)>/g;
+const CLOSING_TAG = /<\/([a-z][a-z0-9_]*)>/g;
 const ARG_OPENING_TAG = /<([a-z][a-z0-9_]*)>/y;
 const WHITESPACE = /\s*/y;
 const EXCERPT_LENGTH = 40;
@@ -38,24 +39,17 @@ export const GENERIC_CALL_SHAPE = "<tool_name>\n<argument_name>value</argument_n
  */
 export function parseToolCall(answer: string, tools: readonly ToolSpec[]): ParsedReply {
   const masked = maskCode(answer);
-  // [>]: A name with no close after an earlier tag has none after a later one either, so the answer is searched once
-  // per name, not once per tag.
-  const neverClosed = new Set<string>();
+  const closes = closingTags(answer);
   for (const match of answer.matchAll(OPENING_TAG)) {
     const start = match.index;
     if (!startsLine(answer, start)) continue;
     if (masked[start] === MASK) continue;
     const name = match[1]!;
-    if (neverClosed.has(name)) continue;
     const tool = tools.find((tool) => tool.name === name);
     const bodyStart = start + match[0].length;
-    // [>]: Searched in the raw answer, not the masked one, so a value holding a code fence still closes.
-    const close = answer.indexOf(`</${name}>`, bodyStart);
+    const close = firstClose(closes, name, bodyStart);
     if (close === -1) {
-      if (!tool) {
-        neverClosed.add(name);
-        continue;
-      }
+      if (!tool) continue;
       return malformed(`The <${name}> tag never closes: end the call with </${name}>.`, tool, start, answer.length);
     }
     const end = close + `</${name}>`.length;
@@ -144,6 +138,35 @@ function skipWhitespace(text: string, index: number): number {
 function argOpeningAt(text: string, index: number): string | undefined {
   ARG_OPENING_TAG.lastIndex = index;
   return ARG_OPENING_TAG.exec(text)?.[1];
+}
+
+/** Each name's closing tags in a text: their positions in order, and a cursor past those behind the scan. */
+type ClosingTags = Map<string, { positions: number[]; next: number }>;
+
+/**
+ * Every closing tag of `text`, found in one pass. [>]: Read in the raw text, not the masked one, so a value holding a
+ * code fence still closes.
+ */
+function closingTags(text: string): ClosingTags {
+  const closes: ClosingTags = new Map();
+  for (const match of text.matchAll(CLOSING_TAG)) {
+    const name = match[1]!;
+    const entry = closes.get(name) ?? { positions: [], next: 0 };
+    entry.positions.push(match.index);
+    closes.set(name, entry);
+  }
+  return closes;
+}
+
+/**
+ * Where the first `</name>` at or after `from` stands, or -1. [>]: Opening tags are scanned in text order, so `from`
+ * never decreases for a name and its cursor only moves forward: the whole scan stays linear.
+ */
+function firstClose(closes: ClosingTags, name: string, from: number): number {
+  const entry = closes.get(name);
+  if (entry === undefined) return -1;
+  while (entry.next < entry.positions.length && entry.positions[entry.next]! < from) entry.next++;
+  return entry.positions[entry.next] ?? -1;
 }
 
 /** True when only spaces or tabs stand between the start of its line and `index`. */

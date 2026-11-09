@@ -111,6 +111,25 @@ describe("parseToolCall", () => {
     expect(parseToolCall(answer, TOOLS)).toMatchObject({ kind: "call", args: { path: "a" } });
     expect(performance.now() - started).toBeLessThan(1000);
   });
+
+  test("stays fast on many line-start unknown tags of distinct names that never close, before a call", () => {
+    const tags = Array.from({ length: 40000 }, (_, index) => `<p${index}>\n`).join("");
+    const answer = `${tags}<read_file>\n<path>a</path>\n</read_file>`;
+    expect(answer.length).toBeGreaterThan(340000);
+    const started = performance.now();
+    expect(parseToolCall(answer, TOOLS)).toMatchObject({ kind: "call", args: { path: "a" } });
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+
+  test("closes the outer tag at its first closing tag after it, not at one before it", () => {
+    const answer = "Text </read_file> first.\n<read_file>\n<path>a</path>\n</read_file>\n</read_file>";
+    expect(parseToolCall(answer, TOOLS)).toMatchObject({
+      kind: "call",
+      args: { path: "a" },
+      start: answer.indexOf("<read_file>"),
+      end: answer.indexOf("</read_file>\n</read_file>") + "</read_file>".length,
+    });
+  });
 });
 
 /** The message of a malformed result, failing the test on any other kind. */
