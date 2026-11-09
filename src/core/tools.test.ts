@@ -89,6 +89,14 @@ describe("read_file", () => {
     expect(result.text).not.toContain("line 2001");
   });
 
+  test("shows a normalized single-line path in the header of a path that normalizes to a short one", async () => {
+    const path = `${"discard\n/../".repeat(3000)}ten.txt`;
+    expect(await run("read_file", { path })).toEqual({
+      status: "ok",
+      text: `@ten.txt (file, 10 lines)\n\`\`\`\n${numberedLines(10)}\`\`\``,
+    });
+  });
+
   test("refuses a folder, naming list_files", async () => {
     const result = await run("read_file", { path: "src" });
     expect(result.status).toBe("error");
@@ -129,6 +137,14 @@ describe("list_files", () => {
     expect(await run("list_files", {})).toEqual(expected);
     expect(await run("list_files", { path: "" })).toEqual(expected);
     expect(await run("list_files", { path: "." })).toEqual(expected);
+  });
+
+  test("shows a normalized single-line path in the header of a long path that normalizes to a folder", async () => {
+    const path = `${"discard\n/../".repeat(3000)}src`;
+    expect(await run("list_files", { path })).toEqual({
+      status: "ok",
+      text: "@src (folder, 3 entries)\n```\na.ts\nb.ts\ncore/\n```",
+    });
   });
 
   test("lists a subfolder's direct children, folders suffixed with /", async () => {
@@ -455,6 +471,34 @@ describe("search", () => {
     expect(result.status).toBe("ok");
     expect(result.text.startsWith("early.ts:1:early\n")).toBe(true);
     expect(result.text).toContain("stopped after 0.5 seconds");
+  });
+
+  test("keeps ripgrep's error message when the timeout stops the run, with or without matches", async () => {
+    const message = "rg: locked.ts: Permission denied";
+    const withMatch = await fakeRipgrep(
+      "err-match-rg",
+      `echo 'early.ts:1:early'\necho '${message}' >&2\nexec sleep 30`,
+    );
+    const noMatch = await fakeRipgrep("err-rg", `echo '${message}' >&2\nexec sleep 30`);
+    const found = await run("search", { pattern: "x" }, [app], {
+      ripgrepCandidates: [withMatch],
+      searchTimeoutMs: 500,
+    });
+    expect(found.status).toBe("ok");
+    expect(found.text).toContain("early.ts:1:early\n");
+    expect(found.text).toContain("stopped after 0.5 seconds");
+    expect(found.text).toContain(message);
+    const none = await run("search", { pattern: "x" }, [app], { ripgrepCandidates: [noMatch], searchTimeoutMs: 500 });
+    expect(none.status).toBe("ok");
+    expect(none.text).toContain("No match before the search stopped after 0.5 seconds.");
+    expect(none.text).toContain(message);
+  });
+
+  test("relativizes output and messages of a workspace whose root is the filesystem root", async () => {
+    const file = join(base, "root-scope.txt");
+    await writeFile(file, "rootneedle\n");
+    const result = await run("search", { pattern: "rootneedle", path: file }, [{ name: "root", path: "/" }]);
+    expect(result).toEqual({ status: "ok", text: `${(await realpath(file)).slice(1)}:1:rootneedle` });
   });
 
   test("ends as stopped when the signal aborts, the process gone", async () => {

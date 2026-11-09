@@ -8,7 +8,7 @@
 import { spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { access, stat } from "node:fs/promises";
-import { delimiter, isAbsolute, join } from "node:path";
+import { delimiter, isAbsolute, join, posix } from "node:path";
 import {
   accessFailureReason,
   formatMention,
@@ -147,7 +147,7 @@ async function readFileTool(roots: WorkspaceRoot[], path: string, seam: RaceSeam
     const text = `read_file: ${excerpt(path)}: the path is a folder. Use list_files to see its children.`;
     return { status: "error", text };
   }
-  return { status: "ok", text: formatMention(mention) };
+  return { status: "ok", text: formatMention({ ...mention, path: displayPath(path) }) };
 }
 
 async function listFilesTool(roots: WorkspaceRoot[], path: string | undefined, seam: RaceSeam): Promise<ToolResult> {
@@ -161,7 +161,15 @@ async function listFilesTool(roots: WorkspaceRoot[], path: string | undefined, s
     return { status: "error", text: `list_files: ${excerpt(shown)}: the path is a file. Use read_file to read it.` };
   }
   if (failure) return refused("list_files", shown, failure, mention.cause);
-  return { status: "ok", text: formatMention(mention) };
+  return { status: "ok", text: formatMention({ ...mention, path: displayPath(shown) }) };
+}
+
+/**
+ * A model-given path as a successful header shows it: normalized, so `a/../b` reads `b`, then cut to its first line.
+ * Resolution uses the path as given; only the header is bounded, since a long path can normalize to a short one.
+ */
+function displayPath(path: string): string {
+  return excerpt(posix.normalize(path));
 }
 
 /** The folder names of a multi-root workspace, as the listing of its top: what a path may start with. */
@@ -443,9 +451,11 @@ function searchResult(run: {
   const listing = found ? run.lines.join("\n") + (run.omitted > 0 ? `\n${truncationNotice(run.omitted)}` : "") : "";
   if (run.ending === "timeout") {
     const seconds = run.timeoutMs / 1000;
-    const text = found
+    const note = found
       ? `${listing}\n[search stopped after ${seconds} seconds: other matches may exist]`
       : `No match before the search stopped after ${seconds} seconds.`;
+    // [>]: ripgrep may have reported a read error before the cap: the model must not lose it.
+    const text = run.messages ? `${note}\n\nSome paths could not be searched:\n${run.messages}` : note;
     return { status: "ok", text };
   }
   if (run.code === 0) return { status: "ok", text: listing };
@@ -483,7 +493,8 @@ function skippedNotice(skipped: string[]): string {
 /** An output line with its path shown as a mention resolves it, when it starts with a workspace folder's real path. */
 function shownLine(line: string, scope: SearchScope): string {
   for (const { realRoot, shown } of scope.prefixes) {
-    if (line.startsWith(`${realRoot}/`)) return shown + line.slice(realRoot.length + 1);
+    const prefix = withSeparator(realRoot);
+    if (line.startsWith(prefix)) return shown + line.slice(prefix.length);
   }
   return line;
 }
@@ -491,8 +502,17 @@ function shownLine(line: string, scope: SearchScope): string {
 /** ripgrep's messages with workspace real paths shown as in the output lines. */
 function shownMessages(stderr: string, scope: SearchScope): string {
   let shown = stderr.trimEnd();
-  for (const prefix of scope.prefixes) shown = shown.replaceAll(`${prefix.realRoot}/`, prefix.shown);
+  for (const { realRoot, shown: replacement } of scope.prefixes) {
+    // [!]: Only where a path starts: with the root `/`, its prefix is a single `/` that every path holds inside.
+    const start = new RegExp(`(?<=^|[\\s:"'(])${withSeparator(realRoot).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "gm");
+    shown = shown.replace(start, () => replacement);
+  }
   return shown;
+}
+
+/** `root` with exactly one trailing separator: the real root `/` already has it. */
+function withSeparator(root: string): string {
+  return root.endsWith("/") ? root : `${root}/`;
 }
 
 function errorCode(error: unknown): string | undefined {
