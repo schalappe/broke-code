@@ -261,12 +261,14 @@ async function findRipgrep(candidates: readonly string[]): Promise<string | unde
  * What one search covers. `paths`: real paths given to ripgrep. `excluded`: real paths of workspace folders nested in
  * another, left out of the outer folder's walk since each is searched on its own. `prefixes`: each workspace folder's
  * real path and what replaces it in the output, longest first, so a nested folder wins over the one that holds it.
+ * `skipped`: the workspace folders a whole-workspace search could not resolve, one `- name (cause)` line each.
  */
 type SearchScope = {
   cwd: string;
   paths: string[];
   excluded: string[];
   prefixes: { realRoot: string; shown: string }[];
+  skipped: string[];
 };
 
 async function searchTool(
@@ -299,21 +301,24 @@ async function searchTool(
  * already runs with the user's rights and can read the outside files itself.
  */
 async function searchScope(roots: WorkspaceRoot[], path: string | undefined): Promise<SearchScope | ToolResult> {
-  const usable = await resolveWorkspaceRoots(roots);
+  const { resolved: usable, unresolved } = await resolveWorkspaceRoots(roots);
   const prefixes = usable
     .map(({ root, realRoot }) => ({ realRoot, shown: roots.length > 1 ? `${root.name}/` : "" }))
     .sort((a, b) => b.realRoot.length - a.realRoot.length);
 
   if (path === undefined || path === "" || path === ".") {
     const realRoots = [...new Set(usable.map(({ realRoot }) => realRoot))];
-    if (realRoots.length === 0) return { status: "error", text: "search: no workspace folder can be searched." };
+    const skipped = unresolved.map(({ root, cause }) => `- ${root.name} (${cause})`);
+    if (realRoots.length === 0) {
+      return { status: "error", text: `search: no workspace folder can be searched.\n\n${skippedNotice(skipped)}` };
+    }
     // [>]: A nested folder is searched on its own, even when the outer walk would skip it (hidden, ignored), and is
     // left out of that walk, so its files show once, under its name. An absolute exclude glob holds only with the
     // working folder at `/`.
     const excluded = realRoots.filter((realRoot) =>
       realRoots.some((other) => other !== realRoot && isInside(other, realRoot)),
     );
-    return { cwd: "/", paths: realRoots, excluded, prefixes };
+    return { cwd: "/", paths: realRoots, excluded, prefixes, skipped };
   }
 
   try {
@@ -322,7 +327,7 @@ async function searchScope(roots: WorkspaceRoot[], path: string | undefined): Pr
     // [!]: A FIFO or device given to ripgrep could block until the timeout or read without end.
     const info = await stat(located.realPath);
     if (!info.isFile() && !info.isDirectory()) return refused("search", path, "unreadable", "not a file or folder");
-    return { cwd: located.realRoot, paths: [located.realPath], excluded: [], prefixes };
+    return { cwd: located.realRoot, paths: [located.realPath], excluded: [], prefixes, skipped: [] };
   } catch (error) {
     return refused("search", path, "unreadable", errorCode(error) ?? String(error));
   }
@@ -418,7 +423,7 @@ function runRipgrep(
     child.on("close", (code) => {
       if (partialLine !== "") keep(partialLine);
       const messages = shownMessages(stderr, scope) + (stderrCut ? "\n…" : "");
-      settle(searchResult({ lines, omitted, code, ending, timeoutMs, messages }));
+      settle(withSkipped(searchResult({ lines, omitted, code, ending, timeoutMs, messages }), code, ending, scope));
     });
   });
 }
@@ -449,6 +454,28 @@ function searchResult(run: {
   }
   const exit = run.code === 2 ? "" : ` (exit code ${run.code})`;
   return { status: "error", text: `search: ripgrep failed${exit}:\n${run.messages || "no message"}` };
+}
+
+/**
+ * `result` with the workspace folders left out of the search listed after it. A run that found nothing while some
+ * folders were not searched is an error, as ripgrep's exit 2 without a match is: "No match" would claim too much.
+ */
+function withSkipped(
+  result: ToolResult,
+  code: number | null,
+  ending: "timeout" | "stopped" | undefined,
+  scope: SearchScope,
+): ToolResult {
+  if (scope.skipped.length === 0 || ending === "stopped") return result;
+  const notice = skippedNotice(scope.skipped);
+  if (ending === undefined && code === 1) {
+    return { status: "error", text: `search: no match in the folders searched.\n\n${notice}` };
+  }
+  return { status: result.status, text: `${result.text}\n\n${notice}` };
+}
+
+function skippedNotice(skipped: string[]): string {
+  return `Workspace folders not searched, since they could not be resolved:\n${skipped.join("\n")}`;
 }
 
 /** An output line with its path shown as a mention resolves it, when it starts with a workspace folder's real path. */

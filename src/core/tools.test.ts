@@ -235,11 +235,33 @@ describe("search", () => {
     }
   });
 
-  test("says when no workspace folder can be resolved", async () => {
+  test("says when no workspace folder can be resolved, and why", async () => {
     const gone: WorkspaceRoot = { name: "gone", path: join(base, "gone") };
     expect(await run("search", { pattern: "x" }, [gone])).toEqual({
       status: "error",
-      text: "search: no workspace folder can be searched.",
+      text: "search: no workspace folder can be searched.\n\nWorkspace folders not searched, since they could not be resolved:\n- gone (ENOENT)",
+    });
+  });
+
+  test("lists the workspace folders it could not resolve after the matches of the others", async () => {
+    const gone: WorkspaceRoot = { name: "gone", path: join(base, "gone") };
+    const fenced: WorkspaceRoot = { name: "fenced", path: await mkdirp(join(base, "fence", "inner")) };
+    await chmod(join(base, "fence"), 0o000);
+    try {
+      expect(await run("search", { pattern: "lib needle" }, [lib, gone, fenced])).toEqual({
+        status: "ok",
+        text: "lib/x.ts:1:lib needle\n\nWorkspace folders not searched, since they could not be resolved:\n- gone (ENOENT)\n- fenced (EACCES)",
+      });
+    } finally {
+      await chmod(join(base, "fence"), 0o700);
+    }
+  });
+
+  test("never says No match when a workspace folder could not be searched", async () => {
+    const gone: WorkspaceRoot = { name: "gone", path: join(base, "gone") };
+    expect(await run("search", { pattern: "absent[0-9]{9}" }, [lib, gone])).toEqual({
+      status: "error",
+      text: "search: no match in the folders searched.\n\nWorkspace folders not searched, since they could not be resolved:\n- gone (ENOENT)",
     });
   });
 

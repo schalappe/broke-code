@@ -120,7 +120,8 @@ export async function locateWorkspacePath(
   );
   if (candidates.length === 0) return { status: "outsideWorkspace" };
 
-  const realRoots = (await resolveWorkspaceRoots(roots)).map((entry) => entry.realRoot);
+  // [>]: A path under a root that cannot be resolved fails its own `realpath`, so it reads as missing or unreadable.
+  const realRoots = (await resolveWorkspaceRoots(roots)).resolved.map((entry) => entry.realRoot);
   for (const candidate of candidates) {
     const realPath = await realpath(candidate).catch((error: unknown) => {
       if (MISSING_CODES.has(errorCode(error) ?? "")) return undefined;
@@ -133,15 +134,29 @@ export async function locateWorkspacePath(
   return { status: "missing" };
 }
 
-/** The roots that resolve, in order, each with its real path. */
-export async function resolveWorkspaceRoots(
-  roots: WorkspaceRoot[],
-): Promise<{ root: WorkspaceRoot; realRoot: string }[]> {
-  const resolved = await Promise.all(
-    roots.map(async (root) => ({ root, realRoot: await realpath(root.path).catch(() => undefined) })),
+/**
+ * The roots that resolve, in order, each with its real path, and those that do not (deleted, unmounted, a parent
+ * denying access), each with the error code. A caller that covers every root must report the unresolved ones.
+ */
+export async function resolveWorkspaceRoots(roots: WorkspaceRoot[]): Promise<{
+  resolved: { root: WorkspaceRoot; realRoot: string }[];
+  unresolved: { root: WorkspaceRoot; cause: string }[];
+}> {
+  const outcomes = await Promise.all(
+    roots.map((root) =>
+      realpath(root.path).then(
+        (realRoot) => ({ root, realRoot }),
+        (error: unknown) => ({ root, cause: errorCode(error) ?? String(error) }),
+      ),
+    ),
   );
-  // [>]: A root that cannot be resolved (deleted, unmounted) holds nothing readable: it is left out, not an error.
-  return resolved.flatMap(({ root, realRoot }) => (realRoot === undefined ? [] : [{ root, realRoot }]));
+  const resolved: { root: WorkspaceRoot; realRoot: string }[] = [];
+  const unresolved: { root: WorkspaceRoot; cause: string }[] = [];
+  for (const outcome of outcomes) {
+    if ("realRoot" in outcome) resolved.push(outcome);
+    else unresolved.push(outcome);
+  }
+  return { resolved, unresolved };
 }
 
 /** A custom folder name may hold `/` (`libs/core`): the longest name that prefixes the path wins. */
