@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describeSkillDiscovery, loadSkill, MAX_SKILL_ENTRIES, readSkills } from "./skills";
+import { describeSkillDiscovery, LOAD_SKILL_TOOL, loadSkill, MAX_SKILL_ENTRIES, readSkills } from "./skills";
 import type { WorkspaceEntry } from "./workspaceFiles";
 
 let base: string;
@@ -350,17 +350,27 @@ describe("readSkills", () => {
     ]);
   });
 
-  test("a SKILL.md gone after its read is no skill; one whose path fails otherwise warns with the cause", async () => {
+  /** A discovery seam that runs `change` once, right after the one skill's `SKILL.md` was read whole. */
+  const afterRead = (change: () => Promise<void>) => async (read: () => Promise<WorkspaceEntry>) => {
+    const entry = await read();
+    expect(entry.status).toBe("ok");
+    await change();
+    return entry;
+  };
+
+  test("a SKILL.md deleted after its read, before its real path check, is no skill and no warning", async () => {
     const gone = await writeSkill(personal, "gone", skillText("gone", "Gone."));
+    const aroundRead = afterRead(() => unlink(join(gone, "SKILL.md")));
+    expect(await readSkills(home, [], { aroundRead })).toEqual({ skills: [], warnings: [] });
+  });
+
+  test("a SKILL.md whose real path check fails otherwise after its read warns with the cause", async () => {
     const looped = await writeSkill(personal, "looped", skillText("looped", "Looped."));
-    const aroundRead = async (read: () => Promise<WorkspaceEntry>) => {
-      const entry = await read();
-      // [>]: After the read, before the real path check: one file deleted, the other swapped for a link to itself.
-      await unlink(join(gone, "SKILL.md")).catch(() => {});
-      await unlink(join(looped, "SKILL.md")).catch(() => {});
-      await symlink(join(looped, "SKILL.md"), join(looped, "SKILL.md")).catch(() => {});
-      return entry;
-    };
+    const file = join(looped, "SKILL.md");
+    const aroundRead = afterRead(async () => {
+      await unlink(file);
+      await symlink(file, file);
+    });
     expect(await readSkills(home, [], { aroundRead })).toEqual({
       skills: [],
       warnings: [{ path: "~/.agents/skills/looped/SKILL.md", problem: { kind: "unreadable", cause: "ELOOP" } }],
@@ -461,6 +471,13 @@ describe("describeSkillDiscovery", () => {
     expect(describeSkillDiscovery({ skills: [], warnings: [] })).toBe(
       "broke-code: skills listed to the model: none; kept from the model: none; skipped: 0",
     );
+  });
+});
+
+describe("LOAD_SKILL_TOOL", () => {
+  test("says only a skill folder outside the workspace is read-only", () => {
+    expect(LOAD_SKILL_TOOL.description).toContain("; a skill folder outside the workspace is read-only.");
+    expect(LOAD_SKILL_TOOL.description).not.toContain("cannot be changed");
   });
 });
 
