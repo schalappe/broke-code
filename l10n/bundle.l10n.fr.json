@@ -77,9 +77,10 @@
   "This conversation is missing or unreadable; it was removed from the list.": "Cette discussion est introuvable ou illisible ; elle a été retirée de la liste.",
   "malformed call": "appel malformé",
   "running…": "en cours…",
-  "not run": "non exécuté",
   "ok, {0}": "ok, {0}",
   "error, {0}": "erreur, {0}",
   "Stopped: the model sent three malformed tool calls in a row.": "Tour de l'agent arrêté : le modèle a envoyé trois appels d'outil malformés d'affilée.",
-  "Stopped: the agent turn reached its tool step limit.": "Tour de l'agent arrêté : la limite d'étapes d'outil est atteinte."
+  "Stopped: the agent turn reached its tool step limit.": "Tour de l'agent arrêté : la limite d'étapes d'outil est atteinte.",
+  "stopped, no result": "arrêté, sans résultat",
+  "no result": "sans résultat"
 }

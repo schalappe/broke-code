@@ -126,6 +126,13 @@ describe("agent turn", () => {
     expect(html).toContain('<span class="step-arg">src/a.ts</span>');
     expect(html).toContain("ok");
     expect(html).toContain("4 lines");
+    expect(html.split('<span class="step-tool">').length - 1).toBe(1);
+  });
+
+  test("a tool step without a reply before it is still shown, once", () => {
+    const html = renderTurn([step]);
+    expect(html.split('<span class="step-tool">read_file</span>').length - 1).toBe(1);
+    expect(html).toContain("SECRET_RESULT_TEXT");
   });
 
   test("shows the reply's text outside the call block as Markdown, never the call itself", () => {
@@ -181,9 +188,11 @@ describe("agent turn", () => {
     expect(html).toContain(">Stop<");
   });
 
-  test("a call stopped before its result shows its row as not run, then Stopped", () => {
+  test("a call stopped while it runs shows its row as stopped with no result, then Stopped", () => {
     const html = renderTurn([{ ...callReply, status: "stopped" }]);
-    expect(html).toContain("not run");
+    expect(html).toContain('<span class="step-tool">read_file</span>');
+    expect(html).toContain("stopped, no result");
+    expect(html).not.toContain("not run");
     expect(html).toContain("Stopped");
   });
 
