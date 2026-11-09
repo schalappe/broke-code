@@ -12,8 +12,8 @@ twinny.
 
 The code so far covers the extension skeleton, a streaming chat with a provider, and the harness with the read tools:
 a message starts an agent turn that runs `read_file`, `list_files`, and `search` until the model answers without a
-call. `bun run eval` measures that loop on local Ollama models. Write tools, `run_command`, skills, and slash
-commands are not built yet. Read
+call. Each send discovers the skills and lists them to the model. `bun run eval` measures that loop on local Ollama
+models. Write tools, `run_command`, `load_skill`, and slash commands are not built yet. Read
 `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the decisions behind the design, starting with
 `docs/adr/0001-body-tool-calls.md`.
 
@@ -24,8 +24,8 @@ commands are not built yet. Read
 - `docs/adr/`: architecture decision records.
 - `src/core/`: modules that import nothing from `vscode`: settings parsing, the API key shape check, the provider
   HTTP client, the CA trust and certificate error classification (`tls.ts`), the SSE reader, the typed provider
-  errors, the chat controller (conversation state, the agent turn loop with its tool runner and instruction reader
-  ports, its limits source and step limits, the context budget check, streaming, Stop, saving, reopen, delete), the conversation record
+  errors, the chat controller (conversation state, the agent turn loop with its tool runner, instruction reader, and
+  skill reader ports, its limits source and step limits, the context budget check, streaming, Stop, saving, reopen, delete), the conversation record
   (`conversation.ts`: version 2, its validation on load, title, id, the summary file's shape), its store
   (`conversationStore.ts`: a record and a summary file per conversation, the list from the summaries, reads, writes,
   and deletes in call order), and the store's file access (`conversationFiles.ts`:
@@ -38,17 +38,20 @@ commands are not built yet. Read
   filtering, the index exclusions), the menu's file index (`fileIndex.ts`: one scan shared until a file
   changes, behind a scan port), the body tool call parser (`toolCalls.ts`: `ToolSpec`, the first call-shaped block,
   malformed-call messages), the system prompt composer (`systemPrompt.ts`: role, call format, rules, tools,
-  instruction files), the turn limits (`limits.ts`: `brokeCode.maxToolSteps` and `brokeCode.contextSizes` parsing,
+  skills, instruction files), the turn limits (`limits.ts`: `brokeCode.maxToolSteps` and `brokeCode.contextSizes` parsing,
   the token estimate, the context-full threshold, the typed size check), and the read tools (`tools.ts`: `read_file` and `list_files` over the mention reader, `search`
   over ripgrep with its candidate paths, bounded `ok` or `error` results), and the instruction files
-  (`instructions.ts`: `~/.agents/AGENTS.md`, then each workspace folder's `AGENTS.md`, under the mention caps). `markdownCode.ts`, `suggestions.ts`, and `conversation.ts` import nothing from
+  (`instructions.ts`: `~/.agents/AGENTS.md`, then each workspace folder's `AGENTS.md`, under the mention caps), and the
+  skills (`skills.ts`: discovery in `~/.agents/skills/` and each workspace folder's `.agents/skills/`, the frontmatter
+  subset, validation, precedence, warnings). `markdownCode.ts`, `suggestions.ts`, and `conversation.ts` import nothing from
   `node:`, since the webview loads them. Unit tests sit next to them as `*.test.ts`, because `bun test` cannot load `vscode`. `tlsFixture.ts`
   generates test certificates with `/usr/bin/openssl` at test time; no private key is committed.
   `conversationFixture.ts` is the in-memory conversation file port for tests.
 - `src/extension/`: the extension host glue (activation, webview view, API keys in `SecretStorage`, the
   file index's `findFiles` scan and watcher in `fileIndex.ts`, the turn limits from the user settings and the "Set
   context size" input box in `contextSizes.ts`, the read tool runner with the ripgrep candidates from
-  `vscode.env.appRoot` and `PATH`, the instruction reader from the home folder and the workspace folders).
+  `vscode.env.appRoot` and `PATH`, the instruction reader and the skill reader from the home folder and the workspace folders, the latter logging the
+  skills of each send).
 - `src/webview/`: the React chat panel and its CSS, tool step rows included. `SuggestionMenu.tsx` is the autocomplete list the `@` menu
   uses and the `/` menu (#11) is meant to reuse.
 - `src/l10n.test.ts`: checks that every `l10n.t` message has a French translation and that the
@@ -167,10 +170,12 @@ commands are not built yet. Read
   have carried it ends `halted` with reason `contextFull`, saved like the other halts; it is never a `ProviderError`,
   which means a request was sent. A turn reads the step limit and context sizes once, when it starts; a settings
   change reaches the usage display at once (`limitsChanged`) and the turns from the next send. The display counts the
-  system prompt the last send composed, in any conversation shown, since instruction files are the workspace's; before
-  the first send of the session, the one without instruction files. It updates once a send has composed it, before the
+  system prompt the last send composed, in any conversation shown, since instruction files and skills are the
+  workspace's; before the first send of the session, the one without instruction files or skills. It updates once a send has composed it, before the
   request goes.
   v1 has no automatic summarization.
+- After the tools, the system prompt has a "Skills" section, one `- <name>: <description>` line per skill listed to
+  the model, telling it to call `load_skill` first; without such a skill the section is absent.
 - The system prompt includes `~/.agents/AGENTS.md`, then each workspace folder's `AGENTS.md` (labelled with its
   folder name in a multi-root workspace), read at each send under the mention caps (1 MiB, 2,000 lines). A missing
   file is left out; an unreadable one is logged and left out. The home file follows symlinks; a workspace file is
@@ -275,14 +280,28 @@ commands are not built yet. Read
 ### Skills and slash commands
 
 - Skills follow the Agent Skills format (`<name>/SKILL.md` with `name` and `description` frontmatter). The
-  extension reads them from two places only: `.agents/skills/` in the workspace and `~/.agents/skills/`. A
-  workspace skill wins over a personal skill with the same name.
+  extension reads them from two places only: `.agents/skills/` in each workspace folder and `~/.agents/skills/`. A
+  workspace skill wins over a personal skill with the same name, and an earlier workspace folder over a later one; a
+  hidden skill gives no warning.
+- Discovery runs at each send, like the instruction files, over the direct children of `~/.agents/skills/`, then of
+  each workspace folder's `.agents/skills/`. A child is a skill when it is a folder holding `SKILL.md` (1 MiB cap); a
+  folder without one, a stray file, and a missing skills folder pass silently. A personal skill folder follows
+  symlinks; a workspace one is held to the workspace boundary, and one linked out is skipped with a warning.
+- The frontmatter is the lines between a first line `---` and the next `---`, read by a hand-written subset of YAML
+  (`skills.ts`), no YAML dependency: top-level `key: value` with plain, single- or double-quoted, or `>` and `|` block
+  values; nested maps and unknown keys are ignored. `name` follows the spec (1 to 64 of `a-z`, `0-9`, `-`, no hyphen
+  first, last, or twice in a row); `description` is 1 to 1,024 characters.
+- `disable-model-invocation: true` (outside the spec) keeps a valid skill out of the model's list and of
+  `load_skill`; it stays discovered for `/<name>`.
 - Do not read `.claude/`, `.codex/`, or any other tool's directory. The `.agents` convention is the only one.
 - The system prompt lists each skill's name and description only. `load_skill` or `/<name>` loads the body.
 - In `/<name> args`, the text after the name replaces `$ARGUMENTS` in the skill body. If the body has no
   `$ARGUMENTS`, the text follows the skill as a user message.
-- Skip a skill whose frontmatter lacks `name` or `description`, or whose `name` differs from its directory
-  name, and show a warning.
+- Skip a skill whose frontmatter lacks `name` or `description`, whose `name` breaks the spec or differs from its
+  directory name, or whose `SKILL.md` cannot be read, and show a warning naming the file and the problem; a skills
+  folder that exists but cannot be listed is one warning too. The warnings sit in `ChatState.skillWarnings`, are
+  replaced at each send, and show in the panel list of skipped providers. The extension logs each send's skills
+  (`broke-code: skills listed to the model: ...`) to the extension host console.
 - The built-in slash commands are `/new` and `/model`. Typing `/` lists them with every skill.
 
 ## Verification
@@ -300,7 +319,7 @@ commands are not built yet. Read
   (VSCodium is the maintainer's editor). Rebuild and reload the window after each change.
 - `bun run eval` plays each scenario 10 times per model against the local Ollama at `http://localhost:11434/v1`,
   on `qwen3.8:27b` then `gemma4:26b-a4b-it-qat`, all runs of one model before the next. Each run drives the
-  chat controller with the read tools over a throwaway copy of the scenario's fixture, no instruction file, and a
+  chat controller with the read tools over a throwaway copy of the scenario's fixture, no instruction file, no skill, and a
   step limit of 6. The one scenario is read then answer: the model must read a setting it cannot guess and answer
   with its value. A run passes when the turn ends `done`, a tool step got the value, the answer holds it, and no
   fixture file changed; a failed run shows one category (`malformed`, `wrongTool`, `wrongAnswer`, `stepLimit`,
