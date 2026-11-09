@@ -19,8 +19,8 @@ const FILE_NAME = "AGENTS.md";
 /**
  * The instruction files that exist, in prompt order: the home file, then one per workspace folder, labelled by its
  * folder name in a multi-root workspace. The home file follows symlinks (dotfiles are often linked); a workspace file
- * is held to the workspace boundary, as mentions are: inside any of the workspace folders. A missing file is left out; any other failure is logged and
- * left out. Never rejects.
+ * is held to the workspace boundary, as mentions are: inside any of the workspace folders. A missing file is left
+ * out; any other failure is logged and left out. Never rejects.
  */
 export async function readInstructionFiles(home: string, roots: WorkspaceRoot[]): Promise<InstructionFile[]> {
   const sources = [
