@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { describeContextUsage, describeProviderError, describeStorageProblem, formatConversationDate } from "./text";
+import type { SkillProblem } from "../core/protocol";
+import {
+  describeContextUsage,
+  describeProviderError,
+  describeSkillWarning,
+  describeStorageProblem,
+  formatConversationDate,
+} from "./text";
 
 describe("describeProviderError", () => {
   test("names the model list, not a reply, when the list download is cut off", () => {
@@ -130,5 +137,31 @@ describe("describeContextUsage", () => {
 
   test("falls back to the runtime's language for a tag it cannot use", () => {
     expect(describeContextUsage({ used: 0, size: 1000, known: false }, "not a tag!")).toContain("0%");
+  });
+});
+
+describe("describeSkillWarning", () => {
+  test("names the file and each problem", () => {
+    const path = "app/.agents/skills/x/SKILL.md";
+    const text = (problem: SkillProblem) => describeSkillWarning({ path, problem });
+    const prefix = `Skill ${path} is skipped: `;
+    expect(text({ kind: "noFrontmatter" })).toBe(`${prefix}it has no frontmatter between --- lines.`);
+    expect(text({ kind: "missingName" })).toBe(`${prefix}it lacks a name.`);
+    expect(text({ kind: "nameTooLong" })).toBe(`${prefix}its name is longer than 64 characters.`);
+    expect(text({ kind: "invalidName" })).toBe(
+      `${prefix}its name is not lowercase letters, digits, and single hyphens, with no hyphen at either end.`,
+    );
+    expect(text({ kind: "nameMismatch", name: "y", directory: "x" })).toBe(
+      `${prefix}its name y differs from its folder x.`,
+    );
+    expect(text({ kind: "unparsableField", field: "description" })).toBe(
+      `${prefix}its description cannot be read; write it as plain, quoted, or > or | block text.`,
+    );
+    expect(text({ kind: "missingDescription" })).toBe(`${prefix}it lacks a description.`);
+    expect(text({ kind: "descriptionTooLong" })).toBe(`${prefix}its description is longer than 1024 characters.`);
+    expect(text({ kind: "tooLarge" })).toBe(`${prefix}the file is over 1 MiB.`);
+    expect(text({ kind: "binary" })).toBe(`${prefix}the file is not text.`);
+    expect(text({ kind: "outsideWorkspace" })).toBe(`${prefix}it links outside the workspace.`);
+    expect(text({ kind: "unreadable", cause: "EACCES" })).toBe(`${prefix}the file cannot be read (EACCES).`);
   });
 });

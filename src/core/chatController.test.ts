@@ -9,6 +9,7 @@ import {
   type ChoiceStore,
   type InstructionReader,
   type LimitsSource,
+  type SkillReader,
   type ToolRunner,
 } from "./chatController";
 import { type ConversationRecord, newConversationId, serializeSummary } from "./conversation";
@@ -18,7 +19,8 @@ import { parseLimits } from "./limits";
 import type { MentionReader, ReadMention } from "./mentions";
 import { type ChatEntry, type ChatState, isReplying } from "./protocol";
 import type { Provider } from "./providers";
-import { composeSystemPrompt, type InstructionFile } from "./systemPrompt";
+import type { SkillDiscovery } from "./skills";
+import { composeSystemPrompt, type InstructionFile, type Skill } from "./systemPrompt";
 import { createTlsFixture, removeTlsFixture } from "./tlsFixture";
 import { READ_TOOLS, runReadTool, type ToolResult } from "./tools";
 import { vllmOpening, vllmReasoningRest } from "./vllmFixture";
@@ -152,10 +154,16 @@ function fixedLimits({ steps, sizes }: { steps?: number; sizes?: Record<string, 
 }
 
 /** The system message of a turn with the read tools and no instruction file. */
-const SYSTEM = { role: "system", content: composeSystemPrompt(READ_TOOLS, []) };
+const SYSTEM = { role: "system", content: composeSystemPrompt(READ_TOOLS, [], []) };
 
-/** Agent ports for replies without a call: the read tools listed, any run fails the test, no instruction file. */
-const noTools: Pick<ChatPorts, "tools" | "instructions"> = {
+/** Skill reader of a send that finds no skill. */
+const noSkills: SkillReader = { read: async () => ({ skills: [], warnings: [] }) };
+
+/**
+ * Agent ports for replies without a call: the read tools listed, any run fails the test, no instruction file, no
+ * skill.
+ */
+const noTools: Pick<ChatPorts, "tools" | "instructions" | "skills"> = {
   tools: {
     tools: READ_TOOLS,
     run: async (call) => {
@@ -163,6 +171,7 @@ const noTools: Pick<ChatPorts, "tools" | "instructions"> = {
     },
   },
   instructions: { read: async () => [] },
+  skills: noSkills,
 };
 
 /** Reader for conversations that mention nothing: any read fails the test. */
@@ -1750,6 +1759,7 @@ describe("ChatController agent turn", () => {
     runner: ToolRunner = okRunner().runner,
     instructions: InstructionReader = { read: async () => [] },
     limits?: LimitsSource,
+    skills: SkillReader = noSkills,
   ) {
     const prefix = `script-${scriptCount++}`;
     scripts.set(prefix, [...script]);
@@ -1762,6 +1772,7 @@ describe("ChatController agent turn", () => {
       store: new ConversationStore(files),
       tools: runner,
       instructions,
+      skills,
       limits,
     });
     const state = () => controller.snapshot;
@@ -2146,10 +2157,72 @@ describe("ChatController agent turn", () => {
     await controller.send("again");
 
     const system = sent()[0]!.messages[0]!;
-    expect(system).toEqual({ role: "system", content: composeSystemPrompt(READ_TOOLS, files) });
+    expect(system).toEqual({ role: "system", content: composeSystemPrompt(READ_TOOLS, files, []) });
     expect(system.content.indexOf("Home rules.")).toBeLessThan(system.content.indexOf("Workspace rules."));
     expect(system.content).toStartWith(SYSTEM.content);
     expect(reads).toBe(2);
+  });
+
+  test("the system message lists the skills discovered at each send", async () => {
+    const first: Skill = { name: "review", description: "Review a diff.", root: "/s/review", listedToModel: true };
+    const second: Skill = { name: "release", description: "Cut a release.", root: "/s/release", listedToModel: true };
+    const found = [[first], [first, second]];
+    const skills: SkillReader = { read: async () => ({ skills: found.shift() ?? [], warnings: [] }) };
+    const { controller, sent } = await scripted(
+      [{ content: "a" }, { content: "b" }],
+      okRunner().runner,
+      undefined,
+      undefined,
+      skills,
+    );
+    await controller.send("hi");
+    await controller.send("again");
+    expect(sent()[0]!.messages[0]).toEqual({ role: "system", content: composeSystemPrompt(READ_TOOLS, [], [first]) });
+    expect(sent()[1]!.messages[0]!.content).toContain("- release: Cut a release.");
+  });
+
+  test("each send publishes the skill warnings it discovered, in place of the last send's", async () => {
+    const warnings: SkillDiscovery["warnings"][] = [
+      [{ path: "~/.agents/skills/a/SKILL.md", problem: { kind: "missingName" } }],
+      [],
+    ];
+    const skills: SkillReader = { read: async () => ({ skills: [], warnings: warnings.shift() ?? [] }) };
+    const { controller, state } = await scripted(
+      [{ content: "a" }, { content: "b" }],
+      okRunner().runner,
+      undefined,
+      undefined,
+      skills,
+    );
+    expect(state().skillWarnings).toEqual([]);
+    await controller.send("hi");
+    expect(state().skillWarnings).toEqual([{ path: "~/.agents/skills/a/SKILL.md", problem: { kind: "missingName" } }]);
+    await controller.send("again");
+    expect(state().skillWarnings).toEqual([]);
+  });
+
+  test("a skill reader that rejects despite its contract gives no skill, logged, and the turn goes on", async () => {
+    const skills: SkillReader = {
+      read: async () => {
+        throw new Error("reader broke");
+      },
+    };
+    const { controller, state, sent } = await scripted(
+      [{ content: "a" }],
+      okRunner().runner,
+      undefined,
+      undefined,
+      skills,
+    );
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await controller.send("hi");
+      expect(logged.mock.calls.map((call) => call.join(" ")).join("\n")).toContain("could not read the skills");
+    } finally {
+      logged.mockRestore();
+    }
+    expect(sent()[0]!.messages[0]).toEqual(SYSTEM);
+    expect(state().entries.at(-1)).toMatchObject({ status: "done", content: "a" });
   });
 
   test("without instruction files the system message is the prompt alone", async () => {
@@ -2184,6 +2257,7 @@ describe("ChatController context usage", () => {
     provider?: Provider;
     tools?: ToolRunner;
     instructions?: InstructionReader;
+    skills?: SkillReader;
     script?: ScriptedReply[];
   }) {
     const usages: { entries: number; waiting: boolean; used: number; size: number; known: boolean }[] = [];
@@ -2201,6 +2275,7 @@ describe("ChatController context usage", () => {
       store: new ConversationStore(undefined),
       tools: options.tools ?? noTools.tools,
       instructions: options.instructions ?? noTools.instructions,
+      skills: options.skills ?? noSkills,
       limits: options.limits,
     });
     const state = () => controller.snapshot;
@@ -2245,6 +2320,18 @@ describe("ChatController context usage", () => {
     const before = state().context.used;
     await controller.send("hi");
     expect(state().context.used - before).toBeGreaterThanOrEqual(1000);
+  });
+
+  test("after a send, it counts the skills section the turn composed", async () => {
+    const skill: Skill = { name: "big", description: "d".repeat(1000), root: "/s/big", listedToModel: true };
+    const { controller, state } = await watched({
+      limits: fixedLimits({}),
+      skills: { read: async () => ({ skills: [skill], warnings: [] }) },
+      script: [{ content: "ok" }],
+    });
+    const before = state().context.used;
+    await controller.send("hi");
+    expect(state().context.used - before).toBeGreaterThanOrEqual(250);
   });
 
   test("while the first reply is waiting, it already counts the instruction files the turn composed", async () => {

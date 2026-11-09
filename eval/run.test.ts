@@ -49,7 +49,7 @@ describe("playScenario", () => {
 
     expect(requests[0]?.messages[0]).toEqual({
       role: "system",
-      content: composeSystemPrompt([...READ_TOOLS, ...WRITE_TOOLS], []),
+      content: composeSystemPrompt([...READ_TOOLS, ...WRITE_TOOLS], [], []),
     });
   });
 

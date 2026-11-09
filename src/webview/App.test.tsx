@@ -31,6 +31,7 @@ function render(reply: Omit<Reply, "role">): string {
   const state: ChatState = {
     providers: ["P"],
     skipped: [],
+    skillWarnings: [],
     ...unsaved,
     provider: "P",
     models: { status: "loaded", models: ["m"] },
@@ -95,6 +96,7 @@ describe("agent turn", () => {
     const state: ChatState = {
       providers: ["P"],
       skipped: [],
+      skillWarnings: [],
       ...unsaved,
       provider: "P",
       models: { status: "loaded", models: ["m"] },
@@ -231,6 +233,7 @@ describe("error actions", () => {
     const state: ChatState = {
       providers: ["P"],
       skipped: [],
+      skillWarnings: [],
       ...unsaved,
       provider: "P",
       models: { status: "failed", error },
@@ -261,6 +264,7 @@ describe("mentions", () => {
     const state: ChatState = {
       providers: ["P"],
       skipped: [],
+      skillWarnings: [],
       ...unsaved,
       provider: "P",
       models: { status: "loaded", models: ["m"] },
@@ -383,6 +387,7 @@ function stateWith(configured: boolean, overrides: Partial<ChatState> = {}): Cha
   return {
     providers: configured ? ["P"] : [],
     skipped: [],
+    skillWarnings: [],
     ...unsaved,
     provider: configured ? "P" : undefined,
     models: configured ? { status: "loaded", models: ["m"] } : { status: "noProvider" },
@@ -447,6 +452,7 @@ describe("conversation history", () => {
     const state: ChatState = {
       providers: ["P"],
       skipped: [],
+      skillWarnings: [],
       ...unsaved,
       storageProblem: { kind: "deleteFailed", cause: "Error: EACCES" },
       provider: "P",
@@ -634,5 +640,34 @@ describe("context usage", () => {
   test("the link asks the host for the selected model's context size", () => {
     button(ContextNotice({ model: "qwen3:8b" }), "Set context size").props.onClick!();
     expect(posted).toEqual([{ type: "setContextSize", model: "qwen3:8b" }]);
+  });
+});
+
+describe("warnings", () => {
+  test("lists each skipped skill beside the skipped providers, naming its file and the problem", () => {
+    const state = stateWith(true, {
+      skipped: [{ position: 2, reason: "missingName" }],
+      skillWarnings: [
+        { path: "~/.agents/skills/a/SKILL.md", problem: { kind: "missingDescription" } },
+        { path: ".agents/skills/b/SKILL.md", problem: { kind: "nameMismatch", name: "c", directory: "b" } },
+      ],
+    });
+    const html = renderToStaticMarkup(<App state={state} language="en" />);
+    expect(html.match(/<ul class="warnings" role="status">/g)).toHaveLength(1);
+    expect(html).toContain("Provider number 2 in the settings is skipped: it has no name.");
+    expect(html).toContain("Skill ~/.agents/skills/a/SKILL.md is skipped: it lacks a description.");
+    expect(html).toContain("Skill .agents/skills/b/SKILL.md is skipped: its name c differs from its folder b.");
+  });
+
+  test("shows skill warnings without any provider configured", () => {
+    const state = stateWith(false, {
+      skillWarnings: [{ path: "~/.agents/skills", problem: { kind: "folderUnreadable", cause: "EACCES" } }],
+    });
+    const html = renderToStaticMarkup(<App state={state} language="en" />);
+    expect(html).toContain("The skills in ~/.agents/skills are skipped: the folder cannot be read (EACCES).");
+  });
+
+  test("shows no warning list when nothing is skipped", () => {
+    expect(renderToStaticMarkup(<App state={stateWith(true)} language="en" />)).not.toContain('class="warnings"');
   });
 });

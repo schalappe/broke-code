@@ -2,8 +2,8 @@
  * @module run
  * One run of a scenario: the chat controller the extension runs, hosted through its ports with the read and write tools
  * over a throwaway copy of the fixture under the system temporary directory, each write applied at once, no
- * instruction file, an in-memory conversation store, and the bench's step limit. The copy is removed when the run
- * ends, also when it throws.
+ * instruction file, no skill, an in-memory conversation store, and the bench's step limit. The copy is removed when
+ * the run ends, also when it throws.
  */
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -59,6 +59,7 @@ export async function playScenario(scenario: Scenario, target: RunTarget, tmpRoo
             : runReadTool(call, [root], toolEnv, signal),
       },
       instructions: { read: async () => [] },
+      skills: { read: async () => ({ skills: [], warnings: [] }) },
       limits: { read: () => limits },
     });
 

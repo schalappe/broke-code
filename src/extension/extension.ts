@@ -1,16 +1,17 @@
 /**
  * @module extension
- * Activation entry point: wires settings, API keys, mentions, read tools, instruction files, turn limits, file index,
+ * Activation entry point: wires settings, API keys, mentions, read tools, instruction files, skills, turn limits, file index,
  * saved conversations, chat controller, chat view, and `broke-code.setApiKey`.
  */
 import { homedir } from "node:os";
 import * as vscode from "vscode";
-import { ChatController, type InstructionReader, type ToolRunner } from "../core/chatController";
+import { ChatController, type InstructionReader, type SkillReader, type ToolRunner } from "../core/chatController";
 import { directoryFiles } from "../core/conversationFiles";
 import { ConversationStore } from "../core/conversationStore";
 import { readInstructionFiles } from "../core/instructions";
 import { type MentionReader, readMention } from "../core/mentions";
 import { parseProviders } from "../core/providers";
+import { readSkills, type SkillDiscovery } from "../core/skills";
 import { READ_TOOLS, ripgrepCandidates, runReadTool } from "../core/tools";
 import type { WorkspaceRoot } from "../core/workspaceFiles";
 import { ApiKeys } from "./apiKeys";
@@ -34,6 +35,7 @@ export function activate(context: vscode.ExtensionContext): void {
     run: (call, { signal }) => runReadTool(call, workspaceRoots(), toolEnv, signal),
   };
   const instructions: InstructionReader = { read: () => readInstructionFiles(homedir(), workspaceRoots()) };
+  const skills: SkillReader = { read: () => readSkills(homedir(), workspaceRoots()).then(logSkills) };
 
   // [>]: `storageUri` is a `file:` URI in the desktop extension host, and only with a folder or workspace open.
   const conversations = new ConversationStore(directoryFiles(context.storageUri?.fsPath));
@@ -46,6 +48,7 @@ export function activate(context: vscode.ExtensionContext): void {
     store: conversations,
     tools,
     instructions,
+    skills,
     limits: { read: readLimits },
   });
   const fileIndex = new WorkspaceFileIndex();
@@ -78,6 +81,21 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {}
+
+/**
+ * Log what a send discovered, one line, so the skills the model sees can be checked in the extension host log. The
+ * warnings show in the chat panel.
+ */
+function logSkills(discovery: SkillDiscovery): SkillDiscovery {
+  const listed = discovery.skills
+    .filter((skill) => skill.listedToModel)
+    .map((skill) => `${skill.name} (${skill.root})`);
+  const unlisted = discovery.skills.filter((skill) => !skill.listedToModel).map((skill) => skill.name);
+  console.info(
+    `broke-code: skills listed to the model: ${listed.join(", ") || "none"}; kept from the model: ${unlisted.join(", ") || "none"}; skipped: ${discovery.warnings.length}`,
+  );
+  return discovery;
+}
 
 /** Workspace folders on disk. Folders of other schemes (remote, virtual) hold no path to read: v1 is local only. */
 function workspaceRoots(): WorkspaceRoot[] {
