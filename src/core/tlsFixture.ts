@@ -1,9 +1,10 @@
 /**
  * @module tlsFixture
- * Test-only certificates, generated with `openssl` into a fresh temp directory: no private key is committed.
+ * Test-only certificates, generated with `openssl` into a fresh temp directory: no private key is committed. A test
+ * file removes the directory with `removeTlsFixture` in its `afterAll`.
  * Uses only `req` and `ca` options that both OpenSSL 3 and macOS LibreSSL accept.
  */
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -25,9 +26,26 @@ export type TlsFixture = {
 
 const LOCALHOST_SAN = "subjectAltName=DNS:localhost,IP:127.0.0.1";
 
-/** Generate every fixture certificate. Throws with `openssl` output when a step fails: a missing tool is a failure. */
+/**
+ * Generate every fixture certificate. Throws with `openssl` output when a step fails, a missing tool included, after
+ * removing the directory.
+ */
 export function createTlsFixture(): TlsFixture {
   const dir = mkdtempSync(join(tmpdir(), "broke-code-tls-"));
+  try {
+    return generate(dir);
+  } catch (error) {
+    rmSync(dir, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+/** Remove `fixture`'s directory, its private keys included. */
+export function removeTlsFixture(fixture: TlsFixture): void {
+  rmSync(fixture.dir, { recursive: true, force: true });
+}
+
+function generate(dir: string): TlsFixture {
   const path = (name: string) => join(dir, name);
 
   const selfSigned = selfSign(path, "self", "/CN=localhost", LOCALHOST_SAN);

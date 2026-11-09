@@ -1,8 +1,8 @@
-import { beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { X509Certificate } from "node:crypto";
 import * as tls from "node:tls";
 import { certificateErrorCode, providerTrust, unexpired } from "./tls";
-import { createTlsFixture, type TlsFixture } from "./tlsFixture";
+import { createTlsFixture, removeTlsFixture, type TlsFixture } from "./tlsFixture";
 
 function coded(code: string, message = "boom", cause?: unknown): Error {
   return Object.assign(new Error(message, { cause }), { code });
@@ -69,6 +69,7 @@ describe("providerTrust", () => {
   beforeAll(() => {
     fixture = createTlsFixture();
   });
+  afterAll(() => removeTlsFixture(fixture));
 
   test("leaves a provider without a CA file on the runtime default, so VS Code adds the OS store", async () => {
     expect(await providerTrust({ name: "P", baseUrl: "https://p/v1" })).toEqual({ ok: true, ca: undefined });
@@ -89,6 +90,7 @@ describe("unexpired", () => {
   beforeAll(() => {
     fixture = createTlsFixture();
   });
+  afterAll(() => removeTlsFixture(fixture));
 
   test("keeps certificates valid at the given time and drops expired ones", () => {
     const { valid, expired } = fixture;
