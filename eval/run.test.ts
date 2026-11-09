@@ -6,7 +6,7 @@ import { composeSystemPrompt } from "../src/core/systemPrompt";
 import { READ_TOOLS } from "../src/core/tools";
 import { WRITE_TOOLS } from "../src/core/writeTools";
 import { playScenario } from "./run";
-import { judge, READ_SCENARIO, type Scenario } from "./scenarios";
+import { CREATE_SCENARIO, EDIT_SCENARIO, judge, READ_SCENARIO, type Scenario } from "./scenarios";
 
 const event = (content: string) => `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`;
 const READ_CALL = "<read_file>\n<path>config/settings.toml</path>\n</read_file>";
@@ -60,6 +60,25 @@ describe("playScenario", () => {
 
     expect(entries[2]).toMatchObject({ role: "tool", name: "write_file", status: "ok" });
     expect(after["notes/new.toml"]).toBe(`${content}\n`);
+  });
+
+  test("passes the edit scenario on an edit_file call that renames the function", async () => {
+    const old = "def compute_surcharge_v2(distance_km):";
+    const edit = `<edit_file>\n<path>src/pricing.py</path>\n<old>${old}</old>\n<new>def distance_surcharge(distance_km):</new>\n</edit_file>`;
+    replies = [edit, "Renamed."];
+    const { entries, after } = await playScenario(EDIT_SCENARIO, { baseUrl, model: "m", maxToolSteps: 6 }, parent);
+
+    expect(entries[2]).toMatchObject({ role: "tool", name: "edit_file", status: "ok" });
+    expect(judge(EDIT_SCENARIO, entries, after)).toEqual({ pass: true });
+  });
+
+  test("passes the create scenario on a write_file call that holds the content raw, tags and fences included", async () => {
+    const [path, text] = Object.entries(CREATE_SCENARIO.writes)[0] ?? ["", ""];
+    replies = [`<write_file>\n<path>${path}</path>\n<content>\n${text}</content>\n</write_file>`, "Created."];
+    const { entries, after } = await playScenario(CREATE_SCENARIO, { baseUrl, model: "m", maxToolSteps: 6 }, parent);
+
+    expect(entries[2]).toMatchObject({ role: "tool", name: "write_file", status: "ok" });
+    expect(judge(CREATE_SCENARIO, entries, after)).toEqual({ pass: true });
   });
 
   test("halts at the step limit it is given", async () => {

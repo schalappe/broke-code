@@ -13,7 +13,7 @@ import { parseArgs } from "node:util";
 import { listModels, type ModelListing } from "../src/core/client";
 import { formatDuration, formatReport, type RunResult } from "./report";
 import { playScenario } from "./run";
-import { describeError, judge, SCENARIOS } from "./scenarios";
+import { describeError, judge, SCENARIOS, workspaceChanges } from "./scenarios";
 
 export const BENCH_MODELS = ["qwen3.8:27b", "gemma4:26b-a4b-it-qat"];
 const OLLAMA_URL = "http://localhost:11434/v1";
@@ -23,7 +23,8 @@ const MAX_TOOL_STEPS = 6;
 /**
  * `models`: `--model`, repeatable, else both bench models; a name given twice is played once, since the report scores
  * a model's runs together against the bar of one batch. `runs`: `--runs`, else 10. `dump`: `--dump <file>`, a JSON
- * Lines file each run's entries and verdict are appended to, for reading failed replies. Throws on any other flag.
+ * Lines file each run's entries (tool steps with the arguments of their calls), verdict, and `changes` (the files that
+ * differ from the fixture after the run) are appended to, for reading failed replies and writes. Throws on any other flag.
  */
 export function parseBenchArgs(args: string[]): { models: string[]; runs: number; dump: string | undefined } {
   const { values } = parseArgs({
@@ -111,7 +112,16 @@ async function main(): Promise<number> {
           const outcome = verdict.pass ? "pass" : `${verdict.category}: ${verdict.detail}`;
           console.error(`${model} ${scenario.name} ${run + 1}/${runs} ${formatDuration(ms)} ${outcome}`);
           if (dump) {
-            const line = { model, scenario: scenario.name, run: run + 1, verdict, ms: Math.round(ms), entries };
+            const changes = workspaceChanges(scenario.files, after);
+            const line = {
+              model,
+              scenario: scenario.name,
+              run: run + 1,
+              verdict,
+              ms: Math.round(ms),
+              entries,
+              changes,
+            };
             await appendFile(dump, `${JSON.stringify(line)}\n`);
           }
         }
