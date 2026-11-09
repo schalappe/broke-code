@@ -305,6 +305,48 @@ describe("approval", () => {
     expect(prevented).toEqual(["Enter"]);
   });
 
+  test("the reason typed survives opening and closing History, and Reject still carries it", async () => {
+    const { GlobalRegistrator } = await import("@happy-dom/global-registrator");
+    const { act, createElement } = await import("react");
+    GlobalRegistrator.register();
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    try {
+      const { createRoot } = await import("react-dom/client");
+      const host = document.createElement("div");
+      document.body.append(host);
+      const root = createRoot(host);
+      const state = stateWith(true, {
+        entries: [{ role: "user", content: "Hi", mentions: [] }, writing],
+        approval,
+      });
+      await act(async () => root.render(createElement(App, { state, language: "en" })));
+
+      const field = host.querySelector<HTMLInputElement>("input.approval-reason");
+      if (!field) throw new Error("no reason field");
+      // [&]: React tracks the value property; set it through the prototype setter so the input event registers.
+      const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      await act(async () => {
+        setValue?.call(field, "Keep the old name.");
+        field.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+
+      const click = async (label: string) => {
+        const target = [...host.querySelectorAll("button")].find((element) => element.textContent === label);
+        if (!target) throw new Error(`no ${label} button`);
+        await act(async () => target.click());
+      };
+      await click("History");
+      await click("History");
+
+      expect(host.querySelector<HTMLInputElement>("input.approval-reason")?.value).toBe("Keep the old name.");
+      await click("Reject");
+      expect(posted).toEqual([{ type: "reject", id: 7, reason: "Keep the old name." }]);
+      await act(async () => root.unmount());
+    } finally {
+      GlobalRegistrator.unregister();
+    }
+  });
+
   test("a rejected step says so; an auto-approved one says so beside its status", () => {
     const rejected = turn(
       [

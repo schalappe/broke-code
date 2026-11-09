@@ -100,6 +100,8 @@ model. `bun run eval` measures that loop on local Ollama models and applies each
   here. Packaging and the other upload stay under Bun.
 - The webview uses React and `react-markdown`, with hand-written CSS built on VS Code theme variables. Do not
   add Tailwind or a component kit, and do not use `@vscode/webview-ui-toolkit`, which Microsoft deprecated.
+- Webview tests render static HTML with `renderToStaticMarkup`. A test that clicks or types registers a DOM with
+  `@happy-dom/global-registrator` (exact-pinned dev dependency) for its own duration and unregisters it after.
 - The UI ships in English and French and follows the VS Code display language, with English as the fallback.
 
 ## Architecture
