@@ -3,17 +3,18 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BENCH_MODELS, dumpLine, modelsProblem, parseBenchArgs, trimIncompleteLine } from "./bench";
-import { CREATE_SCENARIO } from "./scenarios";
+import { CREATE_SCENARIO, SCENARIOS } from "./scenarios";
 
 describe("parseBenchArgs", () => {
-  test("defaults to both models and 10 runs", () => {
-    expect(parseBenchArgs([])).toEqual({ models: BENCH_MODELS, runs: 10, dump: undefined });
+  test("defaults to both models, every scenario, and 10 runs", () => {
+    expect(parseBenchArgs([])).toEqual({ models: BENCH_MODELS, scenarios: SCENARIOS, runs: 10, dump: undefined });
     expect(BENCH_MODELS).toEqual(["qwen3.8:27b", "gemma4:26b-a4b-it-qat"]);
   });
 
   test("takes repeated models, a run count, and a dump file", () => {
     expect(parseBenchArgs(["--model", "a", "--runs", "3", "--model", "b", "--dump", "/tmp/runs.jsonl"])).toEqual({
       models: ["a", "b"],
+      scenarios: SCENARIOS,
       runs: 3,
       dump: "/tmp/runs.jsonl",
     });
@@ -21,6 +22,19 @@ describe("parseBenchArgs", () => {
 
   test("plays a model named twice once, in first-seen order, so its runs are never scored together", () => {
     expect(parseBenchArgs(["--model", "b", "--model", "a", "--model", "b"]).models).toEqual(["b", "a"]);
+  });
+
+  test("plays only the scenarios named, each once and in the bench's order", () => {
+    const names = parseBenchArgs(["--scenario", "skill", "--scenario", "read", "--scenario", "skill"]).scenarios.map(
+      (scenario) => scenario.name,
+    );
+    expect(names).toEqual(["read", "skill"]);
+  });
+
+  test("refuses a scenario the bench does not hold, naming those it does", () => {
+    expect(() => parseBenchArgs(["--scenario", "reed"])).toThrow(
+      '--scenario takes one of read, edit, create, skill, not "reed".',
+    );
   });
 
   test("refuses a run count that is not a positive integer, and unknown flags", () => {
