@@ -1,6 +1,19 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { chmod, link, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  type FileHandle,
+  link,
+  mkdir,
+  mkdtemp,
+  open,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolResult } from "./tools";
@@ -341,6 +354,51 @@ describe("fileApplier", () => {
     });
     expect(await readFile(join(app.path, "locked", "a.txt"), "utf8")).toBe("original\n");
     expect(await readdir(join(app.path, "locked"))).toEqual(["a.txt"]);
+  });
+
+  test("a write that fails halfway leaves the file and no temporary file, and applies again once the fault clears", async () => {
+    await mkdir(join(app.path, "full"));
+    const file = join(app.path, "full", "a.txt");
+    await writeFile(file, "original\n");
+    const change = await plan("edit_file", { path: "full/a.txt", old: "original", new: "changed" });
+
+    // [>]: The handle class is not exported: take it from an open handle. The first write puts half the bytes down,
+    // then the disk is full; later writes go through.
+    const probe = await open(file, "r");
+    const handlePrototype = Object.getPrototypeOf(probe) as FileHandle;
+    await probe.close();
+    const realWrite = handlePrototype.write;
+    let failed = false;
+    const write = spyOn(handlePrototype, "write").mockImplementation(async function (
+      this: FileHandle,
+      ...args: unknown[]
+    ) {
+      if (failed) return (realWrite as (...a: unknown[]) => Promise<unknown>).apply(this, args);
+      failed = true;
+      const [bytes, offset, length, position] = args as [Buffer, number, number, number];
+      await (realWrite as (...a: unknown[]) => Promise<unknown>).call(
+        this,
+        bytes,
+        offset,
+        Math.floor(length / 2),
+        position,
+      );
+      throw Object.assign(new Error("no space left on device"), { code: "ENOSPC" });
+    } as never);
+    try {
+      expect(await fileApplier([app])(change)).toEqual({
+        status: "error",
+        text: "edit_file: full/a.txt: the file was not written (ENOSPC).",
+      });
+      expect(await readFile(file, "utf8")).toBe("original\n");
+      expect(await readdir(join(app.path, "full"))).toEqual(["a.txt"]);
+    } finally {
+      write.mockRestore();
+    }
+
+    expect((await fileApplier([app])(change)).status).toBe("ok");
+    expect(await readFile(file, "utf8")).toBe("changed\n");
+    expect(await readdir(join(app.path, "full"))).toEqual(["a.txt"]);
   });
 
   test("a folder that cannot be created fails the write with its cause", async () => {

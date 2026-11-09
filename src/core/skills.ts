@@ -268,6 +268,9 @@ function scalarValue(head: string, rest: string[]): string | null | undefined {
   if (first === "" && /^(?:[^\s:#][^:]*:(?:\s|$)|-(?:\s|$))/.test(continuation.find((line) => line !== "") ?? "")) {
     return undefined;
   }
+  // [>]: An unquoted value that opens with `{` or `[`, on the head or the first line after an empty head, is a flow map
+  // or sequence: not a string either.
+  if (/^[{[]/.test(first === "" ? (continuation.find((line) => line !== "") ?? "") : first)) return undefined;
   while (continuation.at(-1) === "") continuation.pop();
   return fold([first, ...continuation]).trim();
 }

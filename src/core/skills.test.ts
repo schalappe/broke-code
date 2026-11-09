@@ -251,6 +251,28 @@ describe("readSkills", () => {
     ]);
   });
 
+  test("reads a flow map or sequence as no string, on the head or after an empty head, and keeps a quoted one", async () => {
+    await writeSkill(workspaceSkills(), "same", "---\nname: same\ndescription: {summary: Nested.}\n---\n");
+    await writeSkill(personal, "same", skillText("same", "Personal."));
+    await writeSkill(personal, "seq", "---\nname: seq\ndescription: [first, second]\n---\n");
+    await writeSkill(personal, "map-line", "---\nname: map-line\ndescription:\n  {summary: Nested.}\n---\n");
+    await writeSkill(personal, "seq-line", "---\nname: seq-line\ndescription:\n\n  [first, second]\n---\n");
+    await writeSkill(personal, "quoted", '---\nname: quoted\ndescription: "[x] {text}"\n---\n');
+
+    const { skills, warnings } = await readSkills(home, single());
+    expect(skills.map(({ name, description }) => ({ name, description }))).toEqual([
+      { name: "quoted", description: "[x] {text}" },
+      { name: "same", description: "Personal." },
+    ]);
+    const missing = { kind: "missingDescription" } as const;
+    expect(warnings).toEqual([
+      { path: "~/.agents/skills/map-line/SKILL.md", problem: missing },
+      { path: "~/.agents/skills/seq/SKILL.md", problem: missing },
+      { path: "~/.agents/skills/seq-line/SKILL.md", problem: missing },
+      { path: ".agents/skills/same/SKILL.md", problem: missing },
+    ]);
+  });
+
   test("parses long whitespace runs without a comment in linear time", async () => {
     // [>]: 200,000 characters: the backtracking regexes took tens of seconds here, and a 1 MiB file, minutes.
     const spaces = " ".repeat(200_000);
