@@ -78,7 +78,19 @@ describe("parseToolCall", () => {
   test("treats a tag that does not start a line as plain text", () => {
     expect(parseToolCall("Use <b>bold</b> and <div>x</div>.", TOOLS)).toEqual({ kind: "none" });
     expect(parseToolCall("Run: <read_file><path>a</path></read_file>", TOOLS)).toEqual({ kind: "none" });
-    expect(parseToolCall("  <read_file><path>a</path></read_file>", TOOLS)).toEqual({ kind: "none" });
+  });
+
+  test("reads an outer tag indented with spaces or tabs as starting a line, with start at its <", () => {
+    const answer = "Reading.\n  <read_file>\n  <path>a</path>\n  </read_file>";
+    expect(parseToolCall(answer, TOOLS)).toEqual({
+      kind: "call",
+      name: "read_file",
+      args: { path: "a" },
+      start: answer.indexOf("<read_file>"),
+      end: answer.length,
+    });
+    expect(parseToolCall("\t<read_file><path>b</path></read_file>", TOOLS)).toMatchObject({ kind: "call", start: 1 });
+    expect(parseToolCall(" \t <read_file><path>c</path></read_file>", TOOLS)).toMatchObject({ start: 3 });
   });
 
   test("treats a tag whose name is not snake_case, or that has attributes, as plain text", () => {
@@ -237,6 +249,19 @@ describe("parseToolCall argument values", () => {
   test("end at the last closing tag before the outer close, so an earlier one stays in the value", () => {
     const answer = "<write_file>\n<path>a</path>\n<content>x</content>y</content>\n</write_file>";
     expect(callArgs(answer).content).toBe("x</content>y");
+  });
+
+  test("hold the tags of an earlier argument, ending at the latest closing tag that lets the rest parse", () => {
+    const content = "<read_file>\n<path>x</path>\n</read_file>";
+    const answer = `<write_file>\n<path>a.md</path>\n<content>\n${content}\n</content>\n</write_file>`;
+    expect(callArgs(answer)).toEqual({ path: "a.md", content });
+  });
+
+  test("stay fast on a body with many repeated closing tags that never parses", () => {
+    const body = "<path>x</path>\n".repeat(2000);
+    const started = performance.now();
+    expect(malformedMessage(`<read_file>\n${body}stray text\n</read_file>`)).toContain("stray text");
+    expect(performance.now() - started).toBeLessThan(1000);
   });
 
   test("end at the first outer closing tag", () => {

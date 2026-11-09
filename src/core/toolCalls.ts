@@ -23,19 +23,21 @@ export type ParsedReply =
   | { kind: "malformed"; message: string; start: number; end: number };
 
 const OPENING_TAG = /<([a-z][a-z0-9_]*)>/g;
-const ARG_OPENING_TAG = /^<([a-z][a-z0-9_]*)>/;
+const ARG_OPENING_TAG = /<([a-z][a-z0-9_]*)>/y;
+const WHITESPACE = /\s*/y;
 const EXCERPT_LENGTH = 40;
 
 /**
  * The first call-shaped block of `answer`, read against `tools`. A block is call-shaped when its opening tag
- * `<name>` (snake_case, no attributes) starts a line outside Markdown code and a `</name>` follows it; an opening
- * tag that never closes is call-shaped only when it names a known tool. Anything after the first block is ignored.
+ * `<name>` (snake_case, no attributes) starts a line, after nothing but spaces or tabs, outside Markdown code, and a
+ * `</name>` follows it; an opening tag that never closes is call-shaped only when it names a known tool. The block
+ * ends at the first `</name>`. Anything after the first block is ignored.
  */
 export function parseToolCall(answer: string, tools: readonly ToolSpec[]): ParsedReply {
   const masked = maskCode(answer);
   for (const match of answer.matchAll(OPENING_TAG)) {
     const start = match.index;
-    if (start > 0 && answer[start - 1] !== "\n") continue;
+    if (!startsLine(answer, start)) continue;
     if (masked[start] === MASK) continue;
     const name = match[1]!;
     const tool = tools.find((tool) => tool.name === name);
@@ -80,28 +82,77 @@ export function describeTool(tool: ToolSpec): string {
   return [...shape, ...args].join("\n");
 }
 
+/** Argument values by name, or the problem to report. */
+type ReadArgs = Record<string, string> | string;
+
+/** One body being read: the reads memoized by body position, and each argument's closing tag positions. */
+type ArgsReader = { body: string; tool: ToolSpec; reads: Map<number, ReadArgs>; closes: Map<string, number[]> };
+
 /**
- * The argument values in `body`, the text between the outer tags, or the first problem found. A value runs to the
- * last closing tag of its argument, so it may hold angle brackets, other tags, and code fences.
+ * The argument values in `body`, the text between the outer tags, or the problem to report. A value ends at the
+ * latest closing tag of its argument that still lets the rest of the body parse, tried from last to first, so it may
+ * hold angle brackets, code fences, other tools' tags, and the tags of an earlier argument. When no closing tag
+ * works, the problem reported is the one found after the last.
  */
-function readArgs(body: string, tool: ToolSpec): Record<string, string> | string {
-  const args: Record<string, string> = {};
-  let index = 0;
-  while (true) {
-    index += /^\s*/.exec(body.slice(index))![0].length;
-    if (index === body.length) return args;
-    const opening = ARG_OPENING_TAG.exec(body.slice(index));
-    if (!opening)
-      return `Unexpected text inside <${tool.name}>: "${excerpt(body.slice(index))}". Put only argument tags in it.`;
-    const name = opening[1]!;
-    if (!tool.args.some((arg) => arg.name === name)) return `<${tool.name}> has no argument <${name}>.`;
-    const valueStart = index + opening[0].length;
-    const valueEnd = body.lastIndexOf(`</${name}>`);
-    // [>]: Also catches an argument opened again after its last close, so a duplicate never reaches the result.
-    if (valueEnd < valueStart) return `The <${name}> argument tag never closes: end its value with </${name}>.`;
-    args[name] = trimLineBreaks(body.slice(valueStart, valueEnd));
-    index = valueEnd + `</${name}>`.length;
+function readArgs(body: string, tool: ToolSpec): ReadArgs {
+  return readArgsFrom({ body, tool, reads: new Map(), closes: new Map() }, 0);
+}
+
+/** `readArgs` from `from` on. [>]: Memoized on the position, so repeated closing tags stay polynomial. */
+function readArgsFrom(reader: ArgsReader, from: number): ReadArgs {
+  let read = reader.reads.get(from);
+  if (read === undefined) {
+    read = readArgsAt(reader, from);
+    reader.reads.set(from, read);
   }
+  return read;
+}
+
+function readArgsAt(reader: ArgsReader, from: number): ReadArgs {
+  const { body, tool } = reader;
+  WHITESPACE.lastIndex = from;
+  const index = from + WHITESPACE.exec(body)![0].length;
+  if (index === body.length) return {};
+  ARG_OPENING_TAG.lastIndex = index;
+  const opening = ARG_OPENING_TAG.exec(body);
+  if (!opening) {
+    const quoted = excerpt(body.slice(index, index + EXCERPT_LENGTH + 1));
+    return `Unexpected text inside <${tool.name}>: "${quoted}". Put only argument tags in it.`;
+  }
+  const name = opening[1]!;
+  if (!tool.args.some((arg) => arg.name === name)) return `<${tool.name}> has no argument <${name}>.`;
+  const valueStart = index + opening[0].length;
+  const candidates = closesOf(reader, name).filter((close) => close >= valueStart);
+  if (candidates.length === 0) return `The <${name}> argument tag never closes: end its value with </${name}>.`;
+  let problem: string | undefined;
+  for (const valueEnd of candidates.reverse()) {
+    const rest = readArgsFrom(reader, valueEnd + `</${name}>`.length);
+    if (typeof rest === "string") problem ??= rest;
+    // [>]: A rest holding the same argument fails this close: an earlier one may still read it once.
+    else if (!Object.hasOwn(rest, name)) return { [name]: trimLineBreaks(body.slice(valueStart, valueEnd)), ...rest };
+  }
+  // [>]: Reached only when the last close failed, which set it: after that close, `<name>` cannot close again.
+  return problem!;
+}
+
+/** Where each `</name>` stands in the body, in order, found once per argument name. */
+function closesOf(reader: ArgsReader, name: string): number[] {
+  let closes = reader.closes.get(name);
+  if (closes === undefined) {
+    closes = [];
+    const tag = `</${name}>`;
+    for (let close = reader.body.indexOf(tag); close !== -1; close = reader.body.indexOf(tag, close + tag.length)) {
+      closes.push(close);
+    }
+    reader.closes.set(name, closes);
+  }
+  return closes;
+}
+
+/** True when only spaces or tabs stand between the start of its line and `index`. */
+function startsLine(text: string, index: number): boolean {
+  const lineStart = text.lastIndexOf("\n", index - 1) + 1;
+  return /^[ \t]*$/.test(text.slice(lineStart, index));
 }
 
 /**

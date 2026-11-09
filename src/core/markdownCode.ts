@@ -1,7 +1,7 @@
 /**
  * @module markdownCode
- * Where a message holds Markdown code, which never holds mentions or body tool calls. No `node:` or `vscode` import, since the webview
- * bundle loads it.
+ * Where a message holds Markdown code, which never holds mentions or body tool calls. No `node:` or `vscode` import,
+ * since the webview bundle loads it.
  */
 
 /** Stands in for code characters; not whitespace, so a token cannot start right after masked code. */
