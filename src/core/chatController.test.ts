@@ -1550,8 +1550,11 @@ describe("ChatController conversations", () => {
     const dir = mkdtempSync(join(tmpdir(), "broke-code-ca-"));
     const caFile = join(dir, "ca.pem");
     const tls = createTlsFixture();
-    copyFileSync(tls.ca.certPath, caFile);
-    removeTlsFixture(tls);
+    try {
+      copyFileSync(tls.ca.certPath, caFile);
+    } finally {
+      removeTlsFixture(tls);
+    }
     const provider: Provider = { name: "Hang", baseUrl: `http://localhost:${server.port}/ca-hang/v1`, caFile };
     const ws = workspace();
     const { controller, state } = await load(ws, { provider });
