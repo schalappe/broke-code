@@ -82,5 +82,6 @@
   "Stopped: the model sent three malformed tool calls in a row.": "Tour de l'agent arrêté : le modèle a envoyé trois appels d'outil malformés d'affilée.",
   "Stopped: the agent turn reached its tool step limit.": "Tour de l'agent arrêté : la limite d'étapes d'outil est atteinte.",
   "stopped, no result": "arrêté, sans résultat",
-  "no result": "sans résultat"
+  "no result": "sans résultat",
+  "An unexpected internal error ended the reply.": "Une erreur interne inattendue a interrompu la réponse."
 }

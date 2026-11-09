@@ -64,6 +64,25 @@ describe("conversation record", () => {
     expect(parseConversation(serializeConversation(turn))).toEqual({ ok: true, record: turn });
   });
 
+  test("reads back a reply failed on an internal error, and refuses one without its message", () => {
+    const failed = record({
+      entries: [
+        { role: "user", content: "x", mentions: [], modelText: "x" },
+        {
+          role: "assistant",
+          reasoning: "",
+          content: "",
+          status: "failed",
+          error: { kind: "internal", message: "bug" },
+        },
+      ],
+    });
+    expect(parseConversation(serializeConversation(failed))).toEqual({ ok: true, record: failed });
+    const [user] = failed.entries;
+    const noMessage = { role: "assistant", reasoning: "", content: "", status: "failed", error: { kind: "internal" } };
+    expect(parse({ ...failed, entries: [user, noMessage] }).ok).toBe(false);
+  });
+
   test("brings back an in-flight reply as stopped, partial text kept", () => {
     for (const status of ["waiting", "streaming"]) {
       const saved = record({

@@ -401,6 +401,12 @@ export class ChatController {
         this.emit();
         void this.save(conversation);
       }
+    } catch (error) {
+      // [!]: A bug, never the provider's failure: logged with its stack, and shown, so the composer never stays
+      // locked on a reply that will not end.
+      console.error("broke-code: the agent turn failed unexpectedly", error instanceof Error ? error.stack : error);
+      reply.error = { kind: "internal", message: error instanceof Error ? error.message : String(error) };
+      settle("failed");
     } finally {
       // [>]: Also on an unexpected throw, so navigation waiting for this turn never hangs.
       if (this.reply?.abort === abort) this.reply = undefined;

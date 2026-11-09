@@ -1,6 +1,7 @@
 /**
  * @module providerError
- * Typed provider failures. Each kind gets its own message in chat; none is a catch-all.
+ * Typed failures of a reply: the provider's, and `internal`, a bug in broke-code itself. Each kind gets its own
+ * message in chat; none is a catch-all.
  */
 
 export type CutOffReason =
@@ -54,4 +55,9 @@ export type ProviderError =
    * `encoding` set instead (any request, `detail` empty) when the body uses a `Content-Encoding` other than
    * gzip, deflate, or br.
    */
-  | { kind: "invalidResponse"; provider: string; detail: string; encoding?: string };
+  | { kind: "invalidResponse"; provider: string; detail: string; encoding?: string }
+  /**
+   * Not the provider's: an unexpected exception inside the agent turn, a bug. `message` = the exception's message;
+   * its stack goes to the log.
+   */
+  | { kind: "internal"; message: string };

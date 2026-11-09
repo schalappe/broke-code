@@ -1982,6 +1982,37 @@ describe("ChatController agent turn", () => {
     expect(sent()).toHaveLength(2);
   });
 
+  test("an unexpected throw inside the turn ends the reply failed with an internal error, logged and saved", async () => {
+    let reads = 0;
+    const throwing: ToolRunner = {
+      // [>]: Read once for the system prompt, then by the parser: the second read throws, as a bug would.
+      get tools() {
+        reads += 1;
+        if (reads > 1) throw new Error("tool list broke");
+        return READ_TOOLS;
+      },
+      run: async () => ({ status: "ok", text: "" }),
+    };
+    const { controller, state, saved } = await scripted([{ content: readCall("a.ts") }], throwing);
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await controller.send("go");
+      expect(logged).toHaveBeenCalledTimes(1);
+      expect(String(logged.mock.calls[0])).toContain("tool list broke");
+      expect(String(logged.mock.calls[0])).toContain("at ");
+    } finally {
+      logged.mockRestore();
+    }
+    expect(isReplying(state())).toBe(false);
+    expect(state().entries.at(-1)).toMatchObject({
+      role: "assistant",
+      status: "failed",
+      error: { kind: "internal", message: "tool list broke" },
+    });
+    await settledSave(saved, 2);
+    expect(saved()?.entries.at(-1)).toMatchObject({ status: "failed", error: { kind: "internal" } });
+  });
+
   test("the system message holds the instruction files' texts in order, read at each send", async () => {
     const files: InstructionFile[] = [
       { label: "~/.agents/AGENTS.md", text: "Home rules." },

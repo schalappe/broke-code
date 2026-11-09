@@ -225,6 +225,7 @@ const ERROR_FIELDS: Record<ProviderError["kind"], Record<string, FieldType>> = {
     cause: "string?",
   },
   invalidResponse: { provider: "string", detail: "string", encoding: "string?" },
+  internal: { message: "string" },
 };
 
 type FieldType = "string" | "string?" | "number" | readonly string[];

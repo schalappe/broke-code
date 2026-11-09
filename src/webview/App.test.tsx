@@ -196,6 +196,16 @@ describe("agent turn", () => {
     expect(html).toContain("Stopped");
   });
 
+  test("a reply ended by an internal error says so with its message, and its call has no result", () => {
+    const html = renderTurn([
+      { ...callReply, status: "failed", error: { kind: "internal", message: "tool list broke" } },
+    ]);
+    expect(html).toContain("An unexpected internal error ended the reply.");
+    expect(html).toContain("tool list broke");
+    expect(html).toContain("no result");
+    expect(html).not.toContain("stopped, no result");
+  });
+
   test("a halted turn says why, after its last step", () => {
     const malformed = renderTurn([{ ...callReply, status: "halted", haltReason: "malformedCalls" }, step]);
     expect(malformed).toContain("Stopped: the model sent three malformed tool calls in a row.");

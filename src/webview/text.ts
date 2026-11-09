@@ -14,6 +14,8 @@ export type ErrorText = { message: string; detail?: string };
 
 export function describeProviderError(error: ProviderError): ErrorText {
   switch (error.kind) {
+    case "internal":
+      return { message: l10n.t("An unexpected internal error ended the reply."), detail: error.message };
     case "unreachable":
       return { message: l10n.t("Cannot reach {0} at {1}.", error.provider, error.baseUrl), detail: error.cause };
     case "certificate":

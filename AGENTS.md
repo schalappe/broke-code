@@ -148,7 +148,8 @@ call. Write tools, `run_command`, skills, and slash commands are not built yet. 
   as `halted` with reason `stepLimit`; three malformed calls in a row (`MAX_MALFORMED_IN_A_ROW`) halt it with reason
   `malformedCalls`, and a call that parses resets that count. Stop ends the turn at once, during a reply or a tool
   run: the step in flight is dropped, nothing later runs, and the record is saved as it stands. A failed reply ends
-  the turn `failed`. Truncate tool results longer than about 2,000 lines and say so in the result. When the context
+  the turn `failed`; so does an unexpected exception inside the turn (a bug), with an `internal` error giving its
+  message, logged with its stack, so the composer never stays locked. Truncate tool results longer than about 2,000 lines and say so in the result. When the context
   is full, stop the turn with a clear message. v1 has no automatic summarization.
 - The system prompt includes `~/.agents/AGENTS.md`, then each workspace folder's `AGENTS.md` (labelled with its
   folder name in a multi-root workspace), read at each send under the mention caps (1 MiB, 2,000 lines). A missing
