@@ -1,6 +1,18 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readdir, readFile, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  stat,
+  symlink,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -40,6 +52,7 @@ beforeAll(async () => {
 afterAll(async () => {
   // [>]: The file exists only once its test ran; without it there is nothing to unlock.
   await chmod(join(app.path, "locked.txt"), 0o600).catch(() => {});
+  await chmod(join(app.path, "w7"), 0o755).catch(() => {});
   await rm(base, { recursive: true, force: true });
 });
 
@@ -283,6 +296,21 @@ describe("writeWorkspaceFile while the file changes", () => {
       status: "changed",
     });
     expect(await readdir(join(app.path, "w5", "other"))).toEqual([]);
+  });
+
+  test("names a temporary file it could not remove, with the cause, leaving the file as it was", async () => {
+    await mkdir(join(app.path, "w7"));
+    await writeFile(join(app.path, "w7", "a.txt"), "original\n");
+    const { target, before } = await planned("w7/a.txt");
+    const lock = () => chmod(join(app.path, "w7"), 0o555);
+    const outcome = await writeWorkspaceFile([app], target, before, "new\n", { afterLastCheck: lock });
+    expect(outcome).toEqual({
+      status: "notWritten",
+      cause: "EACCES",
+      leftover: { name: expect.stringMatching(/^\.a\.txt\.broke-code-[0-9a-f]{12}\.tmp$/), cause: "EACCES" },
+    });
+    expect(await readFile(join(app.path, "w7", "a.txt"), "utf8")).toBe("original\n");
+    expect(await temporaryFiles(join(app.path, "w7"))).toEqual([outcome.leftover!.name]);
   });
 
   test("reports a target deleted between its check and its read as missing", async () => {

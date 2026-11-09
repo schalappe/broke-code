@@ -26,7 +26,7 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   // [>]: Tests lock these folders and files; unlock them so the cleanup can remove them.
-  for (const path of ["locked", "locked-parent", "denied.txt"])
+  for (const path of ["locked", "locked-parent", "denied.txt", "denied-later.txt"])
     await chmod(join(app.path, path), 0o755).catch(() => {});
   await rm(base, { recursive: true, force: true });
 });
@@ -280,6 +280,18 @@ describe("fileApplier", () => {
     const change = await plan("write_file", { path: "fresh.txt", content: "x" });
     expect((await fileApplier([app])(change)).status).toBe("ok");
     expect((await stat(join(app.path, "fresh.txt"))).mode & 0o777).toBe(0o666 & ~process.umask());
+  });
+
+  test("refuses at apply a file that became unreadable since the plan, naming the cause", async () => {
+    await writeFile(join(app.path, "denied-later.txt"), "a\n");
+    const change = await plan("edit_file", { path: "denied-later.txt", old: "a", new: "b" });
+    await chmod(join(app.path, "denied-later.txt"), 0o000);
+    expect(await fileApplier([app])(change)).toEqual({
+      status: "error",
+      text: "edit_file: denied-later.txt: the path could not be read (EACCES).",
+    });
+    await chmod(join(app.path, "denied-later.txt"), 0o644);
+    expect(await readFile(join(app.path, "denied-later.txt"), "utf8")).toBe("a\n");
   });
 
   test("a write that fails leaves the file byte-identical and no temporary file, and names the cause", async () => {
