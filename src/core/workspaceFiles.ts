@@ -163,11 +163,11 @@ async function locateCandidates(
   roots: WorkspaceRoot[],
   candidates: string[],
 ): Promise<LocatedPath | { status: "missing" | "outsideWorkspace" }> {
-  const inside = candidates.filter((candidate) => roots.some((root) => isInside(resolve(root.path), candidate)));
+  const inside = lexicallyInside(roots, candidates);
   if (inside.length === 0) return { status: "outsideWorkspace" };
 
   // [>]: A path under a root that cannot be resolved fails its own `realpath`, so it reads as missing or unreadable.
-  const realRoots = (await resolveWorkspaceRoots(roots)).resolved.map((entry) => entry.realRoot);
+  const realRoots = await realRootPaths(roots);
   for (const candidate of inside) {
     const realPath = await realpath(candidate).catch((error: unknown) => {
       if (MISSING_CODES.has(errorCode(error) ?? "")) return undefined;
@@ -178,6 +178,16 @@ async function locateCandidates(
     return realRoot === undefined ? { status: "outsideWorkspace" } : { status: "ok", realPath, realRoots, realRoot };
   }
   return { status: "missing" };
+}
+
+/** The `candidates` inside a root as written, symlinks unresolved: the first check, which never touches the disk. */
+function lexicallyInside(roots: WorkspaceRoot[], candidates: string[]): string[] {
+  return candidates.filter((candidate) => roots.some((root) => isInside(resolve(root.path), candidate)));
+}
+
+/** The real paths of the roots that resolve, in order: what a path must lie in once its symlinks are resolved. */
+async function realRootPaths(roots: WorkspaceRoot[]): Promise<string[]> {
+  return (await resolveWorkspaceRoots(roots)).resolved.map((entry) => entry.realRoot);
 }
 
 /**
@@ -446,12 +456,12 @@ async function checkWriteTarget(
   seam: RaceSeam = {},
 ): Promise<CheckedTarget | Exclude<WriteTarget, { status: "ok" }>> {
   try {
-    const inside = candidates.filter((candidate) => roots.some((root) => isInside(resolve(root.path), candidate)));
+    const inside = lexicallyInside(roots, candidates);
     if (inside.length === 0) return { status: "outsideWorkspace" };
     const path = (await firstExisting(inside)) ?? inside[0]!;
     if (roots.some((root) => resolve(root.path) === path)) return { status: "folder" };
 
-    const realRoots = (await resolveWorkspaceRoots(roots)).resolved.map((entry) => entry.realRoot);
+    const realRoots = await realRootPaths(roots);
     const ancestor = await deepestFolder(dirname(path));
     if (!realRoots.some((root) => isInside(root, ancestor.realPath))) return { status: "outsideWorkspace" };
     if (!(await stat(ancestor.realPath)).isDirectory()) return { status: "unreadable", cause: "ENOTDIR" };
