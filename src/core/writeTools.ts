@@ -10,7 +10,8 @@ import type { ToolSpec } from "./toolCalls";
 import { displayPath, excerpt, stopped, type ToolCall, type ToolResult } from "./tools";
 import {
   locateWriteTarget,
-  MAX_WRITE_BYTES,
+  type UnwritableText,
+  unwritableText,
   type WorkspaceRoot,
   type WriteFailure,
   type WriteOutcome,
@@ -101,7 +102,8 @@ async function planChange(call: ToolCall, roots: WorkspaceRoot[]): Promise<Plann
     if (typeof replaced !== "string") return replaced;
     after = replaced;
   }
-  if (Buffer.byteLength(after) > MAX_WRITE_BYTES) return refused(tool, path, "tooLarge");
+  const unwritable = unwritableText(after);
+  if (unwritable !== undefined) return unwritableResult(tool, path, unwritable);
   return { tool, path, target: target.path, before: target.before, after };
 }
 
@@ -154,9 +156,21 @@ function describeOutcome(change: PlannedChange, outcome: WriteOutcome): ToolResu
         status: "error",
         text: `${change.tool}: ${excerpt(change.path)}: the file was not written (${outcome.cause}).`,
       };
+    case "unwritable":
+      return unwritableResult(change.tool, change.path, outcome.reason);
     default:
       return refused(change.tool, change.path, outcome.status, "cause" in outcome ? outcome.cause : undefined);
   }
+}
+
+/** New text the file could not read back as written; over 1 MiB keeps the read tools' wording. */
+function unwritableResult(tool: string, path: string, reason: UnwritableText): ToolResult {
+  if (reason === "tooLarge") return refused(tool, path, "tooLarge");
+  const why =
+    reason === "binary"
+      ? "the new text holds a NUL character in its first 8 KiB, so the file would read as binary"
+      : "the new text holds an unpaired UTF-16 surrogate, which UTF-8 cannot encode";
+  return { status: "error", text: `${tool}: ${excerpt(path)}: ${why}. Nothing was written; remove that character.` };
 }
 
 /** A refused path, in the read tools' wording for the failures they share. */

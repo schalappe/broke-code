@@ -146,9 +146,10 @@ async function readSkill(
   if (entry.status !== "ok") return warn({ kind: entry.status });
   if (entry.kind !== "file") return warn({ kind: "unreadable", cause: "not a file" });
 
-  const parsed = validate(entry.text, directory);
-  if ("problem" in parsed) return warn(parsed.problem);
   try {
+    // [>]: Inside the `try`, so a parser bug skips this skill with a warning rather than the whole discovery.
+    const parsed = validate(entry.text, directory);
+    if ("problem" in parsed) return warn(parsed.problem);
     const located = await source.locate(folder);
     if (located.status !== "ok") {
       // [>]: Gone since its `SKILL.md` was read: as a folder without one.
@@ -182,11 +183,14 @@ function validate(text: string, directory: string): Omit<Skill, "root"> | { prob
   return { name, description, listedToModel };
 }
 
+/** The frontmatter fields `validate` reads; any other key is skipped undecoded. */
+const FIELDS = new Set(["name", "description", "disable-model-invocation"]);
+
 /**
- * The top-level fields of the frontmatter: the lines between a first line `---` and the next line `---`. A value is
+ * The top-level `FIELDS` of the frontmatter: the lines between a first line `---` and the next line `---`. A value is
  * a plain scalar (with continuation lines and `#` comments), a single- or double-quoted scalar closed on its line,
- * or a `>` or `|` block scalar on the following indented lines. Nested maps, lists, and other keys' errors are
- * ignored; `null`: a value of another form. `undefined` when there is no frontmatter.
+ * or a `>` or `|` block scalar on the following indented lines. Nested maps, lists, and other keys are ignored;
+ * `null`: a value of another form. `undefined` when there is no frontmatter.
  *
  * A YAML subset by design: a skill needs two strings, and a YAML library would be a dependency for that alone.
  */
@@ -206,6 +210,7 @@ function parseFrontmatter(text: string): Map<string, string | null> | undefined 
     // [>]: The indented lines that follow belong to this key: a block scalar, a continuation, or a nested map.
     const start = index;
     while (index < body.length && (body[index]!.trim() === "" || /^[ \t]/.test(body[index]!))) index += 1;
+    if (!FIELDS.has(match[1]!)) continue;
     const value = scalarValue((match[2] ?? "").trim(), body.slice(start, index));
     if (value !== undefined) fields.set(match[1]!, value);
   }
@@ -219,7 +224,9 @@ function parseFrontmatter(text: string): Map<string, string | null> | undefined 
 function scalarValue(head: string, rest: string[]): string | null | undefined {
   const block = /^([>|])(?:[+-]?[1-9]?|[1-9][+-])(?:[ \t]+#.*)?$/.exec(head);
   if (block) {
-    const indent = Math.min(...rest.filter((line) => line.trim() !== "").map((line) => line.search(/\S/)));
+    // [!]: A loop, not `Math.min(...lines)`: V8 throws a RangeError on 200,000 arguments, which a 1 MiB block holds.
+    let indent = Number.POSITIVE_INFINITY;
+    for (const line of rest) if (line.trim() !== "") indent = Math.min(indent, line.search(/\S/));
     const content = rest.map((line) => line.slice(indent).trimEnd());
     while (content.at(-1) === "") content.pop();
     return block[1] === "|" ? content.join("\n") : fold(content);

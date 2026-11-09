@@ -251,8 +251,13 @@ async function readTextBytes(handle: FileHandle): Promise<Buffer | "tooLarge" | 
   }
   if (size > MAX_FILE_BYTES) return "tooLarge";
   const bytes = buffer.subarray(0, size);
-  if (bytes.subarray(0, BINARY_PROBE_BYTES).includes(0)) return "binary";
+  if (looksBinary(bytes)) return "binary";
   return bytes;
+}
+
+/** The readers' binary probe: a NUL byte in the first 8 KiB. */
+function looksBinary(bytes: Buffer): boolean {
+  return bytes.subarray(0, BINARY_PROBE_BYTES).includes(0);
 }
 
 /**
@@ -284,8 +289,21 @@ type CheckedTarget = {
   newFolders: string[];
 };
 
-/** Larger content is refused: a file over it could not be read back. */
-export const MAX_WRITE_BYTES = MAX_FILE_BYTES;
+/**
+ * Why `text` would not read back identically once written as UTF-8. `tooLarge`: over 1 MiB, past the readers' cap.
+ * `binary`: a NUL character in its first 8 KiB, the readers' binary probe. `notUtf8`: an unpaired UTF-16 surrogate,
+ * which UTF-8 cannot encode (`Buffer.from` would write U+FFFD instead).
+ */
+export type UnwritableText = "tooLarge" | "binary" | "notUtf8";
+
+/** Why `text` cannot be written so the file reads back as exactly `text`, or `undefined` when it can. */
+export function unwritableText(text: string): UnwritableText | undefined {
+  const bytes = Buffer.from(text);
+  if (bytes.length > MAX_FILE_BYTES) return "tooLarge";
+  if (bytes.toString("utf8") !== text) return "notUtf8";
+  if (looksBinary(bytes)) return "binary";
+  return undefined;
+}
 
 /**
  * Check a write to `path` inside `roots` and read what the file holds now. The path resolves as `readWorkspaceEntry`
@@ -307,6 +325,7 @@ export async function locateWriteTarget(
  * What applying a change did. `alreadyWritten`: the file already holds the new text, so running twice changes nothing.
  * `changed`: the file no longer holds the planned text, or the path no longer leads where it did; nothing is written.
  * `notWritten`: a disk failure (`cause`) stopped the write; the file is as it was, but folders created for it stay.
+ * `unwritable`: the new text would not read back identically (`reason`, see `unwritableText`); nothing is touched.
  * The check's refusals come back as `locateWriteTarget` gives them. `leftover`: the temporary file could not be
  * removed (`cause`); it sits in the file's folder under `name`.
  */
@@ -314,6 +333,7 @@ export type WriteOutcome = (
   | { status: "written" | "alreadyWritten" | "changed" }
   | Exclude<WriteTarget, { status: "ok" }>
   | { status: "notWritten"; cause: string }
+  | { status: "unwritable"; reason: UnwritableText }
 ) & { leftover?: { name: string; cause: string } };
 
 /**
@@ -351,6 +371,9 @@ export async function writeWorkspaceFile(
   after: string,
   seam: WriteSeam = {},
 ): Promise<WriteOutcome> {
+  // [>]: Before the disk: a text that would read back otherwise could neither be read nor applied twice.
+  const unwritable = unwritableText(after);
+  if (unwritable !== undefined) return { status: "unwritable", reason: unwritable };
   const first = await checkWriteTarget(roots, [resolve(path)]);
   if (first.status !== "ok") return first;
   if (first.before === after) return { status: "alreadyWritten" };

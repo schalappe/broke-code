@@ -276,6 +276,19 @@ describe("readSkills", () => {
     ]);
   });
 
+  test("reads a block scalar of 200,000 lines under 1 MiB, in an unknown field or the description", async () => {
+    const block = `|\n${"  x\n".repeat(200_000)}`;
+    await writeSkill(personal, "notes", skillText("notes", "Has notes.", `notes: ${block}`));
+    await writeSkill(personal, "long-block", `---\nname: long-block\ndescription: ${block}---\n`);
+    await writeSkill(personal, "other", skillText("other", "Other."));
+
+    const { skills, warnings } = await readSkills(home, []);
+    expect(skills.map((skill) => skill.name)).toEqual(["notes", "other"]);
+    expect(warnings).toEqual([
+      { path: "~/.agents/skills/long-block/SKILL.md", problem: { kind: "descriptionTooLong" } },
+    ]);
+  });
+
   test("warns about a skills folder that exists but cannot be listed, and still reads the others", async () => {
     await writeSkill(workspaceSkills(), "kept", skillText("kept", "Kept."));
     await chmod(personal, 0o000);

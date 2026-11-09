@@ -20,6 +20,7 @@ import {
   locateWriteTarget,
   readWorkspaceEntry,
   truncateLines,
+  unwritableText,
   type WorkspaceRoot,
   writeWorkspaceFile,
 } from "./workspaceFiles";
@@ -209,6 +210,41 @@ describe("readWorkspaceEntry while the path changes", () => {
       status: "outsideWorkspace",
       kind: "folder",
     });
+  });
+});
+
+describe("unwritableText", () => {
+  test("accepts text that reads back as written: a NUL past the first 8 KiB, a byte order mark, a whole emoji", () => {
+    expect(unwritableText("")).toBeUndefined();
+    expect(unwritableText(`${"a".repeat(8 * 1024)}\u0000`)).toBeUndefined();
+    expect(unwritableText("\uFEFFsmile 😀\n")).toBeUndefined();
+    expect(unwritableText("a".repeat(1024 * 1024))).toBeUndefined();
+  });
+
+  test("refuses a NUL in the first 8 KiB, an unpaired surrogate, and over 1 MiB once encoded", () => {
+    expect(unwritableText(`${"a".repeat(8 * 1024 - 1)}\u0000`)).toBe("binary");
+    expect(unwritableText("a\uD800")).toBe("notUtf8");
+    expect(unwritableText("\uDE00a")).toBe("notUtf8");
+    expect(unwritableText("é".repeat(512 * 1024 + 1))).toBe("tooLarge");
+  });
+});
+
+describe("writeWorkspaceFile with text that would not read back", () => {
+  test("refuses it before touching the disk: no folder, no temporary file, the file kept", async () => {
+    await mkdir(join(app.path, "unwritable"));
+    await writeFile(join(app.path, "unwritable", "a.txt"), "kept\n");
+    const target = await locateWriteTarget([app], "unwritable/a.txt");
+    if (target.status !== "ok") throw new Error(`not planned: ${target.status}`);
+    expect(await writeWorkspaceFile([app], target.path, target.before, "a\u0000b\n")).toEqual({
+      status: "unwritable",
+      reason: "binary",
+    });
+    expect(await writeWorkspaceFile([app], join(app.path, "unwritable", "new", "b.txt"), undefined, "\uD800")).toEqual({
+      status: "unwritable",
+      reason: "notUtf8",
+    });
+    expect(await readdir(join(app.path, "unwritable"))).toEqual(["a.txt"]);
+    expect(await readFile(join(app.path, "unwritable", "a.txt"), "utf8")).toBe("kept\n");
   });
 });
 

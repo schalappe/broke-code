@@ -97,6 +97,19 @@ describe("write_file", () => {
     expect(existsSync(join(app.path, "huge.txt"))).toBe(false);
   });
 
+  test("refuses content with a NUL in its first 8 KiB or an unpaired surrogate, writing nothing", async () => {
+    expect(await run("write_file", { path: "nul.txt", content: "a\u0000b" })).toEqual({
+      status: "error",
+      text: "write_file: nul.txt: the new text holds a NUL character in its first 8 KiB, so the file would read as binary. Nothing was written; remove that character.",
+    });
+    expect(await run("write_file", { path: "surrogate.txt", content: "a\uD800b" })).toEqual({
+      status: "error",
+      text: "write_file: surrogate.txt: the new text holds an unpaired UTF-16 surrogate, which UTF-8 cannot encode. Nothing was written; remove that character.",
+    });
+    expect(existsSync(join(app.path, "nul.txt"))).toBe(false);
+    expect(existsSync(join(app.path, "surrogate.txt"))).toBe(false);
+  });
+
   test("refuses a folder, a symlink that stays inside, and a file that is not UTF-8, writing nothing", async () => {
     await writeFile(join(app.path, "latin1.txt"), Buffer.from([0x63, 0x61, 0x66, 0xe9, 0x0a]));
     await symlink(join(app.path, "latin1.txt"), join(app.path, "link-in.txt"));
@@ -189,6 +202,20 @@ describe("edit_file", () => {
     });
   });
 
+  test("refuses an edit that puts a NUL in the first 8 KiB or leaves half a surrogate pair, writing nothing", async () => {
+    await writeFile(join(app.path, "edit-nul.txt"), "a b\n");
+    expect((await run("edit_file", { path: "edit-nul.txt", old: " ", new: "\u0000" })).text).toBe(
+      "edit_file: edit-nul.txt: the new text holds a NUL character in its first 8 KiB, so the file would read as binary. Nothing was written; remove that character.",
+    );
+    // [>]: The first half of the emoji's pair, as a model could escape it: the second half would stay alone.
+    await writeFile(join(app.path, "edit-emoji.txt"), "smile 😀\n");
+    expect((await run("edit_file", { path: "edit-emoji.txt", old: "\uD83D", new: "" })).text).toBe(
+      "edit_file: edit-emoji.txt: the new text holds an unpaired UTF-16 surrogate, which UTF-8 cannot encode. Nothing was written; remove that character.",
+    );
+    expect(await readFile(join(app.path, "edit-nul.txt"), "utf8")).toBe("a b\n");
+    expect(await readFile(join(app.path, "edit-emoji.txt"), "utf8")).toBe("smile 😀\n");
+  });
+
   test("refuses a binary file and a file over 1 MiB with the read tools' wording", async () => {
     await writeFile(join(app.path, "edit.bin"), Buffer.from([0x61, 0x00, 0x62]));
     await writeFile(join(app.path, "edit-big.txt"), `${"a".repeat(1024 * 1024)}b`);
@@ -232,6 +259,15 @@ describe("fileApplier", () => {
     expect((await apply(change)).status).toBe("ok");
     expect(await apply(change)).toEqual({ status: "ok", text: "edit_file: again.txt already holds this change." });
     expect(await readFile(join(app.path, "again.txt"), "utf8")).toBe("two\n");
+  });
+
+  test("applies twice content with a NUL past the first 8 KiB, which reads back as text", async () => {
+    const content = `${"a".repeat(8 * 1024)}\u0000b`;
+    const change = await plan("write_file", { path: "late-nul.txt", content });
+    const apply = fileApplier([app]);
+    expect(await apply(change)).toEqual({ status: "ok", text: "write_file: created late-nul.txt." });
+    expect(await apply(change)).toEqual({ status: "ok", text: "write_file: late-nul.txt already holds this change." });
+    expect(await readFile(join(app.path, "late-nul.txt"), "utf8")).toBe(`${content}\n`);
   });
 
   test("leaves alone a file that changed since the change was planned, and one created meanwhile", async () => {
