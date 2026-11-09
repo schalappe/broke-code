@@ -147,8 +147,10 @@ yet. Read
   `</tool_name>`. A value may therefore hold `</write_file>`, `</content>`, other tools' tags, and code fences. Known
   cost, kept by maintainer decision: a value holding an unpaired `<argument>` pairs it with the real closing tag, so
   it runs on into the text after the call when that text holds `</argument>` then `</tool_name>`. The parser drops
-  one leading and one trailing line break of a value that sits on its own lines, so `write_file` writes its content
-  followed by one line break unless the content is empty.
+  one leading and one trailing line break of a value that sits on its own lines (both or neither). `write_file` then
+  drops every trailing line break of its content (`\n` or `\r\n`) and ends the file with exactly one, of the kind its
+  last line break is; content left empty writes an empty file. Accepted cost, by maintainer decision (ADR 0001):
+  `write_file` cannot create a file ending with an empty line; `edit_file` can.
 - The v1 tools are `read_file`, `list_files`, `search` (ripgrep), `write_file`, `edit_file`, `run_command`,
   and `load_skill`.
 - `edit_file` replaces exact text only, compared byte for byte, line endings included. If the text matches zero

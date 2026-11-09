@@ -89,6 +89,17 @@ describe("write_file", () => {
     expect(await readFile(join(app.path, "whole.txt"), "utf8")).toBe("");
   });
 
+  test("drops every trailing line break of the content, then ends the file with exactly one", async () => {
+    await run("write_file", { path: "trail.md", content: "a\n```\n\n\n" });
+    expect(await readFile(join(app.path, "trail.md"), "utf8")).toBe("a\n```\n");
+    await run("write_file", { path: "trail-crlf.md", content: "a\r\nb\r\n\r\n" });
+    expect(await readFile(join(app.path, "trail-crlf.md"), "utf8")).toBe("a\r\nb\r\n");
+    await run("write_file", { path: "trail-crlf-cut.md", content: "a\r\nb" });
+    expect(await readFile(join(app.path, "trail-crlf-cut.md"), "utf8")).toBe("a\r\nb\r\n");
+    await run("write_file", { path: "trail-only.md", content: "\n\r\n\n" });
+    expect(await readFile(join(app.path, "trail-only.md"), "utf8")).toBe("");
+  });
+
   test("refuses a binary target, a target over 1 MiB, and content over 1 MiB with the read tools' wording", async () => {
     const binary = Buffer.from([0x89, 0x50, 0x00, 0x47]);
     await writeFile(join(app.path, "image.bin"), binary);

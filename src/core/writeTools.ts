@@ -39,7 +39,7 @@ export const WRITE_TOOLS: ToolSpec[] = [
   {
     name: "write_file",
     description:
-      "Create a file of the workspace, or replace a whole file. Missing folders are created. The file becomes exactly the content given, followed by one line break, so give the complete new text. Binary files and files over 1 MiB are refused. To change part of a file, use edit_file.",
+      "Create a file of the workspace, or replace a whole file. Missing folders are created. The file becomes exactly the content given, ending with one line break whatever line breaks end the content, so give the complete new text. Binary files and files over 1 MiB are refused. To change part of a file, use edit_file.",
     args: [
       { name: "path", required: true, description: "Path of the file, relative to the workspace folder." },
       { name: "content", required: true, description: "The whole new content of the file, as raw text." },
@@ -93,9 +93,7 @@ async function planChange(call: ToolCall, roots: WorkspaceRoot[]): Promise<Plann
 
   let after: string;
   if (tool === "write_file") {
-    // [>]: The parser drops the line break written before the closing tag, and a text file ends with one.
-    const content = call.args.content ?? "";
-    after = content === "" ? "" : `${content}\n`;
+    after = withOneFinalLineBreak(call.args.content ?? "");
   } else {
     if (target.before === undefined) return refused(tool, path, "missing");
     const replaced = replaceOnce(target.before, call.args.old ?? "", call.args.new ?? "", path);
@@ -105,6 +103,21 @@ async function planChange(call: ToolCall, roots: WorkspaceRoot[]): Promise<Plann
   const unwritable = unwritableText(after);
   if (unwritable !== undefined) return unwritableResult(tool, path, unwritable);
   return { tool, path, target: target.path, before: target.before, after };
+}
+
+/**
+ * `content` without its trailing line breaks (`\n` or `\r\n`), then ending with exactly one, of the kind its last line
+ * break is (`\r\n` or `\n`); empty when nothing else is left. Models often close the content tag after an empty line,
+ * and a text file ends with one line break (ADR 0001, decision of 2026-11-09). Cost: `write_file` cannot create a
+ * file ending with an empty line; `edit_file` can.
+ */
+function withOneFinalLineBreak(content: string): string {
+  let end = content.length;
+  while (end > 0 && content[end - 1] === "\n") end -= content[end - 2] === "\r" ? 2 : 1;
+  if (end === 0) return "";
+  const lastBreak = content.lastIndexOf("\n");
+  const lineBreak = lastBreak > 0 && content[lastBreak - 1] === "\r" ? "\r\n" : "\n";
+  return content.slice(0, end) + lineBreak;
 }
 
 /** `text` with the one occurrence of `old` replaced by `replacement`, compared exactly, or the error result. */

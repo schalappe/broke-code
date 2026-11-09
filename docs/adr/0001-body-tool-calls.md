@@ -47,9 +47,11 @@ failing case needs prose after the call that itself holds those closing tags.
 This changes one of the starting values above ahead of its eval evidence, because the old rule could not write such
 files at all; the write scenario of the eval (#38) is the evidence that confirms or reverses it.
 
-## Evidence (2026-11-09): the write eval
+## Amendment (2026-11-09): trailing line breaks of written content
 
-The `create` scenario of the eval (#38) asks for a new file whose text holds double quotes, backslashes,
+Decided by the maintainer (schalappe) on 2026-11-09, on the evidence of the write eval (#38).
+
+The `create` scenario of the eval asks for a new file whose text holds double quotes, backslashes,
 `<content>...</content>`, `</write_file>`, and a fenced code block. On revision 0d6ebb7, 10 runs per model:
 
 | Model                   | `read` | `edit` | `create` |
@@ -62,11 +64,18 @@ held the requested text exactly, every quote, backslash, tag, and fence included
 call was cut and no other file changed. Every one of the 12 misses is the same: one or two extra empty lines at the
 end of the file. Two causes, both read from the dump:
 
-- The leading and trailing line breaks are dropped only together. A value that starts on the `<content>` line and
-  ends on a line of its own keeps its last line break, and `write_file` then adds one: 5 misses (`gemma4` 3,
-  `qwen3.8` 2) come from this alone.
+- The parser drops the leading and trailing line breaks of a value only together. A value that starts on the
+  `<content>` line and ends on a line of its own keeps its last line break, and `write_file` then added one: 5
+  misses (`gemma4` 3, `qwen3.8` 2) come from this alone.
 - `qwen3.8` writes an empty line between the closing fence and `</content>`: 7 misses, 6 of them with the first
   cause too.
 
-The scenario is therefore under the 9/10 bar on both models. The `edit` scenario, an `edit_file` rename, passed all
-20 runs. Changing the line-break rule is a parser decision, left to the maintainer.
+**Decision.** `write_file` drops every trailing line break of its content, `\n` or `\r\n`, then ends the file
+with exactly one, of the kind its last line break is. Content made only of line breaks, or empty, writes an empty
+file. The parser's rule (one leading and one trailing line break, both or neither) stays as it is: it is the
+`write_file` contract, not the parser, that decides how a file ends.
+
+**Cost, accepted.** `write_file` cannot create a file that ends with an empty line; `edit_file` still can.
+
+**Considered.** Dropping one trailing line break whatever the leading one does would have fixed the 5 misses of the
+first cause only, leaving `qwen3.8` at 3/10 on the same replies.

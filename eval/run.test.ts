@@ -81,6 +81,14 @@ describe("playScenario", () => {
     expect(judge(CREATE_SCENARIO, entries, after)).toEqual({ pass: true });
   });
 
+  test("passes the create scenario when the content opens on the tag's line and ends with an empty line", async () => {
+    const [path, text] = Object.entries(CREATE_SCENARIO.writes)[0] ?? ["", ""];
+    replies = [`<write_file>\n<path>${path}</path>\n<content>${text}\n</content>\n</write_file>`, "Created."];
+    const { entries, after } = await playScenario(CREATE_SCENARIO, { baseUrl, model: "m", maxToolSteps: 6 }, parent);
+
+    expect(judge(CREATE_SCENARIO, entries, after)).toEqual({ pass: true });
+  });
+
   test("halts at the step limit it is given", async () => {
     replies = [READ_CALL, READ_CALL, READ_CALL];
     const { entries, after } = await playScenario(READ_SCENARIO, { baseUrl, model: "m", maxToolSteps: 2 }, parent);
