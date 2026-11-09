@@ -10,7 +10,8 @@ tool call in the text of its reply, and the extension parses and runs the call. 
 covers the agent loop over the reply text, skills, and slash commands, in a minimal chat panel styled after
 twinny.
 
-The code so far covers the extension skeleton and a streaming chat with a provider, with no tools yet. Read
+The code so far covers the extension skeleton and a streaming chat with a provider. The body tool call parser, the
+system prompt, and the read tools exist in `src/core/`, but no harness runs them yet. Read
 `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the decisions behind the design, starting with
 `docs/adr/0001-body-tool-calls.md`.
 
@@ -33,8 +34,9 @@ The code so far covers the extension skeleton and a streaming chat with a provid
   (`markdownCode.ts`), the mention menu logic (`suggestions.ts`: the `@` token at the caret, index entries,
   filtering, the index exclusions), the menu's file index (`fileIndex.ts`: one scan shared until a file
   changes, behind a scan port), the body tool call parser (`toolCalls.ts`: `ToolSpec`, the first call-shaped block,
-  malformed-call messages), and the system prompt composer (`systemPrompt.ts`: role, call format, rules, tools,
-  instruction files). `markdownCode.ts`, `suggestions.ts`, and `conversation.ts` import nothing from
+  malformed-call messages), the system prompt composer (`systemPrompt.ts`: role, call format, rules, tools,
+  instruction files), and the read tools (`tools.ts`: `read_file` and `list_files` over the mention reader, `search`
+  over ripgrep with its candidate paths, bounded `ok` or `error` results). `markdownCode.ts`, `suggestions.ts`, and `conversation.ts` import nothing from
   `node:`, since the webview loads them. Unit tests sit next to them as `*.test.ts`, because `bun test` cannot load `vscode`. `tlsFixture.ts`
   generates test certificates with `/usr/bin/openssl` at test time; no private key is committed.
   `conversationFixture.ts` is the in-memory conversation file port for tests.
