@@ -15,14 +15,44 @@ export type ModelsState =
   | { status: "loaded"; models: string[] }
   | { status: "failed"; error: ProviderError };
 
-/** `waiting`: request sent, no reasoning or answer yet (model may still be loading). `streaming`: either has started. */
-export type ReplyStatus = "waiting" | "streaming" | "done" | "stopped" | "failed";
+/**
+ * `waiting`: request sent, no reasoning or answer yet (model may still be loading). `streaming`: either has started,
+ * and a reply whose call is running stays `streaming` until its tool step is recorded. `halted`: the agent turn ended
+ * on a limit after this reply's tool step (see `HaltReason`).
+ */
+export type ReplyStatus = "waiting" | "streaming" | "done" | "stopped" | "failed" | "halted";
+
+/** `malformedCalls`: three malformed calls in a row. `stepLimit`: the turn reached its tool step limit. */
+export type HaltReason = "malformedCalls" | "stepLimit";
+
+/** The body tool call a reply's answer holds: tool name, raw argument values, and where its block sits in `content`. */
+export type ReplyCall = { name: string; args: Record<string, string>; start: number; end: number };
+
+/**
+ * `ok` and `error`: what the tool returned. `malformed`: the reply's call could not be read; `text` is the message
+ * sent back to the model, and `name` is the tool the block named, or `unknown` when it names none.
+ */
+export type ToolStepStatus = "ok" | "error" | "malformed";
 
 export type ChatEntry =
   /** `content`: the text as typed. `mentions`: each mention read at send time, in order. */
   | { role: "user"; content: string; mentions: MentionResult[] }
-  /** `reasoning`: text the model writes before its answer, shown collapsed, never sent back. `content`: the answer. */
-  | { role: "assistant"; reasoning: string; content: string; status: ReplyStatus; error?: ProviderError };
+  /**
+   * `reasoning`: text the model writes before its answer, shown collapsed, never sent back. `content`: the whole
+   * answer, its call block included, so the history resends exactly what the model wrote; the chat hides the block by
+   * `call`'s range. `haltReason`: set exactly when `status` is `halted`.
+   */
+  | {
+      role: "assistant";
+      reasoning: string;
+      content: string;
+      status: ReplyStatus;
+      error?: ProviderError;
+      call?: ReplyCall;
+      haltReason?: HaltReason;
+    }
+  /** A tool step: one body tool call of the reply before it, or its malformed block, and the text the model got back. */
+  | { role: "tool"; name: string; args: Record<string, string>; status: ToolStepStatus; text: string };
 
 /**
  * Why the conversation shown or the user's last action on a saved conversation failed: a save, delete, or open
@@ -86,7 +116,10 @@ export function chatStateOf(message: HostMessage): ChatState | undefined {
   return message.type === "fileSuggestions" ? undefined : message.state;
 }
 
-/** True while a reply is in flight. */
+/**
+ * True while an agent turn is in flight: its last reply is waiting, streaming, or running its call. A tool step is
+ * appended together with the next reply, so the last entry is a tool step only once the turn has ended.
+ */
 export function isReplying(state: ChatState): boolean {
   const last = state.entries.at(-1);
   return last?.role === "assistant" && (last.status === "waiting" || last.status === "streaming");
