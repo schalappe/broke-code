@@ -336,6 +336,68 @@ button.history-open:hover:not(:disabled) {
   white-space: pre-wrap;
 }
 
+/* Tool step: one compact row per body tool call, its result shown once expanded. */
+.step {
+  margin: 4px 0;
+  border: 1px solid var(--vscode-widget-border, var(--vscode-input-background));
+  border-radius: 4px;
+  font-size: 0.9em;
+}
+
+.step-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  padding: 3px 8px;
+}
+
+summary.step-row {
+  cursor: pointer;
+}
+
+summary.step-row:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.step-tool {
+  flex: none;
+  font-family: var(--vscode-editor-font-family);
+  font-weight: 600;
+}
+
+.step-arg {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--vscode-editor-font-family);
+}
+
+.step-status {
+  flex: none;
+  margin-left: auto;
+  color: var(--vscode-descriptionForeground);
+}
+
+.step-status.failed {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--vscode-errorForeground);
+}
+
+.message .step-result {
+  max-height: 20em;
+  margin: 0;
+  overflow: auto;
+  border-radius: 0 0 4px 4px;
+  white-space: pre;
+}
+
 .error {
   padding: 6px 8px;
   border-left: 2px solid var(--vscode-errorForeground);

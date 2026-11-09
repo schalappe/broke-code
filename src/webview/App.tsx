@@ -8,13 +8,16 @@ import type { MentionToken, Suggestion } from "../core/suggestions";
 import { composerKeyAction, type MenuAnswer, menuToken, menuView, openMenuToken, pickedInText } from "./composer";
 import { moveHighlight, optionId, SuggestionMenu } from "./SuggestionMenu";
 import {
+  describeHalt,
   describeListFailure,
   describeMention,
   describeProviderError,
   describeSkippedProvider,
   describeStorageProblem,
+  describeToolStep,
   type ErrorText,
   formatConversationDate,
+  mainArgument,
 } from "./text";
 import { post } from "./vscodeApi";
 
@@ -292,30 +295,119 @@ function Conversation({ entries }: { entries: ChatEntry[] }) {
         if (element) setPinned(element.scrollHeight - element.scrollTop - element.clientHeight < 24);
       }}
     >
-      {entries.map((entry, index) =>
-        entry.role === "user" ? (
-          // biome-ignore lint/suspicious/noArrayIndexKey: a conversation's entries are only appended; another one remounts the list.
-          <div key={index} className="message user">
-            {entry.content}
-            {entry.mentions.length > 0 && <Mentions entry={entry} />}
-          </div>
-        ) : (
-          // biome-ignore lint/suspicious/noArrayIndexKey: a conversation's entries are only appended; another one remounts the list.
-          <div key={index} className="message assistant">
-            {entry.reasoning !== "" && <Reasoning key="reasoning" entry={entry} />}
-            {entry.content !== "" && <Markdown>{entry.content}</Markdown>}
-            {entry.status === "waiting" && (
-              <p className="loading" role="status">
-                {l10n.t("Waiting for the reply…")}
-              </p>
-            )}
-            {entry.status === "stopped" && <p className="mark">{l10n.t("Stopped")}</p>}
-            {entry.error && <ErrorBlock error={entry.error} />}
-          </div>
-        ),
-      )}
+      {entries.map((entry, index) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: a conversation's entries are only appended; another one remounts the list.
+        <Entry key={index} entry={entry} previous={entries[index - 1]} next={entries[index + 1]} />
+      ))}
       <div ref={end} />
     </section>
+  );
+}
+
+/** One entry of the conversation, with its neighbours: a tool step shows inside the reply before it. */
+function Entry({ entry, previous, next }: { entry: ChatEntry; previous?: ChatEntry; next?: ChatEntry }) {
+  switch (entry.role) {
+    case "user":
+      return (
+        <div className="message user">
+          {entry.content}
+          {entry.mentions.length > 0 && <Mentions entry={entry} />}
+        </div>
+      );
+    case "assistant":
+      return <Reply entry={entry} step={next?.role === "tool" ? next : undefined} />;
+    case "tool":
+      // [>]: A step without a reply before it is still shown, never lost.
+      return previous?.role === "assistant" ? null : (
+        <div className="message assistant">
+          <ToolStep name={entry.name} args={entry.args} result={entry} />
+        </div>
+      );
+  }
+}
+
+/**
+ * One reply of an agent turn: its reasoning, its answer as Markdown less its call block, the row of its tool step
+ * (`step`: the entry after it), and how the turn ended when it ended here.
+ */
+function Reply({ entry, step }: { entry: ChatEntry & { role: "assistant" }; step?: ChatEntry & { role: "tool" } }) {
+  const { call } = entry;
+  const answer = call ? (entry.content.slice(0, call.start) + entry.content.slice(call.end)).trim() : entry.content;
+  const inFlight = entry.status === "waiting" || entry.status === "streaming";
+  return (
+    <div className="message assistant">
+      {entry.reasoning !== "" && <Reasoning key="reasoning" entry={entry} />}
+      {answer !== "" && <Markdown>{answer}</Markdown>}
+      {step ? (
+        <ToolStep name={step.name} args={step.args} result={step} />
+      ) : (
+        call && <ToolStep name={call.name} args={call.args} pending={inFlight ? "running" : "notRun"} />
+      )}
+      {entry.status === "waiting" && (
+        <p className="loading" role="status">
+          {l10n.t("Waiting for the reply…")}
+        </p>
+      )}
+      {entry.status === "stopped" && <p className="mark">{l10n.t("Stopped")}</p>}
+      {entry.status === "halted" && entry.haltReason && <p className="mark">{describeHalt(entry.haltReason)}</p>}
+      {entry.error && <ErrorBlock error={entry.error} />}
+    </div>
+  );
+}
+
+/**
+ * A compact tool step row: tool name, main argument, and the result's status and size. The result text, or a
+ * malformed call's whole message, shows once the row is expanded; a malformed step shows its first line in the row.
+ * Uncontrolled `<details>`, as the reasoning block, so the user's choice survives re-renders. Without a `result`,
+ * the call is running or was stopped before it ran.
+ */
+function ToolStep({
+  name,
+  args,
+  result,
+  pending,
+}: {
+  name: string;
+  args: Record<string, string>;
+  result?: ChatEntry & { role: "tool" };
+  pending?: "running" | "notRun";
+}) {
+  const argument = mainArgument(args);
+  const malformed = result?.status === "malformed";
+  const head = (
+    <>
+      <span className="step-tool">{malformed ? l10n.t("malformed call") : name}</span>
+      {!malformed && argument !== undefined && <span className="step-arg">{argument}</span>}
+    </>
+  );
+  if (!result) {
+    return (
+      <div className="step">
+        <div className="step-row">
+          {head}
+          {pending === "running" ? (
+            <span className="step-status loading" role="status">
+              {l10n.t("running…")}
+            </span>
+          ) : (
+            <span className="step-status">{l10n.t("not run")}</span>
+          )}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <details className="step">
+      <summary className="step-row">
+        {head}
+        <span className={result.status === "ok" ? "step-status" : "step-status failed"}>
+          {describeToolStep(result)}
+        </span>
+      </summary>
+      <pre className="step-result">
+        <code>{result.text}</code>
+      </pre>
+    </details>
   );
 }
 
