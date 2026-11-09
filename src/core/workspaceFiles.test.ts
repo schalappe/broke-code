@@ -15,7 +15,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   compareNames,
   locateWriteTarget,
@@ -193,6 +193,41 @@ describe("readWorkspaceEntry with read-only roots", () => {
       text: "one\n",
     });
     expect(await readWorkspaceEntry([], "a.md", {}, [one])).toEqual({ status: "outsideWorkspace", kind: "file" });
+  });
+
+  test("reads a file of a read-only root with no workspace folder open", async () => {
+    expect(await readWorkspaceEntry([], join(one, "a.md"), {}, [one])).toEqual({
+      status: "ok",
+      kind: "file",
+      text: "one\n",
+    });
+  });
+
+  test("reads the literal path inside a read-only root, never one a folder name reroutes it to", async () => {
+    // [>]: A multi-root folder named after the root's first component (`/private` on macOS) would reroute the path.
+    const name = `/${one.split("/")[1]}`;
+    const decoyRoot: WorkspaceRoot = { name, path: join(base, "decoy") };
+    const decoy = join(decoyRoot.path, one.slice(name.length + 1), "a.md");
+    await mkdir(dirname(decoy), { recursive: true });
+    await writeFile(decoy, "decoy\n");
+    expect(await readWorkspaceEntry([decoyRoot, lib], join(one, "a.md"), {}, [one])).toEqual({
+      status: "ok",
+      kind: "file",
+      text: "one\n",
+    });
+  });
+
+  test("holds a path to the deepest read-only root that holds it, the outer root listed first", async () => {
+    const outer = join(one, "outer");
+    const inner = join(outer, "inner");
+    await mkdir(inner, { recursive: true });
+    await writeFile(join(outer, "other.md"), "outer\n");
+    await symlink(join(outer, "other.md"), join(inner, "escape.md"));
+    expect(await readWorkspaceEntry([], join(inner, "escape.md"), {}, [outer, inner])).toEqual({
+      status: "outsideWorkspace",
+      kind: "file",
+    });
+    expect(await readWorkspaceEntry([], join(outer, "other.md"), {}, [outer, inner])).toMatchObject({ status: "ok" });
   });
 
   test("refuses a symlink out of its own root, into another read-only root or into the workspace", async () => {
