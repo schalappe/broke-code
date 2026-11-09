@@ -298,6 +298,47 @@ describe("writeWorkspaceFile while the file changes", () => {
     expect(await readdir(join(app.path, "w5", "other"))).toEqual([]);
   });
 
+  test("keeps the staged text private until it takes an existing file's place, then gives it the file's bits", async () => {
+    await mkdir(join(app.path, "w6"));
+    for (const mode of [0o600, 0o644]) {
+      const file = join(app.path, "w6", `mode-${mode.toString(8)}.txt`);
+      await writeFile(file, "old\n");
+      await chmod(file, mode);
+      const { target, before } = await planned(`w6/mode-${mode.toString(8)}.txt`);
+      const stagedModes: number[] = [];
+      const look = async () => {
+        for (const name of await temporaryFiles(join(app.path, "w6"))) {
+          stagedModes.push((await stat(join(app.path, "w6", name))).mode & 0o777);
+        }
+      };
+      expect(await writeWorkspaceFile([app], target, before, "new\n", { afterTempWritten: look })).toEqual({
+        status: "written",
+      });
+      expect(stagedModes).toEqual([0o600]);
+      expect((await stat(file)).mode & 0o777).toBe(mode);
+    }
+  });
+
+  test("writes a file whose name is 250 bytes long, its temporary name cut whole characters under 255 bytes", async () => {
+    await mkdir(join(app.path, "w8"));
+    // [>]: 2 + 82 * 3 + 2 = 250 bytes: a cut at a fixed byte count would land inside a character.
+    const name = `ab${"€".repeat(82)}é`;
+    expect(Buffer.byteLength(name)).toBe(250);
+    const { target, before } = await planned(`w8/${name}`);
+    const staged: string[] = [];
+    const look = async () => {
+      staged.push(...(await temporaryFiles(join(app.path, "w8"))));
+    };
+    expect(await writeWorkspaceFile([app], target, before, "long\n", { afterTempWritten: look })).toEqual({
+      status: "written",
+    });
+    expect(await readFile(join(app.path, "w8", name), "utf8")).toBe("long\n");
+    expect(staged).toHaveLength(1);
+    expect(Buffer.byteLength(staged[0]!)).toBeLessThanOrEqual(255);
+    expect(staged[0]).toMatch(/^\.ab€+\.broke-code-[0-9a-f]{12}\.tmp$/);
+    expect(await readdir(join(app.path, "w8"))).toEqual([name]);
+  });
+
   test("names a temporary file it could not remove, with the cause, leaving the file as it was", async () => {
     await mkdir(join(app.path, "w7"));
     await writeFile(join(app.path, "w7", "a.txt"), "original\n");

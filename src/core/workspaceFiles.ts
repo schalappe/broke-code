@@ -330,10 +330,11 @@ export type WriteSeam = {
 /**
  * Write `after` to the file at `path`, a path `locateWriteTarget` returned, atomically: the file holds either its
  * old text or `after`, never a mix or nothing, even after a crash. Checked again first; missing folders are created;
- * `after` goes to a new temporary file in the same folder (`.<name>.broke-code-<random>.tmp`), flushed to disk, with
- * the old file's permission bits or the default ones for a new file. Then the target is checked a last time (inside
- * the workspace, not a symlink, still holding `before`), and the temporary file takes its place: renamed over an
- * existing file, or linked to a new name, which fails rather than replace a file created meanwhile. Never rejects.
+ * `after` goes to a new temporary file in the same folder (`.<name>.broke-code-<random>.tmp`, the name cut so it fits
+ * in 255 bytes), flushed to disk. Then the target is checked a last time (inside the workspace, not a symlink, still
+ * holding `before`), the temporary file gets the old file's permission bits, and it takes the file's place: renamed
+ * over an existing file, or linked to a new name, which fails rather than replace a file created meanwhile. Until
+ * then the staged copy of an existing file is readable by its owner only. Never rejects.
  *
  * [!]: Accepted costs of replacing the file rather than writing into it: a hard link to it keeps the old text, and
  * its owner, extended attributes, and ACLs are not kept; a folder that holds the file must be writable. A crash
@@ -356,6 +357,9 @@ export async function writeWorkspaceFile(
   if (first.before !== before) return { status: "changed" };
   try {
     await seam.afterCheck?.();
+    // [!]: A missing folder swapped for a symlink out after the check makes `mkdir` create the next one outside, empty,
+    // before the folder check below refuses the write. Out of scope, as for reads: such a swapper already runs with the
+    // user's rights.
     for (const folder of first.newFolders) {
       await mkdir(folder).catch((error: unknown) => {
         // [>]: Created meanwhile; the folder check below tells whether it still leads inside.
@@ -364,11 +368,12 @@ export async function writeWorkspaceFile(
     }
     const moved = await folderMoved(first);
     if (moved !== undefined) return { status: moved };
-    const temp = join(
-      dirname(first.realPath),
-      `.${basename(first.realPath)}.broke-code-${randomBytes(6).toString("hex")}.tmp`,
-    );
-    const handle = await open(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW);
+    const temp = join(dirname(first.realPath), temporaryName(basename(first.realPath)));
+    // [>]: A new file gets the default bits (0o666 less the umask) like any other new file, so staging at them shows
+    // nothing more than the file will; reading the umask itself (`process.umask()`) is racy across threads.
+    const mode = first.mode === undefined ? 0o666 : 0o600;
+    const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW;
+    const handle = await open(temp, flags, mode);
     let outcome: WriteOutcome;
     try {
       outcome = await swapIn(roots, first, handle, temp, after, seam);
@@ -382,7 +387,26 @@ export async function writeWorkspaceFile(
   }
 }
 
-/** Write `after` through `handle` to the temporary file `temp`, then put it at `checked`'s path once checked again. */
+/** Bytes a file name may hold on macOS (APFS, HFS+). */
+const NAME_MAX_BYTES = 255;
+const TEMPORARY_SUFFIX_BYTES = ".broke-code-".length + 12 + ".tmp".length;
+
+/** `.<name>.broke-code-<12 hex>.tmp`, `name` cut to whole characters so the result fits in `NAME_MAX_BYTES`. */
+function temporaryName(name: string): string {
+  const budget = NAME_MAX_BYTES - ".".length - TEMPORARY_SUFFIX_BYTES;
+  let prefix = "";
+  let bytes = 0;
+  // [>]: `for...of` walks code points, so a cut never splits a UTF-8 sequence.
+  for (const char of name) {
+    const size = Buffer.byteLength(char);
+    if (bytes + size > budget) break;
+    prefix += char;
+    bytes += size;
+  }
+  return `.${prefix}.broke-code-${randomBytes(6).toString("hex")}.tmp`;
+}
+
+/** Stage `after` through `handle` in the temporary file `temp`, then put it at `checked`'s path once checked again. */
 async function swapIn(
   roots: WorkspaceRoot[],
   checked: CheckedTarget,
@@ -391,25 +415,13 @@ async function swapIn(
   after: string,
   seam: WriteSeam,
 ): Promise<WriteOutcome> {
+  let refused: WriteOutcome | undefined;
   try {
-    const bytes = Buffer.from(after);
-    let written = 0;
-    while (written < bytes.length) {
-      written += (await handle.write(bytes, written, bytes.length - written, written)).bytesWritten;
-    }
-    // [>]: By handle, so the umask the open applied does not narrow the old file's bits.
-    if (checked.mode !== undefined) await handle.chmod(checked.mode);
-    await handle.sync();
+    refused = await stage(roots, checked, handle, after, seam);
   } finally {
     await handle.close();
   }
-  await seam.afterTempWritten?.();
-
-  const last = await checkWriteTarget(roots, [checked.path]);
-  if (last.status !== "ok") return last;
-  if (last.realPath !== checked.realPath || last.newFolders.length > 0) return { status: "changed" };
-  if (last.before === after) return { status: "alreadyWritten" };
-  if (last.before !== checked.before) return { status: "changed" };
+  if (refused !== undefined) return refused;
   await seam.afterLastCheck?.();
 
   if (checked.before !== undefined) {
@@ -424,6 +436,38 @@ async function swapIn(
       throw error;
     },
   );
+}
+
+/**
+ * Write `after` through `handle`, flush it, and check the target a last time; once it passes, give the staged file
+ * the old file's bits. The refusal, or `undefined` when the staged file may take the target's place.
+ */
+async function stage(
+  roots: WorkspaceRoot[],
+  checked: CheckedTarget,
+  handle: FileHandle,
+  after: string,
+  seam: WriteSeam,
+): Promise<WriteOutcome | undefined> {
+  const bytes = Buffer.from(after);
+  let written = 0;
+  while (written < bytes.length) {
+    written += (await handle.write(bytes, written, bytes.length - written, written)).bytesWritten;
+  }
+  await handle.sync();
+  await seam.afterTempWritten?.();
+
+  const last = await checkWriteTarget(roots, [checked.path]);
+  if (last.status !== "ok") return last;
+  if (last.realPath !== checked.realPath || last.newFolders.length > 0) return { status: "changed" };
+  if (last.before === after) return { status: "alreadyWritten" };
+  if (last.before !== checked.before) return { status: "changed" };
+  if (checked.mode !== undefined) {
+    // [>]: By handle, so no umask narrows the bits, and only now, so a refused text never left the owner's hands.
+    await handle.chmod(checked.mode);
+    await handle.sync();
+  }
+  return undefined;
 }
 
 /** Why the folder of `checked` no longer leads where it did once its missing folders exist, if it does not. */
