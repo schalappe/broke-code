@@ -31,3 +31,12 @@ there is one code path to test, and the harness behaves the same on every provid
 - Tool results go back to the model as `user` messages that wrap the result in a
   `<tool_result tool="<name>" status="ok|error">` tag. The OpenAI `tool` role needs a `tool_call_id`, so it
   needs native tool calling. The assistant message before the result is the reply verbatim, call included.
+
+## Amendment (2026-11-09): where a call ends
+
+The first parser ended a call at the first `</tool_name>` in the reply, so a `write_file` whose content held that
+text was cut, sometimes silently. A call now ends at the `</tool_name>` that follows its last argument value, and a
+value ends at the first `</argument>` followed by nothing but whitespace and then another argument tag of the tool
+or the call's closing tag. File content can therefore hold the call's own tags, other tools' tags, and code fences.
+This changes one of the starting values above ahead of its eval evidence, because the old rule could not write such
+files at all; the write scenario of the eval (#38) is the evidence that confirms or reverses it.

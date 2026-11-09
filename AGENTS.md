@@ -12,8 +12,9 @@ twinny.
 
 The code so far covers the extension skeleton, a streaming chat with a provider, and the harness with the read tools:
 a message starts an agent turn that runs `read_file`, `list_files`, and `search` until the model answers without a
-call. `bun run eval` measures that loop on local Ollama models. Write tools, `run_command`, skills, and slash
-commands are not built yet. Read
+call. `bun run eval` measures that loop on local Ollama models. `write_file` and `edit_file` exist in the core and
+the eval, which applies each change at once; the extension does not list them until the approval flow (#37) lands.
+`run_command`, skills, and slash commands are not built yet. Read
 `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the decisions behind the design, starting with
 `docs/adr/0001-body-tool-calls.md`.
 
@@ -32,7 +33,7 @@ commands are not built yet. Read
   the file port, and its implementation over a local directory with `node:fs`: missing versus failed, regular files
   only, atomic writes, leftover temporary files), the dialog queue, the host-webview message
   protocol and its validation, workspace file access (`workspaceFiles.ts`: the inside-workspace check, capped reads,
-  one-level listings, line truncation, with `node:fs`), mentions (`mentions.ts`: token detection, picked and typed
+  one-level listings, line truncation, the write boundary and in-place writes, with `node:fs`), mentions (`mentions.ts`: token detection, picked and typed
   mentions merged, reading, and the text the model receives), where a message holds Markdown code
   (`markdownCode.ts`), the mention menu logic (`suggestions.ts`: the `@` token at the caret, index entries,
   filtering, the index exclusions), the menu's file index (`fileIndex.ts`: one scan shared until a file
@@ -40,7 +41,9 @@ commands are not built yet. Read
   malformed-call messages), the system prompt composer (`systemPrompt.ts`: role, call format, rules, tools,
   instruction files), the turn limits (`limits.ts`: `brokeCode.maxToolSteps` and `brokeCode.contextSizes` parsing,
   the token estimate, the context-full threshold, the typed size check), and the read tools (`tools.ts`: `read_file` and `list_files` over the mention reader, `search`
-  over ripgrep with its candidate paths, bounded `ok` or `error` results), and the instruction files
+  over ripgrep with its candidate paths, bounded `ok` or `error` results), the write tools (`writeTools.ts`:
+  `write_file` and `edit_file` plan a change `{ path, target, before, after }` and never write; an applier port writes
+  it, `fileApplier` straight to disk for the tests and the eval), and the instruction files
   (`instructions.ts`: `~/.agents/AGENTS.md`, then each workspace folder's `AGENTS.md`, under the mention caps). `markdownCode.ts`, `suggestions.ts`, and `conversation.ts` import nothing from
   `node:`, since the webview loads them. Unit tests sit next to them as `*.test.ts`, because `bun test` cannot load `vscode`. `tlsFixture.ts`
   generates test certificates with `/usr/bin/openssl` at test time; no private key is committed.
@@ -61,7 +64,8 @@ commands are not built yet. Read
   release workflow runs it as a CLI. Its tests sit next to it.
 - `eval/`: the Ollama eval bench (`bun run eval`). `scenarios.ts` holds each scenario (fixture files, message, check
   of a turn that ended `done`) and `judge`, the verdict and failure category of a run; `run.ts` plays one run through
-  the `ChatController` ports, with the read tools over a copy of the fixture under the system temporary directory;
+  the `ChatController` ports, with the read and write tools over a copy of the fixture under the system temporary
+  directory, each write applied at once by `fileApplier`;
   `report.ts` formats the scores; `bench.ts` is the CLI, guarded by `import.meta.main` so `bun test` never starts it.
   Its unit tests sit next to them and need no Ollama.
 - `biome.jsonc`: the Biome linter and formatter settings. Markdown is excluded, because Biome's Markdown formatter
@@ -130,10 +134,23 @@ commands are not built yet. Read
   call per reply, calls inside code fences are ignored, a malformed call goes back to the model as a precise
   error, three malformed calls in a row stop the agent turn, and a reply without a call is the final answer.
   Change these rules only on evidence from the Ollama eval.
+- A known tool's call ends at the `</tool_name>` after its last argument value, not at the first one, and a value
+  ends at the first `</argument>` followed by nothing but whitespace and then another argument tag of the tool or the
+  call's closing tag (its own tags in pairs are kept). A value may therefore hold `</write_file>`, `</content>`, other
+  tools' tags, and code fences. The parser drops one leading and one trailing line break of a value that sits on its
+  own lines, so `write_file` writes its content followed by one line break unless the content is empty.
 - The v1 tools are `read_file`, `list_files`, `search` (ripgrep), `write_file`, `edit_file`, `run_command`,
   and `load_skill`.
-- `edit_file` replaces exact text only. If the text matches zero times or more than once, return an error to
-  the model. Never guess the location.
+- `edit_file` replaces exact text only, compared byte for byte, line endings included. If the text matches zero
+  times or more than once (overlapping matches count), return an error to the model. Never guess the location.
+- The write tools plan a change and never write; the host's applier writes it. The path resolves like a mention, a
+  path that exists nowhere going to the first workspace folder that may hold it. The deepest existing folder above
+  the file must resolve inside a workspace folder; missing folders are created at apply. The file itself must not
+  be a symlink, and an existing one must be a UTF-8 text file within the read caps (binary or over 1 MiB refused, as
+  for reads); content over 1 MiB is refused. The applier checks the path again, writes only when the file still holds
+  the planned text (already holding the new text is a success, so applying twice is harmless), and writes in place:
+  it creates the file with `O_EXCL`, or truncates and writes through an `O_NOFOLLOW` handle checked to be the file
+  at the checked path. Nothing is written in any error case.
 - Tools act inside the open workspace only. The one exception is read-only access to the directories of skills
   loaded in the current conversation.
 - Approvals:
@@ -152,7 +169,7 @@ commands are not built yet. Read
   (ADR 0001). A malformed call's message goes back the same way with `status="error"`, with `tool` the tag name the block
   opens with, a known tool or not, and `tool="unknown"` only when no tool name can be read.
 - When a reply ends, its answer goes through the parser. No call: the turn ends. A call: the tool runs with the
-  turn's abort signal, a tool step entry records its name, arguments, status, and text, and the loop requests again.
+  turn's context (`ToolRunner.run(call, { signal })`, the abort signal), a tool step entry records its name, arguments, status, and text, and the loop requests again.
   A malformed call: a step entry with the message, and the loop requests again. The reply stays `streaming` while its
   call runs, and the step and the next reply are appended together, so `isReplying` holds across the whole turn.
 - An agent turn has a Stop button and stops after `brokeCode.maxToolSteps` tool steps (a user setting, `application`
@@ -300,7 +317,8 @@ commands are not built yet. Read
   (VSCodium is the maintainer's editor). Rebuild and reload the window after each change.
 - `bun run eval` plays each scenario 10 times per model against the local Ollama at `http://localhost:11434/v1`,
   on `qwen3.8:27b` then `gemma4:26b-a4b-it-qat`, all runs of one model before the next. Each run drives the
-  chat controller with the read tools over a throwaway copy of the scenario's fixture, no instruction file, and a
+  chat controller with the read and write tools over a throwaway copy of the scenario's fixture, each write applied
+  at once, no instruction file, and a
   step limit of 6. The one scenario is read then answer: the model must read a setting it cannot guess and answer
   with its value. A run passes when the turn ends `done`, a tool step got the value, the answer holds it, and no
   fixture file changed; a failed run shows one category (`malformed`, `wrongTool`, `wrongAnswer`, `stepLimit`,
@@ -310,7 +328,7 @@ commands are not built yet. Read
   each run's entries and verdict as JSON Lines, to read the failing replies; an incomplete last line left by an
   interrupted run is removed, with a notice, before the first append. A full run took 2 min 40 s on the
   maintainer's Mac, the first run of each model including its load. It runs locally on demand and never in CI.
-  Scenarios for edits, created files, commands, and skills come with the write tools (#8), `run_command` (#9), and
+  Scenarios for edits, created files, commands, and skills come with the write eval (#38), `run_command` (#9), and
   skills (#10).
 - v1 supports macOS only. Windows and Linux are planned for v2.
 
