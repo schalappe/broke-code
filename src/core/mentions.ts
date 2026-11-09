@@ -6,13 +6,14 @@ import { MASK, maskMessage } from "./markdownCode";
 import {
   type AccessFailure,
   type EntryKind,
+  type RaceSeam,
   readWorkspaceEntry,
   truncateLines,
   type WorkspaceRoot,
 } from "./workspaceFiles";
 
-/** Lines of a file, or entries of a folder, attached before the rest is cut. */
-const MAX_MENTION_LINES = 2000;
+/** Lines of a file, or entries of a folder, attached before the rest is cut. The read tools cut at the same count. */
+export const MAX_MENTION_LINES = 2000;
 
 /**
  * `attached`: content sent whole. `truncated`: content cut to its first lines. Any other status: nothing
@@ -65,7 +66,12 @@ export function formatMention(mention: ReadMention): string {
   const fence = "`".repeat(Math.max(3, longestRun + 1));
   const body = mention.content.endsWith("\n") || mention.content === "" ? mention.content : `${mention.content}\n`;
   const block = `${header}\n${fence}\n${body}${fence}`;
-  return status === "truncated" ? `${block}\n[truncated: ${mention.omitted} more lines not shown]` : block;
+  return status === "truncated" ? `${block}\n${truncationNotice(mention.omitted)}` : block;
+}
+
+/** The line closing a cut text, for mentions and tool results alike. */
+export function truncationNotice(omitted: number): string {
+  return `[truncated: ${omitted} more lines not shown]`;
 }
 
 /** What the model receives for a user message: the text, then one block per mention. */
@@ -73,18 +79,26 @@ export function composeUserMessage(text: string, mentions: ReadMention[]): strin
   return [text, ...mentions.map(formatMention)].join("\n\n");
 }
 
-function notice(mention: ReadMention & { status: Exclude<MentionStatus, "attached" | "truncated"> }): string {
-  switch (mention.status) {
+function notice(mention: ReadMention & { status: AccessFailure }): string {
+  return `Not attached: ${accessFailureReason(mention.status, mention.cause)}.`;
+}
+
+/**
+ * Why a path could not be read, as a clause without a final period: mentions say it after "Not attached: ", tool
+ * errors after the path. `cause`: the error code or message of an `unreadable` path.
+ */
+export function accessFailureReason(failure: AccessFailure, cause?: string): string {
+  switch (failure) {
     case "missing":
-      return "Not attached: no such file or folder in the workspace.";
+      return "no such file or folder in the workspace";
     case "outsideWorkspace":
-      return "Not attached: the path is outside the workspace folders.";
+      return "the path is outside the workspace folders";
     case "binary":
-      return "Not attached: the file is binary.";
+      return "the file is binary";
     case "tooLarge":
-      return "Not attached: the file is larger than 1 MiB.";
+      return "the file is larger than 1 MiB";
     case "unreadable":
-      return `Not attached: the path could not be read (${mention.cause ?? "unknown error"}).`;
+      return `the path could not be read (${cause ?? "unknown error"})`;
   }
 }
 
@@ -92,9 +106,12 @@ function plural(count: number, one: string, many: string): string {
   return `${count} ${count === 1 ? one : many}`;
 }
 
-/** Read mentioned `path` inside `roots`: whole or truncated content, or the reason nothing is attached. */
-export async function readMention(roots: WorkspaceRoot[], path: string): Promise<ReadMention> {
-  const entry = await readWorkspaceEntry(roots, path);
+/**
+ * Read mentioned `path` inside `roots`: whole or truncated content, or the reason nothing is attached. `seam`: for
+ * tests, see `readWorkspaceEntry`.
+ */
+export async function readMention(roots: WorkspaceRoot[], path: string, seam: RaceSeam = {}): Promise<ReadMention> {
+  const entry = await readWorkspaceEntry(roots, path, seam);
   if (entry.status !== "ok") {
     const cause = entry.status === "unreadable" ? { cause: entry.cause } : {};
     return { path, kind: entry.kind, status: entry.status, content: "", omitted: 0, ...cause };

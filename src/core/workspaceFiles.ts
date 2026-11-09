@@ -1,7 +1,7 @@
 /**
  * @module workspaceFiles
  * Read access to the workspace folders: the inside-workspace check, file reads under a size cap, one-level folder
- * listings, and line truncation. Mentions use it; `read_file` and `list_files` (#6) are meant to.
+ * listings, and line truncation. Mentions and the read tools (`tools.ts`) use it.
  * Plain `node:fs`: v1 runs on local macOS folders only, and real files keep the boundary rules testable.
  */
 import { constants, type Dirent, type Stats } from "node:fs";
@@ -47,7 +47,7 @@ export async function readWorkspaceEntry(
 ): Promise<WorkspaceEntry> {
   const guessedKind: EntryKind = path.endsWith("/") ? "folder" : "file";
   try {
-    const located = await locate(roots, path);
+    const located = await locateWorkspacePath(roots, path);
     if (located.status !== "ok") return { status: located.status, kind: guessedKind };
     // [!]: Opening a FIFO or device could block forever or read without end.
     if (!isFileOrFolder(await stat(located.realPath))) return notFileOrFolder;
@@ -103,32 +103,60 @@ export function truncateLines(text: string, max: number): { text: string; lines:
   return { text: lines.slice(0, max).join("\n"), lines: max, omitted: lines.length - max };
 }
 
+/** A path that passed the boundary check: its real path, the real paths of all roots, and the first that holds it. */
+export type LocatedPath = { status: "ok"; realPath: string; realRoots: string[]; realRoot: string };
+
 /**
- * Real path of `path`, checked twice: lexically first, so a path outside is refused without touching the disk
- * (and without telling whether it exists), then after resolving symlinks.
+ * Real path of `path`, resolved as `readWorkspaceEntry` resolves it and checked twice: lexically first, so a path
+ * outside is refused without touching the disk (and without telling whether it exists), then after resolving
+ * symlinks. Rejects on a disk error other than a missing path, such as `EACCES`.
  */
-async function locate(
+export async function locateWorkspacePath(
   roots: WorkspaceRoot[],
   path: string,
-): Promise<{ status: "ok"; realPath: string; realRoots: string[] } | { status: "missing" | "outsideWorkspace" }> {
+): Promise<LocatedPath | { status: "missing" | "outsideWorkspace" }> {
   const candidates = candidatePaths(roots, path).filter((candidate) =>
     roots.some((root) => isInside(resolve(root.path), candidate)),
   );
   if (candidates.length === 0) return { status: "outsideWorkspace" };
 
-  // [>]: A root that cannot be resolved (deleted, unmounted) holds nothing readable: it is left out, not an error.
-  const resolved = await Promise.all(roots.map((root) => realpath(root.path).catch(() => undefined)));
-  const realRoots = resolved.filter((root) => root !== undefined);
+  // [>]: A path under a root that cannot be resolved fails its own `realpath`, so it reads as missing or unreadable.
+  const realRoots = (await resolveWorkspaceRoots(roots)).resolved.map((entry) => entry.realRoot);
   for (const candidate of candidates) {
     const realPath = await realpath(candidate).catch((error: unknown) => {
       if (MISSING_CODES.has(errorCode(error) ?? "")) return undefined;
       throw error;
     });
     if (realPath === undefined) continue;
-    const inside = realRoots.some((root) => isInside(root, realPath));
-    return inside ? { status: "ok", realPath, realRoots } : { status: "outsideWorkspace" };
+    const realRoot = realRoots.find((root) => isInside(root, realPath));
+    return realRoot === undefined ? { status: "outsideWorkspace" } : { status: "ok", realPath, realRoots, realRoot };
   }
   return { status: "missing" };
+}
+
+/**
+ * The roots that resolve, in order, each with its real path, and those that do not (deleted, unmounted, a parent
+ * denying access), each with the error code. A caller that covers every root must report the unresolved ones.
+ */
+export async function resolveWorkspaceRoots(roots: WorkspaceRoot[]): Promise<{
+  resolved: { root: WorkspaceRoot; realRoot: string }[];
+  unresolved: { root: WorkspaceRoot; cause: string }[];
+}> {
+  const outcomes = await Promise.all(
+    roots.map((root) =>
+      realpath(root.path).then(
+        (realRoot) => ({ root, realRoot }),
+        (error: unknown) => ({ root, cause: errorCode(error) ?? String(error) }),
+      ),
+    ),
+  );
+  const resolved: { root: WorkspaceRoot; realRoot: string }[] = [];
+  const unresolved: { root: WorkspaceRoot; cause: string }[] = [];
+  for (const outcome of outcomes) {
+    if ("realRoot" in outcome) resolved.push(outcome);
+    else unresolved.push(outcome);
+  }
+  return { resolved, unresolved };
 }
 
 /** A custom folder name may hold `/` (`libs/core`): the longest name that prefixes the path wins. */
@@ -143,7 +171,8 @@ function candidatePaths(roots: WorkspaceRoot[], path: string): string[] {
   return roots.map((root) => resolve(root.path, path));
 }
 
-function isInside(root: string, path: string): boolean {
+/** True when absolute `path` is `root` or inside it, compared as written: resolve symlinks first where they matter. */
+export function isInside(root: string, path: string): boolean {
   const rest = relative(root, path);
   return rest === "" || (rest !== ".." && !rest.startsWith("../") && !isAbsolute(rest));
 }
@@ -176,8 +205,13 @@ async function listFolder(realPath: string): Promise<string[]> {
     })),
   );
   return listed
-    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+    .sort((a, b) => compareNames(a.name, b.name))
     .map((child) => (child.folder ? `${child.name}/` : child.name));
+}
+
+/** The order of a folder listing: by UTF-16 code unit, so it never depends on the locale. */
+export function compareNames(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
 }
 
 /** True for a symlink whose target is a folder; a link whose target cannot be checked is listed as a plain name. */

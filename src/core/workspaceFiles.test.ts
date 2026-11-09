@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readWorkspaceEntry, truncateLines, type WorkspaceRoot } from "./workspaceFiles";
+import { compareNames, readWorkspaceEntry, truncateLines, type WorkspaceRoot } from "./workspaceFiles";
 
 // [>]: `tmpdir()` sits under /var, a symlink to /private/var on macOS: every root here has a real path that differs
 // from its path, as a workspace opened through a symlink would.
@@ -229,6 +229,14 @@ describe("readWorkspaceEntry in several folders", () => {
 
   test("takes the first segment as a plain folder when only one folder is open", async () => {
     expect(await readWorkspaceEntry([lib], "lib/x.txt")).toEqual({ status: "missing", kind: "file" });
+  });
+});
+
+describe("compareNames", () => {
+  test("orders by UTF-16 code unit, equal names as equal", () => {
+    expect(compareNames("B", "a")).toBe(-1);
+    expect(compareNames("a", "B")).toBe(1);
+    expect(compareNames("a-b", "a-b")).toBe(0);
   });
 });
 

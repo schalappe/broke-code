@@ -17,6 +17,8 @@ jobs:
         with:
           bun-version: 1.4.4
       - run: bun install --frozen-lockfile
+      # The search tool's tests run the real ripgrep; the macOS runner does not ship it.
+      - run: brew install ripgrep
       - run: bun run lint
       - run: bun run typecheck
       - run: bun test

@@ -10,7 +10,8 @@ tool call in the text of its reply, and the extension parses and runs the call. 
 covers the agent loop over the reply text, skills, and slash commands, in a minimal chat panel styled after
 twinny.
 
-The code so far covers the extension skeleton and a streaming chat with a provider, with no tools yet. Read
+The code so far covers the extension skeleton and a streaming chat with a provider. The body tool call parser, the
+system prompt, and the read tools exist in `src/core/`, but no harness runs them yet. Read
 `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the decisions behind the design, starting with
 `docs/adr/0001-body-tool-calls.md`.
 
@@ -33,8 +34,9 @@ The code so far covers the extension skeleton and a streaming chat with a provid
   (`markdownCode.ts`), the mention menu logic (`suggestions.ts`: the `@` token at the caret, index entries,
   filtering, the index exclusions), the menu's file index (`fileIndex.ts`: one scan shared until a file
   changes, behind a scan port), the body tool call parser (`toolCalls.ts`: `ToolSpec`, the first call-shaped block,
-  malformed-call messages), and the system prompt composer (`systemPrompt.ts`: role, call format, rules, tools,
-  instruction files). `markdownCode.ts`, `suggestions.ts`, and `conversation.ts` import nothing from
+  malformed-call messages), the system prompt composer (`systemPrompt.ts`: role, call format, rules, tools,
+  instruction files), and the read tools (`tools.ts`: `read_file` and `list_files` over the mention reader, `search`
+  over ripgrep with its candidate paths, bounded `ok` or `error` results). `markdownCode.ts`, `suggestions.ts`, and `conversation.ts` import nothing from
   `node:`, since the webview loads them. Unit tests sit next to them as `*.test.ts`, because `bun test` cannot load `vscode`. `tlsFixture.ts`
   generates test certificates with `/usr/bin/openssl` at test time; no private key is committed.
   `conversationFixture.ts` is the in-memory conversation file port for tests.
@@ -147,7 +149,9 @@ The code so far covers the extension skeleton and a streaming chat with a provid
   resolved again, and the open handle must be the same file (device and inode) as that inside path: this refuses a
   committed symlink out and a component swapped for one between the first check and the open. A writer swapping
   again between the later checks is out of scope: it already runs with the user's rights and can read the outside
-  file itself. Other statuses: `missing`, `binary` (NUL byte in the first 8 KiB), `tooLarge` (over 1 MiB),
+  file itself. `search` checks its `path` the same way, then ripgrep opens it by name: a folder swapped for a
+  symlink out after the check, or a subfolder swapped during the walk, is out of scope for the same reason. Other
+  statuses: `missing`, `binary` (NUL byte in the first 8 KiB), `tooLarge` (over 1 MiB),
   `unreadable` (any other failure, such as a permission error or a FIFO), `attached`, and `truncated` (cut to its
   first 2,000 lines, then `[truncated: N more lines not shown]`).
 - The model receives the user text, then one block per mention: a header `@<path> (<kind>, <count or status>)`,
@@ -243,7 +247,8 @@ The code so far covers the extension skeleton and a streaming chat with a provid
 ## Verification
 
 - `bun run lint`, `bun run typecheck`, `bun test`, and `bun run build` run in CI on every pull request and on
-  `develop` and `main`.
+  `develop` and `main`. `bun test` needs `rg` (ripgrep) on `PATH`, because the `search` tests run the real binary;
+  the workflows install it.
 - `bun run lint` runs Biome over code, CSS, and JSON without writing. `bun run format` applies its formatting,
   import sorting, and safe lint fixes. Run it before committing.
 - `bun run package` builds and writes `broke-code-<version>.vsix` with the version from `VERSION` (default
