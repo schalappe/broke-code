@@ -88,6 +88,25 @@ describe("readInstructionFiles", () => {
     expect(logged).toEqual([]);
   });
 
+  test("reads each folder's file at its own path, even beside a folder named like the start of that path", async () => {
+    // [>]: A custom folder name such as `/var` prefixes every absolute path under /var; it must not reroute them.
+    const prefixName = `/${base.split("/")[1]}`;
+    const named = join(base, "named");
+    await mkdir(named);
+    await writeFile(join(workspace, "AGENTS.md"), "App rules.");
+    await writeFile(join(named, "AGENTS.md"), "Named rules.");
+    const roots = [
+      { name: "app", path: workspace },
+      { name: prefixName, path: named },
+    ];
+    const { result, logged } = await quietly(() => readInstructionFiles(home, roots));
+    expect(result).toEqual([
+      { label: "app/AGENTS.md", text: "App rules." },
+      { label: `${prefixName}/AGENTS.md`, text: "Named rules." },
+    ]);
+    expect(logged).toEqual([]);
+  });
+
   test("follows a symlinked home file, as dotfiles often are", async () => {
     const dotfiles = join(base, "dotfiles");
     await mkdir(dotfiles);

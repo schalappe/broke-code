@@ -8,7 +8,7 @@ import { MAX_MENTION_LINES, truncationNotice } from "./mentions";
 import type { InstructionFile } from "./systemPrompt";
 import {
   readFileOutsideWorkspace,
-  readWorkspaceEntry,
+  readWorkspaceEntryAt,
   truncateLines,
   type WorkspaceEntry,
   type WorkspaceRoot,
@@ -27,9 +27,10 @@ export async function readInstructionFiles(home: string, roots: WorkspaceRoot[])
     { label: `~/.agents/${FILE_NAME}`, read: () => readFileOutsideWorkspace(join(home, ".agents", FILE_NAME)) },
     ...roots.map((root) => ({
       label: roots.length > 1 ? `${root.name}/${FILE_NAME}` : FILE_NAME,
-      // [>]: The absolute path names this folder's file whatever the folder names are, and the boundary check runs
-      // against every workspace folder, as for mentions: a link to a file in another open folder is accepted.
-      read: () => readWorkspaceEntry(roots, join(root.path, FILE_NAME)),
+      // [>]: Read at its absolute path, never through folder names, which a custom name such as `/var` could match;
+      // the boundary check runs against every workspace folder, as for mentions, so a link into another open folder
+      // is accepted.
+      read: () => readWorkspaceEntryAt(roots, join(root.path, FILE_NAME)),
     })),
   ];
   const entries = await Promise.all(sources.map((source) => source.read()));

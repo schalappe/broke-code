@@ -40,14 +40,28 @@ const UNRESOLVED_LINK_CODES = new Set(["ENOENT", "ENOTDIR", "ELOOP", "EACCES", "
  * root only; any other relative path resolves against each root in turn, the first that holds it winning. Never
  * rejects. The kind of a path that could not be inspected is a guess: `folder` when it ends with `/`.
  */
-export async function readWorkspaceEntry(
+export function readWorkspaceEntry(roots: WorkspaceRoot[], path: string, seam: RaceSeam = {}): Promise<WorkspaceEntry> {
+  return readEntryAmong(roots, candidatePaths(roots, path), path.endsWith("/") ? "folder" : "file", seam);
+}
+
+/**
+ * Read the file or folder at `absolutePath`, held to the same boundary as `readWorkspaceEntry`: inside any of
+ * `roots`, symlinks resolved. No folder name selects a root, so a custom name that prefixes the path (`/var`) never
+ * reroutes it. For a path the host builds itself, such as a folder's `AGENTS.md`. Never rejects.
+ */
+export function readWorkspaceEntryAt(roots: WorkspaceRoot[], absolutePath: string): Promise<WorkspaceEntry> {
+  return readEntryAmong(roots, [resolve(absolutePath)], absolutePath.endsWith("/") ? "folder" : "file", {});
+}
+
+/** `readWorkspaceEntry` over absolute `candidates`, the first that exists winning. */
+async function readEntryAmong(
   roots: WorkspaceRoot[],
-  path: string,
-  seam: RaceSeam = {},
+  candidates: string[],
+  guessedKind: EntryKind,
+  seam: RaceSeam,
 ): Promise<WorkspaceEntry> {
-  const guessedKind: EntryKind = path.endsWith("/") ? "folder" : "file";
   try {
-    const located = await locateWorkspacePath(roots, path);
+    const located = await locateCandidates(roots, candidates);
     if (located.status !== "ok") return { status: located.status, kind: guessedKind };
     // [!]: Opening a FIFO or device could block forever or read without end.
     if (!isFileOrFolder(await stat(located.realPath))) return notFileOrFolder;
@@ -134,18 +148,24 @@ export type LocatedPath = { status: "ok"; realPath: string; realRoots: string[];
  * outside is refused without touching the disk (and without telling whether it exists), then after resolving
  * symlinks. Rejects on a disk error other than a missing path, such as `EACCES`.
  */
-export async function locateWorkspacePath(
+export function locateWorkspacePath(
   roots: WorkspaceRoot[],
   path: string,
 ): Promise<LocatedPath | { status: "missing" | "outsideWorkspace" }> {
-  const candidates = candidatePaths(roots, path).filter((candidate) =>
-    roots.some((root) => isInside(resolve(root.path), candidate)),
-  );
-  if (candidates.length === 0) return { status: "outsideWorkspace" };
+  return locateCandidates(roots, candidatePaths(roots, path));
+}
+
+/** `locateWorkspacePath` over absolute `candidates`, the first that exists winning. */
+async function locateCandidates(
+  roots: WorkspaceRoot[],
+  candidates: string[],
+): Promise<LocatedPath | { status: "missing" | "outsideWorkspace" }> {
+  const inside = candidates.filter((candidate) => roots.some((root) => isInside(resolve(root.path), candidate)));
+  if (inside.length === 0) return { status: "outsideWorkspace" };
 
   // [>]: A path under a root that cannot be resolved fails its own `realpath`, so it reads as missing or unreadable.
   const realRoots = (await resolveWorkspaceRoots(roots)).resolved.map((entry) => entry.realRoot);
-  for (const candidate of candidates) {
+  for (const candidate of inside) {
     const realPath = await realpath(candidate).catch((error: unknown) => {
       if (MISSING_CODES.has(errorCode(error) ?? "")) return undefined;
       throw error;
