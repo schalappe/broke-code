@@ -168,7 +168,7 @@ async function listFilesTool(roots: WorkspaceRoot[], path: string | undefined, s
  * A model-given path as a successful header shows it: normalized, so `a/../b` reads `b`, then cut to its first line.
  * Resolution uses the path as given; only the header is bounded, since a long path can normalize to a short one.
  */
-function displayPath(path: string): string {
+export function displayPath(path: string): string {
   return excerpt(posix.normalize(path));
 }
 
@@ -197,7 +197,7 @@ const MAX_EXCERPT_CHARS = 200;
  * `text` as an error result shows it: its first line, cut at 200 characters, with `…` when anything was left out.
  * A value comes from the model and an error message from anywhere: neither may make the result unbounded.
  */
-function excerpt(text: string): string {
+export function excerpt(text: string): string {
   const lineEnd = text.indexOf("\n");
   const line = lineEnd === -1 ? text : text.slice(0, lineEnd);
   const shown = line.slice(0, MAX_EXCERPT_CHARS);
@@ -520,6 +520,6 @@ function errorCode(error: unknown): string | undefined {
   return typeof code === "string" ? code : undefined;
 }
 
-function stopped(tool: string): ToolResult {
+export function stopped(tool: string): ToolResult {
   return { status: "error", text: `${tool}: stopped before it finished.` };
 }

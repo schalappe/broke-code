@@ -12,8 +12,10 @@ twinny.
 
 The code so far covers the extension skeleton, a streaming chat with a provider, and the harness with the read tools:
 a message starts an agent turn that runs `read_file`, `list_files`, and `search` until the model answers without a
-call. `bun run eval` measures that loop on local Ollama models. Write tools, `run_command`, skills, and slash
-commands are not built yet. Read
+call. Each send discovers the skills and lists them to the model. `bun run eval` measures that loop on local Ollama
+models. `write_file` and `edit_file` exist in the core and the eval, which applies each change at once; the extension
+does not list them until the approval flow (#37) lands. `run_command`, `load_skill`, and slash commands are not built
+yet. Read
 `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the decisions behind the design, starting with
 `docs/adr/0001-body-tool-calls.md`.
 
@@ -24,31 +26,36 @@ commands are not built yet. Read
 - `docs/adr/`: architecture decision records.
 - `src/core/`: modules that import nothing from `vscode`: settings parsing, the API key shape check, the provider
   HTTP client, the CA trust and certificate error classification (`tls.ts`), the SSE reader, the typed provider
-  errors, the chat controller (conversation state, the agent turn loop with its tool runner and instruction reader
-  ports, its limits source and step limits, the context budget check, streaming, Stop, saving, reopen, delete), the conversation record
+  errors, the chat controller (conversation state, the agent turn loop with its tool runner, instruction reader, and
+  skill reader ports, its limits source and step limits, the context budget check, streaming, Stop, saving, reopen, delete), the conversation record
   (`conversation.ts`: version 2, its validation on load, title, id, the summary file's shape), its store
   (`conversationStore.ts`: a record and a summary file per conversation, the list from the summaries, reads, writes,
   and deletes in call order), and the store's file access (`conversationFiles.ts`:
   the file port, and its implementation over a local directory with `node:fs`: missing versus failed, regular files
   only, atomic writes, leftover temporary files), the dialog queue, the host-webview message
   protocol and its validation, workspace file access (`workspaceFiles.ts`: the inside-workspace check, capped reads,
-  one-level listings, line truncation, with `node:fs`), mentions (`mentions.ts`: token detection, picked and typed
+  one-level listings, line truncation, the write boundary and atomic writes, with `node:fs`), mentions (`mentions.ts`: token detection, picked and typed
   mentions merged, reading, and the text the model receives), where a message holds Markdown code
   (`markdownCode.ts`), the mention menu logic (`suggestions.ts`: the `@` token at the caret, index entries,
   filtering, the index exclusions), the menu's file index (`fileIndex.ts`: one scan shared until a file
   changes, behind a scan port), the body tool call parser (`toolCalls.ts`: `ToolSpec`, the first call-shaped block,
   malformed-call messages), the system prompt composer (`systemPrompt.ts`: role, call format, rules, tools,
-  instruction files), the turn limits (`limits.ts`: `brokeCode.maxToolSteps` and `brokeCode.contextSizes` parsing,
+  skills, instruction files), the turn limits (`limits.ts`: `brokeCode.maxToolSteps` and `brokeCode.contextSizes` parsing,
   the token estimate, the context-full threshold, the typed size check), and the read tools (`tools.ts`: `read_file` and `list_files` over the mention reader, `search`
-  over ripgrep with its candidate paths, bounded `ok` or `error` results), and the instruction files
-  (`instructions.ts`: `~/.agents/AGENTS.md`, then each workspace folder's `AGENTS.md`, under the mention caps). `markdownCode.ts`, `suggestions.ts`, and `conversation.ts` import nothing from
+  over ripgrep with its candidate paths, bounded `ok` or `error` results), the write tools (`writeTools.ts`:
+  `write_file` and `edit_file` plan a change `{ path, target, before, after }` and never write; an applier port writes
+  it, `fileApplier` straight to disk for the tests and the eval), the instruction files
+  (`instructions.ts`: `~/.agents/AGENTS.md`, then each workspace folder's `AGENTS.md`, under the mention caps), and the
+  skills (`skills.ts`: discovery in `~/.agents/skills/` and each workspace folder's `.agents/skills/`, the frontmatter
+  subset, validation, precedence, warnings, the line the extension logs at each send). `markdownCode.ts`, `suggestions.ts`, and `conversation.ts` import nothing from
   `node:`, since the webview loads them. Unit tests sit next to them as `*.test.ts`, because `bun test` cannot load `vscode`. `tlsFixture.ts`
   generates test certificates with `/usr/bin/openssl` at test time; no private key is committed.
   `conversationFixture.ts` is the in-memory conversation file port for tests.
 - `src/extension/`: the extension host glue (activation, webview view, API keys in `SecretStorage`, the
   file index's `findFiles` scan and watcher in `fileIndex.ts`, the turn limits from the user settings and the "Set
   context size" input box in `contextSizes.ts`, the read tool runner with the ripgrep candidates from
-  `vscode.env.appRoot` and `PATH`, the instruction reader from the home folder and the workspace folders).
+  `vscode.env.appRoot` and `PATH`, the instruction reader and the skill reader from the home folder and the workspace folders, the latter logging the
+  skills of each send).
 - `src/webview/`: the React chat panel and its CSS, tool step rows included. `SuggestionMenu.tsx` is the autocomplete list the `@` menu
   uses and the `/` menu (#11) is meant to reuse.
 - `src/l10n.test.ts`: checks that every `l10n.t` message has a French translation and that the
@@ -61,7 +68,8 @@ commands are not built yet. Read
   release workflow runs it as a CLI. Its tests sit next to it.
 - `eval/`: the Ollama eval bench (`bun run eval`). `scenarios.ts` holds each scenario (fixture files, message, check
   of a turn that ended `done`) and `judge`, the verdict and failure category of a run; `run.ts` plays one run through
-  the `ChatController` ports, with the read tools over a copy of the fixture under the system temporary directory;
+  the `ChatController` ports, with the read and write tools over a copy of the fixture under the system temporary
+  directory, each write applied at once by `fileApplier`;
   `report.ts` formats the scores; `bench.ts` is the CLI, guarded by `import.meta.main` so `bun test` never starts it.
   Its unit tests sit next to them and need no Ollama.
 - `biome.jsonc`: the Biome linter and formatter settings. Markdown is excluded, because Biome's Markdown formatter
@@ -130,10 +138,42 @@ commands are not built yet. Read
   call per reply, calls inside code fences are ignored, a malformed call goes back to the model as a precise
   error, three malformed calls in a row stop the agent turn, and a reply without a call is the final answer.
   Change these rules only on evidence from the Ollama eval.
+- A known tool's call ends at the `</tool_name>` after its last argument value, not at the first one. A value ends at
+  the first `</argument>` that closes no `<argument>` opened inside the value and is followed by nothing but
+  whitespace and then another argument tag of the tool or the call's closing tag: an inner `<argument>` …
+  `</argument>` pair is kept, so a value can hold a whole example call. When the tags never balance, the value ends
+  at the first `</argument>` so followed, pairs ignored; failing that, at the last `</argument>` before the next
+  `</tool_name>`. A value may therefore hold `</write_file>`, `</content>`, other tools' tags, and code fences. Known
+  cost, kept by maintainer decision: a value holding an unpaired `<argument>` pairs it with the real closing tag, so
+  it runs on into the text after the call when that text holds `</argument>` then `</tool_name>`. The parser drops
+  one leading and one trailing line break of a value that sits on its own lines, so `write_file` writes its content
+  followed by one line break unless the content is empty.
 - The v1 tools are `read_file`, `list_files`, `search` (ripgrep), `write_file`, `edit_file`, `run_command`,
   and `load_skill`.
-- `edit_file` replaces exact text only. If the text matches zero times or more than once, return an error to
-  the model. Never guess the location.
+- `edit_file` replaces exact text only, compared byte for byte, line endings included. If the text matches zero
+  times or more than once (overlapping matches count), return an error to the model. Never guess the location.
+- The write tools plan a change and never write; the host's applier writes it. The path resolves like a mention, a
+  path that exists nowhere going to the first workspace folder that may hold it. The deepest existing folder above
+  the file must resolve inside a workspace folder; missing folders are created at apply. The file itself must not
+  be a symlink, and an existing one must be a UTF-8 text file within the read caps (binary or over 1 MiB refused, as
+  for reads); content over 1 MiB is refused. The applier checks the path again and writes only when the file still
+  holds the planned text (already holding the new text is a success, so applying twice is harmless).
+- A write is atomic: the file holds its old text or the new one, never a mix or nothing, even after a crash. The new
+  text goes to a temporary file `.<name>.broke-code-<random>.tmp` in the target's own folder (at most 226 bytes of
+  the file name, cut between characters, so the name fits in 255 bytes), flushed to disk. For an existing file it is
+  created readable by its owner only (`0600`); for a new file, with the default bits. A last check then reads the
+  target again: its folder must still resolve to the same place inside the workspace, the target must not be a
+  symlink, and it must still hold the planned text (or already the new text: a success). Only then does the
+  temporary file get the old file's permission bits (`rwx` for owner, group, and others) and take its place:
+  `rename(2)` over an existing file, `link(2)` for a new one, which fails rather than replace a file created meanwhile
+  (refused as changed since planned). On any failure the file stays byte-identical and the temporary file is
+  removed; when that removal fails, the result names the temporary file and its cause. The error result keeps the
+  cause ("the file was not written (ENOSPC)"), and folders created for the write stay. Accepted costs: a hard link to the file keeps the old text; its owner, extended attributes, and ACLs
+  are not kept; the folder must be writable; a crash before the swap, or a folder renamed during the write, leaves
+  the temporary file behind. Residual races, accepted as for reads, since such a writer already runs with the user's
+  rights: a write landing between the last read and the rename is overwritten (Node has no compare-and-swap on a
+  path), and a missing parent folder swapped for a symlink out after the check makes `mkdir` create an empty folder
+  outside before the write is refused.
 - Tools act inside the open workspace only. The one exception is read-only access to the directories of skills
   loaded in the current conversation.
 - Approvals:
@@ -152,7 +192,7 @@ commands are not built yet. Read
   (ADR 0001). A malformed call's message goes back the same way with `status="error"`, with `tool` the tag name the block
   opens with, a known tool or not, and `tool="unknown"` only when no tool name can be read.
 - When a reply ends, its answer goes through the parser. No call: the turn ends. A call: the tool runs with the
-  turn's abort signal, a tool step entry records its name, arguments, status, and text, and the loop requests again.
+  turn's context (`ToolRunner.run(call, { signal })`, the abort signal), a tool step entry records its name, arguments, status, and text, and the loop requests again.
   A malformed call: a step entry with the message, and the loop requests again. The reply stays `streaming` while its
   call runs, and the step and the next reply are appended together, so `isReplying` holds across the whole turn.
 - An agent turn has a Stop button and stops after `brokeCode.maxToolSteps` tool steps (a user setting, `application`
@@ -167,10 +207,12 @@ commands are not built yet. Read
   have carried it ends `halted` with reason `contextFull`, saved like the other halts; it is never a `ProviderError`,
   which means a request was sent. A turn reads the step limit and context sizes once, when it starts; a settings
   change reaches the usage display at once (`limitsChanged`) and the turns from the next send. The display counts the
-  system prompt the last send composed, in any conversation shown, since instruction files are the workspace's; before
-  the first send of the session, the one without instruction files. It updates once a send has composed it, before the
+  system prompt the last send composed, in any conversation shown, since instruction files and skills are the
+  workspace's; before the first send of the session, the one without instruction files or skills. It updates once a send has composed it, before the
   request goes.
   v1 has no automatic summarization.
+- After the tools, the system prompt has a "Skills" section, one `- <name>: <description>` line per skill listed to
+  the model, telling it to call `load_skill` first; without such a skill the section is absent.
 - The system prompt includes `~/.agents/AGENTS.md`, then each workspace folder's `AGENTS.md` (labelled with its
   folder name in a multi-root workspace), read at each send under the mention caps (1 MiB, 2,000 lines). A missing
   file is left out; an unreadable one is logged and left out. The home file follows symlinks; a workspace file is
@@ -275,14 +317,35 @@ commands are not built yet. Read
 ### Skills and slash commands
 
 - Skills follow the Agent Skills format (`<name>/SKILL.md` with `name` and `description` frontmatter). The
-  extension reads them from two places only: `.agents/skills/` in the workspace and `~/.agents/skills/`. A
-  workspace skill wins over a personal skill with the same name.
+  extension reads them from two places only: `.agents/skills/` in each workspace folder and `~/.agents/skills/`. A
+  workspace skill wins over a personal skill with the same name, and an earlier workspace folder over a later one; a
+  hidden skill gives no warning, valid or not. A skipped skill hides nothing: a valid one of its name further down
+  the order wins, and the skipped one warns.
+- Discovery runs at each send, like the instruction files, over the direct children of `~/.agents/skills/`, then of
+  each workspace folder's `.agents/skills/`. A child is a skill when it is a folder holding `SKILL.md` (1 MiB cap); a
+  folder without one, a stray file, and a missing skills folder pass silently. A personal skill folder follows
+  symlinks; a workspace one, the folder and its `SKILL.md` alike, is held to its own workspace folder, and one linked
+  out of it, into another workspace folder included, is skipped with a warning.
+- A repository controls its skills folder, and each `SKILL.md` read holds a 1 MiB buffer and a file descriptor, so
+  discovery reads one `SKILL.md` at a time, folder after folder, and only the first `MAX_SKILL_ENTRIES` (200) entries of
+  each skills folder by name. A folder holding more gives one `tooManyEntries` warning naming it; an entry past the cap
+  is never read, so it hides nothing. 5,000 entries linked to one 1 MiB file take about 90 ms per send on the
+  maintainer's Mac.
+- The frontmatter is the lines between a first line `---` and the next `---`, read by a hand-written subset of YAML
+  (`skills.ts`), no YAML dependency: top-level `key: value` with plain, single- or double-quoted, or `>` and `|` block
+  values; nested maps and unknown keys are ignored. `name` follows the spec (1 to 64 of `a-z`, `0-9`, `-`, no hyphen
+  first, last, or twice in a row); `description` is 1 to 1,024 characters.
+- `disable-model-invocation: true` (outside the spec) keeps a valid skill out of the model's list and of
+  `load_skill`; it stays discovered for `/<name>`.
 - Do not read `.claude/`, `.codex/`, or any other tool's directory. The `.agents` convention is the only one.
 - The system prompt lists each skill's name and description only. `load_skill` or `/<name>` loads the body.
 - In `/<name> args`, the text after the name replaces `$ARGUMENTS` in the skill body. If the body has no
   `$ARGUMENTS`, the text follows the skill as a user message.
-- Skip a skill whose frontmatter lacks `name` or `description`, or whose `name` differs from its directory
-  name, and show a warning.
+- Skip a skill whose frontmatter lacks `name` or `description`, whose `name` breaks the spec or differs from its
+  directory name, or whose `SKILL.md` cannot be read, and show a warning naming the file and the problem; a skills
+  folder that exists but cannot be listed is one warning too. The warnings sit in `ChatState.skillWarnings`, are
+  replaced at each send, and show in the panel list of skipped providers. The extension logs each send's skills
+  (`broke-code: skills listed to the model: ...`) to the extension host console.
 - The built-in slash commands are `/new` and `/model`. Typing `/` lists them with every skill.
 
 ## Verification
@@ -300,7 +363,8 @@ commands are not built yet. Read
   (VSCodium is the maintainer's editor). Rebuild and reload the window after each change.
 - `bun run eval` plays each scenario 10 times per model against the local Ollama at `http://localhost:11434/v1`,
   on `qwen3.8:27b` then `gemma4:26b-a4b-it-qat`, all runs of one model before the next. Each run drives the
-  chat controller with the read tools over a throwaway copy of the scenario's fixture, no instruction file, and a
+  chat controller with the read and write tools over a throwaway copy of the scenario's fixture, each write applied
+  at once, no instruction file, no skill, and a
   step limit of 6. The one scenario is read then answer: the model must read a setting it cannot guess and answer
   with its value. A run passes when the turn ends `done`, a tool step got the value, the answer holds it, and no
   fixture file changed; a failed run shows one category (`malformed`, `wrongTool`, `wrongAnswer`, `stepLimit`,
@@ -310,7 +374,7 @@ commands are not built yet. Read
   each run's entries and verdict as JSON Lines, to read the failing replies; an incomplete last line left by an
   interrupted run is removed, with a notice, before the first append. A full run took 2 min 40 s on the
   maintainer's Mac, the first run of each model including its load. It runs locally on demand and never in CI.
-  Scenarios for edits, created files, commands, and skills come with the write tools (#8), `run_command` (#9), and
+  Scenarios for edits, created files, commands, and skills come with the write eval (#38), `run_command` (#9), and
   skills (#10).
 - v1 supports macOS only. Windows and Linux are planned for v2.
 

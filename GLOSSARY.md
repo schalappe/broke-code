@@ -56,6 +56,15 @@ A named set of instructions, stored as a `SKILL.md` file, that the model or the 
 conversation.
 _Avoid_: plugin, prompt template, custom command
 
+**Personal skill**:
+A skill in `~/.agents/skills/`, available in every workspace; a workspace skill of the same name hides it.
+_Avoid_: global skill, user skill
+
+**Workspace skill**:
+A skill in a workspace folder's `.agents/skills/`, shared with the repository; the first workspace folder wins
+over a later one with the same name.
+_Avoid_: project skill, local skill
+
 **Slash command**:
 A word starting with `/` typed in the chat box: either a built-in action or the name of a skill to load.
 _Avoid_: command, shortcut

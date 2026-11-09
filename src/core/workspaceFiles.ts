@@ -1,12 +1,14 @@
 /**
  * @module workspaceFiles
- * Read access to the workspace folders: the inside-workspace check, file reads under a size cap, one-level folder
- * listings, and line truncation. Mentions and the read tools (`tools.ts`) use it.
+ * Access to the workspace folders: the inside-workspace check, file reads under a size cap, one-level folder
+ * listings, line truncation, and the write boundary with atomic writes. Mentions and the read tools (`tools.ts`)
+ * read through it; the write tools (`writeTools.ts`) check and write through it.
  * Plain `node:fs`: v1 runs on local macOS folders only, and real files keep the boundary rules testable.
  */
+import { randomBytes } from "node:crypto";
 import { constants, type Dirent, type Stats } from "node:fs";
-import { type FileHandle, open, readdir, realpath, stat } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { type FileHandle, link, lstat, mkdir, open, readdir, realpath, rename, stat, unlink } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 /** A workspace folder: its name in a multi-root workspace and its absolute path. */
 export type WorkspaceRoot = { name: string; path: string };
@@ -161,11 +163,11 @@ async function locateCandidates(
   roots: WorkspaceRoot[],
   candidates: string[],
 ): Promise<LocatedPath | { status: "missing" | "outsideWorkspace" }> {
-  const inside = candidates.filter((candidate) => roots.some((root) => isInside(resolve(root.path), candidate)));
+  const inside = lexicallyInside(roots, candidates);
   if (inside.length === 0) return { status: "outsideWorkspace" };
 
   // [>]: A path under a root that cannot be resolved fails its own `realpath`, so it reads as missing or unreadable.
-  const realRoots = (await resolveWorkspaceRoots(roots)).resolved.map((entry) => entry.realRoot);
+  const realRoots = await realRootPaths(roots);
   for (const candidate of inside) {
     const realPath = await realpath(candidate).catch((error: unknown) => {
       if (MISSING_CODES.has(errorCode(error) ?? "")) return undefined;
@@ -176,6 +178,16 @@ async function locateCandidates(
     return realRoot === undefined ? { status: "outsideWorkspace" } : { status: "ok", realPath, realRoots, realRoot };
   }
   return { status: "missing" };
+}
+
+/** The `candidates` inside a root as written, symlinks unresolved: the first check, which never touches the disk. */
+function lexicallyInside(roots: WorkspaceRoot[], candidates: string[]): string[] {
+  return candidates.filter((candidate) => roots.some((root) => isInside(resolve(root.path), candidate)));
+}
+
+/** The real paths of the roots that resolve, in order: what a path must lie in once its symlinks are resolved. */
+async function realRootPaths(roots: WorkspaceRoot[]): Promise<string[]> {
+  return (await resolveWorkspaceRoots(roots)).resolved.map((entry) => entry.realRoot);
 }
 
 /**
@@ -222,6 +234,13 @@ export function isInside(root: string, path: string): boolean {
 }
 
 async function readFile(handle: FileHandle): Promise<WorkspaceEntry> {
+  const bytes = await readTextBytes(handle);
+  if (typeof bytes === "string") return { status: bytes, kind: "file" };
+  return { status: "ok", kind: "file", text: new TextDecoder().decode(bytes) };
+}
+
+/** The bytes of a text file under the size cap, or why it is not one. */
+async function readTextBytes(handle: FileHandle): Promise<Buffer | "tooLarge" | "binary"> {
   // [>]: Read one byte past the cap rather than trust `stat`: the file may grow after it.
   const buffer = Buffer.alloc(MAX_FILE_BYTES + 1);
   let size = 0;
@@ -230,10 +249,373 @@ async function readFile(handle: FileHandle): Promise<WorkspaceEntry> {
     if (bytesRead === 0) break;
     size += bytesRead;
   }
-  if (size > MAX_FILE_BYTES) return { status: "tooLarge", kind: "file" };
+  if (size > MAX_FILE_BYTES) return "tooLarge";
   const bytes = buffer.subarray(0, size);
-  if (bytes.subarray(0, BINARY_PROBE_BYTES).includes(0)) return { status: "binary", kind: "file" };
-  return { status: "ok", kind: "file", text: new TextDecoder().decode(bytes) };
+  if (looksBinary(bytes)) return "binary";
+  return bytes;
+}
+
+/** The readers' binary probe: a NUL byte in the first 8 KiB. */
+function looksBinary(bytes: Buffer): boolean {
+  return bytes.subarray(0, BINARY_PROBE_BYTES).includes(0);
+}
+
+/**
+ * Why a write cannot go ahead, beyond the read failures. `symlink`: the path is a symbolic link that stays inside the
+ * workspace. `folder`: the path is a folder. `notText`: the file is not valid UTF-8, so its text would not round-trip.
+ */
+export type WriteFailure = AccessFailure | "symlink" | "folder" | "notText";
+
+/**
+ * Where a write to a path lands. `path`: the absolute path that passed the check, symlinks unresolved, to give back to
+ * `writeWorkspaceFile`. `before`: the file's whole text, `undefined` when it does not exist yet.
+ */
+export type WriteTarget =
+  | { status: "ok"; path: string; before: string | undefined }
+  | { status: Exclude<WriteFailure, "unreadable"> }
+  | { status: "unreadable"; cause: string };
+
+/**
+ * A target that passed the check, with what the write needs: its real path, the folders to create, in order, and the
+ * permission bits of the file there (`undefined` for a new file).
+ */
+type CheckedTarget = {
+  status: "ok";
+  path: string;
+  before: string | undefined;
+  mode: number | undefined;
+  realPath: string;
+  realRoots: string[];
+  newFolders: string[];
+};
+
+/**
+ * Why `text` would not read back identically once written as UTF-8. `tooLarge`: over 1 MiB, past the readers' cap.
+ * `binary`: a NUL character in its first 8 KiB, the readers' binary probe. `notUtf8`: an unpaired UTF-16 surrogate,
+ * which UTF-8 cannot encode (`Buffer.from` would write U+FFFD instead).
+ */
+export type UnwritableText = "tooLarge" | "binary" | "notUtf8";
+
+/** Why `text` cannot be written so the file reads back as exactly `text`, or `undefined` when it can. */
+export function unwritableText(text: string): UnwritableText | undefined {
+  const bytes = Buffer.from(text);
+  if (bytes.length > MAX_FILE_BYTES) return "tooLarge";
+  if (bytes.toString("utf8") !== text) return "notUtf8";
+  if (looksBinary(bytes)) return "binary";
+  return undefined;
+}
+
+/**
+ * Check a write to `path` inside `roots` and read what the file holds now. The path resolves as `readWorkspaceEntry`
+ * resolves it; a path that exists nowhere goes to the first folder that may hold it. The deepest existing folder
+ * above the file must resolve inside a workspace folder, the file itself must not be a symlink, and an existing file
+ * is read as `readWorkspaceEntry` reads it, its handle checked to be the file at that path. Never writes; never
+ * rejects. `seam`: for tests, `beforeOpen` runs between the file's check and its read.
+ */
+export async function locateWriteTarget(
+  roots: WorkspaceRoot[],
+  path: string,
+  seam: RaceSeam = {},
+): Promise<WriteTarget> {
+  const checked = await checkWriteTarget(roots, candidatePaths(roots, path), seam);
+  return checked.status === "ok" ? { status: "ok", path: checked.path, before: checked.before } : checked;
+}
+
+/**
+ * What applying a change did. `alreadyWritten`: the file already holds the new text, so running twice changes nothing.
+ * `changed`: the file no longer holds the planned text, or the path no longer leads where it did; nothing is written.
+ * `notWritten`: a disk failure (`cause`) stopped the write; the file is as it was, but folders created for it stay.
+ * `unwritable`: the new text would not read back identically (`reason`, see `unwritableText`); nothing is touched.
+ * The check's refusals come back as `locateWriteTarget` gives them. `leftover`: the temporary file could not be
+ * removed (`cause`); it sits in the file's folder under `name`.
+ */
+export type WriteOutcome = (
+  | { status: "written" | "alreadyWritten" | "changed" }
+  | Exclude<WriteTarget, { status: "ok" }>
+  | { status: "notWritten"; cause: string }
+  | { status: "unwritable"; reason: UnwritableText }
+) & { leftover?: { name: string; cause: string } };
+
+/**
+ * Test seam of `writeWorkspaceFile`: each hook runs where a concurrent change could land. `afterCheck`: before the
+ * missing folders are created. `afterTempWritten`: once the new text is on disk, before the last check.
+ * `afterLastCheck`: right before the new text takes the file's place.
+ */
+export type WriteSeam = {
+  afterCheck?: () => Promise<void>;
+  afterTempWritten?: () => Promise<void>;
+  afterLastCheck?: () => Promise<void>;
+};
+
+/**
+ * Write `after` to the file at `path`, a path `locateWriteTarget` returned, atomically: the file holds either its
+ * old text or `after`, never a mix or nothing, even after a crash. Checked again first; missing folders are created;
+ * `after` goes to a new temporary file in the same folder (`.<name>.broke-code-<random>.tmp`, the name cut so it fits
+ * in 255 bytes), flushed to disk. Then the target is checked a last time (inside the workspace, not a symlink, still
+ * holding `before`), the temporary file gets the old file's permission bits, and it takes the file's place: renamed
+ * over an existing file, or linked to a new name, which fails rather than replace a file created meanwhile. Until
+ * then the staged copy of an existing file is readable by its owner only. Never rejects.
+ *
+ * [!]: Accepted costs of replacing the file rather than writing into it: a hard link to it keeps the old text, and
+ * its owner, extended attributes, and ACLs are not kept; a folder that holds the file must be writable. A crash
+ * before the swap leaves the temporary file behind, recognizable by its name, and so does a folder renamed during
+ * the write, which carries it out of the cleanup's reach.
+ * [!]: The last check reads the file by name, then the rename goes by name: a write landing between the two is
+ * overwritten, as a swap between the checks and the open is accepted for reads. Node offers no compare-and-swap on a
+ * path; the window is one read long.
+ */
+export async function writeWorkspaceFile(
+  roots: WorkspaceRoot[],
+  path: string,
+  before: string | undefined,
+  after: string,
+  seam: WriteSeam = {},
+): Promise<WriteOutcome> {
+  // [>]: Before the disk: a text that would read back otherwise could neither be read nor applied twice.
+  const unwritable = unwritableText(after);
+  if (unwritable !== undefined) return { status: "unwritable", reason: unwritable };
+  const first = await checkWriteTarget(roots, [resolve(path)]);
+  if (first.status !== "ok") return first;
+  if (first.before === after) return { status: "alreadyWritten" };
+  if (first.before !== before) return { status: "changed" };
+  try {
+    await seam.afterCheck?.();
+    // [!]: A missing folder swapped for a symlink out after the check makes `mkdir` create the next one outside, empty,
+    // before the folder check below refuses the write. Out of scope, as for reads: such a swapper already runs with the
+    // user's rights.
+    for (const folder of first.newFolders) {
+      await mkdir(folder).catch((error: unknown) => {
+        // [>]: Created meanwhile; the folder check below tells whether it still leads inside.
+        if (errorCode(error) !== "EEXIST") throw error;
+      });
+    }
+    const moved = await folderMoved(first);
+    if (moved !== undefined) return { status: moved };
+    const temp = join(dirname(first.realPath), temporaryName(basename(first.realPath)));
+    // [>]: A new file gets the default bits (0o666 less the umask) like any other new file, so staging at them shows
+    // nothing more than the file will; reading the umask itself (`process.umask()`) is racy across threads.
+    const mode = first.mode === undefined ? 0o666 : 0o600;
+    const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW;
+    const handle = await open(temp, flags, mode);
+    let outcome: WriteOutcome;
+    try {
+      outcome = await swapIn(roots, first, handle, temp, after, seam);
+    } catch (error) {
+      outcome = notWritten(error);
+    }
+    const leftover = await removeTemporaryFile(temp);
+    return leftover === undefined ? outcome : { ...outcome, leftover };
+  } catch (error) {
+    return notWritten(error);
+  }
+}
+
+/** Bytes a file name may hold on macOS (APFS, HFS+). */
+const NAME_MAX_BYTES = 255;
+const TEMPORARY_SUFFIX_BYTES = ".broke-code-".length + 12 + ".tmp".length;
+
+/** `.<name>.broke-code-<12 hex>.tmp`, `name` cut to whole characters so the result fits in `NAME_MAX_BYTES`. */
+function temporaryName(name: string): string {
+  const budget = NAME_MAX_BYTES - ".".length - TEMPORARY_SUFFIX_BYTES;
+  let prefix = "";
+  let bytes = 0;
+  // [>]: `for...of` walks code points, so a cut never splits a UTF-8 sequence.
+  for (const char of name) {
+    const size = Buffer.byteLength(char);
+    if (bytes + size > budget) break;
+    prefix += char;
+    bytes += size;
+  }
+  return `.${prefix}.broke-code-${randomBytes(6).toString("hex")}.tmp`;
+}
+
+/** Stage `after` through `handle` in the temporary file `temp`, then put it at `checked`'s path once checked again. */
+async function swapIn(
+  roots: WorkspaceRoot[],
+  checked: CheckedTarget,
+  handle: FileHandle,
+  temp: string,
+  after: string,
+  seam: WriteSeam,
+): Promise<WriteOutcome> {
+  let refused: WriteOutcome | undefined;
+  try {
+    refused = await stage(roots, checked, handle, after, seam);
+  } finally {
+    await handle.close();
+  }
+  if (refused !== undefined) return refused;
+  await seam.afterLastCheck?.();
+
+  if (checked.before !== undefined) {
+    await rename(temp, checked.realPath);
+    return { status: "written" };
+  }
+  // [>]: `link` never replaces an existing name, unlike `rename`: a file created since the last check stays.
+  return link(temp, checked.realPath).then(
+    () => ({ status: "written" }),
+    (error: unknown) => {
+      if (errorCode(error) === "EEXIST") return { status: "changed" };
+      throw error;
+    },
+  );
+}
+
+/**
+ * Write `after` through `handle`, flush it, and check the target a last time; once it passes, give the staged file
+ * the old file's bits. The refusal, or `undefined` when the staged file may take the target's place.
+ */
+async function stage(
+  roots: WorkspaceRoot[],
+  checked: CheckedTarget,
+  handle: FileHandle,
+  after: string,
+  seam: WriteSeam,
+): Promise<WriteOutcome | undefined> {
+  const bytes = Buffer.from(after);
+  let written = 0;
+  while (written < bytes.length) {
+    written += (await handle.write(bytes, written, bytes.length - written, written)).bytesWritten;
+  }
+  await handle.sync();
+  await seam.afterTempWritten?.();
+
+  const last = await checkWriteTarget(roots, [checked.path]);
+  if (last.status !== "ok") return last;
+  if (last.realPath !== checked.realPath || last.newFolders.length > 0) return { status: "changed" };
+  if (last.before === after) return { status: "alreadyWritten" };
+  if (last.before !== checked.before) return { status: "changed" };
+  if (checked.mode !== undefined) {
+    // [>]: By handle, so no umask narrows the bits, and only now, so a refused text never left the owner's hands.
+    await handle.chmod(checked.mode);
+    await handle.sync();
+  }
+  return undefined;
+}
+
+/** Why the folder of `checked` no longer leads where it did once its missing folders exist, if it does not. */
+async function folderMoved(checked: CheckedTarget): Promise<"outsideWorkspace" | "changed" | undefined> {
+  const folder = dirname(checked.realPath);
+  const now = await realpath(folder);
+  if (now === folder) return undefined;
+  return checked.realRoots.some((root) => isInside(root, now)) ? "changed" : "outsideWorkspace";
+}
+
+/** Remove the temporary file at `temp`, gone already once renamed; why it could not be removed, otherwise. */
+async function removeTemporaryFile(temp: string): Promise<{ name: string; cause: string } | undefined> {
+  try {
+    await unlink(temp);
+    return undefined;
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return undefined;
+    return { name: basename(temp), cause: errorCode(error) ?? String(error) };
+  }
+}
+
+function notWritten(error: unknown): WriteOutcome {
+  return { status: "notWritten", cause: errorCode(error) ?? String(error) };
+}
+
+/** `locateWriteTarget` over absolute `candidates`, the first that exists winning. Never rejects. */
+async function checkWriteTarget(
+  roots: WorkspaceRoot[],
+  candidates: string[],
+  seam: RaceSeam = {},
+): Promise<CheckedTarget | Exclude<WriteTarget, { status: "ok" }>> {
+  try {
+    const inside = lexicallyInside(roots, candidates);
+    if (inside.length === 0) return { status: "outsideWorkspace" };
+    const path = (await firstExisting(inside)) ?? inside[0]!;
+    if (roots.some((root) => resolve(root.path) === path)) return { status: "folder" };
+
+    const realRoots = await realRootPaths(roots);
+    const ancestor = await deepestFolder(dirname(path));
+    if (!realRoots.some((root) => isInside(root, ancestor.realPath))) return { status: "outsideWorkspace" };
+    if (!(await stat(ancestor.realPath)).isDirectory()) return { status: "unreadable", cause: "ENOTDIR" };
+    const newFolders = ancestor.missing.map((_, index) =>
+      join(ancestor.realPath, ...ancestor.missing.slice(0, index + 1)),
+    );
+    const realPath = join(ancestor.realPath, ...ancestor.missing, basename(path));
+    const target = { status: "ok" as const, path, realPath, realRoots, newFolders };
+    if (newFolders.length > 0) return { ...target, before: undefined, mode: undefined };
+
+    const info = await lstat(realPath).catch((error: unknown) => {
+      if (MISSING_CODES.has(errorCode(error) ?? "")) return undefined;
+      throw error;
+    });
+    if (info === undefined) return { ...target, before: undefined, mode: undefined };
+    if (info.isSymbolicLink()) {
+      const linked = await realpath(realPath).catch(() => undefined);
+      const stays = linked !== undefined && realRoots.some((root) => isInside(root, linked));
+      return { status: stays ? "symlink" : "outsideWorkspace" };
+    }
+    if (info.isDirectory()) return { status: "folder" };
+    if (!info.isFile()) return { status: "unreadable", cause: "not a file" };
+    await seam.beforeOpen?.();
+    const read = await readWriteTarget(realPath, realRoots);
+    return "text" in read ? { ...target, before: read.text, mode: read.mode } : read;
+  } catch (error) {
+    // [>]: Deleted between the check and the read.
+    if (MISSING_CODES.has(errorCode(error) ?? "")) return { status: "missing" };
+    return { status: "unreadable", cause: errorCode(error) ?? String(error) };
+  }
+}
+
+/** The text of the regular file at `realPath`, every byte kept, a byte order mark included, and its permission bits. */
+async function readWriteTarget(
+  realPath: string,
+  realRoots: string[],
+): Promise<{ text: string; mode: number } | Exclude<WriteTarget, { status: "ok" }>> {
+  const handle = await open(realPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const opened = await handle.stat();
+    if (!(await isInsideFile(realRoots, realPath, opened))) return { status: "outsideWorkspace" };
+    if (!opened.isFile()) return { status: "unreadable", cause: "not a file" };
+    const bytes = await readTextBytes(handle);
+    if (typeof bytes === "string") return { status: bytes };
+    try {
+      // [>]: Permission bits only: setting the sticky bit on a file fails on macOS (`EFTYPE`) for anyone but root.
+      return {
+        text: new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes),
+        mode: opened.mode & 0o777,
+      };
+    } catch {
+      return { status: "notText" };
+    }
+  } finally {
+    await handle.close();
+  }
+}
+
+/** The first of `paths` that exists, symlinks not followed at its last component. */
+async function firstExisting(paths: string[]): Promise<string | undefined> {
+  for (const path of paths) {
+    const found = await lstat(path).then(
+      () => true,
+      (error: unknown) => {
+        if (MISSING_CODES.has(errorCode(error) ?? "")) return false;
+        throw error;
+      },
+    );
+    if (found) return path;
+  }
+  return undefined;
+}
+
+/** The real path of the deepest existing ancestor of absolute `folder`, itself included, and the names below it. */
+async function deepestFolder(folder: string): Promise<{ realPath: string; missing: string[] }> {
+  const missing: string[] = [];
+  let current = folder;
+  for (;;) {
+    try {
+      return { realPath: await realpath(current), missing };
+    } catch (error) {
+      const parent = dirname(current);
+      if (!MISSING_CODES.has(errorCode(error) ?? "") || parent === current) throw error;
+      missing.unshift(basename(current));
+      current = parent;
+    }
+  }
 }
 
 /**

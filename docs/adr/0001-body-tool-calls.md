@@ -31,3 +31,18 @@ there is one code path to test, and the harness behaves the same on every provid
 - Tool results go back to the model as `user` messages that wrap the result in a
   `<tool_result tool="<name>" status="ok|error">` tag. The OpenAI `tool` role needs a `tool_call_id`, so it
   needs native tool calling. The assistant message before the result is the reply verbatim, call included.
+
+## Amendment (2026-11-09): where a call ends
+
+The first parser ended a call at the first `</tool_name>` in the reply, so a `write_file` whose content held that
+text was cut, sometimes silently. A call now ends at the `</tool_name>` that follows its last argument value. A
+value ends at the first `</argument>` that closes no `<argument>` opened inside the value and is followed by nothing
+but whitespace and then another argument tag of the tool or the call's closing tag; an inner `<argument>` …
+`</argument>` pair is kept, so content can hold a whole example call. When the tags never balance, the value ends at
+the first `</argument>` so followed, pairs ignored; failing that, at the last `</argument>` before the next
+`</tool_name>`. File content can therefore hold the call's own tags, other tools' tags, and code fences. The pairing
+has a cost: content holding an unpaired `<argument>` runs on into the text after the call when that text holds
+`</argument>` then `</tool_name>`. It is kept: the pairing protects content holding a whole example call, and the
+failing case needs prose after the call that itself holds those closing tags.
+This changes one of the starting values above ahead of its eval evidence, because the old rule could not write such
+files at all; the write scenario of the eval (#38) is the evidence that confirms or reverses it.

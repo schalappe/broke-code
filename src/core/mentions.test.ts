@@ -33,6 +33,12 @@ describe("findMentions", () => {
     expect(findMentions("@...")).toEqual([]);
   });
 
+  test("reads a token with a long punctuation run inside it in linear time", () => {
+    const started = performance.now();
+    expect(findMentions(`@a${".".repeat(200_000)}b.`)).toEqual([`a${".".repeat(200_000)}b`]);
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+
   test("ignores tokens inside fenced code blocks of backticks or tildes", () => {
     const text = [
       "@before.ts",

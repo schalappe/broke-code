@@ -69,6 +69,33 @@ export type StorageProblem =
   | { kind: "notFound" };
 
 /**
+ * Why a skill was skipped. `unparsableField`: the field's value is a form the frontmatter reader does not take, such as
+ * a quoted value that does not close on its line. `folderUnreadable`: a skills folder exists but cannot be listed.
+ * `tooManyEntries`: a skills folder holds more than `MAX_SKILL_ENTRIES` entries (`entries`), and only the first, by
+ * name, were read. `cause`: runtime error code or text.
+ */
+export type SkillProblem =
+  | {
+      kind:
+        | "noFrontmatter"
+        | "missingName"
+        | "nameTooLong"
+        | "invalidName"
+        | "missingDescription"
+        | "descriptionTooLong"
+        | "tooLarge"
+        | "binary"
+        | "outsideWorkspace";
+    }
+  | { kind: "nameMismatch"; name: string; directory: string }
+  | { kind: "unparsableField"; field: "name" | "description" }
+  | { kind: "unreadable" | "folderUnreadable"; cause: string }
+  | { kind: "tooManyEntries"; entries: number };
+
+/** A skipped skill: `path` names its `SKILL.md`, or its skills folder, as the user sees it (`~/` for the home folder). */
+export type SkillWarning = { path: string; problem: SkillProblem };
+
+/**
  * The next request's estimated size against the selected model's context size, both in tokens. `known`: the model is
  * in `brokeCode.contextSizes`; else `size` is 32,768.
  */
@@ -77,6 +104,8 @@ export type ContextUsage = { used: number; size: number; known: boolean };
 export type ChatState = {
   providers: string[];
   skipped: SkippedProvider[];
+  /** The skills the last send skipped, refreshed at each send; empty before the first. */
+  skillWarnings: SkillWarning[];
   provider: string | undefined;
   models: ModelsState;
   model: string | undefined;

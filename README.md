@@ -9,7 +9,8 @@ extension reads and runs it. broke-code never sends `tools`, even to a service t
 The current version is a chat agent that reads your workspace: pick a model, ask a question with files and folders
 attached, and the model reads files, lists folders, and searches the workspace until it can answer. You can follow
 each step, stop the agent at any time, read the model's reasoning collapsed above its answer, and come back to past
-conversations. Write tools, commands, skills, and slash commands come next.
+conversations. The model also sees the name and description of each of your skills. Write tools, commands, loading
+skills, and slash commands come next.
 
 ## Requirements
 
@@ -125,6 +126,41 @@ in flight keeps the limits it started with. Like the providers, both settings ar
 
 broke-code adds your instructions to every request: `~/.agents/AGENTS.md`, then the `AGENTS.md` at the root of each
 workspace folder, when they exist. Each is read under the same limits as a mention. `CLAUDE.md` is never read.
+
+## Skills
+
+A skill is a folder holding a `SKILL.md` file, in the [Agent Skills](https://agentskills.io/specification) format:
+a frontmatter with a `name` and a `description`, then the instructions.
+
+```markdown
+---
+name: release-notes
+description: Write release notes from the commits since the last tag. Use when asked for a changelog.
+---
+
+# Release notes
+
+...
+```
+
+broke-code reads skills from two places only: your personal skills in `~/.agents/skills/`, and the skills of each
+workspace folder in `.agents/skills/`. It never reads `.claude/`, `.codex/`, or another tool's folder. The skills
+are read again at each message, so a skill you add or edit counts from your next message. Every request lists each
+skill's name and description to the model; the instructions themselves stay out until a skill is loaded, which comes
+next.
+
+- `name` is 1 to 64 lowercase letters, digits, and hyphens, with no hyphen at either end and no two in a row, and
+  equals the skill's folder name. `description` is 1 to 1,024 characters. Other frontmatter fields are ignored.
+- A workspace skill hides a personal skill of the same name; between two workspace folders, the first one wins. A
+  hidden skill shows no warning. An invalid skill hides nothing: a valid skill of the same name further down counts.
+- A personal skill folder may be a symbolic link anywhere. A workspace skill folder that links outside its workspace
+  folder, even into another folder of the workspace, is skipped.
+- `disable-model-invocation: true` keeps a skill out of the list the model sees.
+
+A skill whose `SKILL.md` is invalid, unreadable, or over 1 MiB is skipped, and the chat shows a warning naming the
+file and the problem; the other skills still count. broke-code reads at most 200 entries of each skills folder, the
+first by name, and shows one warning naming a folder that holds more. The list counts in the context usage like the
+rest of the instructions.
 
 ## Past conversations
 

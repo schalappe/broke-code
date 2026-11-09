@@ -1,8 +1,29 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  stat,
+  symlink,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { compareNames, readWorkspaceEntry, truncateLines, type WorkspaceRoot } from "./workspaceFiles";
+import {
+  compareNames,
+  locateWriteTarget,
+  readWorkspaceEntry,
+  truncateLines,
+  unwritableText,
+  type WorkspaceRoot,
+  writeWorkspaceFile,
+} from "./workspaceFiles";
 
 // [>]: `tmpdir()` sits under /var, a symlink to /private/var on macOS: every root here has a real path that differs
 // from its path, as a workspace opened through a symlink would.
@@ -32,6 +53,7 @@ beforeAll(async () => {
 afterAll(async () => {
   // [>]: The file exists only once its test ran; without it there is nothing to unlock.
   await chmod(join(app.path, "locked.txt"), 0o600).catch(() => {});
+  await chmod(join(app.path, "w7"), 0o755).catch(() => {});
   await rm(base, { recursive: true, force: true });
 });
 
@@ -188,6 +210,191 @@ describe("readWorkspaceEntry while the path changes", () => {
       status: "outsideWorkspace",
       kind: "folder",
     });
+  });
+});
+
+describe("unwritableText", () => {
+  test("accepts text that reads back as written: a NUL past the first 8 KiB, a byte order mark, a whole emoji", () => {
+    expect(unwritableText("")).toBeUndefined();
+    expect(unwritableText(`${"a".repeat(8 * 1024)}\u0000`)).toBeUndefined();
+    expect(unwritableText("\uFEFFsmile 😀\n")).toBeUndefined();
+    expect(unwritableText("a".repeat(1024 * 1024))).toBeUndefined();
+  });
+
+  test("refuses a NUL in the first 8 KiB, an unpaired surrogate, and over 1 MiB once encoded", () => {
+    expect(unwritableText(`${"a".repeat(8 * 1024 - 1)}\u0000`)).toBe("binary");
+    expect(unwritableText("a\uD800")).toBe("notUtf8");
+    expect(unwritableText("\uDE00a")).toBe("notUtf8");
+    expect(unwritableText("é".repeat(512 * 1024 + 1))).toBe("tooLarge");
+  });
+});
+
+describe("writeWorkspaceFile with text that would not read back", () => {
+  test("refuses it before touching the disk: no folder, no temporary file, the file kept", async () => {
+    await mkdir(join(app.path, "unwritable"));
+    await writeFile(join(app.path, "unwritable", "a.txt"), "kept\n");
+    const target = await locateWriteTarget([app], "unwritable/a.txt");
+    if (target.status !== "ok") throw new Error(`not planned: ${target.status}`);
+    expect(await writeWorkspaceFile([app], target.path, target.before, "a\u0000b\n")).toEqual({
+      status: "unwritable",
+      reason: "binary",
+    });
+    expect(await writeWorkspaceFile([app], join(app.path, "unwritable", "new", "b.txt"), undefined, "\uD800")).toEqual({
+      status: "unwritable",
+      reason: "notUtf8",
+    });
+    expect(await readdir(join(app.path, "unwritable"))).toEqual(["a.txt"]);
+    expect(await readFile(join(app.path, "unwritable", "a.txt"), "utf8")).toBe("kept\n");
+  });
+});
+
+describe("writeWorkspaceFile while the file changes", () => {
+  // [>]: Each hook runs where a concurrent writer could land; the planned `before` comes from a real plan.
+  async function planned(path: string): Promise<{ target: string; before: string | undefined }> {
+    const target = await locateWriteTarget([app], path);
+    if (target.status !== "ok") throw new Error(`not planned: ${target.status}`);
+    return { target: target.path, before: target.before };
+  }
+
+  async function temporaryFiles(folder: string): Promise<string[]> {
+    return (await readdir(folder)).filter((name) => name.includes(".broke-code-"));
+  }
+
+  test("refuses a file edited after the new text is staged, keeping the edit and leaving no temporary file", async () => {
+    await mkdir(join(app.path, "w1"));
+    await writeFile(join(app.path, "w1", "a.txt"), "original\n");
+    const { target, before } = await planned("w1/a.txt");
+    const edit = () => writeFile(join(app.path, "w1", "a.txt"), "user edit\n");
+    expect(await writeWorkspaceFile([app], target, before, "agent edit\n", { afterTempWritten: edit })).toEqual({
+      status: "changed",
+    });
+    expect(await readFile(join(app.path, "w1", "a.txt"), "utf8")).toBe("user edit\n");
+    expect(await temporaryFiles(join(app.path, "w1"))).toEqual([]);
+  });
+
+  test("takes a file that came to hold the new text meanwhile as already written, leaving no temporary file", async () => {
+    await mkdir(join(app.path, "w2"));
+    await writeFile(join(app.path, "w2", "a.txt"), "original\n");
+    const { target, before } = await planned("w2/a.txt");
+    const same = () => writeFile(join(app.path, "w2", "a.txt"), "agent edit\n");
+    expect(await writeWorkspaceFile([app], target, before, "agent edit\n", { afterTempWritten: same })).toEqual({
+      status: "alreadyWritten",
+    });
+    expect(await temporaryFiles(join(app.path, "w2"))).toEqual([]);
+  });
+
+  test("never clobbers a new file created after the last check", async () => {
+    await mkdir(join(app.path, "w3"));
+    const { target, before } = await planned("w3/new.txt");
+    const create = () => writeFile(join(app.path, "w3", "new.txt"), "theirs\n");
+    expect(await writeWorkspaceFile([app], target, before, "mine\n", { afterLastCheck: create })).toEqual({
+      status: "changed",
+    });
+    expect(await readFile(join(app.path, "w3", "new.txt"), "utf8")).toBe("theirs\n");
+    expect(await temporaryFiles(join(app.path, "w3"))).toEqual([]);
+  });
+
+  test("goes on when a missing folder is created meanwhile, and refuses one created as a symlink out", async () => {
+    await mkdir(join(app.path, "w4"));
+    const made = await planned("w4/made/a.txt");
+    const create = () => mkdir(join(app.path, "w4", "made")).then(() => {});
+    expect(await writeWorkspaceFile([app], made.target, made.before, "a\n", { afterCheck: create })).toEqual({
+      status: "written",
+    });
+    expect(await readFile(join(app.path, "w4", "made", "a.txt"), "utf8")).toBe("a\n");
+
+    const outsideDir = join(base, "outside-w4");
+    await mkdir(outsideDir);
+    const linked = await planned("w4/linked/a.txt");
+    const link = () => symlink(outsideDir, join(app.path, "w4", "linked"));
+    // [>]: Not even the temporary file may land outside, however briefly.
+    const seenOutside: string[][] = [];
+    const look = async () => {
+      seenOutside.push(await readdir(outsideDir));
+    };
+    const seam = { afterCheck: link, afterTempWritten: look };
+    expect(await writeWorkspaceFile([app], linked.target, linked.before, "a\n", seam)).toEqual({
+      status: "outsideWorkspace",
+    });
+    expect(seenOutside).toEqual([]);
+    expect(await readdir(outsideDir)).toEqual([]);
+  });
+
+  test("refuses when the folder is swapped for a link to another folder inside once the new text is staged", async () => {
+    await mkdir(join(app.path, "w5", "sub"), { recursive: true });
+    await mkdir(join(app.path, "w5", "other"));
+    const { target, before } = await planned("w5/sub/a.txt");
+    const swap = async () => {
+      await rename(join(app.path, "w5", "sub"), join(app.path, "w5", "sub-moved"));
+      await symlink(join(app.path, "w5", "other"), join(app.path, "w5", "sub"));
+    };
+    expect(await writeWorkspaceFile([app], target, before, "a\n", { afterTempWritten: swap })).toEqual({
+      status: "changed",
+    });
+    expect(await readdir(join(app.path, "w5", "other"))).toEqual([]);
+  });
+
+  test("keeps the staged text private until it takes an existing file's place, then gives it the file's bits", async () => {
+    await mkdir(join(app.path, "w6"));
+    for (const mode of [0o600, 0o644]) {
+      const file = join(app.path, "w6", `mode-${mode.toString(8)}.txt`);
+      await writeFile(file, "old\n");
+      await chmod(file, mode);
+      const { target, before } = await planned(`w6/mode-${mode.toString(8)}.txt`);
+      const stagedModes: number[] = [];
+      const look = async () => {
+        for (const name of await temporaryFiles(join(app.path, "w6"))) {
+          stagedModes.push((await stat(join(app.path, "w6", name))).mode & 0o777);
+        }
+      };
+      expect(await writeWorkspaceFile([app], target, before, "new\n", { afterTempWritten: look })).toEqual({
+        status: "written",
+      });
+      expect(stagedModes).toEqual([0o600]);
+      expect((await stat(file)).mode & 0o777).toBe(mode);
+    }
+  });
+
+  test("writes a file whose name is 250 bytes long, its temporary name cut whole characters under 255 bytes", async () => {
+    await mkdir(join(app.path, "w8"));
+    // [>]: 2 + 82 * 3 + 2 = 250 bytes: a cut at a fixed byte count would land inside a character.
+    const name = `ab${"€".repeat(82)}é`;
+    expect(Buffer.byteLength(name)).toBe(250);
+    const { target, before } = await planned(`w8/${name}`);
+    const staged: string[] = [];
+    const look = async () => {
+      staged.push(...(await temporaryFiles(join(app.path, "w8"))));
+    };
+    expect(await writeWorkspaceFile([app], target, before, "long\n", { afterTempWritten: look })).toEqual({
+      status: "written",
+    });
+    expect(await readFile(join(app.path, "w8", name), "utf8")).toBe("long\n");
+    expect(staged).toHaveLength(1);
+    expect(Buffer.byteLength(staged[0]!)).toBeLessThanOrEqual(255);
+    expect(staged[0]).toMatch(/^\.ab€+\.broke-code-[0-9a-f]{12}\.tmp$/);
+    expect(await readdir(join(app.path, "w8"))).toEqual([name]);
+  });
+
+  test("names a temporary file it could not remove, with the cause, leaving the file as it was", async () => {
+    await mkdir(join(app.path, "w7"));
+    await writeFile(join(app.path, "w7", "a.txt"), "original\n");
+    const { target, before } = await planned("w7/a.txt");
+    const lock = () => chmod(join(app.path, "w7"), 0o555);
+    const outcome = await writeWorkspaceFile([app], target, before, "new\n", { afterLastCheck: lock });
+    expect(outcome).toEqual({
+      status: "notWritten",
+      cause: "EACCES",
+      leftover: { name: expect.stringMatching(/^\.a\.txt\.broke-code-[0-9a-f]{12}\.tmp$/), cause: "EACCES" },
+    });
+    expect(await readFile(join(app.path, "w7", "a.txt"), "utf8")).toBe("original\n");
+    expect(await temporaryFiles(join(app.path, "w7"))).toEqual([outcome.leftover!.name]);
+  });
+
+  test("reports a target deleted between its check and its read as missing", async () => {
+    await writeFile(join(app.path, "vanishing.txt"), "here\n");
+    const remove = () => unlink(join(app.path, "vanishing.txt"));
+    expect(await locateWriteTarget([app], "vanishing.txt", { beforeOpen: remove })).toEqual({ status: "missing" });
+    expect(existsSync(join(app.path, "vanishing.txt"))).toBe(false);
   });
 });
 

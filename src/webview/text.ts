@@ -1,11 +1,11 @@
 /**
  * @module text
- * Localized panel text for provider errors, skipped providers, mentions, tool steps, halted agent turns, context
+ * Localized panel text for provider errors, skipped providers and skills, mentions, tool steps, halted agent turns, context
  * usage, and saved conversations.
  */
 import * as l10n from "@vscode/l10n";
 import type { MentionResult } from "../core/mentions";
-import type { ChatEntry, ContextUsage, HaltReason, StorageProblem } from "../core/protocol";
+import type { ChatEntry, ContextUsage, HaltReason, SkillWarning, StorageProblem } from "../core/protocol";
 import type { ProviderError } from "../core/providerError";
 import type { SkippedProvider } from "../core/providers";
 
@@ -111,6 +111,56 @@ export function describeSkippedProvider(skipped: SkippedProvider): string {
       return l10n.t("Provider {0} is skipped: its base URL is not an http or https URL.", skipped.name ?? "");
     case "duplicateName":
       return l10n.t("Provider {0} is skipped: another provider already uses this name.", skipped.name ?? "");
+  }
+}
+
+/** Why a skill, or a whole skills folder, was skipped, naming its file or folder. */
+export function describeSkillWarning({ path, problem }: SkillWarning): string {
+  switch (problem.kind) {
+    case "noFrontmatter":
+      return l10n.t("Skill {0} is skipped: it has no frontmatter between --- lines.", path);
+    case "missingName":
+      return l10n.t("Skill {0} is skipped: it lacks a name.", path);
+    case "nameTooLong":
+      return l10n.t("Skill {0} is skipped: its name is longer than 64 characters.", path);
+    case "invalidName":
+      return l10n.t(
+        "Skill {0} is skipped: its name is not lowercase letters, digits, and single hyphens, with no hyphen at either end.",
+        path,
+      );
+    case "nameMismatch":
+      return l10n.t(
+        "Skill {0} is skipped: its name {1} differs from its folder {2}.",
+        path,
+        problem.name,
+        problem.directory,
+      );
+    case "unparsableField":
+      return l10n.t(
+        "Skill {0} is skipped: its {1} cannot be read; write it as plain, quoted, or > or | block text.",
+        path,
+        problem.field,
+      );
+    case "missingDescription":
+      return l10n.t("Skill {0} is skipped: it lacks a description.", path);
+    case "descriptionTooLong":
+      return l10n.t("Skill {0} is skipped: its description is longer than 1024 characters.", path);
+    case "tooLarge":
+      return l10n.t("Skill {0} is skipped: the file is over 1 MiB.", path);
+    case "binary":
+      return l10n.t("Skill {0} is skipped: the file is not text.", path);
+    case "outsideWorkspace":
+      return l10n.t("Skill {0} is skipped: it links outside the workspace.", path);
+    case "unreadable":
+      return l10n.t("Skill {0} is skipped: the file cannot be read ({1}).", path, problem.cause);
+    case "folderUnreadable":
+      return l10n.t("The skills in {0} are skipped: the folder cannot be read ({1}).", path, problem.cause);
+    case "tooManyEntries":
+      return l10n.t(
+        "Some skills in {0} are skipped: the folder holds {1} entries, and only the first 200 by name are read.",
+        path,
+        problem.entries,
+      );
   }
 }
 

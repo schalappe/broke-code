@@ -356,9 +356,59 @@ describe("parseToolCall argument values", () => {
     expect(performance.now() - started).toBeLessThan(1000);
   });
 
-  test("end at the first outer closing tag", () => {
-    const answer = "<write_file>\n<path>a</path>\n<content>x</content>\n</write_file>\n</write_file>";
-    expect(parseToolCall(answer, TOOLS)).toMatchObject({ kind: "call", end: answer.lastIndexOf("\n</write_file>") });
+  test("round-trip quotes, backslashes, angle brackets, a code fence, and the call's own closing tags byte for byte", () => {
+    const content = [
+      `const quoted = "say \\"hi\\"" + 'it\\'s' + \`\${a}\`;`,
+      "const path = 'C:\\\\Users\\\\me\\n';",
+      "if (a < b && c > d) {}",
+      "```ts",
+      "const tag = `</write_file>`;",
+      "```",
+      "</write_file>",
+      "</content>",
+      "</content> then </write_file> on one line",
+      "",
+    ].join("\n");
+    const answer = `Writing it.\n<write_file>\n<path>a.md</path>\n<content>\n${content}\n</content>\n</write_file>`;
+    expect(parseToolCall(answer, TOOLS)).toEqual({
+      kind: "call",
+      name: "write_file",
+      args: { path: "a.md", content },
+      start: "Writing it.\n".length,
+      end: answer.length,
+    });
+  });
+
+  test("end the call at the closing tag after its last value, not at an earlier one inside a value", () => {
+    const content = "before\n</write_file>\nafter";
+    const call = `<write_file>\n<path>a</path>\n<content>\n${content}\n</content>\n</write_file>`;
+    const answer = `${call}\nDone.\n</write_file>`;
+    expect(parseToolCall(answer, TOOLS)).toMatchObject({ kind: "call", args: { content }, end: call.length });
+  });
+
+  test("end a value at the first closing tag followed by the call's closing tag, ignoring text after the call", () => {
+    const call = "<write_file>\n<path>a</path>\n<content>x</content>\n</write_file>";
+    const answer = `${call}\nThen y</content>\n</write_file>`;
+    expect(parseToolCall(answer, TOOLS)).toMatchObject({ kind: "call", args: { content: "x" }, end: call.length });
+  });
+
+  test("end a value holding an unpaired opening tag and the call's closing tag at the close before the next argument", () => {
+    const content = 'const tag = "<content>"; // </write_file>';
+    const answer = `<write_file>\n<content>\n${content}\n</content>\n<path>a.ts</path>\n</write_file>`;
+    expect(callArgs(answer)).toEqual({ path: "a.ts", content });
+  });
+
+  test("report an argument that never closes even when the call's closing tag stands in its value", () => {
+    const answer = "<write_file>\n<path>a</path>\n<content>\nhello\n</write_file>\n";
+    expect(parseToolCall(answer, TOOLS)).toMatchObject({ kind: "malformed", start: 0, end: answer.length - 1 });
+    expect(malformedMessage(answer)).toContain(
+      "The <content> argument tag never closes: end its value with </content>.",
+    );
+  });
+
+  test("report text after the last value that is neither an argument nor the call's closing tag", () => {
+    const answer = "<write_file>\n<path>a</path>\n<content>x</content>\nstray words\n</write_file>";
+    expect(malformedMessage(answer)).toContain('Unexpected text inside <write_file>: "stray words".');
   });
 });
 

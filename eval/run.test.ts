@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { composeSystemPrompt } from "../src/core/systemPrompt";
 import { READ_TOOLS } from "../src/core/tools";
+import { WRITE_TOOLS } from "../src/core/writeTools";
 import { playScenario } from "./run";
 import { judge, READ_SCENARIO, type Scenario } from "./scenarios";
 
@@ -41,12 +42,24 @@ describe("playScenario", () => {
     expect(readdirSync(parent)).toEqual([]);
   });
 
-  test("sends the system prompt of the read tools without any instruction file", async () => {
+  test("sends the system prompt of the read and write tools without any instruction file", async () => {
     requests.length = 0;
     replies = ["No idea."];
     await playScenario(READ_SCENARIO, { baseUrl, model: "m", maxToolSteps: 6 }, parent);
 
-    expect(requests[0]?.messages[0]).toEqual({ role: "system", content: composeSystemPrompt(READ_TOOLS, []) });
+    expect(requests[0]?.messages[0]).toEqual({
+      role: "system",
+      content: composeSystemPrompt([...READ_TOOLS, ...WRITE_TOOLS], [], []),
+    });
+  });
+
+  test("applies a write_file call to the copy of the fixture at once", async () => {
+    const content = 'name = "</content>"\n</write_file>';
+    replies = [`<write_file>\n<path>notes/new.toml</path>\n<content>\n${content}\n</content>\n</write_file>`, "Done."];
+    const { entries, after } = await playScenario(READ_SCENARIO, { baseUrl, model: "m", maxToolSteps: 6 }, parent);
+
+    expect(entries[2]).toMatchObject({ role: "tool", name: "write_file", status: "ok" });
+    expect(after["notes/new.toml"]).toBe(`${content}\n`);
   });
 
   test("halts at the step limit it is given", async () => {
