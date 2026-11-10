@@ -12,7 +12,8 @@ files, and runs shell commands until it is done. Each change opens as a diff and
 in the chat, unless you turn on auto-approval in your user settings; each command waits for your **Run** or **Reject**,
 always. You can follow each step, stop the agent at any time, read the model's reasoning collapsed above its answer,
 and come back to past conversations. The model also sees the name and description of each of your skills, and loads a
-skill's instructions when your task matches it. Slash commands come next.
+skill's instructions when your task matches it. Type `/` at the start of a message to start a new conversation, choose
+the model, or pick a skill.
 
 ## Requirements
 
@@ -216,6 +217,22 @@ A skill whose `SKILL.md` is invalid, unreadable, or over 1 MiB is skipped, and t
 file and the problem; the other skills still count. broke-code reads at most 200 entries of each skills folder, the
 first by name, and shows one warning naming a folder that holds more. The list counts in the context usage like the
 rest of the instructions.
+
+## Slash commands
+
+Type `/` at the start of the message box to open a menu of commands: `/new`, `/model`, then each of your skills, each
+with its description. The menu keeps the commands whose name starts with what you type after `/`, ignoring case. Move
+with the arrow keys, pick with Enter, Tab, or a click, and close the menu with Escape; a pick puts `/<name> ` in the
+message box. A `/` anywhere else in a message, as in a path, opens no menu.
+
+- `/new`: send it alone to start a new conversation, as **New chat** does.
+- `/model`: send it alone to open the model list in the header. Where the editor does not let broke-code open the
+  list, the list gets the keyboard focus instead.
+
+Both work only when you could send a message: with a model chosen and no reply in progress. Nothing is sent to the
+model. With words after them, `/new` and `/model` are ordinary messages. The skills are read when the menu opens; if
+they cannot be read, the menu says so and still shows `/new` and `/model`. A skipped skill is not listed; its warning
+shows after your next message.
 
 ## Past conversations
 
