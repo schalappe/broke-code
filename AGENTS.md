@@ -16,7 +16,8 @@ write tools and commands: a message starts an agent turn that runs `read_file`, 
 Accept or Reject in the chat, ADR 0002) unless the user setting auto-approves it; each command waits for Run or Reject,
 always. Each send discovers the skills and lists them to the model, which loads one with `load_skill` and may then read
 its folder (ADR 0003). `bun run eval` measures that loop on local Ollama models, applying each change and running each
-command at once. Slash commands are not built yet. Read `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the decisions behind the design, starting with
+command at once. A message `/<name> args` loads that skill itself, with its arguments; the `/` menu, `/new`, and
+`/model` are not built yet. Read `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the decisions behind the design, starting with
 `docs/adr/0001-body-tool-calls.md`.
 
 ## Structure
@@ -58,7 +59,8 @@ command at once. Slash commands are not built yet. Read `GLOSSARY.md` for the do
   (`instructions.ts`: `~/.agents/AGENTS.md`, then each workspace folder's `AGENTS.md`, under the mention caps), and the
   skills (`skills.ts`: discovery in `~/.agents/skills/` and each workspace folder's `.agents/skills/`, the frontmatter
   subset, validation, precedence, warnings, the line the extension logs at each send; `LOAD_SKILL_TOOL`, `loadSkill`
-  for the model's call, and `loadSkillText`, the load result whoever loads, for `/<name>` too). `markdownCode.ts`, `suggestions.ts`, and `conversation.ts` import nothing from
+  for the model's call, `findSlashSkill`, the skill a `/<name> args` message loads, and `loadSkillText`, the load
+  result whoever loads, the user's arguments substituted or appended). `markdownCode.ts`, `suggestions.ts`, and `conversation.ts` import nothing from
   `node:`, since the webview loads them. Unit tests sit next to them as `*.test.ts`, because `bun test` cannot load `vscode`. `tlsFixture.ts`
   generates test certificates with `/usr/bin/openssl` at test time; no private key is committed.
   `conversationFixture.ts` is the in-memory conversation file port for tests.
@@ -201,11 +203,12 @@ command at once. Slash commands are not built yet. Read `GLOSSARY.md` for the do
   with the user's rights and can read, change, or delete anything the user can, outside the workspace too; the
   approval is the only guard. The one exception to the file tools' boundary is read-only access to the directories of
   skills loaded in the current conversation that lie outside the workspace (ADR 0003):
-  - A skill is loaded when the conversation holds an `ok` `load_skill` step for its name; an `error` step, a step
-    dropped by Stop, and a malformed call load nothing. Before each call the controller maps those names to folders
-    through the current send's discovery (`ToolContext.skillRoots`, beside `ToolContext.skills`, the send's skills),
-    so a load earlier in the turn counts at the next call, a reopened conversation keeps its loaded skills with no
-    record change, and a skill gone since is no longer readable.
+  - A skill is loaded when the conversation holds an `ok` `load_skill` step for its name, or a user entry whose
+    `skill` is `loaded` (a `/<name>` message); an `error` step, a step dropped by Stop, a malformed call, and a
+    `failed` user skill load nothing. Before each call the controller maps those names to folders through the current
+    send's discovery (`ToolContext.skillRoots`, beside `ToolContext.skills`, the send's skills), so a load earlier in
+    the turn counts at the next call, a reopened conversation keeps its loaded skills, and a skill gone since is no
+    longer readable.
   - `read_file`, `list_files`, and `search` also accept an absolute path inside a loaded skill's real folder, the path
     its load result gives. The shared read boundary (`readWorkspaceEntry`, `locateWorkspacePath`) takes the folders
     as read-only roots. An absolute path written inside one is read as written, never rerouted through a multi-root
@@ -392,10 +395,12 @@ command at once. Slash commands are not built yet. Read `GLOSSARY.md` for the do
   shown as a failure, and the prune deletes the next oldest valid conversation instead, so 50 rows remain; the user can
   still delete its row.
 - The record is versioned (`version: 2`) and holds the displayed entries: user entries, each with the text the model
-  received (`modelText`), assistant entries, with an optional `call` locating the call block in the answer and, when
+  received (`modelText`) and an optional `skill` (`{ name, status }`, any other shape making the record invalid),
+  assistant entries, with an optional `call` locating the call block in the answer and, when
   `halted`, its `haltReason`, and tool steps, with an optional `approval`. A reopened conversation therefore resends exactly what was sent and
   never reads its mentions again. Version 1 files are skipped like any unknown version: no release wrote them, so
-  none is migrated. It holds no API key and nothing else of `ProviderAccess`; a failed reply's error keeps the provider's base
+  none is migrated. An optional field added to an entry keeps the version: an older build drops the unknown key and
+  reads the rest (ADR 0003). It holds no API key and nothing else of `ProviderAccess`; a failed reply's error keeps the provider's base
   URL for display, since it is user settings, not a secret. Times are whole milliseconds within the `Date` range. A
   file that fails validation or has an unknown version is logged and skipped; a file that cannot be read is shown as
   a listing failure. On load, a reply still `waiting` or `streaming` becomes `stopped`.
@@ -458,8 +463,20 @@ command at once. Slash commands are not built yet. Read `GLOSSARY.md` for the do
   the skill's folder)`). A skill already loaded gives `ok`, `Skill <name> is already loaded; its files live in ...`,
   without the body. An unknown name, a skipped skill, and one kept from the model give an `error` naming the skills the
   model may load.
-- In `/<name> args`, the text after the name replaces `$ARGUMENTS` in the skill body. If the body has no
-  `$ARGUMENTS`, the text follows the skill as a user message.
+- A sent message is a skill command when its trimmed text is `/`, a name of the send's discovery (listed to the model
+  or not; a skipped skill is not discovered), then whitespace or the end (`findSlashSkill`, in the controller's send,
+  after discovery). Any other `/word` is sent as typed, `/new` and `/model` included (#51 handles them in the webview
+  before any send). `args` is the text after the name, trimmed.
+- The model receives one user message (role alternation): `loadSkillText(skill, args)`, the `load_skill` text with
+  every `$ARGUMENTS` of the body replaced by `args`, the empty string included, before the 2,000-line cut; a body
+  without `$ARGUMENTS` is followed, when `args` is not empty, by a blank line and `args`, its trailing line breaks
+  dropped first. Mentions in `args` are read as for any message and their blocks follow; the `/<name>` token is never
+  a mention. A `SKILL.md` that cannot be read at send (swapped since discovery) still sends the message, as an
+  unreadable mention does: `Skill <name> could not be loaded: its SKILL.md could not be read (<reason>).`, then `args`
+  after a blank line. The user entry keeps the text as typed and gets `skill: { name, status: "loaded" | "failed" }`,
+  which the chat shows as a chip `Skill <name>` before the mention chips. A loaded one counts as loaded in the
+  conversation from that message on (see "Harness"); a second `/<name>` sends the whole text again, and the model's
+  `load_skill` of it answers "already loaded".
 - Skip a skill whose frontmatter lacks `name` or `description`, whose `name` breaks the spec or differs from its
   directory name, or whose `SKILL.md` cannot be read, and show a warning naming the file and the problem; a skills
   folder that exists but cannot be listed is one warning too. The warnings sit in `ChatState.skillWarnings`, are
@@ -489,7 +506,7 @@ command at once. Slash commands are not built yet. Read `GLOSSARY.md` for the do
   included, so the bench confines what the tools reach, not what a command itself does. Skills are discovered as the extension
   does, but with a throwaway copy of the scenario's home fixture as the home folder, so the bench never reads the real
   `~/.agents`; a scenario without one gets no skill, and its prompt has neither the Skills section nor `load_skill`.
-  Five scenarios, each judged on the turn ending `done` and on the workspace after it: every file the scenario writes
+  Six scenarios, each judged on the turn ending `done` and on the workspace after it: every file the scenario writes
   holds its exact expected text, byte for byte, and every other entry is unchanged. The workspace is read back without
   following symlinks: every entry but a folder counts, a file by its text, a symlink by its target (`{ symlink }`), any
   other kind, such as a FIFO, by its kind (`{ special }`), so a command that adds a symlink fails `workspaceChanged`.
@@ -509,6 +526,10 @@ command at once. Slash commands are not built yet. Read `GLOSSARY.md` for the do
     when an `ok` `run_command` step ran, the answer holds 61 as a number token of its own (the answer is split into runs of digits, letters, `.`, `,`, `_`, `+`, `-`, and U+2212 holding a digit, trailing `.` and `,` dropped, so `161`, `61,000`, `61.5`, `0,61`, `-61`, `61e3`, and `61k` fail and `61.` passes), and no file changed. Without an `ok`
     `run_command` step it is `wrongTool`, its detail led by the first line of the last command step when one ran (a
     rejection, `stopped after 10 seconds`, an exit code).
+  - `slash`: the `skill` fixture and home, the message `/depot-codes` then the `skill` question, so the user loads the
+    skill. Passes when a read step got the code, the answer holds it, and no file changed; no `load_skill` step is
+    required, and an `ok` one is allowed. A first user entry without a `loaded` skill is `wrongTool`, its detail
+    saying so, since the run then measures nothing of the slash path.
 
   A failed run shows one category and a one-line detail: `malformed`, `wrongTool`, `wrongAnswer`, `stepLimit`,
   `contextFull`, `providerError`, `wrongEdit` (a file the scenario writes is missing or holds other text, with the
@@ -528,7 +549,6 @@ command at once. Slash commands are not built yet. Read `GLOSSARY.md` for the do
   and answered without reading the reference file). Live, `qwen3.8:27b` proposes a command for that count, but on a
   small tree (7 files in 4 folders) it walks the folders with `list_files` instead, even when asked to count the
   subfolders (#9 verification).
-  Scenarios for slash commands come with #11.
 - v1 supports macOS only. Windows and Linux are planned for v2.
 
 ## Git and release workflow

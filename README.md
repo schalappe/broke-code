@@ -12,7 +12,8 @@ files, and runs shell commands until it is done. Each change opens as a diff and
 in the chat, unless you turn on auto-approval in your user settings; each command waits for your **Run** or **Reject**,
 always. You can follow each step, stop the agent at any time, read the model's reasoning collapsed above its answer,
 and come back to past conversations. The model also sees the name and description of each of your skills, and loads a
-skill's instructions when your task matches it. Slash commands come next.
+skill's instructions when your task matches it; you can load one yourself by starting your message with `/` and its
+name.
 
 ## Requirements
 
@@ -200,7 +201,8 @@ skill's name and description to the model; the instructions themselves stay out 
   folder, even into another folder of the workspace, is skipped.
 - Every file of a skill lives in its own folder: a skill whose `SKILL.md` is a symbolic link to somewhere outside the
   skill's folder is skipped, with a warning.
-- `disable-model-invocation: true` keeps a skill out of the list the model sees, and the model cannot load it.
+- `disable-model-invocation: true` keeps a skill out of the list the model sees, and the model cannot load it; you
+  still can, with `/<name>`.
 
 When a task matches a skill's description, the model calls **load_skill** with its name and receives the
 instructions, without the frontmatter, cut to their first 2,000 lines, together with the real path of the skill's
@@ -211,6 +213,16 @@ The file tools cannot change the files of a skill outside the workspace, and bef
 that is a symbolic link to somewhere outside the skill's folder is refused. A workspace skill's folder is part of the
 workspace: the usual rules apply, so the model can change its files with your approval. A skill loaded in a past conversation is loaded again when you reopen it, as long as it is still
 there. `load_skill` is offered to the model only while a skill is listed to it.
+
+You can also load a skill yourself: start your message with `/` and the skill's name, then what you want, such as
+`/release-notes since v0.3`. The model receives the skill's instructions, as **load_skill** gives them, in place of
+your message, and every `$ARGUMENTS` in them is replaced by the text after the name (by nothing when there is none).
+When the instructions hold no `$ARGUMENTS`, that text follows them, after a blank line. Mentions in it are attached as
+usual. The chat shows your message as you typed it, with a **Skill** chip under it, and the skill counts as loaded
+from that message on, its folder readable as above, even for a skill kept from the model. A `/` word that names no
+skill, or a skill that was skipped, is sent as you typed it. When the skill's `SKILL.md` cannot be read at that
+moment, the message still goes: the model is told the skill could not be loaded, then gets your text, and the chip
+says so.
 
 A skill whose `SKILL.md` is invalid, unreadable, or over 1 MiB is skipped, and the chat shows a warning naming the
 file and the problem; the other skills still count. broke-code reads at most 200 entries of each skills folder, the
@@ -234,15 +246,16 @@ never hold an API key. A window with no folder open keeps its conversation in me
 ## Tested models
 
 broke-code's tool calls are measured on local models with Ollama: `qwen3.8:27b` and `gemma4:26b-a4b-it-qat`, ten
-runs of each task, with the bar at nine. The bench has five tasks:
+runs of each task, with the bar at nine. The bench has six tasks:
 
 - **Read**: answer with the value of a setting that only a file holds.
 - **Edit**: rename a function in a source file, changing nothing else.
 - **Create**: create a file whose text holds double quotes, backslashes, tags, and a code block, exactly as asked.
 - **Skill**: answer a question that a personal skill covers, by loading the skill and reading a file in its folder.
 - **Command**: count the files of a folder and its subfolders, by running a shell command.
+- **Slash**: answer the skill task's question sent after `/` and the skill's name, which loads the skill for the model.
 
-Both models pass the five tasks, 10 runs of 10 on each. When a model thinks, then stops without a
+Both models pass the first five tasks, 10 runs of 10 on each. When a model thinks, then stops without a
 word, broke-code tells it so and asks again. Contributors run the bench with `bun run eval`.
 
 ## Privacy
