@@ -2,10 +2,10 @@ import * as l10n from "@vscode/l10n";
 import { type KeyboardEvent, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import type { ConversationSummary } from "../core/conversation";
+import { emptyModelsLabel } from "../core/modelList";
 import {
   type ChatEntry,
   type ChatState,
-  emptyModelsLabel,
   type HostMessage,
   isReplying,
   type PendingApproval,

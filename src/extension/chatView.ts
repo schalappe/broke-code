@@ -5,13 +5,8 @@
 import * as vscode from "vscode";
 import type { ChatController } from "../core/chatController";
 import type { FileQueryAnswer } from "../core/fileIndex";
-import {
-  type ChatState,
-  emptyModelsLabel,
-  type HostMessage,
-  modelChoices,
-  parseWebviewMessage,
-} from "../core/protocol";
+import { chooseModel } from "../core/modelList";
+import { type ChatState, type HostMessage, parseWebviewMessage } from "../core/protocol";
 import { answerSkillQuery, type SkillDiscovery } from "../core/skills";
 import { renderWebviewHtml } from "../core/webviewHtml";
 
@@ -76,21 +71,18 @@ export class ChatView implements vscode.WebviewViewProvider {
     }
   }
 
-  /**
-   * The model list `/model` opens: the selected provider's listed models, the current one described as such. Before
-   * the models are listed, it opens empty and its placeholder says why, as the header's select does. A pick goes
-   * through `selectModel`, as the select's change; Escape changes nothing.
-   */
-  private async chooseModel(): Promise<void> {
-    const { models, model } = this.controller.snapshot;
-    const items = modelChoices({ models, model }).map((choice) => ({
-      label: choice.model,
-      description: choice.current ? vscode.l10n.t("current") : undefined,
-    }));
-    const placeHolder =
-      items.length > 0 ? vscode.l10n.t("Choose the model") : emptyModelsLabel(models, vscode.l10n, "noModels");
-    const picked = await vscode.window.showQuickPick(items, { placeHolder });
-    if (picked) this.controller.selectModel(picked.label);
+  /** The `/model` pick over the editor's Quick Pick; see `chooseModel`. */
+  private chooseModel(): Promise<void> {
+    const { controller } = this;
+    return chooseModel(
+      controller.snapshot,
+      {
+        pick: async (items, placeHolder) => vscode.window.showQuickPick(items, { placeHolder }),
+        selectModel: (model) => controller.selectModel(model),
+        showError: (message) => void vscode.window.showErrorMessage(message),
+      },
+      vscode.l10n,
+    );
   }
 
   private receive(raw: unknown): void {
@@ -122,10 +114,7 @@ export class ChatView implements vscode.WebviewViewProvider {
       case "newChat":
         return void controller.newChat();
       case "chooseModel":
-        return void this.chooseModel().catch((error: unknown) => {
-          console.error("broke-code: could not open the model list", error);
-          void vscode.window.showErrorMessage(vscode.l10n.t("Could not open the model list: {0}", String(error)));
-        });
+        return void this.chooseModel();
       case "openConversation":
         return void controller.openConversation(message.id);
       case "deleteConversation":

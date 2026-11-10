@@ -16,31 +16,6 @@ export type ModelsState =
   | { status: "failed"; error: ProviderError };
 
 /**
- * A translator of English message keys: `vscode.l10n` in the host, `@vscode/l10n` in the webview. Callers name it
- * `l10n` so the localization test, which reads the literal key of each `t` call on `l10n`, finds the keys used here.
- */
-export type Translator = { t(message: string): string };
-
-/**
- * Why the model list `models` is empty, as a label translated by `l10n`, for the header's select and the `/model`
- * Quick Pick. Without a provider, `withoutProvider` decides: `blank` (the header's select stays empty) or `noModels`
- * (the Quick Pick's placeholder says "No models").
- */
-export function emptyModelsLabel(models: ModelsState, l10n: Translator, withoutProvider: "blank" | "noModels"): string {
-  switch (models.status) {
-    case "loading":
-      return l10n.t("Loading models…");
-    case "failed":
-      return l10n.t("Models unavailable");
-    case "noProvider":
-      if (withoutProvider === "blank") return "";
-      return l10n.t("No models");
-    case "loaded":
-      return l10n.t("No models");
-  }
-}
-
-/**
  * `waiting`: request sent, no reasoning or answer yet (model may still be loading). `streaming`: either has started,
  * and a reply whose call is running stays `streaming` until its tool step is recorded. `halted`: the agent turn ended
  * on a limit (see `HaltReason`): after this reply's tool step, or, when the context is full, before this reply's
@@ -239,15 +214,6 @@ export function chatStateOf(message: HostMessage): ChatState | undefined {
 export function isReplying(state: ChatState): boolean {
   const last = state.entries.at(-1);
   return last?.role === "assistant" && (last.status === "waiting" || last.status === "streaming");
-}
-
-/** A row of the model list `/model` opens. `current`: the model selected now. */
-export type ModelChoice = { model: string; current: boolean };
-
-/** Rows of the model list `/model` opens: the listed models in listing order, as the header's select; none until listed. */
-export function modelChoices(state: Pick<ChatState, "models" | "model">): ModelChoice[] {
-  if (state.models.status !== "loaded") return [];
-  return state.models.models.map((model) => ({ model, current: model === state.model }));
 }
 
 /** Longest menu query the host answers; the webview asks nothing past it. */

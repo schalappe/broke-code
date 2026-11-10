@@ -2,10 +2,8 @@ import { describe, expect, test } from "bun:test";
 import {
   type ChatState,
   chatStateOf,
-  emptyModelsLabel,
   MAX_MENTION_PATH_LENGTH,
   MAX_QUERY_LENGTH,
-  modelChoices,
   parseWebviewMessage,
 } from "./protocol";
 
@@ -149,40 +147,5 @@ describe("chatStateOf", () => {
   test("leaves the chat state alone for file and skill suggestions", () => {
     expect(chatStateOf({ type: "fileSuggestions", id: 1, items: [], capped: false, failed: false })).toBeUndefined();
     expect(chatStateOf({ type: "skillSuggestions", id: 1, items: [], failed: false })).toBeUndefined();
-  });
-});
-
-describe("emptyModelsLabel", () => {
-  const french = { t: (message: string) => `fr:${message}` };
-  const failed = {
-    status: "failed",
-    error: { kind: "unreachable", provider: "P", baseUrl: "http://x", cause: "down" },
-  } as const;
-
-  test("says why the list is empty, through the translator it is given", () => {
-    expect(emptyModelsLabel({ status: "loading" }, french, "blank")).toBe("fr:Loading models…");
-    expect(emptyModelsLabel(failed, french, "blank")).toBe("fr:Models unavailable");
-    expect(emptyModelsLabel({ status: "loaded", models: [] }, french, "blank")).toBe("fr:No models");
-  });
-
-  test("without a provider: blank for the header's select, No models for the Quick Pick", () => {
-    expect(emptyModelsLabel({ status: "noProvider" }, french, "blank")).toBe("");
-    expect(emptyModelsLabel({ status: "noProvider" }, french, "noModels")).toBe("fr:No models");
-  });
-});
-
-describe("modelChoices", () => {
-  test("lists the selected provider's models in listing order, the selected one marked current", () => {
-    expect(modelChoices({ models: { status: "loaded", models: ["a", "b", "c"] }, model: "b" })).toEqual([
-      { model: "a", current: false },
-      { model: "b", current: true },
-      { model: "c", current: false },
-    ]);
-  });
-
-  test("lists nothing until the models are listed", () => {
-    expect(modelChoices({ models: { status: "loading" }, model: "b" })).toEqual([]);
-    expect(modelChoices({ models: { status: "noProvider" }, model: undefined })).toEqual([]);
-    expect(modelChoices({ models: { status: "loaded", models: [] }, model: undefined })).toEqual([]);
   });
 });

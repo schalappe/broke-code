@@ -35,7 +35,9 @@ goes to the model as typed. Read `GLOSSARY.md` for the domain vocabulary and `do
   and deletes in call order), and the store's file access (`conversationFiles.ts`:
   the file port, and its implementation over a local directory with `node:fs`: missing versus failed, regular files
   only, atomic writes, leftover temporary files), the dialog queue, the host-webview message
-  protocol and its validation (and `modelChoices`, the rows of the model list `/model` opens), workspace file access (`workspaceFiles.ts`: the inside-workspace check and its read-only
+  protocol and its validation, the model list (`modelList.ts`: `emptyModelsLabel`, why the list is empty, for the
+  header's select and the Quick Pick; `modelChoices`, the rows `/model` opens; `chooseModel`, the `/model` pick over a
+  pick port the host fills with `showQuickPick`), workspace file access (`workspaceFiles.ts`: the inside-workspace check and its read-only
   roots (the loaded skills' folders outside the workspace, for reads only), capped reads, one-level listings, line truncation, the write boundary and atomic writes, with `node:fs`), mentions (`mentions.ts`: token detection, picked and typed
   mentions merged, reading, and the text the model receives), where a message holds Markdown code
   (`markdownCode.ts`), the menu logic (`suggestions.ts`: the `@` token at the caret, index entries,
@@ -62,7 +64,7 @@ goes to the model as typed. Read `GLOSSARY.md` for the domain vocabulary and `do
   skills (`skills.ts`: discovery in `~/.agents/skills/` and each workspace folder's `.agents/skills/`, the frontmatter
   subset, validation, precedence, warnings, the line the extension logs at each send; `LOAD_SKILL_TOOL`, `loadSkill`
   for the model's call, `findSlashSkill`, the skill a `/<name> args` message loads, `loadSkillText`, the load result
-  whoever loads, the user's arguments substituted or appended, and `answerSkillQuery`, the `/` menu's answer). `markdownCode.ts`, `suggestions.ts`, and `conversation.ts` import nothing from
+  whoever loads, the user's arguments substituted or appended, and `answerSkillQuery`, the `/` menu's answer). `markdownCode.ts`, `suggestions.ts`, `modelList.ts`, and `conversation.ts` import nothing from
   `node:`, since the webview loads them. Unit tests sit next to them as `*.test.ts`, because `bun test` cannot load `vscode`. `tlsFixture.ts`
   generates test certificates with `/usr/bin/openssl` at test time; no private key is committed.
   `conversationFixture.ts` is the in-memory conversation file port for tests.
@@ -385,7 +387,8 @@ goes to the model as typed. Read `GLOSSARY.md` for the domain vocabulary and `do
   the selected one described "current", placeholder "Choose the model". Before the models are listed, it opens empty,
   its placeholder saying why as the header's select does ("Loading models…", "Models unavailable", "No models"). A
   pick goes through `controller.selectModel`, as the header select's change, so the header follows; Escape changes
-  nothing. (A webview cannot open the select's own list: Chromium refuses `showPicker()` in a cross-origin iframe.)
+  nothing; a Quick Pick that fails is logged and shown as an error (`chooseModel`). (A webview cannot open the
+  select's own list: Chromium refuses `showPicker()` in a cross-origin iframe.)
   Both clear the box and act only when Send would (a model chosen, no reply in flight); nothing reaches the model.
   `/new words` and `/model words` are ordinary messages.
 - The file index is built on the first menu query with `findFiles("**/*", "**/{node_modules,.git,dist,out,build}/**",
