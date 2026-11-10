@@ -9,6 +9,7 @@ import {
   READ_SCENARIO,
   SCENARIOS,
   SKILL_SCENARIO,
+  SLASH_SCENARIO,
   workspaceChanges,
 } from "./scenarios";
 
@@ -405,6 +406,62 @@ describe("judge on the skill scenario", () => {
   });
 });
 
+const slashUser: ChatEntry = {
+  role: "user",
+  content: SLASH_SCENARIO.message,
+  mentions: [],
+  skill: { name: "depot-codes", status: "loaded" },
+};
+
+describe("slash scenario fixture", () => {
+  test("loads the skill scenario's skill with /depot-codes, then asks the same question", () => {
+    expect(SLASH_SCENARIO.files).toEqual(SKILL_SCENARIO.files);
+    expect(SLASH_SCENARIO.home).toEqual(SKILL_SCENARIO.home);
+    expect(SLASH_SCENARIO.message).toBe(`/depot-codes ${SKILL_SCENARIO.message}`);
+  });
+});
+
+describe("judge on the slash scenario", () => {
+  test("passes a turn that read the reference file and answered with the value, with no load_skill step", () => {
+    const entries = [slashUser, ...depotsRead, answer(`The Lyon code is ${DISPATCH_CODE}.`)];
+    expect(judge(SLASH_SCENARIO, entries, skillUntouched)).toEqual({ pass: true });
+  });
+
+  test("passes a turn that also loaded the skill with load_skill", () => {
+    const entries = [slashUser, loadCall, loadStep(), ...depotsRead, answer(DISPATCH_CODE)];
+    expect(judge(SLASH_SCENARIO, entries, skillUntouched)).toEqual({ pass: true });
+  });
+
+  test("wrongAnswer: the turn read the file but the answer lacks the value", () => {
+    const entries = [slashUser, ...depotsRead, answer("The Lyon code is LYN-7Q42.")];
+    expect(judge(SLASH_SCENARIO, entries, skillUntouched)).toMatchObject({ pass: false, category: "wrongAnswer" });
+  });
+
+  test("wrongTool: no read step got the value", () => {
+    const entries = [slashUser, answer(DISPATCH_CODE)];
+    expect(judge(SLASH_SCENARIO, entries, skillUntouched)).toMatchObject({ pass: false, category: "wrongTool" });
+  });
+
+  test("wrongTool: the message loaded no skill, whatever the turn did after", () => {
+    const { skill: _, ...unloaded } = slashUser as ChatEntry & { role: "user" };
+    const failed: ChatEntry = { ...unloaded, skill: { name: "depot-codes", status: "failed" } };
+    for (const user of [unloaded, failed]) {
+      const verdict = judge(SLASH_SCENARIO, [user, ...depotsRead, answer(DISPATCH_CODE)], skillUntouched);
+      expect(verdict).toMatchObject({
+        pass: false,
+        category: "wrongTool",
+        detail: expect.stringContaining("/depot-codes"),
+      });
+    }
+  });
+
+  test("workspaceChanged: the turn passed the check but changed a workspace file", () => {
+    const entries = [slashUser, ...depotsRead, answer(DISPATCH_CODE)];
+    const changed = { ...skillUntouched, "notes.txt": DISPATCH_CODE };
+    expect(judge(SLASH_SCENARIO, entries, changed)).toMatchObject({ pass: false, category: "workspaceChanged" });
+  });
+});
+
 const FILE_COUNT = 61;
 const commandUser: ChatEntry = { role: "user", content: COMMAND_SCENARIO.message, mentions: [] };
 const COUNT_COMMAND = "find logs -type f | wc -l";
@@ -555,8 +612,8 @@ describe("judge on the command scenario", () => {
   });
 });
 
-test("SCENARIOS holds read, edit, create, skill, and command, in that order", () => {
-  expect(SCENARIOS.map((scenario) => scenario.name)).toEqual(["read", "edit", "create", "skill", "command"]);
+test("SCENARIOS holds read, edit, create, skill, command, and slash, in that order", () => {
+  expect(SCENARIOS.map((scenario) => scenario.name)).toEqual(["read", "edit", "create", "skill", "command", "slash"]);
 });
 
 describe("workspaceChanges", () => {

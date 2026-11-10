@@ -230,6 +230,39 @@ export const SKILL_SCENARIO: Scenario = {
   },
 };
 
+/**
+ * Load a skill with `/<name>`: the skill scenario's workspace and personal skill, the message `/depot-codes` then the
+ * same question, so the user, not the model, loads the skill. Passes when an `ok` read step's text holds the value, the
+ * answer holds it, and no workspace file changed; no `load_skill` step is needed, and an `ok` one is allowed. A message
+ * that loaded no skill is `wrongTool` whatever the turn did after, since the scenario then measures nothing of the
+ * slash path.
+ */
+export const SLASH_SCENARIO: Scenario = {
+  name: "slash",
+  files: SKILL_SCENARIO.files,
+  ...(SKILL_SCENARIO.home ? { home: SKILL_SCENARIO.home } : {}),
+  message: `/depot-codes ${SKILL_SCENARIO.message}`,
+  writes: {},
+  check(entries) {
+    const steps = entries.filter((entry) => entry.role === "tool");
+    const first = entries[0];
+    const skill = first?.role === "user" ? first.skill : undefined;
+    if (skill?.status !== "loaded") {
+      const status = skill ? skill.status : "none";
+      return {
+        pass: false,
+        category: "wrongTool",
+        detail: `the message did not load /depot-codes (skill: ${status}); steps: ${describeSteps(steps)}`,
+      };
+    }
+    const read = steps.some(
+      (step) => READ_TOOL_NAMES.has(step.name) && step.status === "ok" && step.text.includes(DISPATCH_CODE),
+    );
+    if (!read) return { pass: false, category: "wrongTool", detail: `steps: ${describeSteps(steps)}` };
+    return answerHolds(entries, DISPATCH_CODE);
+  },
+};
+
 /** Log files per month under `logs/<year>/<month>/`, uneven so the total cannot be guessed from the folder count. */
 const LOG_MONTHS: Record<string, readonly number[]> = {
   "2024": [3, 5, 2, 4, 6, 1, 3, 4, 2, 5, 3, 4],
@@ -297,6 +330,7 @@ export const SCENARIOS: readonly Scenario[] = [
   CREATE_SCENARIO,
   SKILL_SCENARIO,
   COMMAND_SCENARIO,
+  SLASH_SCENARIO,
 ];
 
 /**
