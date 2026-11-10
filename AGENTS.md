@@ -595,6 +595,8 @@ goes to the model as typed. Read `GLOSSARY.md` for the domain vocabulary and `do
   `edit` 9/10 on `gemma4`, every other scenario 10/10. On 9f6ae23 plus the `release-notes` skill, `hidden` alone
   took 5 min 38 s, 10/10 on both models: `qwen3.8:27b` read the reference file at once in every run; `gemma4` called
   `load_skill(depot-codes)` in 2 runs, got "already loaded", then read the file, and listed the skill folder first in 4.
+  On edc18b5 the seven scenarios took 56 min 39 s, 10/10 for every scenario on both models (140 of 140 runs); one
+  `gemma4` `edit` run alone took 19 min 19 s and passed.
 - v1 supports macOS only. Windows and Linux are planned for v2.
 
 ## Git and release workflow

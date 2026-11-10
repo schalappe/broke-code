@@ -274,7 +274,7 @@ runs of each task, with the bar at nine. The bench has seven tasks:
 - **Hidden**: the slash task with a skill kept from the model, which only you can load, beside an unrelated skill the
   model may load.
 
-Both models pass every task, with at least 9 runs of 10 on each; the slash and hidden tasks passed 10 of 10 on both. When a model thinks, then stops without a
+Both models pass every task, 10 runs of 10 on each in the latest full run. When a model thinks, then stops without a
 word, broke-code tells it so and asks again. Contributors run the bench with `bun run eval`.
 
 ## Privacy
