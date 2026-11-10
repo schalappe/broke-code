@@ -123,6 +123,45 @@ describe("conversation record", () => {
     expect(parse({ ...record(), createdAt: 0, updatedAt: 8.64e15 })).toMatchObject({ ok: true });
   });
 
+  test("reads back a user entry's skill, and an entry without one as a message without a skill", () => {
+    const withSkill = record({
+      entries: [
+        {
+          role: "user",
+          content: "/grilling x",
+          mentions: [],
+          skill: { name: "grilling", status: "loaded" },
+          modelText: "Skill",
+        },
+        {
+          role: "user",
+          content: "/grilling y",
+          mentions: [],
+          skill: { name: "grilling", status: "failed" },
+          modelText: "No",
+        },
+        { role: "user", content: "plain", mentions: [], modelText: "plain" },
+      ],
+    });
+    const parsed = parse(withSkill);
+    expect(parsed).toEqual({ ok: true, record: withSkill });
+    expect(parsed.ok && "skill" in parsed.record.entries[2]!).toBe(false);
+  });
+
+  test("refuses a user entry whose skill has another shape", () => {
+    for (const skill of [
+      3,
+      null,
+      "grilling",
+      { name: "grilling" },
+      { name: 1, status: "loaded" },
+      { name: "g", status: "ok" },
+    ]) {
+      const entries = [{ role: "user", content: "/g", mentions: [], skill, modelText: "g" }];
+      expect(parse({ ...record(), entries })).toEqual({ ok: false, reason: "invalid entry 0" });
+    }
+  });
+
   test("rejects a record whose user entry has no model text", () => {
     const { modelText: _, ...user } = record().entries[0] as ConversationRecord["entries"][0] & { modelText: string };
     const parsed = parse({ ...record(), entries: [user] });

@@ -5,16 +5,29 @@
  * untrusted: `parseConversation` and `parseSummary` check every field and keep only known ones.
  */
 import type { MentionResult } from "./mentions";
-import type { ChatEntry, HaltReason, ReplyCall, ReplyStatus, StepApproval, ToolStepStatus } from "./protocol";
+import type {
+  ChatEntry,
+  HaltReason,
+  ReplyCall,
+  ReplyStatus,
+  StepApproval,
+  ToolStepStatus,
+  UserSkill,
+} from "./protocol";
 import type { ProviderError } from "./providerError";
 
-/** A user entry as saved: `modelText` is the text the model received, typed text plus mention blocks. */
+/**
+ * A user entry as saved: `modelText` is the text the model received, typed text (or the text of the skill it loads)
+ * plus mention blocks.
+ */
 export type StoredUserEntry = ChatEntry & { role: "user" } & { modelText: string };
 export type StoredEntry = StoredUserEntry | Exclude<ChatEntry, { role: "user" }>;
 
 /**
  * The record version this build writes and reads. Version 2 added tool steps, a reply's `call`, and halted replies.
- * Version 1 files are skipped like any other version: no release ever wrote them, so none is migrated.
+ * Version 1 files are skipped like any other version: no release ever wrote them, so none is migrated. An optional
+ * field added to an entry, such as a user entry's `skill`, keeps the version: an older build drops the unknown key and
+ * reads the rest.
  */
 export const CONVERSATION_VERSION = 2;
 
@@ -141,6 +154,7 @@ const HALT_REASONS: readonly HaltReason[] = ["malformedCalls", "stepLimit", "con
 const TOOL_STEP_STATUSES: readonly ToolStepStatus[] = ["ok", "error", "malformed"];
 const STEP_APPROVALS: readonly StepApproval[] = ["accepted", "rejected", "auto"];
 const MENTION_KINDS: readonly string[] = ["file", "folder"];
+const USER_SKILL_STATUSES: readonly string[] = ["loaded", "failed"];
 const MENTION_STATUSES: readonly string[] = [
   "attached",
   "truncated",
@@ -157,7 +171,15 @@ function parseEntry(raw: unknown): StoredEntry | undefined {
     if (!isString(raw.content) || !Array.isArray(raw.mentions) || !isString(raw.modelText)) return undefined;
     const mentions = raw.mentions.map(parseMention);
     if (mentions.some((mention) => mention === undefined)) return undefined;
-    return { role: "user", content: raw.content, mentions: mentions as MentionResult[], modelText: raw.modelText };
+    const skill = raw.skill === undefined ? undefined : parseUserSkill(raw.skill);
+    if (raw.skill !== undefined && !skill) return undefined;
+    return {
+      role: "user",
+      content: raw.content,
+      mentions: mentions as MentionResult[],
+      ...(skill ? { skill } : {}),
+      modelText: raw.modelText,
+    };
   }
   if (raw.role === "assistant") {
     if (!isString(raw.reasoning) || !isString(raw.content)) return undefined;
@@ -211,6 +233,11 @@ function parseCall(raw: unknown, length: number): ReplyCall | undefined {
 
 function isStringRecord(value: unknown): value is Record<string, string> {
   return isObject(value) && Object.values(value).every(isString);
+}
+
+function parseUserSkill(raw: unknown): UserSkill | undefined {
+  if (!isObject(raw) || !isString(raw.name) || !USER_SKILL_STATUSES.includes(raw.status as string)) return undefined;
+  return { name: raw.name, status: raw.status as UserSkill["status"] };
 }
 
 function parseMention(raw: unknown): MentionResult | undefined {

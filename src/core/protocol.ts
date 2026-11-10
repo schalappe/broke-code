@@ -52,9 +52,18 @@ export type StepApproval = "accepted" | "rejected" | "auto";
  */
 export type PendingApproval = { id: number; kind: "write" | "command"; tool: string; summary: string };
 
+/**
+ * The skill a user message loads with `/<name>`: `loaded` when its text reached the model, `failed` when its `SKILL.md`
+ * could not be read at send, and the model got a notice instead.
+ */
+export type UserSkill = { name: string; status: "loaded" | "failed" };
+
 export type ChatEntry =
-  /** `content`: the text as typed. `mentions`: each mention read at send time, in order. */
-  | { role: "user"; content: string; mentions: MentionResult[] }
+  /**
+   * `content`: the text as typed. `mentions`: each mention read at send time, in order. `skill`: set when the message
+   * starts with `/<name>` of a discovered skill.
+   */
+  | { role: "user"; content: string; mentions: MentionResult[]; skill?: UserSkill }
   /**
    * `reasoning`: text the model writes before its answer, shown collapsed, never sent back. `content`: the whole
    * answer, its call block included, so the history resends exactly what the model wrote; the chat hides the block by

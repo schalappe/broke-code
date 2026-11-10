@@ -3,8 +3,8 @@
  * Skill discovery: the direct children of `~/.agents/skills/` and of each workspace folder's `.agents/skills/` that
  * hold a `SKILL.md`, read at each send. A skill is valid when its frontmatter holds a `name` and a `description` that
  * follow the Agent Skills specification (agentskills.io/specification); any other skill is skipped with a warning.
- * No other tool's folder (`.claude/`, `.codex/`) is ever read. Also skill loading: the `load_skill` tool and the text a
- * loaded skill gives the model. Model-facing text is English and never localized.
+ * No other tool's folder (`.claude/`, `.codex/`) is ever read. Also skill loading: the `load_skill` tool, the `/<name>`
+ * a user message loads, and the text a loaded skill gives the model. Model-facing text is English and never localized.
  */
 import { readdir, realpath } from "node:fs/promises";
 import { join } from "node:path";
@@ -408,26 +408,56 @@ export async function loadSkill(
   return loadSkillText(skill);
 }
 
+/** A message that loads a skill: the skill its `/<name>` names, and the text after the name, trimmed. */
+export type SlashSkill = { skill: Skill; args: string };
+
+/**
+ * The skill `text` loads, when its trimmed text starts with `/`, a skill name, then whitespace or nothing: the skill of
+ * that name among `skills` (the send's discovery), listed to the model or not. `undefined` for any other text, so an
+ * unknown `/word` goes to the model as typed.
+ */
+export function findSlashSkill(text: string, skills: readonly Skill[]): SlashSkill | undefined {
+  const match = /^\/([a-z0-9-]+)(?:\s+([\s\S]*))?$/.exec(text.trim());
+  const skill = match ? skills.find((candidate) => candidate.name === match[1]) : undefined;
+  if (match === null || skill === undefined) return undefined;
+  return { skill, args: match[2] ?? "" };
+}
+
+/** The placeholder of a skill body that a user load replaces with the text after `/<name>`. */
+const ARGUMENTS = "$ARGUMENTS";
+
 /**
  * What loading `skill` gives the model, whoever loads it: a header naming the real path of its folder, then its
  * `SKILL.md` body, frontmatter and the blank lines after it removed, cut to the mention caps (1 MiB, 2,000 lines) with
  * the usual notice. `SKILL.md` is read as the files of a loaded skill are: inside the skill's real folder, symlinks
  * resolved. An `error` when it cannot be read. Never rejects.
+ *
+ * `args`: given when the user loads the skill with `/<name> args` (empty without arguments), absent for `load_skill`.
+ * Every `$ARGUMENTS` of the body becomes `args`, before the cut; a body without one is followed by a blank line and
+ * `args`, unless empty. The error then says the skill could not be loaded, followed by `args` the same way, since the
+ * message still goes.
  */
-export async function loadSkillText(skill: Skill): Promise<ToolResult> {
+export async function loadSkillText(skill: Skill, args?: string): Promise<ToolResult> {
+  const withArgs = (text: string) => (args ? `${text}\n\n${args}` : text);
   // [>]: Discovery already refused a `SKILL.md` linked out; this read is the boundary, should it be swapped since.
   const entry = await readWorkspaceEntry([], join(skill.root, FILE_NAME), {}, [skill.root]);
   if (entry.status !== "ok" || entry.kind !== "file") {
     const reason =
       entry.status === "ok" ? "it is a folder" : skillFileFailure(entry.status, "cause" in entry ? entry.cause : "");
-    return { status: "error", text: `load_skill: ${skill.name}: its ${FILE_NAME} could not be read (${reason}).` };
+    const failure = `its ${FILE_NAME} could not be read (${reason}).`;
+    if (args === undefined) return { status: "error", text: `load_skill: ${skill.name}: ${failure}` };
+    return { status: "error", text: withArgs(`Skill ${skill.name} could not be loaded: ${failure}`) };
   }
-  const body = (splitFrontmatter(entry.text)?.rest ?? entry.text).replace(/^(?:[ \t]*(?:\r\n|\r|\n))+/, "");
+  const written = (splitFrontmatter(entry.text)?.rest ?? entry.text).replace(/^(?:[ \t]*(?:\r\n|\r|\n))+/, "");
+  const substitutes = args !== undefined && written.includes(ARGUMENTS);
+  // [!]: A function, not the string: `replaceAll` reads `$&` and the like in a replacement string as patterns.
+  const body = substitutes ? written.replaceAll(ARGUMENTS, () => args) : written;
   const header = `Skill ${skill.name} loaded; ${whereFilesLive(skill)}`;
-  if (body === "") return { status: "ok", text: header };
   const cut = truncateLines(body, MAX_MENTION_LINES);
   const notice = cut.omitted > 0 ? `\n${truncationNotice(cut.omitted)}` : "";
-  return { status: "ok", text: `${header}\n\n${cut.text}${notice}` };
+  const text = body === "" ? header : `${header}\n\n${cut.text}${notice}`;
+  if (substitutes || !args) return { status: "ok", text };
+  return { status: "ok", text: withArgs(text.replace(/(?:\r\n|\r|\n)+$/, "")) };
 }
 
 function whereFilesLive(skill: Skill): string {
