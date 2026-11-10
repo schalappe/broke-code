@@ -596,6 +596,20 @@ describe("loadSkill", () => {
     });
   });
 
+  test("a skill kept from the model that the user already loaded gives the same ok, saying so", async () => {
+    const root = await writeSkill(
+      personal,
+      "deploy",
+      skillText("deploy", "Deploy.", "disable-model-invocation: true\n"),
+    );
+    await writeSkill(personal, "review", skillText("review", "Review."));
+    const { skills } = await readSkills(home, []);
+    expect(await loadSkill("deploy", skills, [root])).toEqual({
+      status: "ok",
+      text: `Skill deploy is already loaded; its files live in ${root}; read them by that absolute path.`,
+    });
+  });
+
   test("cuts a body over 2,000 lines to its first 2,000, with the mention notice", async () => {
     const lines = Array.from({ length: 2500 }, (_, index) => `step ${index + 1}`).join("\n");
     const root = await writeSkill(personal, "long", `---\nname: long\ndescription: Long.\n---\n${lines}\n`);

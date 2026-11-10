@@ -61,7 +61,8 @@ call, and a user entry whose `SKILL.md` could not be read at send load nothing. 
 maps those names to folders through the current send's discovery, so a load earlier in the same turn counts at the
 next call, a reopened conversation keeps its loaded skills with no new version, and a skill that vanished since is
 simply no longer readable. Loading a skill already loaded answers `ok`, "already loaded", without the body, which the
-conversation already holds.
+conversation already holds; this holds for a skill kept from the model too, once the user loaded it with `/<name>`,
+since an error there contradicts the text the conversation holds and models then refuse that text as injected.
 
 `load_skill` is offered, with its prompt rule, only while a skill is listed to the model, like the Skills section: a
 workspace without skills spends no prompt on it, and the prompt of every eval scenario without a skill stays as it was measured. Its call is then a malformed one.

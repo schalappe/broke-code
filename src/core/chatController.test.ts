@@ -2658,6 +2658,42 @@ describe("ChatController agent turn", () => {
       await controller.send("again");
       expect(state().entries[10]).toMatchObject({ role: "tool", status: "ok" });
     });
+
+    test("after /<name> of a skill kept from the model, its load_skill is already loaded; before, it is refused", async () => {
+      const root = personalSkill("deploy", "Deploy $ARGUMENTS.\n", "disable-model-invocation: true\n");
+      personalSkill("review", "Review.\n");
+      const runner = workspaceToolRunner(
+        () => [{ name: "ws", path: workspaceDir }],
+        { ripgrepCandidates: [] },
+        (roots) => fileApplier(roots),
+      );
+      const loadCall = "<load_skill>\n<name>deploy</name>\n</load_skill>";
+      const { controller, state } = await scripted(
+        [{ content: loadCall }, { content: "Loaded." }, { content: loadCall }, { content: "Cannot." }],
+        runner,
+        undefined,
+        undefined,
+        discovery,
+      );
+      await controller.send("/deploy prod");
+      expect(state().entries[2]).toEqual({
+        role: "tool",
+        name: "load_skill",
+        args: { name: "deploy" },
+        status: "ok",
+        text: `Skill deploy is already loaded; its files live in ${root}; read them by that absolute path.`,
+      });
+
+      await controller.newChat();
+      await controller.send("deploy prod");
+      expect(state().entries[2]).toEqual({
+        role: "tool",
+        name: "load_skill",
+        args: { name: "deploy" },
+        status: "error",
+        text: "load_skill: deploy: no skill of that name can be loaded. Skills you can load: review.",
+      });
+    });
   });
 
   test("without instruction files the system message is the prompt alone", async () => {

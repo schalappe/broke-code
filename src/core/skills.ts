@@ -407,9 +407,10 @@ export const LOAD_SKILL_TOOL: ToolSpec = {
 };
 
 /**
- * The model's `load_skill` of `name`: the skill of that name among `skills` (the send's discovery) that is listed to
- * the model. A skill whose folder is in `loadedRoots` (the real folders of the skills loaded in the conversation) is
- * already loaded: `ok`, saying so, without the body. An unknown name, a skipped skill, and one kept from the model give
+ * The model's `load_skill` of `name`, among `skills` (the send's discovery). A skill whose folder is in `loadedRoots`
+ * (the real folders of the skills loaded in the conversation) is already loaded: `ok`, saying so, without the body,
+ * kept from the model or not, since the user may have loaded it with `/<name>` and the conversation holds its text.
+ * Otherwise the model loads a skill listed to it; an unknown name, a skipped skill, and one kept from the model give
  * an `error` naming the skills the model may load. Never rejects.
  */
 export async function loadSkill(
@@ -417,15 +418,16 @@ export async function loadSkill(
   skills: readonly Skill[],
   loadedRoots: readonly string[],
 ): Promise<ToolResult> {
+  const loaded = skills.find((candidate) => candidate.name === name && loadedRoots.includes(candidate.root));
+  if (loaded !== undefined) {
+    return { status: "ok", text: `Skill ${loaded.name} is already loaded; ${whereFilesLive(loaded)}` };
+  }
   const loadable = skills.filter((skill) => skill.listedToModel);
   const skill = loadable.find((candidate) => candidate.name === name);
   if (skill === undefined) {
     const names = loadable.map((candidate) => candidate.name).sort(compareNames);
     const choice = names.length > 0 ? `Skills you can load: ${names.join(", ")}.` : "No skill can be loaded.";
     return { status: "error", text: `load_skill: ${excerpt(name)}: no skill of that name can be loaded. ${choice}` };
-  }
-  if (loadedRoots.includes(skill.root)) {
-    return { status: "ok", text: `Skill ${skill.name} is already loaded; ${whereFilesLive(skill)}` };
   }
   return loadSkillText(skill);
 }

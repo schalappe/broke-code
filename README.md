@@ -202,7 +202,7 @@ skill's name and description to the model; the instructions themselves stay out 
 - Every file of a skill lives in its own folder: a skill whose `SKILL.md` is a symbolic link to somewhere outside the
   skill's folder is skipped, with a warning.
 - `disable-model-invocation: true` keeps a skill out of the list the model sees, and the model cannot load it; you
-  still can, with `/<name>`.
+  still can, with `/<name>`, and the model then sees it as loaded.
 
 When a task matches a skill's description, the model calls **load_skill** with its name and receives the
 instructions, without the frontmatter, cut to their first 2,000 lines, together with the real path of the skill's

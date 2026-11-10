@@ -479,18 +479,21 @@ goes to the model as typed. Read `GLOSSARY.md` for the domain vocabulary and `do
   (`skills.ts`), no YAML dependency: top-level `key: value` with plain, single- or double-quoted, or `>` and `|` block
   values; nested maps and unknown keys are ignored. `name` follows the spec (1 to 64 of `a-z`, `0-9`, `-`, no hyphen
   first, last, or twice in a row); `description` is 1 to 1,024 characters.
-- `disable-model-invocation: true` (outside the spec) keeps a valid skill out of the model's list and of
-  `load_skill`; it stays discovered for `/<name>`.
+- `disable-model-invocation: true` (outside the spec) keeps a valid skill out of the model's list, and the model cannot
+  load it with `load_skill`; it stays discovered for `/<name>`, and once the user loaded it that way the model's
+  `load_skill` of it answers "already loaded".
 - Do not read `.claude/`, `.codex/`, or any other tool's directory. The `.agents` convention is the only one.
 - The system prompt lists each skill's name and description only. `load_skill` or `/<name>` loads the body.
-- `load_skill(name)` loads a skill of the send's discovery that is listed to the model. Its `ok` result is
+- `load_skill(name)` loads a skill of the send's discovery that is listed to the model; a skill already loaded in the
+  conversation answers "already loaded" (below), listed to the model or not. Its `ok` result is
   `Skill <name> loaded; its files live in <real folder path>; read them by that absolute path.`, a blank line, then the
   `SKILL.md` body without its frontmatter and the blank lines after it, cut to 2,000 lines with the mention notice
   (`SKILL.md` is read under the 1 MiB cap, inside the skill's real folder like its other files: discovery already
   skipped one linked out, so this check only catches a swap since, as `its SKILL.md could not be read (it links outside
   the skill's folder)`). A skill already loaded gives `ok`, `Skill <name> is already loaded; its files live in ...`,
-  without the body. An unknown name, a skipped skill, and one kept from the model give an `error` naming the skills the
-  model may load.
+  without the body, also one kept from the model that the user loaded with `/<name>`: an error there made models read
+  the loaded text as injected and refuse it (#50, live). An unknown name, a skipped skill, and one kept from the model
+  and not loaded give an `error` naming the skills the model may load.
 - A sent message is a skill command when its trimmed text is `/`, a name of the send's discovery (listed to the model
   or not; a skipped skill is not discovered), then whitespace or the end (`findSlashSkill`, in the controller's send,
   after discovery). Any other `/word` is sent as typed, `/new` and `/model` included (#51 handles them in the webview
