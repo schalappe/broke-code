@@ -283,15 +283,34 @@ export const SLASH_SCENARIO: Scenario = {
   check: slashLoadedCodeRead,
 };
 
+/** A personal skill unrelated to depots, listed to the model, so a scenario's prompt offers `load_skill`. */
+const DECOY_SKILL: WorkspaceFiles = {
+  ".agents/skills/release-notes/SKILL.md": [
+    "---",
+    "name: release-notes",
+    "description: Write release notes from the commits since the last tag. Use when asked for release notes.",
+    "---",
+    "",
+    "# Release notes",
+    "",
+    "1. List the commits since the last tag.",
+    "2. Group them by feature, fix, and other.",
+    "3. Write one line per change, in the past tense.",
+    "",
+  ].join("\n"),
+};
+
 /**
  * Load a skill kept from the model with `/<name>`: the slash scenario with `disable-model-invocation: true` in the
- * skill's frontmatter, so the prompt has no Skills section and no `load_skill`. Measures that the model follows a skill
- * the user loaded although it was never listed to it, rather than refusing the loaded text. Judged as `slash`.
+ * skill's frontmatter, beside an unrelated listed skill, so the prompt has the Skills section and offers `load_skill`
+ * while `depot-codes` stays off its list. Measures that the model follows a skill the user loaded although it was
+ * never listed to it, rather than refusing the loaded text; a `load_skill` of it answers "already loaded" (#50, where
+ * an error there made the model refuse). Judged as `slash`.
  */
 export const HIDDEN_SCENARIO: Scenario = {
   ...SLASH_SCENARIO,
   name: "hidden",
-  home: depotHome(["disable-model-invocation: true"]),
+  home: { ...depotHome(["disable-model-invocation: true"]), ...DECOY_SKILL },
 };
 
 /** Log files per month under `logs/<year>/<month>/`, uneven so the total cannot be guessed from the folder count. */

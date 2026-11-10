@@ -271,7 +271,8 @@ runs of each task, with the bar at nine. The bench has seven tasks:
 - **Skill**: answer a question that a personal skill covers, by loading the skill and reading a file in its folder.
 - **Command**: count the files of a folder and its subfolders, by running a shell command.
 - **Slash**: answer the skill task's question sent after `/` and the skill's name, which loads the skill for the model.
-- **Hidden**: the slash task with a skill kept from the model, which only you can load.
+- **Hidden**: the slash task with a skill kept from the model, which only you can load, beside an unrelated skill the
+  model may load.
 
 Both models pass every task, with at least 9 runs of 10 on each; the slash and hidden tasks passed 10 of 10 on both. When a model thinks, then stops without a
 word, broke-code tells it so and asks again. Contributors run the bench with `bun run eval`.

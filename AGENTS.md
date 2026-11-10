@@ -566,9 +566,11 @@ goes to the model as typed. Read `GLOSSARY.md` for the domain vocabulary and `do
     skill. Passes when a read step got the code, the answer holds it, and no file changed; no `load_skill` step is
     required, and an `ok` one is allowed. A first user entry without a `loaded` skill is `wrongTool`, its detail
     saying so, since the run then measures nothing of the slash path.
-  - `hidden`: `slash` with `disable-model-invocation: true` in the skill's frontmatter, so the prompt has neither the
-    Skills section nor `load_skill`, and judged the same way. It measures that the model follows a skill the user
-    loaded although it was never listed to it, instead of refusing the loaded text as injected (#50, live).
+  - `hidden`: `slash` with `disable-model-invocation: true` in the skill's frontmatter, beside a second personal skill,
+    `release-notes`, unrelated to depots and listed, so the prompt has the Skills section and offers `load_skill` while
+    `depot-codes` stays off its list; judged the same way. It measures that the model follows a skill the user loaded
+    although it was never listed to it, instead of refusing the loaded text as injected: live, a `load_skill` of it
+    answered an error and the model refused (#50); it now answers "already loaded".
 
   A failed run shows one category and a one-line detail: `malformed`, `wrongTool`, `wrongAnswer`, `stepLimit`,
   `contextFull`, `providerError`, `wrongEdit` (a file the scenario writes is missing or holds other text, with the
@@ -590,9 +592,9 @@ goes to the model as typed. Read `GLOSSARY.md` for the domain vocabulary and `do
   subfolders (#9 verification). On 9db1a52 the six scenarios took 55 min 45 s, one `gemma4` `edit` run alone 22 min 56 s
   before it failed `malformed` (a `<read_file>` call never closed); every model met the bar: `slash` 10/10 on both
   models, `command` 9/10 on `qwen3.8:27b` (`wrongTool`: it listed the folders, then searched, and ran no command),
-  `edit` 9/10 on `gemma4`, every other scenario 10/10. When `hidden` was added, `slash` and `hidden` alone took
-  11 min 58 s, 10/10 on both models; no `hidden` run called `load_skill`: `qwen3.8:27b` read the reference file at
-  once, `gemma4` most often after listing the skill folder.
+  `edit` 9/10 on `gemma4`, every other scenario 10/10. On 9f6ae23 plus the `release-notes` skill, `hidden` alone
+  took 5 min 38 s, 10/10 on both models: `qwen3.8:27b` read the reference file at once in every run; `gemma4` called
+  `load_skill(depot-codes)` in 2 runs, got "already loaded", then read the file, and listed the skill folder first in 4.
 - v1 supports macOS only. Windows and Linux are planned for v2.
 
 ## Git and release workflow

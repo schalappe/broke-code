@@ -335,6 +335,7 @@ describe("judge on the create scenario", () => {
 
 const DISPATCH_CODE = "LYN-7Q42-ORCA";
 const SKILL_FILE = ".agents/skills/depot-codes/SKILL.md";
+const DECOY_FILE = ".agents/skills/release-notes/SKILL.md";
 const SKILL_ROOT = "/tmp/home/.agents/skills/depot-codes";
 const skillHome = SKILL_SCENARIO.home ?? {};
 const skillUser: ChatEntry = { role: "user", content: SKILL_SCENARIO.message, mentions: [] };
@@ -470,17 +471,21 @@ describe("judge on the slash scenario", () => {
 const hiddenUser: ChatEntry = { ...slashUser, content: HIDDEN_SCENARIO.message };
 
 describe("hidden scenario fixture", () => {
-  test("is the slash scenario with its skill kept from the model", () => {
+  test("is the slash scenario with its skill kept from the model, beside one unrelated listed skill", () => {
     expect(HIDDEN_SCENARIO.files).toEqual(SLASH_SCENARIO.files);
     expect(HIDDEN_SCENARIO.message).toBe(SLASH_SCENARIO.message);
     const home = HIDDEN_SCENARIO.home ?? {};
     expect(fileAt(home, SKILL_FILE)).toBe(
       fileAt(skillHome, SKILL_FILE)?.replace("\n---\n", "\ndisable-model-invocation: true\n---\n"),
     );
-    expect(Object.keys(home).sort()).toEqual(Object.keys(skillHome).sort());
+    expect(Object.keys(home).sort()).toEqual([...Object.keys(skillHome), DECOY_FILE].sort());
+    const decoy = fileAt(home, DECOY_FILE) ?? "";
+    expect(decoy).toStartWith("---\nname: release-notes\ndescription: ");
+    for (const hint of ["depot", "dispatch", DISPATCH_CODE])
+      expect(decoy.toLowerCase()).not.toContain(hint.toLowerCase());
   });
 
-  test("its skill is discovered and not listed to the model", async () => {
+  test("its depot skill is discovered and not listed to the model; the decoy is listed, so load_skill is offered", async () => {
     const dir = mkdtempSync(join(tmpdir(), "broke-code-hidden-"));
     try {
       for (const [path, text] of Object.entries(HIDDEN_SCENARIO.home ?? {})) {
@@ -489,8 +494,10 @@ describe("hidden scenario fixture", () => {
       }
       const { skills, warnings } = await readSkills(dir, []);
       expect(warnings).toEqual([]);
-      expect(skills.map(({ name, listedToModel }) => ({ name, listedToModel }))).toEqual([
+      const listed = skills.map(({ name, listedToModel }) => ({ name, listedToModel }));
+      expect(listed.sort((a, b) => a.name.localeCompare(b.name))).toEqual([
         { name: "depot-codes", listedToModel: false },
+        { name: "release-notes", listedToModel: true },
       ]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -499,6 +506,18 @@ describe("hidden scenario fixture", () => {
 });
 
 describe("judge on the hidden scenario", () => {
+  test("passes a turn whose load_skill of the skill the user loaded answered already loaded", () => {
+    const alreadyLoaded: ChatEntry = {
+      role: "tool",
+      name: "load_skill",
+      args: { name: "depot-codes" },
+      status: "ok",
+      text: `Skill depot-codes is already loaded; its files live in ${SKILL_ROOT}; read them by that absolute path.`,
+    };
+    const entries = [hiddenUser, loadCall, alreadyLoaded, ...depotsRead, answer(DISPATCH_CODE)];
+    expect(judge(HIDDEN_SCENARIO, entries, skillUntouched)).toEqual({ pass: true });
+  });
+
   test("passes a turn that read the reference file and answered with the value", () => {
     const entries = [hiddenUser, ...depotsRead, answer(`The Lyon code is ${DISPATCH_CODE}.`)];
     expect(judge(HIDDEN_SCENARIO, entries, skillUntouched)).toEqual({ pass: true });
