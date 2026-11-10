@@ -502,11 +502,12 @@ goes to the model as typed. Read `GLOSSARY.md` for the domain vocabulary and `do
   after discovery). Any other `/word` is sent as typed, `/new` and `/model` included (#51 handles them in the webview
   before any send). `args` is the text after the name, trimmed.
 - The model receives one user message (role alternation): `loadSkillText(skill, args)`, the `load_skill` text with
-  every `$ARGUMENTS` of the body replaced by `args`, the empty string included, before the 2,000-line cut; a body
-  without `$ARGUMENTS` is followed, when `args` is not empty, by a blank line and `args`, its trailing line breaks
-  dropped first. Mentions in `args` are read as for any message and their blocks follow; the `/<name>` token is never
-  a mention. A `SKILL.md` that cannot be read at send (swapped since discovery) still sends the message, as an
-  unreadable mention does: `Skill <name> could not be loaded: its SKILL.md could not be read (<reason>).`, then `args`
+  every `$ARGUMENTS` of the body replaced by `args`, the empty string included, before the cut to 2,000 lines and
+  1 MiB (between characters, a line the byte cap cuts counted as not shown; a longer text is never built whole, since a
+  repository's `SKILL.md` can hold 100,000 `$ARGUMENTS`); a body without `$ARGUMENTS` is followed, when `args` is not
+  empty, by a blank line and `args`, its trailing line breaks dropped first. Mentions in `args` are read as for any
+  message and their blocks follow; the `/<name>` token is never a mention. A `SKILL.md` that cannot be read at send
+  (swapped since discovery) still sends the message, as an unreadable mention does: `Skill <name> could not be loaded: its SKILL.md could not be read (<reason>).`, then `args`
   after a blank line. The user entry keeps the text as typed and gets `skill: { name, status: "loaded" | "failed" }`,
   which the chat shows as a chip `Skill <name>` before the mention chips. A loaded one counts as loaded in the
   conversation from that message on (see "Harness"); a second `/<name>` sends the whole text again, and the model's

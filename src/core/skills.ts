@@ -473,15 +473,85 @@ export async function loadSkillText(skill: Skill, args?: string): Promise<ToolRe
     return { status: "error", text: withArgs(`Skill ${skill.name} could not be loaded: ${failure}`) };
   }
   const written = (splitFrontmatter(entry.text)?.rest ?? entry.text).replace(/^(?:[ \t]*(?:\r\n|\r|\n))+/, "");
-  const substitutes = args !== undefined && written.includes(ARGUMENTS);
-  // [!]: A function, not the string: `replaceAll` reads `$&` and the like in a replacement string as patterns.
-  const body = substitutes ? written.replaceAll(ARGUMENTS, () => args) : written;
+  const segments = args === undefined ? [written] : written.split(ARGUMENTS);
+  const substitutes = segments.length > 1;
   const header = `Skill ${skill.name} loaded; ${whereFilesLive(skill)}`;
-  const cut = truncateLines(body, MAX_MENTION_LINES);
+  const cut = cutExpansion(segments, args ?? "");
   const notice = cut.omitted > 0 ? `\n${truncationNotice(cut.omitted)}` : "";
-  const text = body === "" ? header : `${header}\n\n${cut.text}${notice}`;
+  const text = cut.text === "" ? header : `${header}\n\n${cut.text}${notice}`;
   if (substitutes || !args) return { status: "ok", text };
   return { status: "ok", text: withArgs(text.replace(/(?:\r\n|\r|\n)+$/, "")) };
+}
+
+/** The byte cap of a loaded skill's body once its `$ARGUMENTS` are replaced: the mention cap. */
+const MAX_LOADED_BYTES = 1024 * 1024;
+
+/**
+ * `segments` joined by `args`, cut to its first 2,000 lines and 1 MiB (between characters) as `truncateLines` cuts a
+ * read, `omitted` counting the lines not shown, a line the byte cap cut among them.
+ *
+ * [!]: A text over 1 MiB is never built whole: a repository's `SKILL.md` can hold 100,000 `$ARGUMENTS` under its
+ * 1 MiB cap, each becoming the whole text the user typed, so the expansion could reach hundreds of megabytes and block
+ * the extension host, which Stop cannot interrupt.
+ */
+function cutExpansion(segments: readonly string[], args: string): { text: string; omitted: number } {
+  const argsBytes = Buffer.byteLength(args);
+  let bytes = (segments.length - 1) * argsBytes;
+  for (const segment of segments) bytes += Buffer.byteLength(segment);
+  if (bytes <= MAX_LOADED_BYTES) {
+    const cut = truncateLines(segments.join(args), MAX_MENTION_LINES);
+    return { text: cut.text, omitted: cut.omitted };
+  }
+  const prefix = bytePrefix(joined(segments, args), MAX_LOADED_BYTES);
+  const cut = truncateLines(prefix, MAX_MENTION_LINES);
+  // [>]: Under the line cap, the byte cap cut the last line shown unless the prefix ends with its line break.
+  const partial = cut.omitted === 0 && !/[\r\n]$/.test(prefix) ? 1 : 0;
+  return { text: cut.text, omitted: joinedLineCount(segments, args) - (cut.lines - partial) };
+}
+
+/** The pieces of `segments` joined by `args`, in order, `args` never copied. */
+function* joined(segments: readonly string[], args: string): Generator<string> {
+  for (const [index, segment] of segments.entries()) {
+    if (index > 0) yield args;
+    yield segment;
+  }
+}
+
+/** The first `max` UTF-8 bytes of `pieces` joined, cut between characters. */
+function bytePrefix(pieces: Iterable<string>, max: number): string {
+  const buffer = new Uint8Array(max);
+  const encoder = new TextEncoder();
+  const kept: string[] = [];
+  let used = 0;
+  for (const piece of pieces) {
+    // [>]: `encodeInto` writes whole characters only, so `read` ends between two of them.
+    const { read, written } = encoder.encodeInto(piece, buffer.subarray(used));
+    kept.push(piece.slice(0, read));
+    used += written;
+    if (read < piece.length) break;
+  }
+  return kept.join("");
+}
+
+/** The lines of `segments` joined by `args`, counted as `truncateLines` counts them, without building the text. */
+function joinedLineCount(segments: readonly string[], args: string): number {
+  const argsBreaks = countLineBreaks(args);
+  let breaks = 0;
+  let last = "";
+  for (const piece of joined(segments, args)) {
+    if (piece === "") continue;
+    // [>]: A `\r` ending one piece and a `\n` starting the next form one `\r\n` break, counted once in each piece.
+    if (last === "\r" && piece.startsWith("\n")) breaks--;
+    breaks += piece === args ? argsBreaks : countLineBreaks(piece);
+    last = piece.at(-1)!;
+  }
+  if (last === "") return 0;
+  // [>]: A final line break ends the last line, not a new one.
+  return last === "\r" || last === "\n" ? breaks : breaks + 1;
+}
+
+function countLineBreaks(text: string): number {
+  return text.match(/\r\n|\r|\n/g)?.length ?? 0;
 }
 
 function whereFilesLive(skill: Skill): string {

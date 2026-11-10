@@ -733,6 +733,33 @@ describe("loadSkillText with the user's arguments", () => {
     expect(result.text).toEndWith("\nstep 1998\n[truncated: 1 more lines not shown]");
   });
 
+  test("100,000 $ARGUMENTS with 1,000-line arguments are cut without building the 200 MB expansion", async () => {
+    const args = Array.from({ length: 1000 }, () => "x").join("\n");
+    const { skill } = await discovered("flood", `${"$ARGUMENTS".repeat(100_000)}\n`);
+    const result = await loadSkillText(skill, args);
+    // [>]: Each junction joins the last line of one copy with the first of the next: 999 breaks a copy, plus the last.
+    expect(result.text).toEndWith(`\nx\n[truncated: ${100_000 * 999 + 1 - 2000} more lines not shown]`);
+    expect(result.text.length).toBeLessThan(10_000);
+  });
+
+  test("an expansion over 1 MiB is cut between characters, the cut line counted as not shown", async () => {
+    const { skill, root } = await discovered("wide", `a${"$ARGUMENTS".repeat(1000)}`);
+    const result = await loadSkillText(skill, "é".repeat(1000));
+    // [>]: `a` takes 1 byte and each `é` 2, so the 1 MiB cap ends one byte short of the next `é`.
+    expect(result).toEqual({
+      status: "ok",
+      text: `${header("wide", root)}\n\na${"é".repeat(524_287)}\n[truncated: 1 more lines not shown]`,
+    });
+  });
+
+  test("a \\r ending the arguments and a \\n after them count as one line break past the byte cap", async () => {
+    const line = "a".repeat(2000);
+    const { skill } = await discovered("crlf", "$ARGUMENTS\n".repeat(1000));
+    const result = await loadSkillText(skill, `${line}\r`);
+    // [>]: 1000 lines of 2,002 bytes: 1 MiB keeps 523 whole lines and 1,530 bytes of the 524th.
+    expect(result.text).toEndWith(`${line}\r\n${"a".repeat(1530)}\n[truncated: 477 more lines not shown]`);
+  });
+
   test("an unreadable SKILL.md says the skill could not be loaded, then the arguments", async () => {
     const { skill, root } = await discovered("grilling", "Grill: $ARGUMENTS\n");
     await unlink(join(root, "SKILL.md"));
