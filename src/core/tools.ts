@@ -47,7 +47,14 @@ export const READ_TOOLS: ToolSpec[] = [
     name: "read_file",
     description:
       "Read a text file of the workspace. Returns its content in a fenced block under a header with its line count. Binary files and files over 1 MiB are refused. A file over 2,000 lines is cut to its first 2,000, with a note saying how many lines were left out. For a folder, use list_files.",
-    args: [{ name: "path", required: true, description: "Path of the file, relative to the workspace folder." }],
+    args: [
+      {
+        name: "path",
+        required: true,
+        oneLine: true,
+        description: "Path of the file, relative to the workspace folder.",
+      },
+    ],
   },
   {
     name: "list_files",
@@ -57,6 +64,7 @@ export const READ_TOOLS: ToolSpec[] = [
       {
         name: "path",
         required: false,
+        oneLine: true,
         description:
           "Path of the folder, relative to the workspace folder. Leave it out to list the workspace folder, or the folder names when the workspace has several.",
       },
@@ -70,12 +78,14 @@ export const READ_TOOLS: ToolSpec[] = [
       {
         name: "pattern",
         required: true,
+        oneLine: true,
         description:
           "The regular expression to find; it must not be empty. Escape characters such as ( . * [ with \\ to match them literally.",
       },
       {
         name: "path",
         required: false,
+        oneLine: true,
         description:
           "File or folder to search in, relative to the workspace folder. Leave it out to search the whole workspace.",
       },

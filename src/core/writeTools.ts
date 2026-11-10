@@ -42,7 +42,12 @@ export const WRITE_TOOLS: ToolSpec[] = [
     description:
       "Create a file of the workspace, or replace a whole file. Missing folders are created. The file becomes exactly the content given, ending with one line break whatever line breaks end the content, so give the complete new text. Binary files and files over 1 MiB are refused. To change part of a file, use edit_file.",
     args: [
-      { name: "path", required: true, description: "Path of the file, relative to the workspace folder." },
+      {
+        name: "path",
+        required: true,
+        oneLine: true,
+        description: "Path of the file, relative to the workspace folder.",
+      },
       { name: "content", required: true, description: "The whole new content of the file, as raw text." },
     ],
   },
@@ -51,7 +56,12 @@ export const WRITE_TOOLS: ToolSpec[] = [
     description:
       "Replace one exact passage of a workspace file. The passage must appear exactly once, matched character for character, spaces, indentation, and line breaks included; otherwise nothing changes and the result says why. Read the file first. Binary files and files over 1 MiB are refused.",
     args: [
-      { name: "path", required: true, description: "Path of the file, relative to the workspace folder." },
+      {
+        name: "path",
+        required: true,
+        oneLine: true,
+        description: "Path of the file, relative to the workspace folder.",
+      },
       {
         name: "old",
         required: true,

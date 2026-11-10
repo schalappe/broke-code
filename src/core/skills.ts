@@ -403,7 +403,7 @@ export const LOAD_SKILL_TOOL: ToolSpec = {
   name: "load_skill",
   description:
     "Load a skill listed under Skills: returns its instructions and the absolute path of its folder. Read the other files of a loaded skill with read_file, list_files, or search, by the absolute path the result gives; a skill folder outside the workspace is read-only. Load a skill once per conversation.",
-  args: [{ name: "name", required: true, description: "The skill's name, as listed under Skills." }],
+  args: [{ name: "name", required: true, oneLine: true, description: "The skill's name, as listed under Skills." }],
 };
 
 /**
