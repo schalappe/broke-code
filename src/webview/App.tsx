@@ -5,6 +5,7 @@ import type { ConversationSummary } from "../core/conversation";
 import {
   type ChatEntry,
   type ChatState,
+  emptyModelsLabel,
   type HostMessage,
   isReplying,
   type PendingApproval,
@@ -182,24 +183,11 @@ function Pickers({ state }: { state: ChatState }) {
             </option>
           ))
         ) : (
-          <option value="">{modelPlaceholder(state)}</option>
+          <option value="">{emptyModelsLabel(models, l10n, "blank")}</option>
         )}
       </select>
     </div>
   );
-}
-
-function modelPlaceholder(state: ChatState): string {
-  switch (state.models.status) {
-    case "loading":
-      return l10n.t("Loading models…");
-    case "failed":
-      return l10n.t("Models unavailable");
-    case "loaded":
-      return l10n.t("No models");
-    case "noProvider":
-      return "";
-  }
 }
 
 /** Skipped providers, from the settings, then skipped skills, from the last send. */

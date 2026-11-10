@@ -7,8 +7,8 @@ import type { ChatController } from "../core/chatController";
 import type { FileQueryAnswer } from "../core/fileIndex";
 import {
   type ChatState,
+  emptyModelsLabel,
   type HostMessage,
-  type ModelsState,
   modelChoices,
   parseWebviewMessage,
 } from "../core/protocol";
@@ -87,7 +87,8 @@ export class ChatView implements vscode.WebviewViewProvider {
       label: choice.model,
       description: choice.current ? vscode.l10n.t("current") : undefined,
     }));
-    const placeHolder = items.length > 0 ? vscode.l10n.t("Choose the model") : noModelsText(models);
+    const placeHolder =
+      items.length > 0 ? vscode.l10n.t("Choose the model") : emptyModelsLabel(models, vscode.l10n, "noModels");
     const picked = await vscode.window.showQuickPick(items, { placeHolder });
     if (picked) this.controller.selectModel(picked.label);
   }
@@ -151,18 +152,5 @@ export class ChatView implements vscode.WebviewViewProvider {
         controller.reject(message.id, message.reason);
         return;
     }
-  }
-}
-
-/** Why the model list is empty, as the header's select says it. */
-function noModelsText(models: ModelsState): string {
-  switch (models.status) {
-    case "loading":
-      return vscode.l10n.t("Loading models…");
-    case "failed":
-      return vscode.l10n.t("Models unavailable");
-    case "loaded":
-    case "noProvider":
-      return vscode.l10n.t("No models");
   }
 }
