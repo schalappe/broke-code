@@ -305,45 +305,18 @@ describe("approval", () => {
   });
 
   test("the reason typed survives opening and closing History, and Reject still carries it", async () => {
-    const { GlobalRegistrator } = await import("@happy-dom/global-registrator");
-    const { act, createElement } = await import("react");
-    GlobalRegistrator.register();
-    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-    try {
-      const { createRoot } = await import("react-dom/client");
-      const host = document.createElement("div");
-      document.body.append(host);
-      const root = createRoot(host);
-      const state = stateWith(true, {
-        entries: [{ role: "user", content: "Hi", mentions: [] }, writing],
-        approval,
-      });
-      await act(async () => root.render(createElement(App, { state, language: "en" })));
-
+    const state = stateWith(true, { entries: [{ role: "user", content: "Hi", mentions: [] }, writing], approval });
+    await withPanel(state, async ({ host, fill, click }) => {
       const field = host.querySelector<HTMLInputElement>("input.approval-reason");
       if (!field) throw new Error("no reason field");
-      // [&]: React tracks the value property; set it through the prototype setter so the input event registers.
-      const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
-      await act(async () => {
-        setValue?.call(field, "Keep the old name.");
-        field.dispatchEvent(new Event("input", { bubbles: true }));
-      });
-
-      const click = async (label: string) => {
-        const target = [...host.querySelectorAll("button")].find((element) => element.textContent === label);
-        if (!target) throw new Error(`no ${label} button`);
-        await act(async () => target.click());
-      };
+      await fill(field, "Keep the old name.");
       await click("History");
       await click("History");
 
       expect(host.querySelector<HTMLInputElement>("input.approval-reason")?.value).toBe("Keep the old name.");
       await click("Reject");
       expect(posted).toEqual([{ type: "reject", id: 7, reason: "Keep the old name." }]);
-      await act(async () => root.unmount());
-    } finally {
-      GlobalRegistrator.unregister();
-    }
+    });
   });
 
   describe("commands", () => {
@@ -725,6 +698,73 @@ const hi: ChatEntry[] = [
   { role: "assistant", reasoning: "", content: "Hello", status: "done" },
 ];
 
+/** The mounted panel `withPanel` hands its callback, with the DOM actions a user takes. */
+type Panel = {
+  host: HTMLElement;
+  textarea: HTMLTextAreaElement;
+  /** Replace the message box text, caret at its end. */
+  type: (value: string) => Promise<void>;
+  /** Key down in the message box. */
+  press: (key: string) => Promise<void>;
+  /** A message from the host. */
+  receive: (message: unknown) => Promise<void>;
+  /** Replace `field`'s value as typing does. */
+  fill: (field: HTMLInputElement | HTMLTextAreaElement, value: string) => Promise<void>;
+  /** Click the button labelled `label`. */
+  click: (label: string) => Promise<void>;
+};
+
+/** Mount `App` over a DOM registered for the test's duration; `run` drives it, then the panel unmounts. */
+async function withPanel(state: ChatState, run: (panel: Panel) => Promise<void>): Promise<void> {
+  const { GlobalRegistrator } = await import("@happy-dom/global-registrator");
+  const { act, createElement } = await import("react");
+  GlobalRegistrator.register();
+  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  try {
+    const { createRoot } = await import("react-dom/client");
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    await act(async () => root.render(createElement(App, { state, language: "en" })));
+    const textarea = host.querySelector("textarea");
+    if (!textarea) throw new Error("no message box");
+    // [&]: React tracks the value property; set it through the prototype setter so the input event registers.
+    const setValue = (field: HTMLInputElement | HTMLTextAreaElement, value: string) =>
+      Object.getOwnPropertyDescriptor(Object.getPrototypeOf(field), "value")?.set?.call(field, value);
+    await run({
+      host,
+      textarea,
+      type: (value) =>
+        act(async () => {
+          setValue(textarea, value);
+          textarea.setSelectionRange(value.length, value.length);
+          textarea.dispatchEvent(new Event("input", { bubbles: true }));
+        }),
+      press: (key) =>
+        act(async () => {
+          textarea.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+        }),
+      receive: (message) =>
+        act(async () => {
+          window.dispatchEvent(new MessageEvent("message", { data: message }));
+        }),
+      fill: (field, value) =>
+        act(async () => {
+          setValue(field, value);
+          field.dispatchEvent(new Event("input", { bubbles: true }));
+        }),
+      click: async (label) => {
+        const target = [...host.querySelectorAll("button")].find((element) => element.textContent === label);
+        if (!target) throw new Error(`no ${label} button`);
+        await act(async () => target.click());
+      },
+    });
+    await act(async () => root.unmount());
+  } finally {
+    GlobalRegistrator.unregister();
+  }
+}
+
 beforeEach(() => {
   posted.length = 0;
 });
@@ -828,55 +868,6 @@ describe("composer", () => {
 });
 
 describe("slash commands in the composer", () => {
-  /** Mount `App` over a DOM for the test's duration; `run` drives it. */
-  async function withPanel(
-    state: ChatState,
-    run: (panel: {
-      host: HTMLElement;
-      textarea: HTMLTextAreaElement;
-      type: (value: string) => Promise<void>;
-      press: (key: string) => Promise<void>;
-      receive: (message: unknown) => Promise<void>;
-    }) => Promise<void>,
-  ): Promise<void> {
-    const { GlobalRegistrator } = await import("@happy-dom/global-registrator");
-    const { act, createElement } = await import("react");
-    GlobalRegistrator.register();
-    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-    try {
-      const { createRoot } = await import("react-dom/client");
-      const host = document.createElement("div");
-      document.body.append(host);
-      const root = createRoot(host);
-      await act(async () => root.render(createElement(App, { state, language: "en" })));
-      const textarea = host.querySelector("textarea");
-      if (!textarea) throw new Error("no message box");
-      // [&]: React tracks the value property; set it through the prototype setter so the input event registers.
-      const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
-      await run({
-        host,
-        textarea,
-        type: (value) =>
-          act(async () => {
-            setValue?.call(textarea, value);
-            textarea.setSelectionRange(value.length, value.length);
-            textarea.dispatchEvent(new Event("input", { bubbles: true }));
-          }),
-        press: (key) =>
-          act(async () => {
-            textarea.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
-          }),
-        receive: (message) =>
-          act(async () => {
-            window.dispatchEvent(new MessageEvent("message", { data: message }));
-          }),
-      });
-      await act(async () => root.unmount());
-    } finally {
-      GlobalRegistrator.unregister();
-    }
-  }
-
   const labels = (host: HTMLElement) =>
     [...host.querySelectorAll("#slash-menu .menu-label")].map((row) => row.textContent);
   /** Ids of the skill queries posted so far. */
