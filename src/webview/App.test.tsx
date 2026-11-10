@@ -11,9 +11,8 @@ const posted: unknown[] = [];
 (globalThis as { acquireVsCodeApi?: () => { postMessage(message: unknown): void } }).acquireVsCodeApi = () => ({
   postMessage: (message) => posted.push(message),
 });
-const { App, ApprovalControls, ContextNotice, ConversationList, Header, HistoryPanel, MentionMenu } = await import(
-  "./App"
-);
+const { App, ApprovalControls, ContextNotice, ConversationList, Header, HistoryPanel, MentionMenu, SlashMenu } =
+  await import("./App");
 const { moveHighlight } = await import("./SuggestionMenu");
 
 type Reply = ChatEntry & { role: "assistant" };
@@ -626,6 +625,46 @@ describe("mention menu", () => {
   });
 });
 
+describe("slash menu", () => {
+  test("shows /new, /model, and the skills, each with its description, the highlighted one selected", () => {
+    const html = renderToStaticMarkup(
+      <SlashMenu
+        items={[
+          { name: "new", description: "Start a new conversation" },
+          { name: "model", description: "Choose the model" },
+          { name: "grilling", description: "Grill the plan." },
+          { name: "release", description: "Cut a release." },
+        ]}
+        failed={false}
+        highlighted={2}
+        onPick={() => {}}
+      />,
+    );
+    expect(html).toContain('<div id="slash-menu" role="listbox" aria-label="Commands and skills" class="menu-list">');
+    expect(html).toContain(
+      '<div id="slash-menu-option-0" role="option" tabindex="-1" aria-selected="false"><span class="menu-label">/new</span><span class="menu-description">Start a new conversation</span></div>',
+    );
+    expect(html).toContain(
+      '<span class="menu-label">/model</span><span class="menu-description">Choose the model</span>',
+    );
+    expect(html).toContain(
+      '<div id="slash-menu-option-2" role="option" tabindex="-1" aria-selected="true" class="highlighted"><span class="menu-label">/grilling</span><span class="menu-description">Grill the plan.</span></div>',
+    );
+    expect(html).toContain(
+      '<span class="menu-label">/release</span><span class="menu-description">Cut a release.</span>',
+    );
+    expect(html).not.toContain("menu-notice");
+  });
+
+  test("says No match when nothing matches, and that the skills could not be listed instead when they failed", () => {
+    const menu = (failed: boolean, items = []) =>
+      renderToStaticMarkup(<SlashMenu items={items} failed={failed} highlighted={0} onPick={() => {}} />);
+    expect(menu(false)).toContain('<p class="menu-notice">No match</p>');
+    expect(menu(true)).toContain('<p class="menu-notice">Could not list the skills</p>');
+    expect(menu(true)).not.toContain("No match");
+  });
+});
+
 describe("moveHighlight", () => {
   test("moves by one row and wraps at both ends", () => {
     expect(moveHighlight(0, 1, 3)).toBe(1);
@@ -771,6 +810,208 @@ describe("composer", () => {
     expect(renderToStaticMarkup(<App state={stateWith(false, { entries: replying })} language="en" />)).toContain(
       "<textarea",
     );
+  });
+});
+
+describe("slash commands in the composer", () => {
+  /** Mount `App` over a DOM for the test's duration; `run` drives it. */
+  async function withPanel(
+    state: ChatState,
+    run: (panel: {
+      host: HTMLElement;
+      textarea: HTMLTextAreaElement;
+      type: (value: string) => Promise<void>;
+      press: (key: string) => Promise<void>;
+      receive: (message: unknown) => Promise<void>;
+    }) => Promise<void>,
+  ): Promise<void> {
+    const { GlobalRegistrator } = await import("@happy-dom/global-registrator");
+    const { act, createElement } = await import("react");
+    GlobalRegistrator.register();
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    try {
+      const { createRoot } = await import("react-dom/client");
+      const host = document.createElement("div");
+      document.body.append(host);
+      const root = createRoot(host);
+      await act(async () => root.render(createElement(App, { state, language: "en" })));
+      const textarea = host.querySelector("textarea");
+      if (!textarea) throw new Error("no message box");
+      // [&]: React tracks the value property; set it through the prototype setter so the input event registers.
+      const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+      await run({
+        host,
+        textarea,
+        type: (value) =>
+          act(async () => {
+            setValue?.call(textarea, value);
+            textarea.setSelectionRange(value.length, value.length);
+            textarea.dispatchEvent(new Event("input", { bubbles: true }));
+          }),
+        press: (key) =>
+          act(async () => {
+            textarea.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+          }),
+        receive: (message) =>
+          act(async () => {
+            window.dispatchEvent(new MessageEvent("message", { data: message }));
+          }),
+      });
+      await act(async () => root.unmount());
+    } finally {
+      GlobalRegistrator.unregister();
+    }
+  }
+
+  const labels = (host: HTMLElement) =>
+    [...host.querySelectorAll("#slash-menu .menu-label")].map((row) => row.textContent);
+  /** Ids of the skill queries posted so far. */
+  const skillQueries = () =>
+    posted.flatMap((message) =>
+      (message as { type: string }).type === "querySkills" ? [message as { id: number }] : [],
+    );
+  /** Id of the last skill query posted. */
+  const lastSkillQuery = () => skillQueries().at(-1)!.id;
+
+  test("/ asks the host once for the skills, lists them after the built-ins, and narrows as the user types", async () => {
+    await withPanel(stateWith(true), async ({ host, type, receive }) => {
+      await type("/");
+      expect(posted).toEqual([{ type: "querySkills", id: lastSkillQuery() }]);
+      expect(labels(host)).toEqual(["/new", "/model"]);
+
+      await receive({
+        type: "skillSuggestions",
+        id: lastSkillQuery(),
+        items: [
+          { name: "grilling", description: "Grill the plan." },
+          { name: "notes", description: "Take notes." },
+        ],
+        failed: false,
+      });
+      expect(labels(host)).toEqual(["/new", "/model", "/grilling", "/notes"]);
+
+      await type("/gr");
+      expect(labels(host)).toEqual(["/grilling"]);
+      await type("/n");
+      expect(labels(host)).toEqual(["/new", "/notes"]);
+      expect(skillQueries()).toHaveLength(1);
+    });
+  });
+
+  test("an answer to an earlier opening is dropped", async () => {
+    await withPanel(stateWith(true), async ({ host, type, receive }) => {
+      await type("/");
+      const first = lastSkillQuery();
+      await type("x");
+      await type("/");
+      expect(skillQueries()).toHaveLength(2);
+      expect(lastSkillQuery()).not.toBe(first);
+      await receive({
+        type: "skillSuggestions",
+        id: first,
+        items: [{ name: "old", description: "Old." }],
+        failed: false,
+      });
+      expect(labels(host)).toEqual(["/new", "/model"]);
+    });
+  });
+
+  test("when the skills cannot be listed, the menu says so and still shows the built-ins", async () => {
+    await withPanel(stateWith(true), async ({ host, type, receive }) => {
+      await type("/");
+      await receive({ type: "skillSuggestions", id: lastSkillQuery(), items: [], failed: true });
+      expect(labels(host)).toEqual(["/new", "/model"]);
+      expect(host.querySelector(".menu-notice")?.textContent).toBe("Could not list the skills");
+    });
+  });
+
+  test("Enter picks the highlighted row, inserting /<name> and a space without sending; Escape closes the menu", async () => {
+    await withPanel(stateWith(true), async ({ host, textarea, type, press, receive }) => {
+      await type("/gr");
+      await receive({
+        type: "skillSuggestions",
+        id: lastSkillQuery(),
+        items: [{ name: "grilling", description: "Grill the plan." }],
+        failed: false,
+      });
+      await press("Enter");
+      expect(textarea.value).toBe("/grilling ");
+      expect(textarea.selectionStart).toBe(10);
+      expect(posted).toHaveLength(1);
+      expect(host.querySelector("#slash-menu")).toBeNull();
+
+      await type("/");
+      expect(skillQueries()).toHaveLength(2);
+      expect(labels(host)).toEqual(["/new", "/model"]);
+      await press("Escape");
+      expect(host.querySelector("#slash-menu")).toBeNull();
+    });
+  });
+
+  test("a / after other text opens no menu and asks nothing", async () => {
+    await withPanel(stateWith(true), async ({ host, type }) => {
+      await type("see /etc");
+      expect(host.querySelector("#slash-menu")).toBeNull();
+      expect(posted).toEqual([]);
+    });
+  });
+
+  test("sending /new posts the New chat request and empties the box", async () => {
+    await withPanel(stateWith(true, { entries: hi }), async ({ textarea, type, press }) => {
+      await type("/new ");
+      posted.length = 0;
+      await press("Enter");
+      expect(posted).toEqual([{ type: "newChat" }]);
+      expect(textarea.value).toBe("");
+    });
+  });
+
+  test("sending /model empties the box, focuses the model select, and opens its list", async () => {
+    await withPanel(stateWith(true), async ({ host, textarea, type, press }) => {
+      const select = host.querySelector<HTMLSelectElement>('select[aria-label="Model"]');
+      if (!select) throw new Error("no model select");
+      let opened = 0;
+      select.showPicker = () => {
+        opened += 1;
+      };
+      await type("/model ");
+      posted.length = 0;
+      await press("Enter");
+      expect(posted).toEqual([]);
+      expect(textarea.value).toBe("");
+      expect(document.activeElement).toBe(select);
+      expect(opened).toBe(1);
+    });
+  });
+
+  test("/model still focuses the model select where the browser refuses to open its list", async () => {
+    await withPanel(stateWith(true), async ({ host, type, press }) => {
+      const select = host.querySelector<HTMLSelectElement>('select[aria-label="Model"]');
+      if (!select) throw new Error("no model select");
+      select.showPicker = () => {
+        throw new DOMException("cross-origin iframe", "SecurityError");
+      };
+      await type("/model");
+      await press("Escape");
+      await press("Enter");
+      expect(document.activeElement).toBe(select);
+    });
+  });
+
+  test("/new and /model do nothing while a reply is in flight, and words after them make an ordinary message", async () => {
+    const replying: ChatEntry[] = [hi[0]!, { role: "assistant", reasoning: "", content: "", status: "waiting" }];
+    await withPanel(stateWith(true, { entries: replying }), async ({ textarea, type, press }) => {
+      await type("/new ");
+      posted.length = 0;
+      await press("Enter");
+      expect(posted).toEqual([]);
+      expect(textarea.value).toBe("/new ");
+    });
+    await withPanel(stateWith(true), async ({ type, press }) => {
+      await type("/new words");
+      await press("Enter");
+      expect(posted.at(-1)).toEqual({ type: "send", text: "/new words", mentions: [] });
+    });
   });
 });
 

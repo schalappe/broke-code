@@ -1,13 +1,13 @@
 /**
  * @module SuggestionMenu
- * Autocomplete list opened by a trigger character in the composer: `@` for mentions, `/` for slash commands (#11).
+ * Autocomplete list opened by a trigger character in the composer: `@` for mentions, `/` for slash commands.
  * Presentational only: the composer owns the token, the items, the highlight, and the keys, and keeps focus in its
  * textarea, which points at the highlighted row with `aria-activedescendant` (`optionId`).
  */
 import { useEffect } from "react";
 
-/** One row. `icon`: kind marker class (`file`, `folder`), drawn in CSS. */
-export type MenuItem = { key: string; label: string; icon?: string };
+/** One row. `icon`: kind marker class (`file`, `folder`), drawn in CSS. `description`: a short line after the label. */
+export type MenuItem = { key: string; label: string; icon?: string; description?: string };
 
 export type SuggestionMenuProps = {
   /** Listbox id; option ids derive from it. */
@@ -50,6 +50,7 @@ export function SuggestionMenu({ id, trigger, label, items, highlighted, onPick,
               {trigger}
               {item.label}
             </span>
+            {item.description && <span className="menu-description">{item.description}</span>}
           </div>
         ))}
       </div>
