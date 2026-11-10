@@ -222,13 +222,23 @@ export const SKILL_SCENARIO: Scenario = {
   check(entries) {
     const steps = entries.filter((entry) => entry.role === "tool");
     const loaded = steps.some((step) => step.name === "load_skill" && step.status === "ok");
-    const read = steps.some(
-      (step) => READ_TOOL_NAMES.has(step.name) && step.status === "ok" && step.text.includes(DISPATCH_CODE),
-    );
-    if (!loaded || !read) return { pass: false, category: "wrongTool", detail: `steps: ${describeSteps(steps)}` };
-    return answerHolds(entries, DISPATCH_CODE);
+    if (!loaded) return { pass: false, category: "wrongTool", detail: `steps: ${describeSteps(steps)}` };
+    return dispatchCodeRead(entries);
   },
 };
+
+/**
+ * The depot scenarios' check once their skill is loaded: an `ok` read step's text holds the dispatch code (only the
+ * reference file does, so that step read it), else `wrongTool`, and the answer holds it.
+ */
+function dispatchCodeRead(entries: readonly ChatEntry[]): Verdict {
+  const steps = entries.filter((entry) => entry.role === "tool");
+  const read = steps.some(
+    (step) => READ_TOOL_NAMES.has(step.name) && step.status === "ok" && step.text.includes(DISPATCH_CODE),
+  );
+  if (!read) return { pass: false, category: "wrongTool", detail: `steps: ${describeSteps(steps)}` };
+  return answerHolds(entries, DISPATCH_CODE);
+}
 
 /**
  * Load a skill with `/<name>`: the skill scenario's workspace and personal skill, the message `/depot-codes` then the
@@ -255,11 +265,7 @@ export const SLASH_SCENARIO: Scenario = {
         detail: `the message did not load /depot-codes (skill: ${status}); steps: ${describeSteps(steps)}`,
       };
     }
-    const read = steps.some(
-      (step) => READ_TOOL_NAMES.has(step.name) && step.status === "ok" && step.text.includes(DISPATCH_CODE),
-    );
-    if (!read) return { pass: false, category: "wrongTool", detail: `steps: ${describeSteps(steps)}` };
-    return answerHolds(entries, DISPATCH_CODE);
+    return dispatchCodeRead(entries);
   },
 };
 
