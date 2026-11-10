@@ -930,6 +930,60 @@ describe("slash commands in the composer", () => {
     });
   });
 
+  test("a menu closed with Escape asks again when typing reopens it, and drops the earlier answer", async () => {
+    await withPanel(stateWith(true), async ({ host, type, press, receive }) => {
+      await type("/");
+      const first = lastSkillQuery();
+      await receive({
+        type: "skillSuggestions",
+        id: first,
+        items: [{ name: "old", description: "Old." }],
+        failed: false,
+      });
+      await press("Escape");
+      await type("/n");
+      expect(skillQueries()).toHaveLength(2);
+      expect(labels(host)).toEqual(["/new"]);
+      await receive({
+        type: "skillSuggestions",
+        id: first,
+        items: [{ name: "nold", description: "Old." }],
+        failed: false,
+      });
+      expect(labels(host)).toEqual(["/new"]);
+      await receive({
+        type: "skillSuggestions",
+        id: lastSkillQuery(),
+        items: [{ name: "notes", description: "Take notes." }],
+        failed: false,
+      });
+      expect(labels(host)).toEqual(["/new", "/notes"]);
+    });
+  });
+
+  test("a menu closed by blur asks again on focus, and drops the earlier answer", async () => {
+    const { act } = await import("react");
+    await withPanel(stateWith(true), async ({ host, textarea, type, receive }) => {
+      const focusChange = (name: "focusin" | "focusout") =>
+        act(async () => {
+          textarea.dispatchEvent(new FocusEvent(name, { bubbles: true }));
+        });
+      await type("/");
+      const first = lastSkillQuery();
+      await focusChange("focusout");
+      expect(host.querySelector("#slash-menu")).toBeNull();
+      await focusChange("focusin");
+      expect(skillQueries()).toHaveLength(2);
+      await receive({
+        type: "skillSuggestions",
+        id: first,
+        items: [{ name: "old", description: "Old." }],
+        failed: false,
+      });
+      expect(labels(host)).toEqual(["/new", "/model"]);
+    });
+  });
+
   test("when the skills cannot be listed, the menu says so and still shows the built-ins", async () => {
     await withPanel(stateWith(true), async ({ host, type, receive }) => {
       await type("/");

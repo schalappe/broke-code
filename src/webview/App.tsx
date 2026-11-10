@@ -761,8 +761,8 @@ function Composer({ state, startNewChat }: { state: ChatState; startNewChat: () 
   const token = menuToken(text, caret, picked);
   const fileQuery = token?.trigger === "@" ? token.query : undefined;
   const slashQuery = token?.trigger === "/" ? token.query : undefined;
-  const slashOpen = slashQuery !== undefined;
   const open = openMenuToken(token, focused, dismissed);
+  const slashOpen = open?.trigger === "/";
   const mentionMenu = open?.trigger === "@" ? menuView(answer, open.query) : undefined;
   const slashMenu = open?.trigger === "/" ? slashMenuView(builtInRows(), skillAnswer, open.query) : undefined;
   const rows = mentionMenu?.items.length ?? slashMenu?.items.length;
@@ -785,8 +785,8 @@ function Composer({ state, startNewChat }: { state: ChatState; startNewChat: () 
     post({ type: "queryFiles", query: fileQuery, id });
   }, [fileQuery]);
 
-  // [>]: One skill query per opening: a discovery reads every `SKILL.md`, too much per keystroke. Closing bumps the id
-  // too, so an answer to an earlier opening is dropped.
+  // [>]: One skill query per opening: a discovery reads every `SKILL.md`, too much per keystroke. Closing the menu
+  // (Escape, blur, or leaving the token) bumps the id too, so an answer to an earlier opening is dropped.
   useEffect(() => {
     latestSkills.current += 1;
     if (!slashOpen) {
