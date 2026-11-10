@@ -204,7 +204,7 @@ export function runCommand(
     // [!]: Once released, the run never signals or probes its group id again: the system may have reused it.
     let released = false;
     const releaseOwnership =
-      pgid === undefined ? () => {} : ownCommandGroup(pgid, (sent) => killedOnDeactivation(sent));
+      pgid === undefined ? () => {} : ownCommandGroup(pgid, (failure) => killedOnDeactivation(failure));
     const release = () => {
       released = true;
       releaseOwnership();
@@ -229,13 +229,17 @@ export function runCommand(
         commandResult({ exit, ending, groupEnd, signalFailures, timeoutMs: env.timeoutMs, graceMs, stdout, stderr }),
       );
     };
-    /** `killRunningCommands` sent SIGKILL (`sent`) or failed to: the run ends as stopped. */
-    const killedOnDeactivation = (sent: boolean) => {
+    /**
+     * `killRunningCommands` sent SIGKILL, or failed to (`failure`, its code). A run not yet stopping ends as stopped; a
+     * timeout or leftover cleanup keeps its reason.
+     */
+    const killedOnDeactivation = (failure: string | undefined) => {
       if (settled) return;
       ending ??= "stopped";
       clearTimeout(timeout);
       clearTimeout(drainTimer);
-      groupDone(sent ? "killed" : "unreachable");
+      if (failure !== undefined) signalFailures.push(signalFailureLine("SIGKILL", failure));
+      groupDone(failure === undefined ? "killedAtOnce" : "unreachable");
     };
     /** The run may settle: the group was never signalled, or it is done and its pipes closed. */
     const finishIfDone = () => {
@@ -248,7 +252,7 @@ export function runCommand(
       if (failure === undefined) return true;
       // [>]: Logged too: after a Stop the controller drops the result, line included.
       console.error(`broke-code: could not send ${name} to the command group ${pgid} (${failure})`);
-      signalFailures.push(`Sending ${name} to the command's processes failed (${failure}).`);
+      signalFailures.push(signalFailureLine(name, failure));
       return false;
     };
     /** The group is gone or got SIGKILL: no signal goes to its id again, since the system may reuse it. */
@@ -315,22 +319,26 @@ type Ending = "timeout" | "stopped" | "leftover";
 
 /**
  * How a signalled group ended: `gone` once no process of it is left, `killed` once SIGKILL was sent at the grace,
- * `unreachable` when SIGKILL could not be sent.
+ * `killedAtOnce` once `killRunningCommands` sent it, `unreachable` when SIGKILL could not be sent.
  */
-type GroupEnd = "gone" | "killed" | "unreachable";
+type GroupEnd = "gone" | "killed" | "killedAtOnce" | "unreachable";
+
+function signalFailureLine(name: NodeJS.Signals, failure: string): string {
+  return `Sending ${name} to the command's processes failed (${failure}).`;
+}
 
 /** A run's claim on its process group, by identity: two runs may see the same id, one after the other. */
-type GroupOwner = { pgid: number; onKilled: (sent: boolean) => void };
+type GroupOwner = { pgid: number; onKilled: (failure: string | undefined) => void };
 
 /** The groups of commands still running, or stopped but not yet gone or sent SIGKILL: what `killRunningCommands` ends. */
 const owners = new Set<GroupOwner>();
 
 /**
  * Claim group `pgid` for a run until the returned release is called (any number of times; it releases this claim
- * only). `killRunningCommands` calls `onKilled` once after its SIGKILL, `sent` false when the signal failed, and
+ * only). `killRunningCommands` calls `onKilled` once after its SIGKILL, with the failure's code when it failed, and
  * releases the claim; the run must then never signal the id again. Exported for the ownership tests.
  */
-export function ownCommandGroup(pgid: number, onKilled: (sent: boolean) => void): () => void {
+export function ownCommandGroup(pgid: number, onKilled: (failure: string | undefined) => void): () => void {
   const owner: GroupOwner = { pgid, onKilled };
   owners.add(owner);
   return () => owners.delete(owner);
@@ -347,7 +355,7 @@ export function killRunningCommands(): void {
   for (const { pgid, onKilled } of killed) {
     const failure = killGroup(process.kill, pgid, "SIGKILL");
     if (failure !== undefined) console.error(`broke-code: could not kill the command group ${pgid} (${failure})`);
-    onKilled(failure === undefined);
+    onKilled(failure);
   }
 }
 
@@ -430,6 +438,8 @@ function leftoverLine(groupEnd: GroupEnd | undefined, graceMs: number): string {
   switch (groupEnd) {
     case "killed":
       return `${subject} did not stop on SIGTERM; they were sent SIGKILL after ${graceMs / 1000} seconds.`;
+    case "killedAtOnce":
+      return `${subject} were sent SIGKILL as the extension shut down.`;
     case "unreachable":
       return `${subject} could not be stopped; they may still be running.`;
     default:

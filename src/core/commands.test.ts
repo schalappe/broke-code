@@ -386,8 +386,67 @@ describe("killRunningCommands", () => {
     // [>]: Well under the 2-second grace a stopped command would otherwise get before its SIGKILL.
     await expectGroupGone(pgid);
     expect(Date.now() - killed).toBeLessThan(1000);
-    abort.abort();
-    await running;
+    expect(await running).toEqual({ status: "error", text: "run_command: stopped before it finished." });
+  });
+
+  test.each([
+    ["while it runs", false],
+    ["after a stop, during the grace", true],
+  ])("a SIGKILL that fails at deactivation never says the command stopped, %s", async (_case, stopFirst) => {
+    const abort = new AbortController();
+    const pidFile = join(base, `host-exit-failed-${stopFirst}.pid`);
+    const running = runCommand(
+      { command: `trap '' TERM; echo $$ > '${pidFile}'; exec sleep 30`, cwd: base },
+      { signal: abort.signal },
+      { shell: "/bin/sh", timeoutMs: 60_000 },
+    );
+    await waitFor(async () => (await readFile(pidFile, "utf8").catch(() => "")).endsWith("\n"));
+    const pgid = Number(await readFile(pidFile, "utf8"));
+    try {
+      if (stopFirst) abort.abort();
+      const original = console.error;
+      console.error = () => {};
+      try {
+        spyKill(() => killRunningCommands(), "EINVAL");
+      } finally {
+        console.error = original;
+      }
+      expect(await running).toEqual({
+        status: "error",
+        text: [
+          "run_command: Stop could not end the command; its processes may still be running.",
+          "",
+          "Sending SIGKILL to the command's processes failed (EINVAL).",
+        ].join("\n"),
+      });
+    } finally {
+      process.kill(-pgid, "SIGKILL");
+    }
+  });
+
+  test("a deactivation while a leftover job waits for its grace keeps the command's result and says so", async () => {
+    const pidFile = join(base, "leftover-deactivated.pid");
+    const started = Date.now();
+    const running = run(`echo $$ > '${pidFile}'; (trap '' TERM; exec sleep 30 >/dev/null 2>&1) & echo started`);
+    await waitFor(async () => (await readFile(pidFile, "utf8").catch(() => "")).endsWith("\n"));
+    const pgid = Number(await readFile(pidFile, "utf8"));
+    // [>]: Past the 200 ms drain, the leftover job got SIGTERM and ignores it: the run is in its grace.
+    await Bun.sleep(400);
+    killRunningCommands();
+    const result = await running;
+    expect(Date.now() - started).toBeLessThan(1500);
+    expect(result).toEqual({
+      status: "ok",
+      text: [
+        "exit code 0",
+        "stdout:",
+        "started",
+        "stderr: (empty)",
+        "",
+        "The processes the command left running in the background were sent SIGKILL as the extension shut down.",
+      ].join("\n"),
+    });
+    await expectGroupGone(pgid);
   });
 });
 
@@ -419,22 +478,22 @@ describe("command group ownership", () => {
   });
 
   test("an owner that releases late never releases a later owner of the same group id", () => {
-    const killed: boolean[] = [];
-    const releaseOld = ownCommandGroup(424242, () => killed.push(false));
-    const releaseNew = ownCommandGroup(424242, (sent) => killed.push(sent));
+    const killed: (string | undefined)[] = [];
+    const releaseOld = ownCommandGroup(424242, () => killed.push("old"));
+    const releaseNew = ownCommandGroup(424242, (failure) => killed.push(failure));
     releaseOld();
     releaseOld();
     expect(spyKill(() => killRunningCommands())).toEqual([[-424242, "SIGKILL"]]);
-    expect(killed).toEqual([true]);
+    expect(killed).toEqual([undefined]);
     releaseNew();
   });
 
   test("a second deactivation signals nothing the first one released", () => {
-    const killed: boolean[] = [];
-    ownCommandGroup(424243, (sent) => killed.push(sent));
+    const killed: (string | undefined)[] = [];
+    ownCommandGroup(424243, (failure) => killed.push(failure));
     expect(spyKill(() => killRunningCommands())).toEqual([[-424243, "SIGKILL"]]);
     expect(spyKill(() => killRunningCommands())).toEqual([]);
-    expect(killed).toEqual([true]);
+    expect(killed).toEqual([undefined]);
   });
 
   test("a command that ended is no longer owned: deactivation afterwards signals nothing", async () => {
@@ -447,10 +506,10 @@ describe("command group ownership", () => {
     const original = console.error;
     console.error = (...args: unknown[]) => void logged.push(args);
     try {
-      const failed: boolean[] = [];
-      ownCommandGroup(424244, (sent) => failed.push(sent));
+      const failed: (string | undefined)[] = [];
+      ownCommandGroup(424244, (failure) => failed.push(failure));
       spyKill(() => killRunningCommands(), "EINVAL");
-      expect(failed).toEqual([false]);
+      expect(failed).toEqual(["EINVAL"]);
       expect(logged).toEqual([["broke-code: could not kill the command group 424244 (EINVAL)"]]);
       logged.length = 0;
       ownCommandGroup(424245, () => {});

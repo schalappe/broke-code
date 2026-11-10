@@ -265,8 +265,9 @@ command at once. Slash commands are not built yet. Read `GLOSSARY.md` for the do
     second more, since a process that left the group may hold them. A stop during the run ends the reply `stopped`.
   - Once the shell exits, the output gets 200 ms to drain. A process still in the group then (a background job, its
     output redirected or not) is stopped the same way, and the result ends with a line saying what is true when it
-    settles: "were stopped" (the group is gone), "did not stop on SIGTERM; they were sent SIGKILL after 2 seconds", or
-    "could not be stopped; they may still be running" (the signals failed). A process that left the group (`setsid`, a
+    settles: "were stopped" (the group is gone), "did not stop on SIGTERM; they were sent SIGKILL after 2 seconds",
+    "were sent SIGKILL as the extension shut down" (deactivation, below), or "could not be stopped; they may still be
+    running" (the signals failed). A process that left the group (`setsid`, a
     daemon) is not stopped, and the result stops waiting for the pipes it holds. A Stop after the shell exited keeps
     its exit code. macOS answers EPERM for a group of zombies, so only a group a signal 0 reaches counts as alive.
   - A signal that fails with ESRCH (the group is gone) or EPERM (zombies, or processes that changed user and could not
@@ -281,7 +282,8 @@ command at once. Slash commands are not built yet. Read `GLOSSARY.md` for the do
     group is gone, got SIGKILL, or the run settled, so a later run that gets the same id keeps its claim. Deactivation
     releases every claim and tells each run, which cancels its pending SIGKILL and probes: once released, a run never
     signals that id again, since the system may reuse it. A SIGKILL that fails there for another reason than ESRCH or
-    EPERM is logged. Accepted limit: a host that crashes never calls it, so a process that ignores SIGTERM can then
+    EPERM is logged and reaches that run's result as a failed-signal line, so the run never says it stopped; a run not
+    yet stopping ends as stopped, a timeout or a leftover cleanup keeps its reason. Accepted limit: a host that crashes never calls it, so a process that ignores SIGTERM can then
     outlive it.
 - Reasoning output (`<think>` tags, `reasoning`, or `reasoning_content`) shows collapsed in the chat. The parser
   never looks for tool calls in it, and the conversation history sent back to the model drops it.
