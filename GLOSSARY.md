@@ -64,8 +64,8 @@ conversation.
 _Avoid_: plugin, prompt template, custom command
 
 **Loaded skill**:
-A skill the model loaded in this conversation: the conversation holds its instructions, and the read tools may read
-its folder until the conversation ends. A folder outside the workspace stays read-only to the file tools (an
+A skill the model or the user loaded in this conversation, the model with `load_skill`, the user with `/<name>`: the
+conversation holds its instructions, and the read tools may read its folder until the conversation ends. A folder outside the workspace stays read-only to the file tools (an
 approved command is held to no folder); a workspace skill's folder follows the workspace rules.
 _Avoid_: active skill, enabled skill
 

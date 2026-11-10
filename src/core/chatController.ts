@@ -34,7 +34,7 @@ import {
 } from "./protocol";
 import type { ParsedProviders, Provider } from "./providers";
 import { SerialQueue } from "./serialQueue";
-import type { SkillDiscovery } from "./skills";
+import { findSlashSkill, loadSkillText, type SkillDiscovery } from "./skills";
 import { composeSystemPrompt, type InstructionFile, type Skill } from "./systemPrompt";
 import { type ParsedReply, parseToolCall, type ToolSpec } from "./toolCalls";
 import type { ToolCall, ToolResult } from "./tools";
@@ -161,9 +161,9 @@ export class ChatController {
    */
   private readonly navigation = new SerialQueue();
   /**
-   * Model-facing text of each user entry: typed text plus mention blocks, composed once at send time and resent
-   * verbatim on later turns, also after a reload: it is saved beside the entry. Kept out of `ChatState`, which is
-   * posted to the webview on every streamed delta.
+   * Model-facing text of each user entry: typed text, or the text of the skill it loads, plus mention blocks, composed
+   * once at send time and resent verbatim on later turns, also after a reload: it is saved beside the entry. Kept out
+   * of `ChatState`, which is posted to the webview on every streamed delta.
    */
   private readonly modelText = new WeakMap<ChatEntry, string>();
 
@@ -370,7 +370,10 @@ export class ChatController {
    * before each request, the first included, so a request that would fill the model's context is never sent. The
    * turn reads the settings once, when it starts. Ignored while replying or without provider and model. `picked`:
    * paths chosen in the menu, mentions while their `@<path>` is still in the text. A mention that cannot be read is
-   * reported to the model and in the entry; the message still goes.
+   * reported to the model and in the entry; the message still goes. A message starting with `/<name>` of a discovered
+   * skill sends that skill's text with the arguments instead of the text as typed (see `loadSkillText`), and the entry
+   * records the skill, which opens its folder to the read tools; a `SKILL.md` that cannot be read is reported the same
+   * way as a mention.
    */
   async send(text: string, picked: readonly string[] = []): Promise<void> {
     const provider = this.currentProvider();
@@ -421,9 +424,17 @@ export class ChatController {
       if (!prepared) return settle("stopped");
       const [mentions, access, instructions, discovery] = prepared;
       this.state.skillWarnings = discovery.warnings;
+      // [>]: A `/<name>` that names no discovered skill (`/new` included) goes as typed. The token is never a mention,
+      // since a mention starts with `@`, so the mentions read above are the arguments'.
+      const slash = findSlashSkill(content, discovery.skills);
+      const loaded = slash ? await unlessAborted(loadSkillText(slash.skill, slash.args), signal) : undefined;
+      if (slash && !loaded) return settle("stopped");
       user.mentions = mentions.map(toResult);
-      this.modelText.set(user, composeUserMessage(content, mentions));
-      if (mentions.length > 0) {
+      if (slash && loaded) {
+        user.skill = { name: slash.skill.name, status: loaded.status === "ok" ? "loaded" : "failed" };
+      }
+      this.modelText.set(user, composeUserMessage(loaded?.text ?? content, mentions));
+      if (mentions.length > 0 || slash) {
         this.emit();
         const saved = await unlessAborted(
           this.save(conversation).then(() => true),
@@ -986,15 +997,17 @@ function offeredTools(tools: readonly ToolSpec[], skills: readonly Skill[]): rea
 }
 
 /**
- * The real folders of the skills loaded in `entries`: each `ok` `load_skill` step's name, found in `discovered` (the
- * send's skills). A step that failed, or was stopped, loaded nothing; a skill no longer discovered is no longer
- * readable. Derived from the steps, so a reopened conversation keeps its loaded skills with no field of its own.
+ * The real folders of the skills loaded in `entries`: each `ok` `load_skill` step's name and each user entry's skill
+ * loaded with `/<name>`, found in `discovered` (the send's skills). A step that failed, or was stopped, and a skill
+ * whose `SKILL.md` could not be read at send loaded nothing; a skill no longer discovered is no longer readable.
+ * Derived from the entries, so a reopened conversation keeps its loaded skills.
  */
 function loadedSkillRoots(entries: readonly ChatEntry[], discovered: readonly Skill[]): string[] {
   const names = new Set(
-    entries.flatMap((entry) =>
-      entry.role === "tool" && entry.name === "load_skill" && entry.status === "ok" ? [entry.args.name] : [],
-    ),
+    entries.flatMap((entry) => {
+      if (entry.role === "user") return entry.skill?.status === "loaded" ? [entry.skill.name] : [];
+      return entry.role === "tool" && entry.name === "load_skill" && entry.status === "ok" ? [entry.args.name] : [];
+    }),
   );
   return discovered.filter((skill) => names.has(skill.name)).map((skill) => skill.root);
 }

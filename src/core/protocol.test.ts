@@ -10,6 +10,7 @@ import {
 describe("parseWebviewMessage", () => {
   test("accepts the messages without fields and those with a string field", () => {
     expect(parseWebviewMessage({ type: "stop" })).toEqual({ type: "stop" });
+    expect(parseWebviewMessage({ type: "chooseModel", model: "ignored" })).toEqual({ type: "chooseModel" });
     expect(parseWebviewMessage({ type: "selectModel", model: "m" })).toEqual({ type: "selectModel", model: "m" });
     expect(parseWebviewMessage({ type: "setApiKey", provider: "P" })).toEqual({ type: "setApiKey", provider: "P" });
   });
@@ -93,6 +94,14 @@ describe("parseWebviewMessage", () => {
     expect(query({ query: "a".repeat(MAX_QUERY_LENGTH + 1), id: 1 })).toBeUndefined();
   });
 
+  test("accepts a skill query with an integer id and drops one without a valid id", () => {
+    expect(parseWebviewMessage({ type: "querySkills", id: 4 })).toEqual({ type: "querySkills", id: 4 });
+    expect(parseWebviewMessage({ type: "querySkills", id: 0 })).toEqual({ type: "querySkills", id: 0 });
+    for (const id of [undefined, "4", 1.5, -1, Number.NaN]) {
+      expect(parseWebviewMessage({ type: "querySkills", id })).toBeUndefined();
+    }
+  });
+
   test("accepts an approval decision by its request id, a rejection with or without a reason", () => {
     expect(parseWebviewMessage({ type: "approve", id: 3 })).toEqual({ type: "approve", id: 3 });
     expect(parseWebviewMessage({ type: "reject", id: 3 })).toEqual({ type: "reject", id: 3 });
@@ -135,7 +144,8 @@ describe("chatStateOf", () => {
     expect(chatStateOf({ type: "state", state })).toBe(state);
   });
 
-  test("leaves the chat state alone for file suggestions", () => {
+  test("leaves the chat state alone for file and skill suggestions", () => {
     expect(chatStateOf({ type: "fileSuggestions", id: 1, items: [], capped: false, failed: false })).toBeUndefined();
+    expect(chatStateOf({ type: "skillSuggestions", id: 1, items: [], failed: false })).toBeUndefined();
   });
 });

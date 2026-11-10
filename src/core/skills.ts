@@ -3,13 +3,13 @@
  * Skill discovery: the direct children of `~/.agents/skills/` and of each workspace folder's `.agents/skills/` that
  * hold a `SKILL.md`, read at each send. A skill is valid when its frontmatter holds a `name` and a `description` that
  * follow the Agent Skills specification (agentskills.io/specification); any other skill is skipped with a warning.
- * No other tool's folder (`.claude/`, `.codex/`) is ever read. Also skill loading: the `load_skill` tool and the text a
- * loaded skill gives the model. Model-facing text is English and never localized.
+ * No other tool's folder (`.claude/`, `.codex/`) is ever read. Also skill loading: the `load_skill` tool, the `/<name>`
+ * a user message loads, and the text a loaded skill gives the model. Model-facing text is English and never localized.
  */
 import { readdir, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { accessFailureReason, MAX_MENTION_LINES, truncationNotice } from "./mentions";
-import type { SkillProblem, SkillWarning } from "./protocol";
+import type { HostMessage, SkillProblem, SkillWarning } from "./protocol";
 import type { Skill } from "./systemPrompt";
 import type { ToolSpec } from "./toolCalls";
 import { excerpt, type ToolResult } from "./tools";
@@ -122,6 +122,28 @@ export async function readSkills(
     // [>]: Warnings in discovery order: personal first, then each workspace folder.
     warnings: [warnings.at(-1)!, ...warnings.slice(0, -1)].flat(),
   };
+}
+
+/**
+ * The host's answer to the `/` menu's `querySkills` `id`: the name and description of each skill `read` discovers, those
+ * kept from the model included, since the user may still load them with `/<name>`. Skipped skills are left out and
+ * their warnings dropped: the next send shows them. The answer is `failed` when a skills folder could not be listed,
+ * with the skills found in the others, or when the reader fails, logged, with none; the menu then says so and still
+ * shows the built-in commands. A skipped skill is no listing failure.
+ */
+export async function answerSkillQuery(
+  id: number,
+  read: () => Promise<SkillDiscovery>,
+): Promise<HostMessage & { type: "skillSuggestions" }> {
+  try {
+    const { skills, warnings } = await read();
+    const items = skills.map(({ name, description }) => ({ name, description }));
+    const failed = warnings.some((warning) => warning.problem.kind === "folderUnreadable");
+    return { type: "skillSuggestions", id, items, failed };
+  } catch (error) {
+    console.error("broke-code: could not list the skills for the / menu", error);
+    return { type: "skillSuggestions", id, items: [], failed: true };
+  }
 }
 
 /**
@@ -385,9 +407,10 @@ export const LOAD_SKILL_TOOL: ToolSpec = {
 };
 
 /**
- * The model's `load_skill` of `name`: the skill of that name among `skills` (the send's discovery) that is listed to
- * the model. A skill whose folder is in `loadedRoots` (the real folders of the skills loaded in the conversation) is
- * already loaded: `ok`, saying so, without the body. An unknown name, a skipped skill, and one kept from the model give
+ * The model's `load_skill` of `name`, among `skills` (the send's discovery). A skill whose folder is in `loadedRoots`
+ * (the real folders of the skills loaded in the conversation) is already loaded: `ok`, saying so, without the body,
+ * kept from the model or not, since the user may have loaded it with `/<name>` and the conversation holds its text.
+ * Otherwise the model loads a skill listed to it; an unknown name, a skipped skill, and one kept from the model give
  * an `error` naming the skills the model may load. Never rejects.
  */
 export async function loadSkill(
@@ -395,6 +418,10 @@ export async function loadSkill(
   skills: readonly Skill[],
   loadedRoots: readonly string[],
 ): Promise<ToolResult> {
+  const loaded = skills.find((candidate) => candidate.name === name && loadedRoots.includes(candidate.root));
+  if (loaded !== undefined) {
+    return { status: "ok", text: `Skill ${loaded.name} is already loaded; ${whereFilesLive(loaded)}` };
+  }
   const loadable = skills.filter((skill) => skill.listedToModel);
   const skill = loadable.find((candidate) => candidate.name === name);
   if (skill === undefined) {
@@ -402,32 +429,129 @@ export async function loadSkill(
     const choice = names.length > 0 ? `Skills you can load: ${names.join(", ")}.` : "No skill can be loaded.";
     return { status: "error", text: `load_skill: ${excerpt(name)}: no skill of that name can be loaded. ${choice}` };
   }
-  if (loadedRoots.includes(skill.root)) {
-    return { status: "ok", text: `Skill ${skill.name} is already loaded; ${whereFilesLive(skill)}` };
-  }
   return loadSkillText(skill);
 }
+
+/** A message that loads a skill: the skill its `/<name>` names, and the text after the name, trimmed. */
+export type SlashSkill = { skill: Skill; args: string };
+
+/**
+ * The skill `text` loads, when its trimmed text starts with `/`, a skill name, then whitespace or nothing: the skill of
+ * that name among `skills` (the send's discovery), listed to the model or not. `undefined` for any other text, so an
+ * unknown `/word` goes to the model as typed.
+ */
+export function findSlashSkill(text: string, skills: readonly Skill[]): SlashSkill | undefined {
+  const match = /^\/([a-z0-9-]+)(?:\s+([\s\S]*))?$/.exec(text.trim());
+  const skill = match ? skills.find((candidate) => candidate.name === match[1]) : undefined;
+  if (match === null || skill === undefined) return undefined;
+  return { skill, args: match[2] ?? "" };
+}
+
+/** The placeholder of a skill body that a user load replaces with the text after `/<name>`. */
+const ARGUMENTS = "$ARGUMENTS";
 
 /**
  * What loading `skill` gives the model, whoever loads it: a header naming the real path of its folder, then its
  * `SKILL.md` body, frontmatter and the blank lines after it removed, cut to the mention caps (1 MiB, 2,000 lines) with
  * the usual notice. `SKILL.md` is read as the files of a loaded skill are: inside the skill's real folder, symlinks
  * resolved. An `error` when it cannot be read. Never rejects.
+ *
+ * `args`: given when the user loads the skill with `/<name> args` (empty without arguments), absent for `load_skill`.
+ * Every `$ARGUMENTS` of the body becomes `args`, before the cut; a body without one is followed by a blank line and
+ * `args`, unless empty. The error then says the skill could not be loaded, followed by `args` the same way, since the
+ * message still goes.
  */
-export async function loadSkillText(skill: Skill): Promise<ToolResult> {
+export async function loadSkillText(skill: Skill, args?: string): Promise<ToolResult> {
+  const withArgs = (text: string) => (args ? `${text}\n\n${args}` : text);
   // [>]: Discovery already refused a `SKILL.md` linked out; this read is the boundary, should it be swapped since.
   const entry = await readWorkspaceEntry([], join(skill.root, FILE_NAME), {}, [skill.root]);
   if (entry.status !== "ok" || entry.kind !== "file") {
     const reason =
       entry.status === "ok" ? "it is a folder" : skillFileFailure(entry.status, "cause" in entry ? entry.cause : "");
-    return { status: "error", text: `load_skill: ${skill.name}: its ${FILE_NAME} could not be read (${reason}).` };
+    const failure = `its ${FILE_NAME} could not be read (${reason}).`;
+    if (args === undefined) return { status: "error", text: `load_skill: ${skill.name}: ${failure}` };
+    return { status: "error", text: withArgs(`Skill ${skill.name} could not be loaded: ${failure}`) };
   }
-  const body = (splitFrontmatter(entry.text)?.rest ?? entry.text).replace(/^(?:[ \t]*(?:\r\n|\r|\n))+/, "");
+  const written = (splitFrontmatter(entry.text)?.rest ?? entry.text).replace(/^(?:[ \t]*(?:\r\n|\r|\n))+/, "");
+  const segments = args === undefined ? [written] : written.split(ARGUMENTS);
+  const substitutes = segments.length > 1;
   const header = `Skill ${skill.name} loaded; ${whereFilesLive(skill)}`;
-  if (body === "") return { status: "ok", text: header };
-  const cut = truncateLines(body, MAX_MENTION_LINES);
+  const cut = cutExpansion(segments, args ?? "");
   const notice = cut.omitted > 0 ? `\n${truncationNotice(cut.omitted)}` : "";
-  return { status: "ok", text: `${header}\n\n${cut.text}${notice}` };
+  const text = cut.text === "" ? header : `${header}\n\n${cut.text}${notice}`;
+  if (substitutes || !args) return { status: "ok", text };
+  return { status: "ok", text: withArgs(text.replace(/(?:\r\n|\r|\n)+$/, "")) };
+}
+
+/** The byte cap of a loaded skill's body once its `$ARGUMENTS` are replaced: the mention cap. */
+const MAX_LOADED_BYTES = 1024 * 1024;
+
+/**
+ * `segments` joined by `args`, cut to its first 2,000 lines and 1 MiB (between characters) as `truncateLines` cuts a
+ * read, `omitted` counting the lines not shown, a line the byte cap cut among them.
+ *
+ * [!]: A text over 1 MiB is never built whole: a repository's `SKILL.md` can hold 100,000 `$ARGUMENTS` under its
+ * 1 MiB cap, each becoming the whole text the user typed, so the expansion could reach hundreds of megabytes and block
+ * the extension host, which Stop cannot interrupt.
+ */
+function cutExpansion(segments: readonly string[], args: string): { text: string; omitted: number } {
+  const argsBytes = Buffer.byteLength(args);
+  let bytes = (segments.length - 1) * argsBytes;
+  for (const segment of segments) bytes += Buffer.byteLength(segment);
+  if (bytes <= MAX_LOADED_BYTES) {
+    const cut = truncateLines(segments.join(args), MAX_MENTION_LINES);
+    return { text: cut.text, omitted: cut.omitted };
+  }
+  const prefix = bytePrefix(joined(segments, args), MAX_LOADED_BYTES);
+  const cut = truncateLines(prefix, MAX_MENTION_LINES);
+  // [>]: Under the line cap, the byte cap cut the last line shown unless the prefix ends with its line break.
+  const partial = cut.omitted === 0 && !/[\r\n]$/.test(prefix) ? 1 : 0;
+  return { text: cut.text, omitted: joinedLineCount(segments, args) - (cut.lines - partial) };
+}
+
+/** The pieces of `segments` joined by `args`, in order, `args` never copied. */
+function* joined(segments: readonly string[], args: string): Generator<string> {
+  for (const [index, segment] of segments.entries()) {
+    if (index > 0) yield args;
+    yield segment;
+  }
+}
+
+/** The first `max` UTF-8 bytes of `pieces` joined, cut between characters. */
+function bytePrefix(pieces: Iterable<string>, max: number): string {
+  const buffer = new Uint8Array(max);
+  const encoder = new TextEncoder();
+  const kept: string[] = [];
+  let used = 0;
+  for (const piece of pieces) {
+    // [>]: `encodeInto` writes whole characters only, so `read` ends between two of them.
+    const { read, written } = encoder.encodeInto(piece, buffer.subarray(used));
+    kept.push(piece.slice(0, read));
+    used += written;
+    if (read < piece.length) break;
+  }
+  return kept.join("");
+}
+
+/** The lines of `segments` joined by `args`, counted as `truncateLines` counts them, without building the text. */
+function joinedLineCount(segments: readonly string[], args: string): number {
+  const argsBreaks = countLineBreaks(args);
+  let breaks = 0;
+  let last = "";
+  for (const piece of joined(segments, args)) {
+    if (piece === "") continue;
+    // [>]: A `\r` ending one piece and a `\n` starting the next form one `\r\n` break, counted once in each piece.
+    if (last === "\r" && piece.startsWith("\n")) breaks--;
+    breaks += piece === args ? argsBreaks : countLineBreaks(piece);
+    last = piece.at(-1)!;
+  }
+  if (last === "") return 0;
+  // [>]: A final line break ends the last line, not a new one.
+  return last === "\r" || last === "\n" ? breaks : breaks + 1;
+}
+
+function countLineBreaks(text: string): number {
+  return text.match(/\r\n|\r|\n/g)?.length ?? 0;
 }
 
 function whereFilesLive(skill: Skill): string {

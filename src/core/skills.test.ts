@@ -2,7 +2,17 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describeSkillDiscovery, LOAD_SKILL_TOOL, loadSkill, MAX_SKILL_ENTRIES, readSkills } from "./skills";
+import {
+  answerSkillQuery,
+  describeSkillDiscovery,
+  findSlashSkill,
+  LOAD_SKILL_TOOL,
+  loadSkill,
+  loadSkillText,
+  MAX_SKILL_ENTRIES,
+  readSkills,
+} from "./skills";
+import type { Skill } from "./systemPrompt";
 import type { WorkspaceEntry } from "./workspaceFiles";
 
 let base: string;
@@ -474,6 +484,64 @@ describe("describeSkillDiscovery", () => {
   });
 });
 
+describe("answerSkillQuery", () => {
+  test("answers with the query's id and each discovered skill's name and description, those kept from the model included", async () => {
+    await writeSkill(personal, "grilling", "---\nname: grilling\ndescription: Grill the plan.\n---\nAsk.\n");
+    await writeSkill(
+      personal,
+      "release",
+      "---\nname: release\ndescription: Cut a release.\ndisable-model-invocation: true\n---\nShip.\n",
+    );
+    await writeSkill(personal, "broken", "---\nname: broken\n---\nNo description.\n");
+    const answer = await answerSkillQuery(9, () => readSkills(home, []));
+    expect(answer).toEqual({
+      type: "skillSuggestions",
+      id: 9,
+      items: [
+        { name: "grilling", description: "Grill the plan." },
+        { name: "release", description: "Cut a release." },
+      ],
+      failed: false,
+    });
+  });
+
+  test("a skills folder that cannot be listed fails the answer, which keeps the skills found elsewhere", async () => {
+    await writeSkill(workspaceSkills(), "kept", skillText("kept", "Kept."));
+    await writeSkill(personal, "broken", "---\nname: broken\n---\nNo description.\n");
+    await chmod(personal, 0o000);
+    const answer = await answerSkillQuery(7, () => readSkills(home, single()));
+    expect(answer).toEqual({
+      type: "skillSuggestions",
+      id: 7,
+      items: [{ name: "kept", description: "Kept." }],
+      failed: true,
+    });
+  });
+
+  test("a skipped skill is no listing failure", async () => {
+    await writeSkill(personal, "grilling", skillText("grilling", "Grill the plan."));
+    await writeSkill(personal, "broken", "---\nname: broken\n---\nNo description.\n");
+    const answer = await answerSkillQuery(4, () => readSkills(home, []));
+    expect(answer).toEqual({
+      type: "skillSuggestions",
+      id: 4,
+      items: [{ name: "grilling", description: "Grill the plan." }],
+      failed: false,
+    });
+  });
+
+  test("a reader that fails gives a failed answer with the query's id and no row", async () => {
+    const original = console.error;
+    console.error = () => {};
+    try {
+      const answer = await answerSkillQuery(3, () => Promise.reject(new Error("boom")));
+      expect(answer).toEqual({ type: "skillSuggestions", id: 3, items: [], failed: true });
+    } finally {
+      console.error = original;
+    }
+  });
+});
+
 describe("LOAD_SKILL_TOOL", () => {
   test("says only a skill folder outside the workspace is read-only", () => {
     expect(LOAD_SKILL_TOOL.description).toContain("; a skill folder outside the workspace is read-only.");
@@ -528,6 +596,20 @@ describe("loadSkill", () => {
     });
   });
 
+  test("a skill kept from the model that the user already loaded gives the same ok, saying so", async () => {
+    const root = await writeSkill(
+      personal,
+      "deploy",
+      skillText("deploy", "Deploy.", "disable-model-invocation: true\n"),
+    );
+    await writeSkill(personal, "review", skillText("review", "Review."));
+    const { skills } = await readSkills(home, []);
+    expect(await loadSkill("deploy", skills, [root])).toEqual({
+      status: "ok",
+      text: `Skill deploy is already loaded; its files live in ${root}; read them by that absolute path.`,
+    });
+  });
+
   test("cuts a body over 2,000 lines to its first 2,000, with the mention notice", async () => {
     const lines = Array.from({ length: 2500 }, (_, index) => `step ${index + 1}`).join("\n");
     const root = await writeSkill(personal, "long", `---\nname: long\ndescription: Long.\n---\n${lines}\n`);
@@ -570,6 +652,132 @@ describe("loadSkill", () => {
     expect(await loadSkill("review", skills, [])).toEqual({
       status: "error",
       text: "load_skill: review: its SKILL.md could not be read (it links outside the skill's folder).",
+    });
+  });
+});
+
+describe("findSlashSkill", () => {
+  const review: Skill = { name: "review", description: "Review.", root: "/s/review", listedToModel: true };
+  const deploy: Skill = { name: "deploy", description: "Deploy.", root: "/s/deploy", listedToModel: false };
+  const skills = [review, deploy];
+
+  test("finds the skill a message starts with, and the text after its name, trimmed, as its arguments", () => {
+    expect(findSlashSkill("/review  the parser\nand its tests ", skills)).toEqual({
+      skill: review,
+      args: "the parser\nand its tests",
+    });
+    expect(findSlashSkill("/review", skills)).toEqual({ skill: review, args: "" });
+    expect(findSlashSkill("/review\tnow", skills)).toEqual({ skill: review, args: "now" });
+  });
+
+  test("finds a skill kept from the model too", () => {
+    expect(findSlashSkill("/deploy prod", skills)).toEqual({ skill: deploy, args: "prod" });
+  });
+
+  test("a name no skill has, a name followed by more than whitespace, or a slash not first is no skill", () => {
+    for (const text of [
+      "/nothing here",
+      "/new",
+      "/model",
+      "/review/x",
+      "/review.",
+      "/Review",
+      "say /review",
+      "review",
+    ]) {
+      expect(findSlashSkill(text, skills)).toBeUndefined();
+    }
+  });
+});
+
+describe("loadSkillText with the user's arguments", () => {
+  const header = (name: string, root: string) =>
+    `Skill ${name} loaded; its files live in ${root}; read them by that absolute path.`;
+
+  async function discovered(name: string, body: string): Promise<{ skill: Skill; root: string }> {
+    const root = await writeSkill(personal, name, `${skillText(name, "D.").replace("\n# Body\n", "")}${body}`);
+    const { skills } = await readSkills(home, []);
+    return { skill: skills.find((skill) => skill.name === name)!, root };
+  }
+
+  test("replaces every $ARGUMENTS of the body with the arguments, taken literally", async () => {
+    const { skill, root } = await discovered("grilling", "Grill: $ARGUMENTS\nAgain: $ARGUMENTS\n");
+    expect(await loadSkillText(skill, "my $& idea")).toEqual({
+      status: "ok",
+      text: `${header("grilling", root)}\n\nGrill: my $& idea\nAgain: my $& idea\n`,
+    });
+  });
+
+  test("replaces $ARGUMENTS with the empty string when there are no arguments", async () => {
+    const { skill, root } = await discovered("grilling", "Grill: $ARGUMENTS.\n");
+    expect(await loadSkillText(skill, "")).toEqual({ status: "ok", text: `${header("grilling", root)}\n\nGrill: .\n` });
+  });
+
+  test("without $ARGUMENTS in the body, a blank line then the arguments follow it; nothing when there are none", async () => {
+    const { skill, root } = await discovered("grilling", "Grill the user.\n\n");
+    expect(await loadSkillText(skill, "my idea")).toEqual({
+      status: "ok",
+      text: `${header("grilling", root)}\n\nGrill the user.\n\nmy idea`,
+    });
+    expect(await loadSkillText(skill, "")).toEqual({
+      status: "ok",
+      text: `${header("grilling", root)}\n\nGrill the user.\n\n`,
+    });
+  });
+
+  test("substitutes before the 2,000-line cut, so arguments holding lines cannot push the notice", async () => {
+    const lines = Array.from({ length: 1999 }, (_, index) => `step ${index + 1}`).join("\n");
+    const { skill } = await discovered("long", `$ARGUMENTS\n${lines}\n`);
+    const result = await loadSkillText(skill, "a\nb");
+    expect(result.text).toContain("\n\na\nb\nstep 1\n");
+    expect(result.text).toEndWith("\nstep 1998\n[truncated: 1 more lines not shown]");
+  });
+
+  test("100,000 $ARGUMENTS with 1,000-line arguments are cut without building the 200 MB expansion", async () => {
+    const args = Array.from({ length: 1000 }, () => "x").join("\n");
+    const { skill } = await discovered("flood", `${"$ARGUMENTS".repeat(100_000)}\n`);
+    const result = await loadSkillText(skill, args);
+    // [>]: Each junction joins the last line of one copy with the first of the next: 999 breaks a copy, plus the last.
+    expect(result.text).toEndWith(`\nx\n[truncated: ${100_000 * 999 + 1 - 2000} more lines not shown]`);
+    expect(result.text.length).toBeLessThan(10_000);
+  });
+
+  test("an expansion over 1 MiB is cut between characters, the cut line counted as not shown", async () => {
+    const { skill, root } = await discovered("wide", `a${"$ARGUMENTS".repeat(1000)}`);
+    const result = await loadSkillText(skill, "é".repeat(1000));
+    // [>]: `a` takes 1 byte and each `é` 2, so the 1 MiB cap ends one byte short of the next `é`.
+    expect(result).toEqual({
+      status: "ok",
+      text: `${header("wide", root)}\n\na${"é".repeat(524_287)}\n[truncated: 1 more lines not shown]`,
+    });
+  });
+
+  test("a \\r ending the arguments and a \\n after them count as one line break past the byte cap", async () => {
+    const line = "a".repeat(2000);
+    const { skill } = await discovered("crlf", "$ARGUMENTS\n".repeat(1000));
+    const result = await loadSkillText(skill, `${line}\r`);
+    // [>]: 1000 lines of 2,002 bytes: 1 MiB keeps 523 whole lines and 1,530 bytes of the 524th.
+    expect(result.text).toEndWith(`${line}\r\n${"a".repeat(1530)}\n[truncated: 477 more lines not shown]`);
+  });
+
+  test("an unreadable SKILL.md says the skill could not be loaded, then the arguments", async () => {
+    const { skill, root } = await discovered("grilling", "Grill: $ARGUMENTS\n");
+    await unlink(join(root, "SKILL.md"));
+    expect(await loadSkillText(skill, "my idea")).toEqual({
+      status: "error",
+      text: "Skill grilling could not be loaded: its SKILL.md could not be read (no such file).\n\nmy idea",
+    });
+    expect(await loadSkillText(skill, "")).toEqual({
+      status: "error",
+      text: "Skill grilling could not be loaded: its SKILL.md could not be read (no such file).",
+    });
+  });
+
+  test("the model's load keeps $ARGUMENTS as written", async () => {
+    const { skill, root } = await discovered("grilling", "Grill: $ARGUMENTS\n");
+    expect(await loadSkillText(skill)).toEqual({
+      status: "ok",
+      text: `${header("grilling", root)}\n\nGrill: $ARGUMENTS\n`,
     });
   });
 });

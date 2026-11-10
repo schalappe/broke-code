@@ -16,7 +16,9 @@ write tools and commands: a message starts an agent turn that runs `read_file`, 
 Accept or Reject in the chat, ADR 0002) unless the user setting auto-approves it; each command waits for Run or Reject,
 always. Each send discovers the skills and lists them to the model, which loads one with `load_skill` and may then read
 its folder (ADR 0003). `bun run eval` measures that loop on local Ollama models, applying each change and running each
-command at once. Slash commands are not built yet. Read `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the decisions behind the design, starting with
+command at once. Typing `/` at the start of a message lists `/new`, `/model`, and the skills; the panel runs `/new` and
+`/model` itself, and a message `/<name> args` loads that skill in the controller, with its arguments; any other `/word`
+goes to the model as typed. Read `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the decisions behind the design, starting with
 `docs/adr/0001-body-tool-calls.md`.
 
 ## Structure
@@ -33,11 +35,14 @@ command at once. Slash commands are not built yet. Read `GLOSSARY.md` for the do
   and deletes in call order), and the store's file access (`conversationFiles.ts`:
   the file port, and its implementation over a local directory with `node:fs`: missing versus failed, regular files
   only, atomic writes, leftover temporary files), the dialog queue, the host-webview message
-  protocol and its validation, workspace file access (`workspaceFiles.ts`: the inside-workspace check and its read-only
+  protocol and its validation, the model list (`modelList.ts`: `emptyModelsLabel`, why the list is empty, for the
+  header's select and the Quick Pick; `modelChoices`, the rows `/model` opens; `chooseModel`, the `/model` pick over a
+  pick port the host fills with `showQuickPick`), workspace file access (`workspaceFiles.ts`: the inside-workspace check and its read-only
   roots (the loaded skills' folders outside the workspace, for reads only), capped reads, one-level listings, line truncation, the write boundary and atomic writes, with `node:fs`), mentions (`mentions.ts`: token detection, picked and typed
   mentions merged, reading, and the text the model receives), where a message holds Markdown code
-  (`markdownCode.ts`), the mention menu logic (`suggestions.ts`: the `@` token at the caret, index entries,
-  filtering, the index exclusions), the menu's file index (`fileIndex.ts`: one scan shared until a file
+  (`markdownCode.ts`), the menu logic (`suggestions.ts`: the `@` token at the caret, index entries,
+  filtering, the index exclusions; the `/` token at the start of the message, `BUILT_IN_COMMANDS`, the slash command
+  filter), the menu's file index (`fileIndex.ts`: one scan shared until a file
   changes, behind a scan port), the body tool call parser (`toolCalls.ts`: `ToolSpec`, the first call-shaped block,
   malformed-call messages), the system prompt composer (`systemPrompt.ts`: role, call format, rules, tools,
   skills, instruction files), the turn limits (`limits.ts`: `brokeCode.maxToolSteps` and `brokeCode.contextSizes` parsing,
@@ -58,7 +63,8 @@ command at once. Slash commands are not built yet. Read `GLOSSARY.md` for the do
   (`instructions.ts`: `~/.agents/AGENTS.md`, then each workspace folder's `AGENTS.md`, under the mention caps), and the
   skills (`skills.ts`: discovery in `~/.agents/skills/` and each workspace folder's `.agents/skills/`, the frontmatter
   subset, validation, precedence, warnings, the line the extension logs at each send; `LOAD_SKILL_TOOL`, `loadSkill`
-  for the model's call, and `loadSkillText`, the load result whoever loads, for `/<name>` too). `markdownCode.ts`, `suggestions.ts`, and `conversation.ts` import nothing from
+  for the model's call, `findSlashSkill`, the skill a `/<name> args` message loads, `loadSkillText`, the load result
+  whoever loads, the user's arguments substituted or appended, and `answerSkillQuery`, the `/` menu's answer). `markdownCode.ts`, `suggestions.ts`, `modelList.ts`, and `conversation.ts` import nothing from
   `node:`, since the webview loads them. Unit tests sit next to them as `*.test.ts`, because `bun test` cannot load `vscode`. `tlsFixture.ts`
   generates test certificates with `/usr/bin/openssl` at test time; no private key is committed.
   `conversationFixture.ts` is the in-memory conversation file port for tests.
@@ -69,9 +75,12 @@ command at once. Slash commands are not built yet. Read `GLOSSARY.md` for the do
   `vscode.env.shell`, `$SHELL`, or `/bin/sh`), the write approval's editor side in
   `approval.ts` (the diff preview over `vscode.diff` and a content provider, the tabs, documents, and
   `brokeCode.autoApproveWrites` values it feeds the core decisions), the instruction reader and the skill reader from the home folder and the workspace folders, the latter logging the
-  skills of each send).
-- `src/webview/`: the React chat panel and its CSS, tool step rows and the approval controls included. `SuggestionMenu.tsx` is the autocomplete list the `@` menu
-  uses and the `/` menu (#11) is meant to reuse.
+  skills of each send, and the same discovery, unlogged, for the `/` menu's `querySkills`; `chatView.ts` opens the
+  Quick Pick of `chooseModel`).
+- `src/webview/`: the React chat panel and its CSS, tool step rows and the approval controls included. `SuggestionMenu.tsx` is the autocomplete list the `@` and
+  `/` menus share, a row with an optional description; `composer.ts` holds the message box's decisions without React
+  (the token at the caret, each menu's rows, what a key does, what picking a `/` row does (`slashPick`), the built-in
+  command a message runs).
 - `src/l10n.test.ts`: checks that every `l10n.t` message has a French translation and that the
   `package.nls*.json` files match.
 - `l10n/bundle.l10n.fr.json`, `package.nls.json`, `package.nls.fr.json`: French strings for the host and
@@ -201,11 +210,12 @@ command at once. Slash commands are not built yet. Read `GLOSSARY.md` for the do
   with the user's rights and can read, change, or delete anything the user can, outside the workspace too; the
   approval is the only guard. The one exception to the file tools' boundary is read-only access to the directories of
   skills loaded in the current conversation that lie outside the workspace (ADR 0003):
-  - A skill is loaded when the conversation holds an `ok` `load_skill` step for its name; an `error` step, a step
-    dropped by Stop, and a malformed call load nothing. Before each call the controller maps those names to folders
-    through the current send's discovery (`ToolContext.skillRoots`, beside `ToolContext.skills`, the send's skills),
-    so a load earlier in the turn counts at the next call, a reopened conversation keeps its loaded skills with no
-    record change, and a skill gone since is no longer readable.
+  - A skill is loaded when the conversation holds an `ok` `load_skill` step for its name, or a user entry whose
+    `skill` is `loaded` (a `/<name>` message); an `error` step, a step dropped by Stop, a malformed call, and a
+    `failed` user skill load nothing. Before each call the controller maps those names to folders through the current
+    send's discovery (`ToolContext.skillRoots`, beside `ToolContext.skills`, the send's skills), so a load earlier in
+    the turn counts at the next call, a reopened conversation keeps its loaded skills, and a skill gone since is no
+    longer readable.
   - `read_file`, `list_files`, and `search` also accept an absolute path inside a loaded skill's real folder, the path
     its load result gives. The shared read boundary (`readWorkspaceEntry`, `locateWorkspacePath`) takes the folders
     as read-only roots. An absolute path written inside one is read as written, never rerouted through a multi-root
@@ -357,6 +367,30 @@ command at once. Slash commands are not built yet. Read `GLOSSARY.md` for the do
   counts, and opens the menu, only when it is outside code in both. Answers carry the query id; the
   webview drops stale ones. While the answer to a new query is pending, the menu shows only the earlier rows that
   match it, never a row for an older query. When the files cannot be listed, the menu says so instead of "No match".
+- A `/` at the very start of the message opens the `/` menu while the caret ends its first word; the query is the text
+  after `/`, possibly empty. A `/` anywhere else opens nothing, since paths hold them. The menu lists `/new` ("Start a
+  new conversation"), `/model` ("Choose the model"), then each skill the send's discovery finds, by name, with its
+  description (`disable-model-invocation: true` included, skipped ones left out), keeping those whose name starts with
+  the query, ignoring case, up to 20; "No match" when none. When the menu opens, the webview posts `querySkills { id }`
+  once, since a discovery reads every `SKILL.md`; the host runs the send's discovery without its log line (its warnings
+  wait for the next send) and answers `skillSuggestions { id, items, failed }`, which `chatStateOf` leaves out; the
+  webview filters as the user types and drops an answer to an earlier opening. Until the answer comes, only the
+  matching built-ins show, and no menu when none matches. When a skills folder cannot be listed (its
+  `folderUnreadable` warning) or the discovery fails, the answer is `failed` and the menu says so, keeping the
+  built-ins and the skills found elsewhere; a skipped skill is no listing failure. Keys and clicks work as in the `@`
+  menu. Picking a skill row replaces the token with `/<name> `, for its arguments. Picking a built-in row (Enter, Tab,
+  or a click) runs that command at once, as sending it would, when Send would act and nothing but whitespace follows
+  the token; otherwise it inserts `/<name> ` and nothing runs, so a draft after the token is never cleared.
+- A message whose trimmed text is exactly `/new` posts the New chat button's `newChat` request and closes History;
+  exactly `/model` posts `chooseModel`, and the host opens VS Code's Quick Pick over `controller.snapshot`: the
+  selected provider's listed models in listing order (`modelChoices`, the header select's list, never fetched again),
+  the selected one described "current", placeholder "Choose the model". Before the models are listed, it opens empty,
+  its placeholder saying why as the header's select does ("Loading models…", "Models unavailable", "No models"). A
+  pick goes through `controller.selectModel`, as the header select's change, so the header follows; Escape changes
+  nothing; a Quick Pick that fails is logged and shown as an error (`chooseModel`). (A webview cannot open the
+  select's own list: Chromium refuses `showPicker()` in a cross-origin iframe.)
+  Both clear the box and act only when Send would (a model chosen, no reply in flight); nothing reaches the model.
+  `/new words` and `/model words` are ordinary messages.
 - The file index is built on the first menu query with `findFiles("**/*", "**/{node_modules,.git,dist,out,build}/**",
   5000)`: an explicit exclude adds to `files.exclude` (only `null` drops it). `.gitignore` is not read. Folders are
   derived from file paths, none inside a multi-root folder name that holds `/`. Paths are `asRelativePath` with its default prefix, the folder name in a multi-root
@@ -392,10 +426,12 @@ command at once. Slash commands are not built yet. Read `GLOSSARY.md` for the do
   shown as a failure, and the prune deletes the next oldest valid conversation instead, so 50 rows remain; the user can
   still delete its row.
 - The record is versioned (`version: 2`) and holds the displayed entries: user entries, each with the text the model
-  received (`modelText`), assistant entries, with an optional `call` locating the call block in the answer and, when
+  received (`modelText`) and an optional `skill` (`{ name, status }`, any other shape making the record invalid),
+  assistant entries, with an optional `call` locating the call block in the answer and, when
   `halted`, its `haltReason`, and tool steps, with an optional `approval`. A reopened conversation therefore resends exactly what was sent and
   never reads its mentions again. Version 1 files are skipped like any unknown version: no release wrote them, so
-  none is migrated. It holds no API key and nothing else of `ProviderAccess`; a failed reply's error keeps the provider's base
+  none is migrated. An optional field added to an entry keeps the version: an older build drops the unknown key and
+  reads the rest (ADR 0003). It holds no API key and nothing else of `ProviderAccess`; a failed reply's error keeps the provider's base
   URL for display, since it is user settings, not a secret. Times are whole milliseconds within the `Date` range. A
   file that fails validation or has an unknown version is logged and skipped; a file that cannot be read is shown as
   a listing failure. On load, a reply still `waiting` or `streaming` becomes `stopped`.
@@ -404,8 +440,8 @@ command at once. Slash commands are not built yet. Read `GLOSSARY.md` for the do
   when the turn ends (done, stopped, failed, halted, or cut off). A reply's saves go to the record it was sent
   in, also after New chat or opening another one, and a deleted conversation is never written again. A conversation
   without entries is never written.
-- Navigation runs one operation at a time, in request order: restore, New chat (and `/new`, #11, through the same
-  `newChat` method), open, delete, and prune. The operations that change the conversation shown (New chat, open,
+- Navigation runs one operation at a time, in request order: restore, New chat (and `/new`, through the same
+  `newChat` request), open, delete, and prune. The operations that change the conversation shown (New chat, open,
   deleting the one shown) stop the reply in flight at request time and wait until it settles, its last save handed to
   the store, so a later read sees that save. Restore stops nothing: no reply exists at activation. Deleting another row
   and pruning leave the reply running; a reply's own save triggers the prune. The conversation shown is therefore the
@@ -446,26 +482,44 @@ command at once. Slash commands are not built yet. Read `GLOSSARY.md` for the do
   (`skills.ts`), no YAML dependency: top-level `key: value` with plain, single- or double-quoted, or `>` and `|` block
   values; nested maps and unknown keys are ignored. `name` follows the spec (1 to 64 of `a-z`, `0-9`, `-`, no hyphen
   first, last, or twice in a row); `description` is 1 to 1,024 characters.
-- `disable-model-invocation: true` (outside the spec) keeps a valid skill out of the model's list and of
-  `load_skill`; it stays discovered for `/<name>`.
+- `disable-model-invocation: true` (outside the spec) keeps a valid skill out of the model's list, and the model cannot
+  load it with `load_skill`; it stays discovered for `/<name>`, and once the user loaded it that way the model's
+  `load_skill` of it answers "already loaded".
 - Do not read `.claude/`, `.codex/`, or any other tool's directory. The `.agents` convention is the only one.
 - The system prompt lists each skill's name and description only. `load_skill` or `/<name>` loads the body.
-- `load_skill(name)` loads a skill of the send's discovery that is listed to the model. Its `ok` result is
+- `load_skill(name)` loads a skill of the send's discovery that is listed to the model; a skill already loaded in the
+  conversation answers "already loaded" (below), listed to the model or not. Its `ok` result is
   `Skill <name> loaded; its files live in <real folder path>; read them by that absolute path.`, a blank line, then the
   `SKILL.md` body without its frontmatter and the blank lines after it, cut to 2,000 lines with the mention notice
   (`SKILL.md` is read under the 1 MiB cap, inside the skill's real folder like its other files: discovery already
   skipped one linked out, so this check only catches a swap since, as `its SKILL.md could not be read (it links outside
   the skill's folder)`). A skill already loaded gives `ok`, `Skill <name> is already loaded; its files live in ...`,
-  without the body. An unknown name, a skipped skill, and one kept from the model give an `error` naming the skills the
-  model may load.
-- In `/<name> args`, the text after the name replaces `$ARGUMENTS` in the skill body. If the body has no
-  `$ARGUMENTS`, the text follows the skill as a user message.
+  without the body, also one kept from the model that the user loaded with `/<name>`: an error there made models read
+  the loaded text as injected and refuse it (#50, live). An unknown name, a skipped skill, and one kept from the model
+  and not loaded give an `error` naming the skills the model may load.
+- A sent message is a skill command when its trimmed text is `/`, a name of the send's discovery (listed to the model
+  or not; a skipped skill is not discovered), then whitespace or the end (`findSlashSkill`, in the controller's send,
+  after discovery). Any other `/word` is sent as typed, `/new` and `/model` included (#51 handles them in the webview
+  before any send). `args` is the text after the name, trimmed.
+- The model receives one user message (role alternation): `loadSkillText(skill, args)`, the `load_skill` text with
+  every `$ARGUMENTS` of the body replaced by `args`, the empty string included, before the cut to 2,000 lines and
+  1 MiB (between characters, a line the byte cap cuts counted as not shown; a longer text is never built whole, since a
+  repository's `SKILL.md` can hold 100,000 `$ARGUMENTS`); a body without `$ARGUMENTS` is followed, when `args` is not
+  empty, by a blank line and `args`, its trailing line breaks dropped first. Mentions in `args` are read as for any
+  message and their blocks follow; the `/<name>` token is never a mention. A `SKILL.md` that cannot be read at send
+  (swapped since discovery) still sends the message, as an unreadable mention does: `Skill <name> could not be loaded: its SKILL.md could not be read (<reason>).`, then `args`
+  after a blank line. The user entry keeps the text as typed and gets `skill: { name, status: "loaded" | "failed" }`,
+  which the chat shows as a chip `Skill <name>` before the mention chips. A loaded one counts as loaded in the
+  conversation from that message on (see "Harness"); a second `/<name>` sends the whole text again, and the model's
+  `load_skill` of it answers "already loaded".
 - Skip a skill whose frontmatter lacks `name` or `description`, whose `name` breaks the spec or differs from its
   directory name, or whose `SKILL.md` cannot be read, and show a warning naming the file and the problem; a skills
   folder that exists but cannot be listed is one warning too. The warnings sit in `ChatState.skillWarnings`, are
   replaced at each send, and show in the panel list of skipped providers. The extension logs each send's skills
   (`broke-code: skills listed to the model: ...`) to the extension host console.
-- The built-in slash commands are `/new` and `/model`. Typing `/` lists them with every skill.
+- The built-in slash commands are `/new` and `/model`, run by the webview and never sent (Harness, the `/` menu).
+  Typing `/` lists them with every skill. A skill named `new` or `model` is listed too, after the built-ins, but a
+  message of exactly its `/<name>` runs the built-in; picking the skill's row inserts `/<name> ` like any skill.
 
 ## Verification
 
@@ -489,7 +543,7 @@ command at once. Slash commands are not built yet. Read `GLOSSARY.md` for the do
   included, so the bench confines what the tools reach, not what a command itself does. Skills are discovered as the extension
   does, but with a throwaway copy of the scenario's home fixture as the home folder, so the bench never reads the real
   `~/.agents`; a scenario without one gets no skill, and its prompt has neither the Skills section nor `load_skill`.
-  Five scenarios, each judged on the turn ending `done` and on the workspace after it: every file the scenario writes
+  Seven scenarios, each judged on the turn ending `done` and on the workspace after it: every file the scenario writes
   holds its exact expected text, byte for byte, and every other entry is unchanged. The workspace is read back without
   following symlinks: every entry but a folder counts, a file by its text, a symlink by its target (`{ symlink }`), any
   other kind, such as a FIFO, by its kind (`{ special }`), so a command that adds a symlink fails `workspaceChanged`.
@@ -509,6 +563,15 @@ command at once. Slash commands are not built yet. Read `GLOSSARY.md` for the do
     when an `ok` `run_command` step ran, the answer holds 61 as a number token of its own (the answer is split into runs of digits, letters, `.`, `,`, `_`, `+`, `-`, and U+2212 holding a digit, trailing `.` and `,` dropped, so `161`, `61,000`, `61.5`, `0,61`, `-61`, `61e3`, and `61k` fail and `61.` passes), and no file changed. Without an `ok`
     `run_command` step it is `wrongTool`, its detail led by the first line of the last command step when one ran (a
     rejection, `stopped after 10 seconds`, an exit code).
+  - `slash`: the `skill` fixture and home, the message `/depot-codes` then the `skill` question, so the user loads the
+    skill. Passes when a read step got the code, the answer holds it, and no file changed; no `load_skill` step is
+    required, and an `ok` one is allowed. A first user entry without a `loaded` skill is `wrongTool`, its detail
+    saying so, since the run then measures nothing of the slash path.
+  - `hidden`: `slash` with `disable-model-invocation: true` in the skill's frontmatter, beside a second personal skill,
+    `release-notes`, unrelated to depots and listed, so the prompt has the Skills section and offers `load_skill` while
+    `depot-codes` stays off its list; judged the same way. It measures that the model follows a skill the user loaded
+    although it was never listed to it, instead of refusing the loaded text as injected: live, a `load_skill` of it
+    answered an error and the model refused (#50); it now answers "already loaded".
 
   A failed run shows one category and a one-line detail: `malformed`, `wrongTool`, `wrongAnswer`, `stepLimit`,
   `contextFull`, `providerError`, `wrongEdit` (a file the scenario writes is missing or holds other text, with the
@@ -527,8 +590,14 @@ command at once. Slash commands are not built yet. Read `GLOSSARY.md` for the do
   most after listing a level or two. On 9a67dd7, `gemma4` once failed `skill` (`wrongTool`: it listed the skill folder
   and answered without reading the reference file). Live, `qwen3.8:27b` proposes a command for that count, but on a
   small tree (7 files in 4 folders) it walks the folders with `list_files` instead, even when asked to count the
-  subfolders (#9 verification).
-  Scenarios for slash commands come with #11.
+  subfolders (#9 verification). On 9db1a52 the six scenarios took 55 min 45 s, one `gemma4` `edit` run alone 22 min 56 s
+  before it failed `malformed` (a `<read_file>` call never closed); every model met the bar: `slash` 10/10 on both
+  models, `command` 9/10 on `qwen3.8:27b` (`wrongTool`: it listed the folders, then searched, and ran no command),
+  `edit` 9/10 on `gemma4`, every other scenario 10/10. On 9f6ae23 plus the `release-notes` skill, `hidden` alone
+  took 5 min 38 s, 10/10 on both models: `qwen3.8:27b` read the reference file at once in every run; `gemma4` called
+  `load_skill(depot-codes)` in 2 runs, got "already loaded", then read the file, and listed the skill folder first in 4.
+  On edc18b5 the seven scenarios took 56 min 39 s, 10/10 for every scenario on both models (140 of 140 runs); one
+  `gemma4` `edit` run alone took 19 min 19 s and passed.
 - v1 supports macOS only. Windows and Linux are planned for v2.
 
 ## Git and release workflow

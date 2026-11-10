@@ -11,9 +11,8 @@ const posted: unknown[] = [];
 (globalThis as { acquireVsCodeApi?: () => { postMessage(message: unknown): void } }).acquireVsCodeApi = () => ({
   postMessage: (message) => posted.push(message),
 });
-const { App, ApprovalControls, ContextNotice, ConversationList, Header, HistoryPanel, MentionMenu } = await import(
-  "./App"
-);
+const { App, ApprovalControls, ContextNotice, ConversationList, Header, HistoryPanel, MentionMenu, SlashMenu } =
+  await import("./App");
 const { moveHighlight } = await import("./SuggestionMenu");
 
 type Reply = ChatEntry & { role: "assistant" };
@@ -306,45 +305,18 @@ describe("approval", () => {
   });
 
   test("the reason typed survives opening and closing History, and Reject still carries it", async () => {
-    const { GlobalRegistrator } = await import("@happy-dom/global-registrator");
-    const { act, createElement } = await import("react");
-    GlobalRegistrator.register();
-    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-    try {
-      const { createRoot } = await import("react-dom/client");
-      const host = document.createElement("div");
-      document.body.append(host);
-      const root = createRoot(host);
-      const state = stateWith(true, {
-        entries: [{ role: "user", content: "Hi", mentions: [] }, writing],
-        approval,
-      });
-      await act(async () => root.render(createElement(App, { state, language: "en" })));
-
+    const state = stateWith(true, { entries: [{ role: "user", content: "Hi", mentions: [] }, writing], approval });
+    await withPanel(state, async ({ host, fill, click }) => {
       const field = host.querySelector<HTMLInputElement>("input.approval-reason");
       if (!field) throw new Error("no reason field");
-      // [&]: React tracks the value property; set it through the prototype setter so the input event registers.
-      const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
-      await act(async () => {
-        setValue?.call(field, "Keep the old name.");
-        field.dispatchEvent(new Event("input", { bubbles: true }));
-      });
-
-      const click = async (label: string) => {
-        const target = [...host.querySelectorAll("button")].find((element) => element.textContent === label);
-        if (!target) throw new Error(`no ${label} button`);
-        await act(async () => target.click());
-      };
+      await fill(field, "Keep the old name.");
       await click("History");
       await click("History");
 
       expect(host.querySelector<HTMLInputElement>("input.approval-reason")?.value).toBe("Keep the old name.");
       await click("Reject");
       expect(posted).toEqual([{ type: "reject", id: 7, reason: "Keep the old name." }]);
-      await act(async () => root.unmount());
-    } finally {
-      GlobalRegistrator.unregister();
-    }
+    });
   });
 
   describe("commands", () => {
@@ -529,8 +501,11 @@ describe("error actions", () => {
 });
 
 describe("mentions", () => {
-  /** Panel markup for one user message with `mentions`, English strings. */
-  function renderMentions(mentions: (ChatEntry & { role: "user" })["mentions"]): string {
+  /** Panel markup for one user message with `mentions` and `skill`, English strings. */
+  function renderMentions(
+    mentions: (ChatEntry & { role: "user" })["mentions"],
+    skill?: (ChatEntry & { role: "user" })["skill"],
+  ): string {
     const state: ChatState = {
       providers: ["P"],
       skipped: [],
@@ -539,7 +514,7 @@ describe("mentions", () => {
       provider: "P",
       models: { status: "loaded", models: ["m"] },
       model: "m",
-      entries: [{ role: "user", content: "look", mentions }],
+      entries: [{ role: "user", content: "look", mentions, ...(skill ? { skill } : {}) }],
     };
     return renderToStaticMarkup(<App state={state} language="en" />);
   }
@@ -576,6 +551,17 @@ describe("mentions", () => {
       expect(html).toContain(expected);
     }
     expect(html.match(/<li class="chip/g)).toHaveLength(9);
+  });
+
+  test("shows the skill a message loaded before its mentions, a failed load marked", () => {
+    const mention = { path: "a.ts", kind: "file", status: "attached", lines: 1 } as const;
+    const loaded = renderMentions([mention], { name: "grilling", status: "loaded" });
+    expect(loaded).toContain(
+      '<ul class="mentions" aria-label="Skill and mentions"><li class="chip"><span class="chip-path">Skill grilling</span><span class="chip-status">loaded</span></li><li class="chip"><span class="kind file"',
+    );
+    expect(renderMentions([], { name: "grilling", status: "failed" })).toContain(
+      '<li class="chip failed"><span class="chip-path">Skill grilling</span><span class="chip-status">could not be loaded</span></li>',
+    );
   });
 });
 
@@ -626,6 +612,46 @@ describe("mention menu", () => {
   });
 });
 
+describe("slash menu", () => {
+  test("shows /new, /model, and the skills, each with its description, the highlighted one selected", () => {
+    const html = renderToStaticMarkup(
+      <SlashMenu
+        items={[
+          { name: "new", description: "Start a new conversation" },
+          { name: "model", description: "Choose the model" },
+          { name: "grilling", description: "Grill the plan." },
+          { name: "release", description: "Cut a release." },
+        ]}
+        failed={false}
+        highlighted={2}
+        onPick={() => {}}
+      />,
+    );
+    expect(html).toContain('<div id="slash-menu" role="listbox" aria-label="Commands and skills" class="menu-list">');
+    expect(html).toContain(
+      '<div id="slash-menu-option-0" role="option" tabindex="-1" aria-selected="false"><span class="menu-label">/new</span><span class="menu-description">Start a new conversation</span></div>',
+    );
+    expect(html).toContain(
+      '<span class="menu-label">/model</span><span class="menu-description">Choose the model</span>',
+    );
+    expect(html).toContain(
+      '<div id="slash-menu-option-2" role="option" tabindex="-1" aria-selected="true" class="highlighted"><span class="menu-label">/grilling</span><span class="menu-description">Grill the plan.</span></div>',
+    );
+    expect(html).toContain(
+      '<span class="menu-label">/release</span><span class="menu-description">Cut a release.</span>',
+    );
+    expect(html).not.toContain("menu-notice");
+  });
+
+  test("says No match when nothing matches, and that the skills could not be listed instead when they failed", () => {
+    const menu = (failed: boolean, items = []) =>
+      renderToStaticMarkup(<SlashMenu items={items} failed={failed} highlighted={0} onPick={() => {}} />);
+    expect(menu(false)).toContain('<p class="menu-notice">No match</p>');
+    expect(menu(true)).toContain('<p class="menu-notice">Could not list the skills</p>');
+    expect(menu(true)).not.toContain("No match");
+  });
+});
+
 describe("moveHighlight", () => {
   test("moves by one row and wraps at both ends", () => {
     expect(moveHighlight(0, 1, 3)).toBe(1);
@@ -671,6 +697,82 @@ const hi: ChatEntry[] = [
   { role: "user", content: "Hi", mentions: [] },
   { role: "assistant", reasoning: "", content: "Hello", status: "done" },
 ];
+
+/** The mounted panel `withPanel` hands its callback, with the DOM actions a user takes. */
+type Panel = {
+  host: HTMLElement;
+  textarea: HTMLTextAreaElement;
+  /** Replace the message box text, caret at `caret` (default: its end). */
+  type: (value: string, caret?: number) => Promise<void>;
+  /** Key down in the message box. */
+  press: (key: string) => Promise<void>;
+  /** A message from the host. */
+  receive: (message: unknown) => Promise<void>;
+  /** Replace `field`'s value as typing does. */
+  fill: (field: HTMLInputElement | HTMLTextAreaElement, value: string) => Promise<void>;
+  /** Click the button labelled `label`. */
+  click: (label: string) => Promise<void>;
+  /** Click the open menu's row labelled `label`. */
+  clickOption: (label: string) => Promise<void>;
+};
+
+/** Mount `App` over a DOM registered for the test's duration; `run` drives it, then the panel unmounts. */
+async function withPanel(state: ChatState, run: (panel: Panel) => Promise<void>): Promise<void> {
+  const { GlobalRegistrator } = await import("@happy-dom/global-registrator");
+  const { act, createElement } = await import("react");
+  GlobalRegistrator.register();
+  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  try {
+    const { createRoot } = await import("react-dom/client");
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    await act(async () => root.render(createElement(App, { state, language: "en" })));
+    const textarea = host.querySelector("textarea");
+    if (!textarea) throw new Error("no message box");
+    // [&]: React tracks the value property; set it through the prototype setter so the input event registers.
+    const setValue = (field: HTMLInputElement | HTMLTextAreaElement, value: string) =>
+      Object.getOwnPropertyDescriptor(Object.getPrototypeOf(field), "value")?.set?.call(field, value);
+    await run({
+      host,
+      textarea,
+      type: (value, caret = value.length) =>
+        act(async () => {
+          setValue(textarea, value);
+          textarea.setSelectionRange(caret, caret);
+          textarea.dispatchEvent(new Event("input", { bubbles: true }));
+        }),
+      press: (key) =>
+        act(async () => {
+          textarea.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+        }),
+      receive: (message) =>
+        act(async () => {
+          window.dispatchEvent(new MessageEvent("message", { data: message }));
+        }),
+      fill: (field, value) =>
+        act(async () => {
+          setValue(field, value);
+          field.dispatchEvent(new Event("input", { bubbles: true }));
+        }),
+      click: async (label) => {
+        const target = [...host.querySelectorAll("button")].find((element) => element.textContent === label);
+        if (!target) throw new Error(`no ${label} button`);
+        await act(async () => target.click());
+      },
+      clickOption: async (label) => {
+        const target = [...host.querySelectorAll<HTMLElement>('[role="option"]')].find(
+          (row) => row.querySelector(".menu-label")?.textContent === label,
+        );
+        if (!target) throw new Error(`no ${label} row`);
+        await act(async () => target.click());
+      },
+    });
+    await act(async () => root.unmount());
+  } finally {
+    GlobalRegistrator.unregister();
+  }
+}
 
 beforeEach(() => {
   posted.length = 0;
@@ -771,6 +873,359 @@ describe("composer", () => {
     expect(renderToStaticMarkup(<App state={stateWith(false, { entries: replying })} language="en" />)).toContain(
       "<textarea",
     );
+  });
+});
+
+describe("slash commands in the composer", () => {
+  const labels = (host: HTMLElement) =>
+    [...host.querySelectorAll("#slash-menu .menu-label")].map((row) => row.textContent);
+  /** Ids of the skill queries posted so far. */
+  const skillQueries = () =>
+    posted.flatMap((message) =>
+      (message as { type: string }).type === "querySkills" ? [message as { id: number }] : [],
+    );
+  /** Id of the last skill query posted. */
+  const lastSkillQuery = () => skillQueries().at(-1)!.id;
+
+  test("/ asks the host once for the skills, lists them after the built-ins, and narrows as the user types", async () => {
+    await withPanel(stateWith(true), async ({ host, type, receive }) => {
+      await type("/");
+      expect(posted).toEqual([{ type: "querySkills", id: lastSkillQuery() }]);
+      expect(labels(host)).toEqual(["/new", "/model"]);
+
+      await receive({
+        type: "skillSuggestions",
+        id: lastSkillQuery(),
+        items: [
+          { name: "grilling", description: "Grill the plan." },
+          { name: "notes", description: "Take notes." },
+        ],
+        failed: false,
+      });
+      expect(labels(host)).toEqual(["/new", "/model", "/grilling", "/notes"]);
+
+      await type("/gr");
+      expect(labels(host)).toEqual(["/grilling"]);
+      await type("/n");
+      expect(labels(host)).toEqual(["/new", "/notes"]);
+      expect(skillQueries()).toHaveLength(1);
+    });
+  });
+
+  test("an answer to an earlier opening is dropped", async () => {
+    await withPanel(stateWith(true), async ({ host, type, receive }) => {
+      await type("/");
+      const first = lastSkillQuery();
+      await type("x");
+      await type("/");
+      expect(skillQueries()).toHaveLength(2);
+      expect(lastSkillQuery()).not.toBe(first);
+      await receive({
+        type: "skillSuggestions",
+        id: first,
+        items: [{ name: "old", description: "Old." }],
+        failed: false,
+      });
+      expect(labels(host)).toEqual(["/new", "/model"]);
+    });
+  });
+
+  test("a menu closed with Escape asks again when typing reopens it, and drops the earlier answer", async () => {
+    await withPanel(stateWith(true), async ({ host, type, press, receive }) => {
+      await type("/");
+      const first = lastSkillQuery();
+      await receive({
+        type: "skillSuggestions",
+        id: first,
+        items: [{ name: "old", description: "Old." }],
+        failed: false,
+      });
+      await press("Escape");
+      await type("/n");
+      expect(skillQueries()).toHaveLength(2);
+      expect(labels(host)).toEqual(["/new"]);
+      await receive({
+        type: "skillSuggestions",
+        id: first,
+        items: [{ name: "nold", description: "Old." }],
+        failed: false,
+      });
+      expect(labels(host)).toEqual(["/new"]);
+      await receive({
+        type: "skillSuggestions",
+        id: lastSkillQuery(),
+        items: [{ name: "notes", description: "Take notes." }],
+        failed: false,
+      });
+      expect(labels(host)).toEqual(["/new", "/notes"]);
+    });
+  });
+
+  test("a menu closed by blur asks again on focus, and drops the earlier answer", async () => {
+    const { act } = await import("react");
+    await withPanel(stateWith(true), async ({ host, textarea, type, receive }) => {
+      const focusChange = (name: "focusin" | "focusout") =>
+        act(async () => {
+          textarea.dispatchEvent(new FocusEvent(name, { bubbles: true }));
+        });
+      await type("/");
+      const first = lastSkillQuery();
+      await focusChange("focusout");
+      expect(host.querySelector("#slash-menu")).toBeNull();
+      await focusChange("focusin");
+      expect(skillQueries()).toHaveLength(2);
+      await receive({
+        type: "skillSuggestions",
+        id: first,
+        items: [{ name: "old", description: "Old." }],
+        failed: false,
+      });
+      expect(labels(host)).toEqual(["/new", "/model"]);
+    });
+  });
+
+  test("when the skills cannot be listed, the menu says so and still shows the built-ins", async () => {
+    await withPanel(stateWith(true), async ({ host, type, receive }) => {
+      await type("/");
+      await receive({ type: "skillSuggestions", id: lastSkillQuery(), items: [], failed: true });
+      expect(labels(host)).toEqual(["/new", "/model"]);
+      expect(host.querySelector(".menu-notice")?.textContent).toBe("Could not list the skills");
+    });
+  });
+
+  test("when one skills folder cannot be listed, the menu says so and shows the skills found elsewhere", async () => {
+    await withPanel(stateWith(true), async ({ host, type, receive }) => {
+      await type("/");
+      await receive({
+        type: "skillSuggestions",
+        id: lastSkillQuery(),
+        items: [{ name: "kept", description: "Kept." }],
+        failed: true,
+      });
+      expect(labels(host)).toEqual(["/new", "/model", "/kept"]);
+      expect(host.querySelector(".menu-notice")?.textContent).toBe("Could not list the skills");
+    });
+  });
+
+  test("Enter picks the highlighted row, inserting /<name> and a space without sending; Escape closes the menu", async () => {
+    await withPanel(stateWith(true), async ({ host, textarea, type, press, receive }) => {
+      await type("/gr");
+      await receive({
+        type: "skillSuggestions",
+        id: lastSkillQuery(),
+        items: [{ name: "grilling", description: "Grill the plan." }],
+        failed: false,
+      });
+      await press("Enter");
+      expect(textarea.value).toBe("/grilling ");
+      expect(textarea.selectionStart).toBe(10);
+      expect(posted).toHaveLength(1);
+      expect(host.querySelector("#slash-menu")).toBeNull();
+
+      await type("/");
+      expect(skillQueries()).toHaveLength(2);
+      expect(labels(host)).toEqual(["/new", "/model"]);
+      await press("Escape");
+      expect(host.querySelector("#slash-menu")).toBeNull();
+    });
+  });
+
+  test("a / after other text opens no menu and asks nothing", async () => {
+    await withPanel(stateWith(true), async ({ host, type }) => {
+      await type("see /etc");
+      expect(host.querySelector("#slash-menu")).toBeNull();
+      expect(posted).toEqual([]);
+    });
+  });
+
+  test("sending /new posts the New chat request and empties the box", async () => {
+    await withPanel(stateWith(true, { entries: hi }), async ({ textarea, type, press }) => {
+      await type("/new ");
+      posted.length = 0;
+      await press("Enter");
+      expect(posted).toEqual([{ type: "newChat" }]);
+      expect(textarea.value).toBe("");
+    });
+  });
+
+  test("sending /model asks the host for its model list and empties the box", async () => {
+    await withPanel(stateWith(true), async ({ textarea, type, press }) => {
+      await type("/model ");
+      posted.length = 0;
+      await press("Enter");
+      expect(posted).toEqual([{ type: "chooseModel" }]);
+      expect(textarea.value).toBe("");
+    });
+  });
+
+  test("one Enter on the highlighted /new row starts a new chat and empties the box", async () => {
+    await withPanel(stateWith(true, { entries: hi }), async ({ host, textarea, type, press }) => {
+      await type("/ne");
+      posted.length = 0;
+      await press("Enter");
+      expect(posted).toEqual([{ type: "newChat" }]);
+      expect(textarea.value).toBe("");
+      expect(host.querySelector("#slash-menu")).toBeNull();
+    });
+  });
+
+  test("Enter or Tab on the /model row and a click on the /new row run them at once", async () => {
+    await withPanel(stateWith(true), async ({ textarea, type, press, clickOption }) => {
+      await type("/m");
+      posted.length = 0;
+      await press("Enter");
+      expect(posted).toEqual([{ type: "chooseModel" }]);
+      expect(textarea.value).toBe("");
+
+      await type("/");
+      posted.length = 0;
+      await press("ArrowDown");
+      await press("Tab");
+      expect(posted).toEqual([{ type: "chooseModel" }]);
+      expect(textarea.value).toBe("");
+
+      await type("/");
+      posted.length = 0;
+      await clickOption("/new");
+      expect(posted).toEqual([{ type: "newChat" }]);
+      expect(textarea.value).toBe("");
+    });
+  });
+
+  test("while a reply is in flight, picking the /new row inserts /new and a space and runs nothing", async () => {
+    const replying: ChatEntry[] = [hi[0]!, { role: "assistant", reasoning: "", content: "", status: "waiting" }];
+    await withPanel(stateWith(true, { entries: replying }), async ({ textarea, type, press }) => {
+      await type("/ne");
+      posted.length = 0;
+      await press("Enter");
+      expect(posted).toEqual([]);
+      expect(textarea.value).toBe("/new ");
+    });
+  });
+
+  test("Enter on the /new row with a draft after the caret inserts /new and a space, keeps the draft, and runs nothing", async () => {
+    await withPanel(stateWith(true, { entries: hi }), async ({ textarea, type, press }) => {
+      await type("/ne keep this draft", "/ne".length);
+      posted.length = 0;
+      await press("Enter");
+      expect(posted).toEqual([]);
+      expect(textarea.value).toBe("/new  keep this draft");
+    });
+  });
+
+  test("with no model chosen, Enter on the /new row inserts /new and a space and runs nothing", async () => {
+    await withPanel(stateWith(true, { entries: hi, model: undefined }), async ({ textarea, type, press }) => {
+      await type("/ne");
+      posted.length = 0;
+      await press("Enter");
+      expect(posted).toEqual([]);
+      expect(textarea.value).toBe("/new ");
+    });
+  });
+
+  test("/new and /model do nothing while a reply is in flight, and words after them make an ordinary message", async () => {
+    const replying: ChatEntry[] = [hi[0]!, { role: "assistant", reasoning: "", content: "", status: "waiting" }];
+    await withPanel(stateWith(true, { entries: replying }), async ({ textarea, type, press }) => {
+      await type("/new ");
+      posted.length = 0;
+      await press("Enter");
+      expect(posted).toEqual([]);
+      expect(textarea.value).toBe("/new ");
+    });
+    await withPanel(stateWith(true), async ({ type, press }) => {
+      await type("/new words");
+      await press("Enter");
+      expect(posted.at(-1)).toEqual({ type: "send", text: "/new words", mentions: [] });
+    });
+  });
+});
+
+describe("composer menus", () => {
+  /** Id of the last query of `type` posted. */
+  const lastQuery = (type: "queryFiles" | "querySkills") =>
+    (posted.filter((message) => (message as { type: string }).type === type).at(-1) as { id: number }).id;
+  /** Label of the row marked selected. */
+  const selected = (host: HTMLElement) =>
+    host.querySelector('[role="option"][aria-selected="true"] .menu-label')?.textContent;
+  const skills = {
+    type: "skillSuggestions",
+    items: [
+      { name: "grilling", description: "Grill the plan." },
+      { name: "notes", description: "Take notes." },
+    ],
+    failed: false,
+  };
+
+  test("the message box controls the open menu, and none while closed", async () => {
+    await withPanel(stateWith(true), async ({ textarea, type, receive }) => {
+      expect(textarea.hasAttribute("aria-controls")).toBe(false);
+      await type("/");
+      expect(textarea.getAttribute("aria-controls")).toBe("slash-menu");
+      await type("@sr");
+      await receive({
+        type: "fileSuggestions",
+        id: lastQuery("queryFiles"),
+        items: [{ path: "src/a.ts", kind: "file" }],
+        capped: false,
+        failed: false,
+      });
+      expect(textarea.getAttribute("aria-controls")).toBe("mention-menu");
+      await type("hi");
+      expect(textarea.hasAttribute("aria-controls")).toBe(false);
+    });
+  });
+
+  test("the message box points at the highlighted row, and at none without rows or menu", async () => {
+    await withPanel(stateWith(true), async ({ textarea, type, press, receive }) => {
+      expect(textarea.hasAttribute("aria-activedescendant")).toBe(false);
+      await type("/");
+      expect(textarea.getAttribute("aria-activedescendant")).toBe("slash-menu-option-0");
+      await press("ArrowDown");
+      expect(textarea.getAttribute("aria-activedescendant")).toBe("slash-menu-option-1");
+      await receive({ ...skills, id: lastQuery("querySkills") });
+      await type("/zz");
+      expect(textarea.hasAttribute("aria-activedescendant")).toBe(false);
+    });
+  });
+
+  test("the highlight goes back to the first row when the filter changes", async () => {
+    await withPanel(stateWith(true), async ({ host, type, press, receive }) => {
+      await type("/");
+      await receive({ ...skills, id: lastQuery("querySkills") });
+      await press("ArrowDown");
+      await press("ArrowDown");
+      expect(selected(host)).toBe("/grilling");
+      await type("/n");
+      expect(selected(host)).toBe("/new");
+    });
+  });
+
+  test("a menu closed with Escape opens again on a new token once the old one is gone", async () => {
+    await withPanel(stateWith(true), async ({ host, type, press }) => {
+      await type("/");
+      await press("Escape");
+      expect(host.querySelector("#slash-menu")).toBeNull();
+      await type("");
+      await type("/");
+      expect(host.querySelector("#slash-menu")).not.toBeNull();
+    });
+  });
+
+  test("picking a path inserts @<path> and a space, and sends it as a mention", async () => {
+    await withPanel(stateWith(true), async ({ textarea, type, press, receive }) => {
+      await type("see @sr");
+      await receive({
+        type: "fileSuggestions",
+        id: lastQuery("queryFiles"),
+        items: [{ path: "src/a b.ts", kind: "file" }],
+        capped: false,
+        failed: false,
+      });
+      await press("Enter");
+      expect(textarea.value).toBe("see @src/a b.ts ");
+      await press("Enter");
+      expect(posted.at(-1)).toEqual({ type: "send", text: "see @src/a b.ts ", mentions: ["src/a b.ts"] });
+    });
   });
 });
 

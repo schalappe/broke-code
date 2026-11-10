@@ -1,5 +1,15 @@
 import { afterAll, afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,7 +30,7 @@ import { parseLimits } from "./limits";
 import type { MentionReader, ReadMention } from "./mentions";
 import { type ChatEntry, type ChatState, isReplying } from "./protocol";
 import type { Provider } from "./providers";
-import { LOAD_SKILL_TOOL, type SkillDiscovery } from "./skills";
+import { LOAD_SKILL_TOOL, readSkills, type SkillDiscovery } from "./skills";
 import { composeSystemPrompt, type InstructionFile, type Skill } from "./systemPrompt";
 import { createTlsFixture, removeTlsFixture } from "./tlsFixture";
 import { workspaceToolRunner } from "./toolRunner";
@@ -1768,6 +1778,7 @@ describe("ChatController agent turn", () => {
     limits?: LimitsSource,
     skills: SkillReader = noSkills,
     autoApproveWrites?: () => boolean,
+    mentions: MentionReader = noMentions,
   ) {
     const prefix = `script-${scriptCount++}`;
     scripts.set(prefix, [...script]);
@@ -1776,7 +1787,7 @@ describe("ChatController agent turn", () => {
       apiKeys: { get: async () => undefined },
       workspaceState: memoryStore(),
       publish: () => {},
-      mentions: noMentions,
+      mentions,
       store: new ConversationStore(files),
       tools: runner,
       instructions,
@@ -2477,6 +2488,211 @@ describe("ChatController agent turn", () => {
       await controller.openConversation(record.id);
       await controller.send("go on");
       expect(seen.map((run) => run.skillRoots)).toEqual([[]]);
+    });
+  });
+
+  describe("slash skills", () => {
+    let base = "";
+    let home = "";
+    let workspaceDir = "";
+    beforeEach(() => {
+      base = realpathSync(mkdtempSync(join(tmpdir(), "broke-code-slash-")));
+      home = join(base, "home");
+      workspaceDir = join(base, "ws");
+      mkdirSync(workspaceDir, { recursive: true });
+    });
+    afterEach(() => rmSync(base, { recursive: true, force: true }));
+
+    /** Write the personal skill `name` with `body` after its frontmatter; returns its folder. */
+    function personalSkill(name: string, body: string, extra = ""): string {
+      const root = join(home, ".agents", "skills", name);
+      mkdirSync(root, { recursive: true });
+      writeFileSync(join(root, "SKILL.md"), `---\nname: ${name}\ndescription: D.\n${extra}---\n\n${body}`);
+      return root;
+    }
+    const discovery: SkillReader = { read: () => readSkills(home, []) };
+    const header = (name: string, root: string) =>
+      `Skill ${name} loaded; its files live in ${root}; read them by that absolute path.`;
+    /** The user message of the first request. */
+    const firstUserMessage = (sent: () => { messages: { role: string; content: string }[] }[]) =>
+      sent()[0]!.messages[1];
+
+    test("/grilling my idea sends the body with $ARGUMENTS replaced; the entry keeps the text as typed and the skill", async () => {
+      const root = personalSkill("grilling", "Grill: $ARGUMENTS\n");
+      const { controller, state, sent, saved } = await scripted(
+        [{ content: "Ok." }],
+        undefined,
+        undefined,
+        undefined,
+        discovery,
+      );
+      await controller.send("/grilling my idea");
+      expect(firstUserMessage(sent)).toEqual({
+        role: "user",
+        content: `${header("grilling", root)}\n\nGrill: my idea\n`,
+      });
+      const entry: ChatEntry = {
+        role: "user",
+        content: "/grilling my idea",
+        mentions: [],
+        skill: { name: "grilling", status: "loaded" },
+      };
+      expect(state().entries[0]).toEqual(entry);
+      expect(saved()!.entries[0]).toEqual({ ...entry, modelText: `${header("grilling", root)}\n\nGrill: my idea\n` });
+    });
+
+    test("a body without $ARGUMENTS is followed by a blank line and the arguments", async () => {
+      const root = personalSkill("grilling", "Grill the user.\n");
+      const { controller, sent } = await scripted([{ content: "Ok." }], undefined, undefined, undefined, discovery);
+      await controller.send("/grilling my idea");
+      expect(firstUserMessage(sent)!.content).toBe(`${header("grilling", root)}\n\nGrill the user.\n\nmy idea`);
+    });
+
+    test("/grilling alone replaces $ARGUMENTS with the empty string", async () => {
+      const root = personalSkill("grilling", "Grill: [$ARGUMENTS]\n");
+      const { controller, sent } = await scripted([{ content: "Ok." }], undefined, undefined, undefined, discovery);
+      await controller.send("  /grilling  ");
+      expect(firstUserMessage(sent)!.content).toBe(`${header("grilling", root)}\n\nGrill: []\n`);
+    });
+
+    test("a skill kept from the model loads this way", async () => {
+      const root = personalSkill("deploy", "Deploy $ARGUMENTS.\n", "disable-model-invocation: true\n");
+      const { controller, state, sent } = await scripted(
+        [{ content: "Ok." }],
+        undefined,
+        undefined,
+        undefined,
+        discovery,
+      );
+      await controller.send("/deploy prod");
+      expect(firstUserMessage(sent)!.content).toBe(`${header("deploy", root)}\n\nDeploy prod.\n`);
+      expect(state().entries[0]).toMatchObject({ skill: { name: "deploy", status: "loaded" } });
+    });
+
+    test("/nothing here and /new reach the request as typed, with no skill", async () => {
+      personalSkill("grilling", "Grill.\n");
+      const { controller, state, sent } = await scripted(
+        [{ content: "a" }, { content: "b" }],
+        undefined,
+        undefined,
+        undefined,
+        discovery,
+      );
+      await controller.send("/nothing here");
+      await controller.send("/new");
+      expect(sent()[0]!.messages[1]).toEqual({ role: "user", content: "/nothing here" });
+      expect(sent()[1]!.messages.at(-1)).toEqual({ role: "user", content: "/new" });
+      expect(state().entries[0]).toEqual({ role: "user", content: "/nothing here", mentions: [] });
+      expect(state().entries[2]).toEqual({ role: "user", content: "/new", mentions: [] });
+    });
+
+    test("a SKILL.md gone since discovery still sends the message, saying the skill could not be loaded", async () => {
+      const root = personalSkill("grilling", "Grill: $ARGUMENTS\n");
+      const skill: Skill = { name: "grilling", description: "D.", root, listedToModel: true };
+      unlinkSync(join(root, "SKILL.md"));
+      const { controller, state, sent } = await scripted([{ content: "Ok." }], undefined, undefined, undefined, {
+        read: async () => ({ skills: [skill], warnings: [] }),
+      });
+      await controller.send("/grilling my idea");
+      expect(firstUserMessage(sent)!.content).toBe(
+        "Skill grilling could not be loaded: its SKILL.md could not be read (no such file).\n\nmy idea",
+      );
+      expect(state().entries[0]).toMatchObject({ skill: { name: "grilling", status: "failed" } });
+    });
+
+    test("mentions in the arguments are read and their blocks follow the skill text", async () => {
+      const root = personalSkill("grilling", "Grill: $ARGUMENTS\n");
+      const reader: MentionReader = {
+        read: async (path) => ({ path, kind: "file", status: "attached", lines: 1, content: "x\n", omitted: 0 }),
+      };
+      const { controller, state, sent } = await scripted(
+        [{ content: "Ok." }],
+        undefined,
+        undefined,
+        undefined,
+        discovery,
+        undefined,
+        reader,
+      );
+      await controller.send("/grilling @a.ts");
+      expect(firstUserMessage(sent)!.content).toBe(
+        `${header("grilling", root)}\n\nGrill: @a.ts\n\n\n@a.ts (file, 1 line)\n\`\`\`\nx\n\`\`\``,
+      );
+      expect(state().entries[0]).toMatchObject({ mentions: [{ path: "a.ts", status: "attached" }] });
+    });
+
+    test("after /grilling x, its folder outside the workspace is readable in the same turn and once reopened", async () => {
+      const root = personalSkill("grilling", "Read reference.md.\n");
+      writeFileSync(join(root, "reference.md"), "the reference\n");
+      const runner = workspaceToolRunner(
+        () => [{ name: "ws", path: workspaceDir }],
+        { ripgrepCandidates: [] },
+        (roots) => fileApplier(roots),
+      );
+      const reference = join(root, "reference.md");
+      const { controller, state } = await scripted(
+        [
+          { content: readCall(reference) },
+          { content: "Cannot." },
+          { content: readCall(reference) },
+          { content: "Read." },
+          { content: readCall(reference) },
+          { content: "Again." },
+        ],
+        runner,
+        undefined,
+        undefined,
+        discovery,
+      );
+      await controller.send("read it");
+      expect(state().entries[2]).toMatchObject({ role: "tool", status: "error" });
+      expect((state().entries[2] as { text: string }).text).toContain("outside the workspace");
+
+      await controller.send("/grilling x");
+      expect(state().entries[6]).toMatchObject({ role: "tool", status: "ok" });
+      expect((state().entries[6] as { text: string }).text).toContain("the reference");
+
+      const id = state().conversationId;
+      await controller.newChat();
+      await controller.openConversation(id);
+      await controller.send("again");
+      expect(state().entries[10]).toMatchObject({ role: "tool", status: "ok" });
+    });
+
+    test("after /<name> of a skill kept from the model, its load_skill is already loaded; before, it is refused", async () => {
+      const root = personalSkill("deploy", "Deploy $ARGUMENTS.\n", "disable-model-invocation: true\n");
+      personalSkill("review", "Review.\n");
+      const runner = workspaceToolRunner(
+        () => [{ name: "ws", path: workspaceDir }],
+        { ripgrepCandidates: [] },
+        (roots) => fileApplier(roots),
+      );
+      const loadCall = "<load_skill>\n<name>deploy</name>\n</load_skill>";
+      const { controller, state } = await scripted(
+        [{ content: loadCall }, { content: "Loaded." }, { content: loadCall }, { content: "Cannot." }],
+        runner,
+        undefined,
+        undefined,
+        discovery,
+      );
+      await controller.send("/deploy prod");
+      expect(state().entries[2]).toEqual({
+        role: "tool",
+        name: "load_skill",
+        args: { name: "deploy" },
+        status: "ok",
+        text: `Skill deploy is already loaded; its files live in ${root}; read them by that absolute path.`,
+      });
+
+      await controller.newChat();
+      await controller.send("deploy prod");
+      expect(state().entries[2]).toEqual({
+        role: "tool",
+        name: "load_skill",
+        args: { name: "deploy" },
+        status: "error",
+        text: "load_skill: deploy: no skill of that name can be loaded. Skills you can load: review.",
+      });
     });
   });
 
