@@ -1,7 +1,8 @@
 /**
  * @module suggestions
- * Mention menu logic shared by host and webview: the `@` token at the caret, the file index entries, and their
- * filtering. No `node:` or `vscode` import, since the webview bundle loads it.
+ * Menu logic shared by host and webview: the `@` token at the caret, the file index entries, and their filtering; the
+ * `/` token at the start of the message and the slash command rows. No `node:` or `vscode` import, since the webview
+ * bundle loads it.
  */
 import { MASK, maskMessage } from "./markdownCode";
 import type { EntryKind } from "./workspaceFiles";
@@ -23,6 +24,36 @@ export function findMentionToken(
   const match = /(?<=^|\s)@(\S*)$/.exec(text.slice(0, caret));
   if (!match || maskMessage(text, picked).masked.charAt(match.index) === MASK) return undefined;
   return { start: match.index, query: match[1]! };
+}
+
+/** `/` token ending at the caret, always at the start of the message. `query`: text typed after the `/`. */
+export type SlashToken = { query: string };
+
+/**
+ * The `/` token the caret ends, if any: `/` at the very start of the text, then non-space characters up to the caret,
+ * with no non-space character right after the caret. A `/` anywhere else is never a slash command, since paths hold
+ * them. No code masking: a message starting with `/` starts with no code.
+ */
+export function findSlashToken(text: string, caret: number): SlashToken | undefined {
+  if (caret < 1 || !text.startsWith("/") || /\S/.test(text.charAt(caret))) return undefined;
+  const query = text.slice(1, caret);
+  return /\s/.test(query) ? undefined : { query };
+}
+
+/** The slash commands the webview runs itself, in the order the menu lists them, before the skills. */
+export const BUILT_IN_COMMANDS = ["new", "model"] as const;
+export type BuiltInCommand = (typeof BUILT_IN_COMMANDS)[number];
+
+/** A row of the `/` menu: a built-in command or a discovered skill, its name without the `/`. */
+export type SlashCommand = { name: string; description: string };
+
+/**
+ * First `limit` of `commands` whose name starts with `query`, ignoring case, in the order given: commands are typed
+ * from their first letter, unlike paths, which the `@` menu matches anywhere.
+ */
+export function filterSlashCommands(commands: SlashCommand[], query: string, limit: number): SlashCommand[] {
+  const prefix = query.toLowerCase();
+  return commands.filter((command) => command.name.toLowerCase().startsWith(prefix)).slice(0, limit);
 }
 
 /** Files the menu offers, at most; past it the menu says the index is limited. */

@@ -51,7 +51,8 @@ export function activate(context: vscode.ExtensionContext): void {
     commandEnv,
   );
   const instructions: InstructionReader = { read: () => readInstructionFiles(homedir(), workspaceRoots()) };
-  const skills: SkillReader = { read: () => readSkills(homedir(), workspaceRoots()).then(logSkills) };
+  const discoverSkills = () => readSkills(homedir(), workspaceRoots());
+  const skills: SkillReader = { read: () => discoverSkills().then(logSkills) };
 
   // [>]: `storageUri` is a `file:` URI in the desktop extension host, and only with a folder or workspace open.
   const conversations = new ConversationStore(directoryFiles(context.storageUri?.fsPath));
@@ -73,6 +74,7 @@ export function activate(context: vscode.ExtensionContext): void {
     setApiKey,
     setContextSize: askContextSize,
     queryFiles: (query) => fileIndex.query(query),
+    querySkills: discoverSkills,
   });
 
   const applySettings = () => {

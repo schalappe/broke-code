@@ -7,7 +7,7 @@ import { type ConversationSummary, isConversationId } from "./conversation";
 import type { MentionResult } from "./mentions";
 import type { ProviderError } from "./providerError";
 import type { SkippedProvider } from "./providers";
-import type { Suggestion } from "./suggestions";
+import type { SlashCommand, Suggestion } from "./suggestions";
 
 export type ModelsState =
   | { status: "noProvider" }
@@ -169,7 +169,12 @@ export type HostMessage =
    * Answer to the `queryFiles` of the same `id`. `capped`: the index stopped at its file limit. `failed`: the
    * workspace files could not be listed, so `items` is empty for that reason, not for lack of a match.
    */
-  | { type: "fileSuggestions"; id: number; items: Suggestion[]; capped: boolean; failed: boolean };
+  | { type: "fileSuggestions"; id: number; items: Suggestion[]; capped: boolean; failed: boolean }
+  /**
+   * Answer to the `querySkills` of the same `id`: every skill a send would discover, those kept from the model
+   * included, by name. `failed`: the skills could not be listed, so `items` is empty for that reason.
+   */
+  | { type: "skillSuggestions"; id: number; items: SlashCommand[]; failed: boolean };
 
 export type WebviewMessage =
   | { type: "ready" }
@@ -180,6 +185,8 @@ export type WebviewMessage =
   | { type: "send"; text: string; mentions: string[] }
   /** `id`: grows with each query, so the webview can drop stale answers. */
   | { type: "queryFiles"; query: string; id: number }
+  /** Ask once per `/` menu opening for the skills; the webview filters them as the user types. `id`: as `queryFiles`. */
+  | { type: "querySkills"; id: number }
   | { type: "stop" }
   | { type: "newChat" }
   /** `id`: a conversation of `ChatState.conversations`. */
@@ -195,7 +202,7 @@ export type WebviewMessage =
 
 /** Chat state carried by `message`; `undefined` for a message that must leave the panel's state alone. */
 export function chatStateOf(message: HostMessage): ChatState | undefined {
-  return message.type === "fileSuggestions" ? undefined : message.state;
+  return message.type === "fileSuggestions" || message.type === "skillSuggestions" ? undefined : message.state;
 }
 
 /**
@@ -255,6 +262,8 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | undefined {
       if (!isRequestId(id)) return undefined;
       return { type: "queryFiles", query, id };
     }
+    case "querySkills":
+      return isRequestId(message.id) ? { type: "querySkills", id: message.id } : undefined;
     case "approve":
       return isRequestId(message.id) ? { type: "approve", id: message.id } : undefined;
     case "reject": {

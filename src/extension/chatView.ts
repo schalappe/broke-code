@@ -6,6 +6,7 @@ import * as vscode from "vscode";
 import type { ChatController } from "../core/chatController";
 import type { FileQueryAnswer } from "../core/fileIndex";
 import { type ChatState, type HostMessage, parseWebviewMessage } from "../core/protocol";
+import { answerSkillQuery, type SkillDiscovery } from "../core/skills";
 import { renderWebviewHtml } from "../core/webviewHtml";
 
 export const CHAT_VIEW_ID = "brokeCode.chat";
@@ -16,6 +17,8 @@ export type ChatViewActions = {
   setContextSize: (model: string) => Promise<void>;
   /** Mention menu entries matching `query`. */
   queryFiles: (query: string) => Promise<FileQueryAnswer>;
+  /** The skills a send would discover, for the `/` menu; no log line, since nothing is sent. */
+  querySkills: () => Promise<SkillDiscovery>;
 };
 
 export class ChatView implements vscode.WebviewViewProvider {
@@ -88,6 +91,8 @@ export class ChatView implements vscode.WebviewViewProvider {
         return void controller.send(message.text, message.mentions);
       case "queryFiles":
         return void this.answerQuery(message.query, message.id);
+      case "querySkills":
+        return void answerSkillQuery(message.id, this.actions.querySkills).then((answer) => this.post(answer));
       case "stop":
         controller.stop();
         return;

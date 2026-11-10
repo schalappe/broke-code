@@ -16,8 +16,9 @@ write tools and commands: a message starts an agent turn that runs `read_file`, 
 Accept or Reject in the chat, ADR 0002) unless the user setting auto-approves it; each command waits for Run or Reject,
 always. Each send discovers the skills and lists them to the model, which loads one with `load_skill` and may then read
 its folder (ADR 0003). `bun run eval` measures that loop on local Ollama models, applying each change and running each
-command at once. A message `/<name> args` loads that skill itself, with its arguments; the `/` menu, `/new`, and
-`/model` are not built yet. Read `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the decisions behind the design, starting with
+command at once. Typing `/` at the start of a message lists `/new`, `/model`, and the skills; the panel runs `/new` and
+`/model` itself, and a message `/<name> args` loads that skill in the controller, with its arguments; any other `/word`
+goes to the model as typed. Read `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the decisions behind the design, starting with
 `docs/adr/0001-body-tool-calls.md`.
 
 ## Structure
@@ -37,8 +38,9 @@ command at once. A message `/<name> args` loads that skill itself, with its argu
   protocol and its validation, workspace file access (`workspaceFiles.ts`: the inside-workspace check and its read-only
   roots (the loaded skills' folders outside the workspace, for reads only), capped reads, one-level listings, line truncation, the write boundary and atomic writes, with `node:fs`), mentions (`mentions.ts`: token detection, picked and typed
   mentions merged, reading, and the text the model receives), where a message holds Markdown code
-  (`markdownCode.ts`), the mention menu logic (`suggestions.ts`: the `@` token at the caret, index entries,
-  filtering, the index exclusions), the menu's file index (`fileIndex.ts`: one scan shared until a file
+  (`markdownCode.ts`), the menu logic (`suggestions.ts`: the `@` token at the caret, index entries,
+  filtering, the index exclusions; the `/` token at the start of the message, `BUILT_IN_COMMANDS`, the slash command
+  filter), the menu's file index (`fileIndex.ts`: one scan shared until a file
   changes, behind a scan port), the body tool call parser (`toolCalls.ts`: `ToolSpec`, the first call-shaped block,
   malformed-call messages), the system prompt composer (`systemPrompt.ts`: role, call format, rules, tools,
   skills, instruction files), the turn limits (`limits.ts`: `brokeCode.maxToolSteps` and `brokeCode.contextSizes` parsing,
@@ -59,8 +61,8 @@ command at once. A message `/<name> args` loads that skill itself, with its argu
   (`instructions.ts`: `~/.agents/AGENTS.md`, then each workspace folder's `AGENTS.md`, under the mention caps), and the
   skills (`skills.ts`: discovery in `~/.agents/skills/` and each workspace folder's `.agents/skills/`, the frontmatter
   subset, validation, precedence, warnings, the line the extension logs at each send; `LOAD_SKILL_TOOL`, `loadSkill`
-  for the model's call, `findSlashSkill`, the skill a `/<name> args` message loads, and `loadSkillText`, the load
-  result whoever loads, the user's arguments substituted or appended). `markdownCode.ts`, `suggestions.ts`, and `conversation.ts` import nothing from
+  for the model's call, `findSlashSkill`, the skill a `/<name> args` message loads, `loadSkillText`, the load result
+  whoever loads, the user's arguments substituted or appended, and `answerSkillQuery`, the `/` menu's answer). `markdownCode.ts`, `suggestions.ts`, and `conversation.ts` import nothing from
   `node:`, since the webview loads them. Unit tests sit next to them as `*.test.ts`, because `bun test` cannot load `vscode`. `tlsFixture.ts`
   generates test certificates with `/usr/bin/openssl` at test time; no private key is committed.
   `conversationFixture.ts` is the in-memory conversation file port for tests.
@@ -71,9 +73,10 @@ command at once. A message `/<name> args` loads that skill itself, with its argu
   `vscode.env.shell`, `$SHELL`, or `/bin/sh`), the write approval's editor side in
   `approval.ts` (the diff preview over `vscode.diff` and a content provider, the tabs, documents, and
   `brokeCode.autoApproveWrites` values it feeds the core decisions), the instruction reader and the skill reader from the home folder and the workspace folders, the latter logging the
-  skills of each send).
-- `src/webview/`: the React chat panel and its CSS, tool step rows and the approval controls included. `SuggestionMenu.tsx` is the autocomplete list the `@` menu
-  uses and the `/` menu (#11) is meant to reuse.
+  skills of each send, and the same discovery, unlogged, for the `/` menu's `querySkills`).
+- `src/webview/`: the React chat panel and its CSS, tool step rows and the approval controls included. `SuggestionMenu.tsx` is the autocomplete list the `@` and
+  `/` menus share, a row with an optional description; `composer.ts` holds the message box's decisions without React
+  (the token at the caret, each menu's rows, what a key does, the built-in command a message runs).
 - `src/l10n.test.ts`: checks that every `l10n.t` message has a French translation and that the
   `package.nls*.json` files match.
 - `l10n/bundle.l10n.fr.json`, `package.nls.json`, `package.nls.fr.json`: French strings for the host and
@@ -360,6 +363,22 @@ command at once. A message `/<name> args` loads that skill itself, with its argu
   counts, and opens the menu, only when it is outside code in both. Answers carry the query id; the
   webview drops stale ones. While the answer to a new query is pending, the menu shows only the earlier rows that
   match it, never a row for an older query. When the files cannot be listed, the menu says so instead of "No match".
+- A `/` at the very start of the message opens the `/` menu while the caret ends its first word; the query is the text
+  after `/`, possibly empty. A `/` anywhere else opens nothing, since paths hold them. The menu lists `/new` ("Start a
+  new conversation"), `/model` ("Choose the model"), then each skill the send's discovery finds, by name, with its
+  description (`disable-model-invocation: true` included, skipped ones left out), keeping those whose name starts with
+  the query, ignoring case, up to 20; "No match" when none. When the menu opens, the webview posts `querySkills { id }`
+  once, since a discovery reads every `SKILL.md`; the host runs the send's discovery without its log line (its warnings
+  wait for the next send) and answers `skillSuggestions { id, items, failed }`, which `chatStateOf` leaves out; the
+  webview filters as the user types and drops an answer to an earlier opening. Until the answer comes, only the
+  matching built-ins show, and no menu when none matches; when the skills cannot be listed, the menu says so and keeps
+  the built-ins. Keys and clicks work as in the `@` menu; a pick replaces the token with `/<name> `.
+- A message whose trimmed text is exactly `/new` posts the New chat button's `newChat` request and closes History;
+  exactly `/model` focuses the header's Model select and calls `showPicker()` inside the key or click handler that
+  sends (it needs transient user activation), focus alone where the select is disabled or `showPicker` is absent or
+  throws (a cross-origin iframe, such as a VS Code webview, gets `SecurityError`). Both clear the box and act only
+  when Send would (a model chosen, no reply in flight); nothing reaches the model. `/new words` and `/model words` are
+  ordinary messages.
 - The file index is built on the first menu query with `findFiles("**/*", "**/{node_modules,.git,dist,out,build}/**",
   5000)`: an explicit exclude adds to `files.exclude` (only `null` drops it). `.gitignore` is not read. Folders are
   derived from file paths, none inside a multi-root folder name that holds `/`. Paths are `asRelativePath` with its default prefix, the folder name in a multi-root
@@ -409,8 +428,8 @@ command at once. A message `/<name> args` loads that skill itself, with its argu
   when the turn ends (done, stopped, failed, halted, or cut off). A reply's saves go to the record it was sent
   in, also after New chat or opening another one, and a deleted conversation is never written again. A conversation
   without entries is never written.
-- Navigation runs one operation at a time, in request order: restore, New chat (and `/new`, #11, through the same
-  `newChat` method), open, delete, and prune. The operations that change the conversation shown (New chat, open,
+- Navigation runs one operation at a time, in request order: restore, New chat (and `/new`, through the same
+  `newChat` request), open, delete, and prune. The operations that change the conversation shown (New chat, open,
   deleting the one shown) stop the reply in flight at request time and wait until it settles, its last save handed to
   the store, so a later read sees that save. Restore stops nothing: no reply exists at activation. Deleting another row
   and pruning leave the reply running; a reply's own save triggers the prune. The conversation shown is therefore the
@@ -482,7 +501,9 @@ command at once. A message `/<name> args` loads that skill itself, with its argu
   folder that exists but cannot be listed is one warning too. The warnings sit in `ChatState.skillWarnings`, are
   replaced at each send, and show in the panel list of skipped providers. The extension logs each send's skills
   (`broke-code: skills listed to the model: ...`) to the extension host console.
-- The built-in slash commands are `/new` and `/model`. Typing `/` lists them with every skill.
+- The built-in slash commands are `/new` and `/model`, run by the webview and never sent (Harness, the `/` menu).
+  Typing `/` lists them with every skill. A skill named `new` or `model` is listed too, after the built-ins, but a
+  message of exactly its `/<name>` runs the built-in.
 
 ## Verification
 
