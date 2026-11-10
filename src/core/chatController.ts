@@ -606,7 +606,7 @@ export class ChatController {
       const onAbort = () => settle({ kind: "cancel" });
       signal.addEventListener("abort", onAbort, { once: true });
       this.openApproval = { id, settle };
-      this.state.approval = { id, tool: request.tool, summary: request.summary };
+      this.state.approval = { id, kind: request.kind, tool: request.tool, summary: request.summary };
       this.emit();
     });
     const approval: StepApproval | undefined =

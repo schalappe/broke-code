@@ -11,11 +11,12 @@ covers the agent loop over the reply text, skills, and slash commands, in a mini
 twinny.
 
 The code so far covers the extension skeleton, a streaming chat with a provider, and the harness with the read and
-write tools: a message starts an agent turn that runs `read_file`, `list_files`, `search`, `write_file`, and
-`edit_file` until the model answers without a call. Each write waits behind the approval (a diff and Accept or Reject
-in the chat, ADR 0002) unless the user setting auto-approves it. Each send discovers the skills and lists them to the
-model, which loads one with `load_skill` and may then read its folder (ADR 0003). `bun run eval` measures that loop on
-local Ollama models and applies each change at once. `run_command` and slash commands are not built yet. Read `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the decisions behind the design, starting with
+write tools and commands: a message starts an agent turn that runs `read_file`, `list_files`, `search`, `write_file`,
+`edit_file`, and `run_command` until the model answers without a call. Each write waits behind the approval (a diff and
+Accept or Reject in the chat, ADR 0002) unless the user setting auto-approves it; each command waits for Run or Reject,
+always. Each send discovers the skills and lists them to the model, which loads one with `load_skill` and may then read
+its folder (ADR 0003). `bun run eval` measures that loop on local Ollama models, applying each change and running each
+command at once. Slash commands are not built yet. Read `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the decisions behind the design, starting with
 `docs/adr/0001-body-tool-calls.md`.
 
 ## Structure
@@ -40,7 +41,10 @@ local Ollama models and applies each change at once. `run_command` and slash com
   changes, behind a scan port), the body tool call parser (`toolCalls.ts`: `ToolSpec`, the first call-shaped block,
   malformed-call messages), the system prompt composer (`systemPrompt.ts`: role, call format, rules, tools,
   skills, instruction files), the turn limits (`limits.ts`: `brokeCode.maxToolSteps` and `brokeCode.contextSizes` parsing,
-  the token estimate, the context-full threshold, the typed size check), and the read tools (`tools.ts`: `read_file` and `list_files` over the mention reader, `search`
+  the token estimate, the context-full threshold, the typed size check, and `brokeCode.commandTimeoutSeconds` parsing),
+  the command tool (`commands.ts`: `RUN_COMMAND_TOOL`, `runCommandTool` checks the call and the folder and asks the
+  approval, `runCommand` runs an approved command in its own process group with an injected shell and timeout, and
+  `commandShell` picks the shell), and the read tools (`tools.ts`: `read_file` and `list_files` over the mention reader, `search`
   over ripgrep with its candidate paths, bounded `ok` or `error` results, each also reaching the loaded skills' folders
   by absolute path), the write tools (`writeTools.ts`:
   `write_file` and `edit_file` plan a change `{ path, target, before, after }` and never write; an applier port writes
@@ -49,7 +53,8 @@ local Ollama models and applies each change at once. `run_command` and slash com
   makes, the decision it gets, the rejection text, and the decisions of the editor side: which change diffs to close,
   the unsaved-editor check over the open documents, the auto-approve setting from its user value), the tool runner (`toolRunner.ts`: the read and write tools over the
   workspace folders, the read tools also over the run's `skillRoots`, each write handed to the applier the host builds
-  for the run, and `load_skill` over the run's `skills`), the instruction files
+  for the run, `run_command` with the command environment the host passes, read at each call, and `load_skill` over
+  the run's `skills`), the instruction files
   (`instructions.ts`: `~/.agents/AGENTS.md`, then each workspace folder's `AGENTS.md`, under the mention caps), and the
   skills (`skills.ts`: discovery in `~/.agents/skills/` and each workspace folder's `.agents/skills/`, the frontmatter
   subset, validation, precedence, warnings, the line the extension logs at each send; `LOAD_SKILL_TOOL`, `loadSkill`
@@ -58,9 +63,10 @@ local Ollama models and applies each change at once. `run_command` and slash com
   generates test certificates with `/usr/bin/openssl` at test time; no private key is committed.
   `conversationFixture.ts` is the in-memory conversation file port for tests.
 - `src/extension/`: the extension host glue (activation, webview view, API keys in `SecretStorage`, the
-  file index's `findFiles` scan and watcher in `fileIndex.ts`, the turn limits from the user settings and the "Set
-  context size" input box in `contextSizes.ts`, the tool runner's wiring (the ripgrep candidates from
-  `vscode.env.appRoot` and `PATH`, the write tools behind `approvalApplier`), the write approval's editor side in
+  file index's `findFiles` scan and watcher in `fileIndex.ts`, the turn limits and the command timeout from the user
+  settings and the "Set context size" input box in `contextSizes.ts`, the tool runner's wiring (the ripgrep candidates
+  from `vscode.env.appRoot` and `PATH`, the write tools behind `approvalApplier`, the command shell from
+  `vscode.env.shell`, `$SHELL`, or `/bin/sh`), the write approval's editor side in
   `approval.ts` (the diff preview over `vscode.diff` and a content provider, the tabs, documents, and
   `brokeCode.autoApproveWrites` values it feeds the core decisions), the instruction reader and the skill reader from the home folder and the workspace folders, the latter logging the
   skills of each send).
@@ -77,9 +83,10 @@ local Ollama models and applies each change at once. `run_command` and slash com
 - `eval/`: the Ollama eval bench (`bun run eval`). `scenarios.ts` holds each scenario (fixture files, an optional
   fixture home folder, message, the files it must write with their exact text, an optional check of a turn that ended
   `done`) and `judge`, the verdict and failure category of a run, which compares the workspace after the run with the
-  fixture plus those writes; `run.ts` plays one run through the `ChatController` ports, with the read and write tools
-  and `load_skill` over a copy of the fixture under the system temporary directory, each write applied at once by
-  `fileApplier` and recorded for the dump, and the skills discovered in a copy of the fixture home, never the real one;
+  fixture plus those writes; `run.ts` plays one run through the `ChatController` ports, with the read and write tools,
+  `run_command`, and `load_skill` over a copy of the fixture under the system temporary directory, each write applied at
+  once by `fileApplier` and recorded for the dump, each command approved at once and run with `BENCH_COMMAND_ENV`, and
+  the skills discovered in a copy of the fixture home, never the real one;
   `report.ts` formats the scores; `bench.ts` is the CLI, guarded by `import.meta.main` so `bun test` never starts it.
   Its unit tests sit next to them and need no Ollama.
 - `biome.jsonc`: the Biome linter and formatter settings. Markdown is excluded, because Biome's Markdown formatter
@@ -189,8 +196,11 @@ local Ollama models and applies each change at once. `run_command` and slash com
   rights: a write landing between the last read and the rename is overwritten (Node has no compare-and-swap on a
   path), and a missing parent folder swapped for a symlink out after the check makes `mkdir` create an empty folder
   outside before the write is refused.
-- Tools act inside the open workspace only. The one exception is read-only access to the directories of skills
-  loaded in the current conversation that lie outside the workspace (ADR 0003):
+- The file tools (`read_file`, `list_files`, `search`, `write_file`, `edit_file`, and `load_skill`) act inside the open
+  workspace only. `run_command` is not confined: its `cwd` must be a workspace folder, but an approved command runs
+  with the user's rights and can read, change, or delete anything the user can, outside the workspace too; the
+  approval is the only guard. The one exception to the file tools' boundary is read-only access to the directories of
+  skills loaded in the current conversation that lie outside the workspace (ADR 0003):
   - A skill is loaded when the conversation holds an `ok` `load_skill` step for its name; an `error` step, a step
     dropped by Stop, and a malformed call load nothing. Before each call the controller maps those names to folders
     through the current send's discovery (`ToolContext.skillRoots`, beside `ToolContext.skills`, the send's skills),
@@ -212,8 +222,8 @@ local Ollama models and applies each change at once. `run_command` and slash com
   - Reads run without asking.
   - A tool asks through its run context: `ToolContext.requestApproval(request)` settles with Accept, Reject (with the
     reason typed, trimmed, left out when blank), or Cancel. While the request is open, the reply stays `streaming` and
-    `ChatState.approval` holds `{ id, tool, summary }`; the chat renders the step row "waiting for your decision",
-    Accept, Reject, and a reason field from that state alone. The webview's `approve { id }` and
+    `ChatState.approval` holds `{ id, kind, tool, summary }`; the chat renders the step row "waiting for your decision",
+    Accept (Run for a command), Reject, and a reason field from that state alone. The webview's `approve { id }` and
     `reject { id, reason? }` are validated like the other messages, and a decision for a request no longer open is
     ignored. One request at a time, since one call runs per reply.
   - A write opens the native VS Code diff editor beside the chat, titled with the path: the planned `before` text on
@@ -224,18 +234,57 @@ local Ollama models and applies each change at once. `run_command` and slash com
     open in an editor with unsaved changes is refused before the request and again right before the write, with
     auto-approve too, as an `error` result saying so; a file changed on disk since the plan is refused by the
     applier's planned-text check.
-  - A rejection goes back to the model as an `error` tool result: "The user rejected this change.", then the reason on
-    its own line when given. It is a tool step like any other and counts toward the step limit. The step records how it
+  - A rejection goes back to the model as an `error` tool result: "The user rejected this change." ("The user rejected
+    this command." for a command), then the reason on its own line when given. It is a tool step like any other and counts toward the step limit. The step records how it
     was approved (`approval`: `accepted`, `rejected`, or `auto`), and the row says rejected or auto-approved.
   - Stop, New chat, opening another conversation, deleting the one shown, and deactivation cancel the open request:
     the diff tab closes, nothing is written, the reply ends `stopped`. An open request is never saved; a record saved
     while one waits reloads `stopped` by the in-flight rule below.
-  - `run_command` always waits for a click.
+  - `run_command` always waits for a click: it asks with a request of kind `command`, its summary the whole command,
+    which the step row shows whole, line breaks kept, with the `cwd` when given ("in <cwd>"), Run, and Reject. Nothing runs before Run, and one Run runs
+    the command once.
   - `brokeCode.autoApproveWrites` (boolean, default false, `application` scope, read from `globalValue` like the
     providers) accepts writes at once, without a diff, and is read at each write's request. The controller applies it
     to requests of kind `write` only: nothing auto-approves commands.
-- `run_command` runs in a hidden child process in the workspace folder with the user's shell, captures the
-  output, and stops after 120 seconds by default.
+- `run_command(command, cwd?)` runs `<shell> -c <command>` in a hidden child process, no login shell, the shell being
+  `vscode.env.shell`, else `$SHELL`, else `/bin/sh`. `cwd` resolves like a read tool's path and must be an existing
+  folder inside the workspace; left out, the command runs in the first workspace folder. Without a workspace folder,
+  an empty command, or a refused `cwd`, the call is an `error` before any approval. The child is spawned `detached`, so
+  it leads a process group of its own, with stdin closed (`ignore`, so a read gets end of file at once) and the host's
+  environment.
+  - The result's first line is `exit code N`, `killed by <signal>`, or `stopped after N seconds`, then a `stdout:` and
+    a `stderr:` section (`stdout: (empty)` when nothing came), each cut to its first 2,000 lines and 1 MiB (cut
+    between UTF-8 characters) with the mention truncation notice. It is `ok` only on exit code 0; a non-zero code, a
+    signal, a timeout, a spawn failure, and a rejection are `error`. The step row shows the command, then the exit code
+    (or signal, or timeout) and the result's line count.
+  - `brokeCode.commandTimeoutSeconds` (integer, default 120, at least 1, `application` scope, read from `globalValue`
+    at each command; capped at the longest timer delay, about 24 days). At the timeout, or on Stop, New chat, the other
+    navigation, and deactivation during the run, the group gets SIGTERM (`process.kill(-pid)`), then SIGKILL two
+    seconds later unless the group is gone by then (checked every 20 ms). The result waits until the group is gone or
+    SIGKILL was sent, so it never claims a stop that has not happened, and then for the output pipes, at most half a
+    second more, since a process that left the group may hold them. A stop during the run ends the reply `stopped`.
+  - Once the shell exits, the output gets 200 ms to drain. A process still in the group then (a background job, its
+    output redirected or not) is stopped the same way, and the result ends with a line saying what is true when it
+    settles: "were stopped" (the group is gone), "did not stop on SIGTERM; they were sent SIGKILL after 2 seconds",
+    "were sent SIGKILL as the extension shut down" (deactivation, below), or "could not be stopped; they may still be
+    running" (the signals failed). A process that left the group (`setsid`, a
+    daemon) is not stopped, and the result stops waiting for the pipes it holds. A Stop after the shell exited keeps
+    its exit code. macOS answers EPERM for a group of zombies, so only a group a signal 0 reaches counts as alive.
+  - A signal that fails with ESRCH (the group is gone) or EPERM (zombies, or processes that changed user and could not
+    be stopped anyway) is ignored. Any other failure adds a line `Sending <signal> to the command's processes failed
+    (<code>).` to the result, whose status still follows the exit code. When SIGKILL itself fails, the result never
+    says the command stopped: a timeout's first line is `timed out after N seconds; its processes could not be stopped
+    and may still be running` (the step row then shows the generic error status), a Stop's is `run_command: Stop could
+    not end the command; its processes may still be running.`.
+  - Deactivation also calls `killRunningCommands` synchronously from `deactivate`: SIGKILL at once to every group still
+    running or in its grace, since the host may exit before a scheduled SIGKILL fires. Ownership is per run, not per
+    group id (`ownCommandGroup`): a run claims its group at spawn and releases its own claim, by identity, once the
+    group is gone, got SIGKILL, or the run settled, so a later run that gets the same id keeps its claim. Deactivation
+    releases every claim and tells each run, which cancels its pending SIGKILL and probes: once released, a run never
+    signals that id again, since the system may reuse it. A SIGKILL that fails there for another reason than ESRCH or
+    EPERM is logged and reaches that run's result as a failed-signal line, so the run never says it stopped; a run not
+    yet stopping ends as stopped, a timeout or a leftover cleanup keeps its reason. Accepted limit: a host that crashes never calls it, so a process that ignores SIGTERM can then
+    outlive it.
 - Reasoning output (`<think>` tags, `reasoning`, or `reasoning_content`) shows collapsed in the chat. The parser
   never looks for tool calls in it, and the conversation history sent back to the model drops it.
 - Each request of an agent turn sends a `system` message first, then the history: each user entry's composed text,
@@ -433,12 +482,17 @@ local Ollama models and applies each change at once. `run_command` and slash com
   (VSCodium is the maintainer's editor). Rebuild and reload the window after each change.
 - `bun run eval` plays each scenario 10 times per model against the local Ollama at `http://localhost:11434/v1`,
   on `qwen3.8:27b` then `gemma4:26b-a4b-it-qat`, all runs of one model before the next. Each run drives the
-  chat controller with the read and write tools and `load_skill` over a throwaway copy of the scenario's fixture,
-  each write applied at once, no instruction file, and a step limit of 10. Skills are discovered as the extension
+  chat controller with the read and write tools, `run_command`, and `load_skill` over a throwaway copy of the scenario's
+  fixture, each write applied at once, each command approved at once through the run context (the bench plays the
+  model, not the user; nothing in the product auto-approves a command) and run with `/bin/sh` in the copy with a
+  10-second timeout, no instruction file, and a step limit of 10. A command inherits the bench's environment, `HOME`
+  included, so the bench confines what the tools reach, not what a command itself does. Skills are discovered as the extension
   does, but with a throwaway copy of the scenario's home fixture as the home folder, so the bench never reads the real
   `~/.agents`; a scenario without one gets no skill, and its prompt has neither the Skills section nor `load_skill`.
-  Four scenarios, each judged on the turn ending `done` and on the workspace after it: every file the scenario writes
-  holds its exact expected text, byte for byte, and every other file is unchanged.
+  Five scenarios, each judged on the turn ending `done` and on the workspace after it: every file the scenario writes
+  holds its exact expected text, byte for byte, and every other entry is unchanged. The workspace is read back without
+  following symlinks: every entry but a folder counts, a file by its text, a symlink by its target (`{ symlink }`), any
+  other kind, such as a FIFO, by its kind (`{ special }`), so a command that adds a symlink fails `workspaceChanged`.
   - `read`: the model must read a setting it cannot guess and answer with its value. Passes when a tool step got the
     value, the answer holds it, and no file changed.
   - `edit`: rename a function named once in `src/pricing.py`. Passes when exactly that line changed.
@@ -450,6 +504,11 @@ local Ollama models and applies each change at once. `run_command` and slash com
     holding the code. The message names neither the skill nor the tool. Passes when an `ok` `load_skill` step ran, a
     read step got the code, the answer holds it, and no file changed; without an `ok` `load_skill` step it is
     `wrongTool`.
+  - `command`: count the files under `logs/`, subfolders included: 61 files in 18 month folders under two year folders,
+    more folders than the step limit lets the model list, and none hidden. The message does not name the tool. Passes
+    when an `ok` `run_command` step ran, the answer holds 61 as a number token of its own (the answer is split into runs of digits, letters, `.`, `,`, `_`, `+`, `-`, and U+2212 holding a digit, trailing `.` and `,` dropped, so `161`, `61,000`, `61.5`, `0,61`, `-61`, `61e3`, and `61k` fail and `61.` passes), and no file changed. Without an `ok`
+    `run_command` step it is `wrongTool`, its detail led by the first line of the last command step when one ran (a
+    rejection, `stopped after 10 seconds`, an exit code).
 
   A failed run shows one category and a one-line detail: `malformed`, `wrongTool`, `wrongAnswer`, `stepLimit`,
   `contextFull`, `providerError`, `wrongEdit` (a file the scenario writes is missing or holds other text, with the
@@ -458,15 +517,18 @@ local Ollama models and applies each change at once. `run_command` and slash com
   any run when Ollama is unreachable or does not list a model. `--model <name>`, `--scenario <name>` (both
   repeatable; an unknown scenario exits 1 naming the others), and `--runs <n>` shorten a local iteration; `--dump <file>` appends each run's entries (tool steps with their call's arguments), verdict,
   `planned` (each change handed to the applier, in call order: tool, path, `before` (`null` for a new file), `after`,
-  and the applier's status), and `changes` (each file that differs from the fixture after the run, with its text,
-  `null` when removed) as JSON Lines, to read the
+  and the applier's status), and `changes` (each entry that differs from the fixture after the run, with its text,
+  `{ symlink }`, or `{ special }`, `null` when removed) as JSON Lines, to read the
   failing replies; an incomplete last line left by an interrupted run is removed, with a notice, before the first
-  append. A full run of the four scenarios took 20 min 24 s on the maintainer's Mac on 9a67dd7, the first run of each
+  append. A full run of the five scenarios took 22 min 48 s on the maintainer's Mac on 394042c, the first run of each
   model including its load; the bench has no time limit per run, and one `gemma4` run whose reasoning ran on for about
-  98,000 characters once took 18 min on its own (b1049a2). It runs locally on demand and never in CI. On 9a67dd7 every
-  model met the bar on every scenario: 10/10 everywhere but `gemma4` on `skill`, 9/10 (one `wrongTool`: it listed the
-  skill folder and answered without reading the reference file).
-  Scenarios for commands come with `run_command` (#9), and for slash commands with #11.
+  98,000 characters once took 18 min on its own (b1049a2). It runs locally on demand and never in CI. On 394042c every
+  model met the bar on every scenario, 10/10 everywhere; every `command` run counted with `find logs -type f | wc -l`,
+  most after listing a level or two. On 9a67dd7, `gemma4` once failed `skill` (`wrongTool`: it listed the skill folder
+  and answered without reading the reference file). Live, `qwen3.8:27b` proposes a command for that count, but on a
+  small tree (7 files in 4 folders) it walks the folders with `list_files` instead, even when asked to count the
+  subfolders (#9 verification).
+  Scenarios for slash commands come with #11.
 - v1 supports macOS only. Windows and Linux are planned for v2.
 
 ## Git and release workflow

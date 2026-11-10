@@ -1,7 +1,8 @@
 /**
  * @module limits
- * Turn limits from the user settings (`brokeCode.maxToolSteps`, `brokeCode.contextSizes`) and the context budget: the
- * estimate of a request's size in tokens and the context-full threshold. No `node:` or `vscode` import.
+ * Turn limits from the user settings (`brokeCode.maxToolSteps`, `brokeCode.contextSizes`), the command timeout
+ * (`brokeCode.commandTimeoutSeconds`), and the context budget: the estimate of a request's size in tokens and the
+ * context-full threshold. No `node:` or `vscode` import.
  */
 
 /** The limits an agent turn runs under: its tool step limit and the context size of each model in the table. */
@@ -31,6 +32,19 @@ export function parseLimits(raw: { maxToolSteps: unknown; contextSizes: unknown 
     }
   }
   return { maxToolSteps, contextSizes };
+}
+
+/** Seconds a command runs before it is stopped, while `brokeCode.commandTimeoutSeconds` is unset or invalid. */
+export const DEFAULT_COMMAND_TIMEOUT_SECONDS = 120;
+/** The longest timeout in seconds: a Node timer fires at once past 2^31 - 1 milliseconds, about 24.8 days. */
+const MAX_COMMAND_TIMEOUT_SECONDS = Math.floor((2 ** 31 - 1) / 1000);
+
+/**
+ * Parse the raw `brokeCode.commandTimeoutSeconds` value. Never throws. A value that is not an integer of at least 1
+ * gives 120; a longer one than a timer can wait is capped, so the timeout still holds.
+ */
+export function parseCommandTimeout(raw: unknown): number {
+  return isPositiveInteger(raw) ? Math.min(raw, MAX_COMMAND_TIMEOUT_SECONDS) : DEFAULT_COMMAND_TIMEOUT_SECONDS;
 }
 
 /** Context size of `model` under `limits`; no model gets the default, unknown. */

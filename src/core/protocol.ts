@@ -47,10 +47,10 @@ export type StepApproval = "accepted" | "rejected" | "auto";
 
 /**
  * The approval request open in the chat: the user's Accept or Reject of the call the reply runs. `id`: the request's,
- * carried by the decision, so a decision for a request no longer open is ignored. `summary`: what it acts on, such as
- * the file a write changes.
+ * carried by the decision, so a decision for a request no longer open is ignored. `kind`: `write` (Accept and Reject)
+ * or `command` (Run and Reject). `summary`: what it acts on, such as the file a write changes or the whole command.
  */
-export type PendingApproval = { id: number; tool: string; summary: string };
+export type PendingApproval = { id: number; kind: "write" | "command"; tool: string; summary: string };
 
 export type ChatEntry =
   /** `content`: the text as typed. `mentions`: each mention read at send time, in order. */

@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { copyFileSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,6 +23,7 @@ import type { Provider } from "./providers";
 import { LOAD_SKILL_TOOL, type SkillDiscovery } from "./skills";
 import { composeSystemPrompt, type InstructionFile, type Skill } from "./systemPrompt";
 import { createTlsFixture, removeTlsFixture } from "./tlsFixture";
+import { workspaceToolRunner } from "./toolRunner";
 import { READ_TOOLS, runReadTool, type ToolResult } from "./tools";
 import { vllmOpening, vllmReasoningRest } from "./vllmFixture";
 import { approvalApplier, fileApplier, runWriteTool, WRITE_TOOLS, type WriteApprovalHost } from "./writeTools";
@@ -2542,7 +2543,7 @@ describe("ChatController agent turn", () => {
 
     test("an open request shows in the state with its diff open while the reply stays streaming", async () => {
       const { state, previews, controller, done } = await waiting();
-      expect(state().approval).toEqual({ id: expect.any(Number), tool: "write_file", summary: "a.txt" });
+      expect(state().approval).toEqual({ id: expect.any(Number), kind: "write", tool: "write_file", summary: "a.txt" });
       expect(state().entries.at(-1)).toMatchObject({
         role: "assistant",
         status: "streaming",
@@ -2754,6 +2755,101 @@ describe("ChatController agent turn", () => {
       expect(decisions).toEqual([{ kind: "reject" }]);
     });
 
+    describe("commands", () => {
+      const commandCall = (command: string) => `<run_command>\n<command>\n${command}\n</command>\n</run_command>`;
+      const pidFile = () => join(workspaceDir, "command.pid");
+
+      /** A turn whose first reply runs `command` in the workspace, then answers "Done.", stopped at the request. */
+      async function waitingCommand(command: string) {
+        const runner = workspaceToolRunner(
+          () => [{ name: "ws", path: workspaceDir }],
+          { ripgrepCandidates: [] },
+          (roots) => fileApplier(roots),
+          () => ({ shell: "/bin/sh", timeoutMs: 10_000 }),
+        );
+        const turn = await scripted([{ content: commandCall(command) }, { content: "Done." }], runner);
+        const done = turn.controller.send("run it");
+        await until(turn.state, (s) => s.approval !== undefined);
+        return { ...turn, done };
+      }
+
+      test("Run shows the whole command, runs it, and the next request holds its output as an ok result", async () => {
+        const command = "echo ran > ran.txt\necho hello";
+        const { state, controller, done, sent } = await waitingCommand(command);
+        expect(state().approval).toEqual({
+          id: expect.any(Number),
+          kind: "command",
+          tool: "run_command",
+          summary: command,
+        });
+        expect(existsSync(join(workspaceDir, "ran.txt"))).toBe(false);
+        controller.approve(state().approval!.id);
+        await done;
+
+        expect(readFileSync(join(workspaceDir, "ran.txt"), "utf8")).toBe("ran\n");
+        expect(state().entries[2]).toEqual({
+          role: "tool",
+          name: "run_command",
+          args: { command },
+          status: "ok",
+          text: "exit code 0\nstdout:\nhello\nstderr: (empty)",
+          approval: "accepted",
+        });
+        expect(sent()[1]!.messages.at(-1)?.content).toBe(
+          '<tool_result tool="run_command" status="ok">\nexit code 0\nstdout:\nhello\nstderr: (empty)\n</tool_result>',
+        );
+        expect(state().entries.at(-1)).toMatchObject({ content: "Done.", status: "done" });
+      });
+
+      test("Reject with a reason runs nothing and sends the rejection and the reason as an error result", async () => {
+        const { state, controller, done, sent } = await waitingCommand("echo ran > ran.txt");
+        controller.reject(state().approval!.id, "Not now.");
+        await done;
+
+        expect(existsSync(join(workspaceDir, "ran.txt"))).toBe(false);
+        expect(state().entries[2]).toMatchObject({ status: "error", approval: "rejected" });
+        expect(sent()[1]!.messages.at(-1)?.content).toBe(
+          '<tool_result tool="run_command" status="error">\nThe user rejected this command.\nNot now.\n</tool_result>',
+        );
+      });
+
+      test("Stop during the wait runs nothing and ends the reply stopped", async () => {
+        const { state, controller, done, sent } = await waitingCommand("echo ran > ran.txt");
+        const id = state().approval!.id;
+        controller.stop();
+        await done;
+        controller.approve(id);
+        await Bun.sleep(20);
+
+        expect(existsSync(join(workspaceDir, "ran.txt"))).toBe(false);
+        expect(state().approval).toBeUndefined();
+        expect(state().entries.at(-1)).toMatchObject({
+          role: "assistant",
+          status: "stopped",
+          call: { name: "run_command" },
+        });
+        expect(sent()).toHaveLength(1);
+      });
+
+      test("Stop during the run kills the command's group and ends the reply stopped", async () => {
+        const { state, controller, done, sent } = await waitingCommand(`echo $$ > '${pidFile()}'; sleep 5 | cat`);
+        controller.approve(state().approval!.id);
+        await until(state, () => readFileOr(pidFile()).endsWith("\n"));
+        controller.stop();
+        await done;
+
+        expect(state().entries.at(-1)).toMatchObject({
+          role: "assistant",
+          status: "stopped",
+          call: { name: "run_command" },
+        });
+        expect(sent()).toHaveLength(1);
+        const pgid = Number(readFileSync(pidFile(), "utf8"));
+        await until(state, () => !groupAlive(pgid));
+        expect(groupAlive(pgid)).toBe(false);
+      });
+    });
+
     test("Stop while the diff opens closes it once open and gives no request", async () => {
       let open: (preview: Preview) => void = () => {};
       let closed = 0;
@@ -2962,3 +3058,22 @@ describe("ChatController context usage", () => {
     expect(usages.at(-1)).toMatchObject({ size: 131072, known: true });
   });
 });
+
+/** The text of the file at `path`, or empty when it cannot be read yet. */
+function readFileOr(path: string): string {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+/** True while a process of group `pgid` is alive. */
+function groupAlive(pgid: number): boolean {
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}

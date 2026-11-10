@@ -5,6 +5,8 @@
  * failed replies, format failures, and the workspace after the run against the one expected. The verdict reads the
  * entries and the workspace files after the run, never the wording of the answer beyond the value a scenario asks for.
  */
+
+import { RUN_COMMAND_TOOL } from "../src/core/commands";
 import type { ChatEntry } from "../src/core/protocol";
 import type { ProviderError } from "../src/core/providerError";
 import { READ_TOOLS } from "../src/core/tools";
@@ -16,8 +18,21 @@ import { READ_TOOLS } from "../src/core/tools";
  */
 export type WorkspaceFiles = Record<string, string>;
 
-/** The text of the file at `path` in `files`, `undefined` when it holds none: own keys only, never the prototype's. */
-export function fileAt(files: WorkspaceFiles, path: string): string | undefined {
+/**
+ * What a workspace holds at a path that is not a folder: a regular file's text, a symlink's target as written, or the
+ * kind of any other entry (`fifo`, `socket`, `blockDevice`, `characterDevice`). Objects, so a symlink never equals a
+ * file whose text is its target.
+ */
+export type WorkspaceEntry = string | { symlink: string } | { special: string };
+
+/**
+ * Every entry of the throwaway copy read back after a run, folders aside, by relative POSIX path. Keyed like
+ * `WorkspaceFiles`, which it extends to entries a command can add.
+ */
+export type WorkspaceSnapshot = Record<string, WorkspaceEntry>;
+
+/** The entry at `path` in `files`, `undefined` when there is none: own keys only, never the prototype's. */
+export function fileAt<T>(files: Record<string, T>, path: string): T | undefined {
   return Object.hasOwn(files, path) ? files[path] : undefined;
 }
 
@@ -215,14 +230,80 @@ export const SKILL_SCENARIO: Scenario = {
   },
 };
 
+/** Log files per month under `logs/<year>/<month>/`, uneven so the total cannot be guessed from the folder count. */
+const LOG_MONTHS: Record<string, readonly number[]> = {
+  "2024": [3, 5, 2, 4, 6, 1, 3, 4, 2, 5, 3, 4],
+  "2025": [4, 2, 5, 3, 1, 4],
+};
+
+/** One daily log per entry of `LOG_MONTHS`, days spread over the month. */
+function logFiles(): WorkspaceFiles {
+  const files: WorkspaceFiles = {};
+  for (const [year, counts] of Object.entries(LOG_MONTHS)) {
+    counts.forEach((count, index) => {
+      const month = String(index + 1).padStart(2, "0");
+      for (let file = 0; file < count; file += 1) {
+        const day = String(1 + file * Math.floor(28 / count)).padStart(2, "0");
+        files[`logs/${year}/${month}/${year}-${month}-${day}.log`] = `${year}-${month}-${day} courier: routes sent\n`;
+      }
+    });
+  }
+  return files;
+}
+
+const LOG_FILES = logFiles();
+const LOG_FILE_COUNT = Object.keys(LOG_FILES).length;
+
+/**
+ * Count with a command: how many files a folder holds, subfolders included. The files sit in 18 month folders under
+ * two year folders, more than the bench's step limit lets the model list one by one, and `list_files` counts one level
+ * only, so a shell command is the way to the count. Passes when an `ok` `run_command` step ran, the answer holds the
+ * count as a whole number, and no file changed; without such a step it is `wrongTool`, its detail led by the first line
+ * of the last `run_command` step when one ran (a rejection, a timeout, an exit code). The message never names the tool.
+ */
+export const COMMAND_SCENARIO: Scenario = {
+  name: "command",
+  files: { ...READ_FILES, ...LOG_FILES },
+  message: "How many files does the logs folder hold, counting the files in all its subfolders? Reply with the number.",
+  writes: {},
+  check(entries) {
+    const steps = entries.filter((entry) => entry.role === "tool");
+    const commands = steps.filter((step) => step.name === RUN_COMMAND_TOOL.name);
+    if (!commands.some((step) => step.status === "ok")) {
+      const last = commands.at(-1);
+      const lead = last ? `${last.text.split("\n", 1)[0]}; ` : "";
+      return { pass: false, category: "wrongTool", detail: `${lead}steps: ${describeSteps(steps)}` };
+    }
+    const answer = lastReply(entries).content;
+    if (numberTokens(answer).includes(String(LOG_FILE_COUNT))) return { pass: true };
+    return { pass: false, category: "wrongAnswer", detail: `answer: ${excerpt(answer)}` };
+  },
+};
+
+/**
+ * The numbers written in `text`, each whole as written: every longest run of digits, letters, `.`, `,`, `_`, signs,
+ * and U+2212 that holds a digit, less its trailing `.` and `,` (sentence punctuation). A count passes only as a token
+ * of its own, so `161`, `1,061`, `61,000`, `61.5`, `0,61`, `-61`, `\u221261`, `+61`, `61e3`, and `61k` never hold 61.
+ */
+function numberTokens(text: string): string[] {
+  const runs = text.match(/[0-9A-Za-z.,_+\-\u2212]+/g) ?? [];
+  return runs.filter((run) => /\d/.test(run)).map((run) => run.replace(/[.,]+$/, ""));
+}
+
 /** Every scenario the bench plays, in order. */
-export const SCENARIOS: readonly Scenario[] = [READ_SCENARIO, EDIT_SCENARIO, CREATE_SCENARIO, SKILL_SCENARIO];
+export const SCENARIOS: readonly Scenario[] = [
+  READ_SCENARIO,
+  EDIT_SCENARIO,
+  CREATE_SCENARIO,
+  SKILL_SCENARIO,
+  COMMAND_SCENARIO,
+];
 
 /**
  * The verdict of one run of `scenario`: `entries` are the conversation after `send` resolved, `after` the workspace
  * files then. Throws on a turn that did not end, or ended stopped: the bench never stops a turn, so that is its bug.
  */
-export function judge(scenario: Scenario, entries: readonly ChatEntry[], after: WorkspaceFiles): Verdict {
+export function judge(scenario: Scenario, entries: readonly ChatEntry[], after: WorkspaceSnapshot): Verdict {
   const reply = lastReply(entries);
   switch (reply.status) {
     case "failed":
@@ -250,7 +331,7 @@ export function judge(scenario: Scenario, entries: readonly ChatEntry[], after: 
 }
 
 /** `after` against the workspace `scenario` expects: `wrongEdit`, `workspaceChanged`, or `undefined` when it matches. */
-function workspaceVerdict(scenario: Scenario, after: WorkspaceFiles): Verdict | undefined {
+function workspaceVerdict(scenario: Scenario, after: WorkspaceSnapshot): Verdict | undefined {
   const expected = { ...scenario.files, ...scenario.writes };
   const differing = Object.keys(workspaceChanges(expected, after));
   const wrong = differing.filter((path) => Object.hasOwn(scenario.writes, path));
@@ -269,22 +350,35 @@ function workspaceVerdict(scenario: Scenario, after: WorkspaceFiles): Verdict | 
 }
 
 /**
- * The files of `after` that differ from `before`, sorted by path: an added or changed file with its text, a removed
- * one with `null`. Empty when they match. The dump records it, so a write's result reads without replaying the run.
+ * The entries of `after` that differ from `before`, sorted by path: an added or changed one with what it holds now, a
+ * removed one with `null`. Empty when they match. The dump records it, so a write's result reads without replaying the
+ * run.
  */
-export function workspaceChanges(before: WorkspaceFiles, after: WorkspaceFiles): Record<string, string | null> {
+export function workspaceChanges(
+  before: WorkspaceSnapshot,
+  after: WorkspaceSnapshot,
+): Record<string, WorkspaceEntry | null> {
   const paths = [...new Set([...Object.keys(before), ...Object.keys(after)])].sort();
-  const changes: Record<string, string | null> = Object.create(null);
+  const changes: Record<string, WorkspaceEntry | null> = Object.create(null);
   for (const path of paths) {
     const now = fileAt(after, path);
-    if (fileAt(before, path) !== now) changes[path] = now ?? null;
+    if (!sameEntry(fileAt(before, path), now)) changes[path] = now ?? null;
   }
   return changes;
 }
 
-/** Where `actual` first departs from `expected`, as one line: missing, or the first differing line of each. */
-function fileDifference(expected: string, actual: string | undefined): string {
+function sameEntry(a: WorkspaceEntry | undefined, b: WorkspaceEntry | undefined): boolean {
+  if (typeof a !== "object" || typeof b !== "object") return a === b;
+  if ("symlink" in a) return "symlink" in b && a.symlink === b.symlink;
+  return "special" in b && a.special === b.special;
+}
+
+/** Where `actual` first departs from `expected`, as one line: missing, not a file, or the first differing line of each. */
+function fileDifference(expected: string, actual: WorkspaceEntry | undefined): string {
   if (actual === undefined) return "missing";
+  if (typeof actual !== "string") {
+    return "symlink" in actual ? `is a symlink to ${JSON.stringify(actual.symlink)}` : `is a ${actual.special}`;
+  }
   const want = expected.split("\n");
   const got = actual.split("\n");
   const index = want.findIndex((line, at) => line !== got[at]);

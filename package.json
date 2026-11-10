@@ -98,6 +98,13 @@
           "scope": "application",
           "default": false,
           "markdownDescription": "%config.autoApproveWrites.description%"
+        },
+        "brokeCode.commandTimeoutSeconds": {
+          "type": "integer",
+          "scope": "application",
+          "default": 120,
+          "minimum": 1,
+          "markdownDescription": "%config.commandTimeoutSeconds.description%"
         }
       }
     }

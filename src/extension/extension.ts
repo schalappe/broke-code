@@ -1,11 +1,13 @@
 /**
  * @module extension
- * Activation entry point: wires settings, API keys, mentions, read tools, write tools behind their approval, instruction
- * files, skills, turn limits, file index, saved conversations, chat controller, chat view, and `broke-code.setApiKey`.
+ * Activation entry point: wires settings, API keys, mentions, read tools, write tools and commands behind their approval,
+ * instruction files, skills, turn limits, file index, saved conversations, chat controller, chat view, and
+ * `broke-code.setApiKey`.
  */
 import { homedir } from "node:os";
 import * as vscode from "vscode";
 import { ChatController, type InstructionReader, type SkillReader } from "../core/chatController";
+import { type CommandEnv, commandShell, killRunningCommands } from "../core/commands";
 import { directoryFiles } from "../core/conversationFiles";
 import { ConversationStore } from "../core/conversationStore";
 import { readInstructionFiles } from "../core/instructions";
@@ -19,7 +21,7 @@ import { approvalApplier, fileApplier, type WriteApprovalHost } from "../core/wr
 import { ApiKeys } from "./apiKeys";
 import { DiffPreviews, hasUnsavedChanges, readAutoApproveWrites } from "./approval";
 import { CHAT_VIEW_ID, ChatView } from "./chatView";
-import { askContextSize, LIMIT_SETTINGS, readLimits } from "./contextSizes";
+import { askContextSize, LIMIT_SETTINGS, readCommandTimeoutSeconds, readLimits } from "./contextSizes";
 import { WorkspaceFileIndex } from "./fileIndex";
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -35,9 +37,18 @@ export function activate(context: vscode.ExtensionContext): void {
   const toolEnv = { ripgrepCandidates: ripgrepCandidates(vscode.env.appRoot, process.env.PATH) };
   const previews = new DiffPreviews();
   const writeHost: WriteApprovalHost = { preview: (change) => previews.preview(change), hasUnsavedChanges };
+  // [>]: Read at each command, so a changed terminal profile or timeout reaches the next one.
+  const commandEnv = (): CommandEnv => ({
+    shell: commandShell(vscode.env.shell, process.env.SHELL),
+    timeoutMs: readCommandTimeoutSeconds() * 1000,
+  });
   // [!]: Every write goes through `approvalApplier`: no build writes without a click unless the user setting says so.
-  const tools = workspaceToolRunner(workspaceRoots, toolEnv, (roots, { requestApproval }) =>
-    approvalApplier(fileApplier(roots), writeHost, requestApproval),
+  // Every command waits for Run: the runner asks before it spawns, and no setting accepts a command.
+  const tools = workspaceToolRunner(
+    workspaceRoots,
+    toolEnv,
+    (roots, { requestApproval }) => approvalApplier(fileApplier(roots), writeHost, requestApproval),
+    commandEnv,
   );
   const instructions: InstructionReader = { read: () => readInstructionFiles(homedir(), workspaceRoots()) };
   const skills: SkillReader = { read: () => readSkills(homedir(), workspaceRoots()).then(logSkills) };
@@ -92,7 +103,13 @@ export function activate(context: vscode.ExtensionContext): void {
   void controller.restore();
 }
 
-export function deactivate(): void {}
+/**
+ * Kill every command still running, or stopped and in its grace, at once: the host may exit right after this, and the
+ * SIGKILL a stop schedules would die with it. Synchronous, so it is done before VS Code moves on.
+ */
+export function deactivate(): void {
+  killRunningCommands();
+}
 
 /** Log what a send discovered, one line; the warnings show in the chat panel. */
 function logSkills(discovery: SkillDiscovery): SkillDiscovery {

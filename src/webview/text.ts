@@ -204,8 +204,25 @@ export function describeToolStep(step: ChatEntry & { role: "tool" }): string {
   if (step.approval === "rejected") return l10n.t("rejected");
   const count = step.text === "" ? 0 : step.text.replace(/\n$/, "").split("\n").length;
   const size = count === 1 ? l10n.t("1 line") : l10n.t("{0} lines", count);
+  const ending = step.name === "run_command" ? describeCommandEnding(step.text) : undefined;
+  if (ending !== undefined) return l10n.t("{0}, {1}", ending, size);
   const status = step.status === "ok" ? l10n.t("ok, {0}", size) : l10n.t("error, {0}", size);
   return step.approval === "auto" ? l10n.t("auto-approved, {0}", status) : status;
+}
+
+/**
+ * How a command that ran ended, from the first line of its result (see `runCommand`): its exit code, the signal that
+ * killed it, or its timeout; `undefined` for a result of a command that never ran, such as a refused folder.
+ */
+function describeCommandEnding(text: string): string | undefined {
+  const first = text.split("\n", 1)[0] ?? "";
+  const exit = /^exit code (-?\d+)$/.exec(first);
+  if (exit) return l10n.t("exit code {0}", exit[1]!);
+  const killed = /^killed by (\S+)$/.exec(first);
+  if (killed) return l10n.t("killed by {0}", killed[1]!);
+  const timeout = /^stopped after (\d+(?:\.\d+)?) seconds$/.exec(first);
+  if (timeout) return l10n.t("stopped after {0} seconds", timeout[1]!);
+  return undefined;
 }
 
 /** Why an agent turn halted, shown after its last step, or on the reply whose request was not sent. */

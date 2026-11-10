@@ -7,12 +7,12 @@ it fail against them. In broke-code, the model writes each tool call in the text
 extension reads and runs it. broke-code never sends `tools`, even to a service that supports them.
 
 The current version is a chat agent that reads and changes your workspace: pick a model, ask a question or a change
-with files and folders attached, and the model reads files, lists folders, searches the workspace, and creates or edits
-files until it is done. Each change opens as a diff and waits for your **Accept** or **Reject** in the chat, unless
-you turn on auto-approval in your user settings. You can follow each step, stop the agent at any time, read the model's
-reasoning collapsed above its answer, and come back to past conversations. The model also sees the name and
-description of each of your skills, and loads a skill's instructions when your task matches it. Commands and slash
-commands come next.
+with files and folders attached, and the model reads files, lists folders, searches the workspace, creates or edits
+files, and runs shell commands until it is done. Each change opens as a diff and waits for your **Accept** or **Reject**
+in the chat, unless you turn on auto-approval in your user settings; each command waits for your **Run** or **Reject**,
+always. You can follow each step, stop the agent at any time, read the model's reasoning collapsed above its answer,
+and come back to past conversations. The model also sees the name and description of each of your skills, and loads a
+skill's instructions when your task matches it. Slash commands come next.
 
 ## Requirements
 
@@ -111,12 +111,34 @@ disk since the model planned the change, or when an editor holds unsaved changes
 **Stop**, **New chat**, or opening another conversation while a change waits closes the diff and writes nothing.
 
 To apply changes without asking, set `brokeCode.autoApproveWrites` to `true` in your **user** settings: no diff opens,
-and each such step is marked auto-approved. A workspace `settings.json` cannot turn it on. Commands, once the agent
-can run them, will always ask.
+and each such step is marked auto-approved. A workspace `settings.json` cannot turn it on. Commands always ask.
 
-Each tool call shows as a compact row under the model's text: the tool, its main argument (a path or a search
-pattern), and whether it worked with the size of its result. Click the row to see the result the model received.
-A path outside the workspace, and outside the folders of the loaded skills, is refused, and the model is told why.
+The agent can also run a shell command with **run_command**, which always asks you first; no setting changes that. The
+chat shows the whole command under the call, line breaks kept, and the folder it runs in when the model names one,
+with **Run** and **Reject** and an optional reason.
+**Reject** runs nothing, and the model reads that you rejected the command, with your reason when you gave one.
+**Run** starts it with your shell (the one of your default terminal profile, else `$SHELL`, else `/bin/sh`, as
+`<shell> -c <command>`, not a login shell), without a terminal, in the first workspace folder unless the model names
+another folder of the workspace. The command cannot read input: it gets end of file at once. The model receives the
+exit code, then stdout and stderr, each cut to its first 2,000 lines and 1 MiB; a command that exits with a code other
+than 0, or is killed, is reported as an error. A command stops after 120 seconds: broke-code sends SIGTERM to its
+process group (the shell and the processes it started that stayed in that group), then SIGKILL two seconds later, and
+the model gets the output so far. Change that limit with
+`brokeCode.commandTimeoutSeconds` (at least 1) in your **user** settings; a workspace `settings.json` cannot change
+it. **Stop**, **New chat**, or opening another conversation while a command waits runs nothing, and while it runs stops
+it the same way. Processes a command leaves running in the background in its process group are stopped once it ends,
+and the model is told so: to keep a server running, start it in your own terminal. A process that leaves the group
+(with `setsid`, or a daemon that detaches) is not stopped. When VS Code closes the window or reloads the extensions,
+every command still running gets SIGKILL at once.
+
+Unlike the file tools, a command is not held to the workspace: it runs with your rights, so it can read, change, or
+delete anything you can, outside the workspace too. The folder it starts in is the only part broke-code checks; your
+approval is the guard, so read the whole command before you click **Run**.
+
+Each tool call shows as a compact row under the model's text: the tool, its main argument (a path, a search pattern,
+or the whole command), and whether it worked with the size of its result, or for a command, its exit code. Click the row to see the result the model received.
+A file tool's path outside the workspace, and outside the folders of the loaded skills, is refused, and the model is
+told why.
 
 The agent turn ends when the model answers with text and no tool call. It also ends when you click **Stop**, at any step;
 after three malformed tool calls in a row, with a message saying so; after 50 tool steps (or the limit you set), with
@@ -184,7 +206,8 @@ When a task matches a skill's description, the model calls **load_skill** with i
 instructions, without the frontmatter, cut to their first 2,000 lines, together with the real path of the skill's
 folder. From then on, for the rest of the conversation, the model may read the files of that folder with
 **read_file**, **list_files**, and **search**, by that absolute path, even for a personal skill outside the workspace.
-It cannot change the files of a skill outside the workspace, and before the load it cannot read them; there, a file
+The file tools cannot change the files of a skill outside the workspace, and before the load they cannot read them
+(a command you approve can, like any file you can reach); there, a file
 that is a symbolic link to somewhere outside the skill's folder is refused. A workspace skill's folder is part of the
 workspace: the usual rules apply, so the model can change its files with your approval. A skill loaded in a past conversation is loaded again when you reopen it, as long as it is still
 there. `load_skill` is offered to the model only while a skill is listed to it.
@@ -211,14 +234,15 @@ never hold an API key. A window with no folder open keeps its conversation in me
 ## Tested models
 
 broke-code's tool calls are measured on local models with Ollama: `qwen3.8:27b` and `gemma4:26b-a4b-it-qat`, ten
-runs of each task, with the bar at nine. The bench has four tasks:
+runs of each task, with the bar at nine. The bench has five tasks:
 
 - **Read**: answer with the value of a setting that only a file holds.
 - **Edit**: rename a function in a source file, changing nothing else.
 - **Create**: create a file whose text holds double quotes, backslashes, tags, and a code block, exactly as asked.
 - **Skill**: answer a question that a personal skill covers, by loading the skill and reading a file in its folder.
+- **Command**: count the files of a folder and its subfolders, by running a shell command.
 
-Both models pass the four tasks: 10 runs of 10 each, except `gemma4:26b-a4b-it-qat` at 9 of 10 on the skill task. When a model thinks, then stops without a
+Both models pass the five tasks, 10 runs of 10 on each. When a model thinks, then stops without a
 word, broke-code tells it so and asks again. Contributors run the bench with `bun run eval`.
 
 ## Privacy
