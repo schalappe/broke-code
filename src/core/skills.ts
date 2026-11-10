@@ -9,7 +9,7 @@
 import { readdir, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { accessFailureReason, MAX_MENTION_LINES, truncationNotice } from "./mentions";
-import type { SkillProblem, SkillWarning } from "./protocol";
+import type { HostMessage, SkillProblem, SkillWarning } from "./protocol";
 import type { Skill } from "./systemPrompt";
 import type { ToolSpec } from "./toolCalls";
 import { excerpt, type ToolResult } from "./tools";
@@ -122,6 +122,26 @@ export async function readSkills(
     // [>]: Warnings in discovery order: personal first, then each workspace folder.
     warnings: [warnings.at(-1)!, ...warnings.slice(0, -1)].flat(),
   };
+}
+
+/**
+ * The host's answer to the `/` menu's `querySkills` `id`: the name and description of each skill `read` discovers, those
+ * kept from the model included, since the user may still load them with `/<name>`. Skipped skills are left out and
+ * their warnings dropped: the next send shows them. A reader that fails is logged and answers `failed`, so the menu
+ * says so and still shows the built-in commands.
+ */
+export async function answerSkillQuery(
+  id: number,
+  read: () => Promise<SkillDiscovery>,
+): Promise<HostMessage & { type: "skillSuggestions" }> {
+  try {
+    const { skills } = await read();
+    const items = skills.map(({ name, description }) => ({ name, description }));
+    return { type: "skillSuggestions", id, items, failed: false };
+  } catch (error) {
+    console.error("broke-code: could not list the skills for the / menu", error);
+    return { type: "skillSuggestions", id, items: [], failed: true };
+  }
 }
 
 /**

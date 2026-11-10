@@ -1,10 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import {
+  filterSlashCommands,
   filterSuggestions,
   findMentionToken,
+  findSlashToken,
   INDEX_EXCLUDE_GLOB,
   indexEntries,
   isExcludedFromIndex,
+  type SlashCommand,
 } from "./suggestions";
 
 describe("findMentionToken", () => {
@@ -56,6 +59,50 @@ describe("findMentionToken", () => {
     expect(findMentionToken("@sse ", 5)).toBeUndefined();
     expect(findMentionToken("plain text", 10)).toBeUndefined();
     expect(findMentionToken("", 0)).toBeUndefined();
+  });
+});
+
+describe("findSlashToken", () => {
+  test("a / at the very start with the caret after it is a token with an empty query", () => {
+    expect(findSlashToken("/", 1)).toEqual({ query: "" });
+  });
+
+  test("the query is the text between the / and the caret", () => {
+    expect(findSlashToken("/gri", 4)).toEqual({ query: "gri" });
+    expect(findSlashToken("/gri rest", 4)).toEqual({ query: "gri" });
+  });
+
+  test("a / anywhere but the very start is no token", () => {
+    expect(findSlashToken("see /etc", 8)).toBeUndefined();
+    expect(findSlashToken("a /x", 4)).toBeUndefined();
+    expect(findSlashToken(" /new", 5)).toBeUndefined();
+  });
+
+  test("is no token once whitespace stands between the / and the caret, or before the caret ends the word", () => {
+    expect(findSlashToken("/new ", 5)).toBeUndefined();
+    expect(findSlashToken("/new\nx", 6)).toBeUndefined();
+    expect(findSlashToken("/model", 3)).toBeUndefined();
+    expect(findSlashToken("/x", 0)).toBeUndefined();
+    expect(findSlashToken("", 0)).toBeUndefined();
+  });
+});
+
+describe("filterSlashCommands", () => {
+  const command = (name: string): SlashCommand => ({ name, description: `${name} text` });
+  const commands = ["new", "model", "grilling", "notes", "tdd", "Nightly"].map(command);
+
+  test("keeps the rows whose name starts with the query, ignoring case, in the order given", () => {
+    expect(filterSlashCommands(commands, "n", 20).map((row) => row.name)).toEqual(["new", "notes", "Nightly"]);
+    expect(filterSlashCommands(commands, "GR", 20).map((row) => row.name)).toEqual(["grilling"]);
+  });
+
+  test("matches the start of the name only", () => {
+    expect(filterSlashCommands(commands, "ill", 20)).toEqual([]);
+  });
+
+  test("an empty query keeps every row up to the limit", () => {
+    expect(filterSlashCommands(commands, "", 20)).toEqual(commands);
+    expect(filterSlashCommands(commands, "", 2).map((row) => row.name)).toEqual(["new", "model"]);
   });
 });
 

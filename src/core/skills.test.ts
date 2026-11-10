@@ -2,7 +2,14 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describeSkillDiscovery, LOAD_SKILL_TOOL, loadSkill, MAX_SKILL_ENTRIES, readSkills } from "./skills";
+import {
+  answerSkillQuery,
+  describeSkillDiscovery,
+  LOAD_SKILL_TOOL,
+  loadSkill,
+  MAX_SKILL_ENTRIES,
+  readSkills,
+} from "./skills";
 import type { WorkspaceEntry } from "./workspaceFiles";
 
 let base: string;
@@ -471,6 +478,39 @@ describe("describeSkillDiscovery", () => {
     expect(describeSkillDiscovery({ skills: [], warnings: [] })).toBe(
       "broke-code: skills listed to the model: none; kept from the model: none; skipped: 0",
     );
+  });
+});
+
+describe("answerSkillQuery", () => {
+  test("answers with the query's id and each discovered skill's name and description, those kept from the model included", async () => {
+    await writeSkill(personal, "grilling", "---\nname: grilling\ndescription: Grill the plan.\n---\nAsk.\n");
+    await writeSkill(
+      personal,
+      "release",
+      "---\nname: release\ndescription: Cut a release.\ndisable-model-invocation: true\n---\nShip.\n",
+    );
+    await writeSkill(personal, "broken", "---\nname: broken\n---\nNo description.\n");
+    const answer = await answerSkillQuery(9, () => readSkills(home, []));
+    expect(answer).toEqual({
+      type: "skillSuggestions",
+      id: 9,
+      items: [
+        { name: "grilling", description: "Grill the plan." },
+        { name: "release", description: "Cut a release." },
+      ],
+      failed: false,
+    });
+  });
+
+  test("a reader that fails gives a failed answer with the query's id and no row", async () => {
+    const original = console.error;
+    console.error = () => {};
+    try {
+      const answer = await answerSkillQuery(3, () => Promise.reject(new Error("boom")));
+      expect(answer).toEqual({ type: "skillSuggestions", id: 3, items: [], failed: true });
+    } finally {
+      console.error = original;
+    }
   });
 });
 
