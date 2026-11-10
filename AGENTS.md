@@ -539,7 +539,7 @@ goes to the model as typed. Read `GLOSSARY.md` for the domain vocabulary and `do
   included, so the bench confines what the tools reach, not what a command itself does. Skills are discovered as the extension
   does, but with a throwaway copy of the scenario's home fixture as the home folder, so the bench never reads the real
   `~/.agents`; a scenario without one gets no skill, and its prompt has neither the Skills section nor `load_skill`.
-  Six scenarios, each judged on the turn ending `done` and on the workspace after it: every file the scenario writes
+  Seven scenarios, each judged on the turn ending `done` and on the workspace after it: every file the scenario writes
   holds its exact expected text, byte for byte, and every other entry is unchanged. The workspace is read back without
   following symlinks: every entry but a folder counts, a file by its text, a symlink by its target (`{ symlink }`), any
   other kind, such as a FIFO, by its kind (`{ special }`), so a command that adds a symlink fails `workspaceChanged`.
@@ -563,6 +563,9 @@ goes to the model as typed. Read `GLOSSARY.md` for the domain vocabulary and `do
     skill. Passes when a read step got the code, the answer holds it, and no file changed; no `load_skill` step is
     required, and an `ok` one is allowed. A first user entry without a `loaded` skill is `wrongTool`, its detail
     saying so, since the run then measures nothing of the slash path.
+  - `hidden`: `slash` with `disable-model-invocation: true` in the skill's frontmatter, so the prompt has neither the
+    Skills section nor `load_skill`, and judged the same way. It measures that the model follows a skill the user
+    loaded although it was never listed to it, instead of refusing the loaded text as injected (#50, live).
 
   A failed run shows one category and a one-line detail: `malformed`, `wrongTool`, `wrongAnswer`, `stepLimit`,
   `contextFull`, `providerError`, `wrongEdit` (a file the scenario writes is missing or holds other text, with the
@@ -584,7 +587,9 @@ goes to the model as typed. Read `GLOSSARY.md` for the domain vocabulary and `do
   subfolders (#9 verification). On 9db1a52 the six scenarios took 55 min 45 s, one `gemma4` `edit` run alone 22 min 56 s
   before it failed `malformed` (a `<read_file>` call never closed); every model met the bar: `slash` 10/10 on both
   models, `command` 9/10 on `qwen3.8:27b` (`wrongTool`: it listed the folders, then searched, and ran no command),
-  `edit` 9/10 on `gemma4`, every other scenario 10/10.
+  `edit` 9/10 on `gemma4`, every other scenario 10/10. When `hidden` was added, `slash` and `hidden` alone took
+  11 min 58 s, 10/10 on both models; no `hidden` run called `load_skill`: `qwen3.8:27b` read the reference file at
+  once, `gemma4` most often after listing the skill folder.
 - v1 supports macOS only. Windows and Linux are planned for v2.
 
 ## Git and release workflow

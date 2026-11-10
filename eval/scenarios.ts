@@ -182,19 +182,16 @@ const DISPATCH_CODE = "LYN-7Q42-ORCA";
 const DEPOT_SKILL = ".agents/skills/depot-codes";
 
 /**
- * Follow a skill: a personal skill whose description matches the message, and whose body sends the model to a
- * reference file in the skill's folder, outside the workspace, for a value it cannot guess. Passes when an `ok`
- * `load_skill` step ran, an `ok` read step's text holds the value (only the reference file does, so that step read
- * it), the answer holds it, and no workspace file changed. The message names neither the tool nor the folder.
+ * The depot scenarios' home folder: the personal skill `depot-codes`, its frontmatter followed by `extra` lines, and
+ * its reference file, the only file holding the dispatch code.
  */
-export const SKILL_SCENARIO: Scenario = {
-  name: "skill",
-  files: READ_FILES,
-  home: {
+function depotHome(extra: readonly string[] = []): WorkspaceFiles {
+  return {
     [`${DEPOT_SKILL}/SKILL.md`]: [
       "---",
       "name: depot-codes",
       "description: Look up the dispatch code of a courier depot. Use when asked for a depot's dispatch code.",
+      ...extra,
       "---",
       "",
       "# Depot codes",
@@ -216,7 +213,19 @@ export const SKILL_SCENARIO: Scenario = {
       "| Marseille | MRS-9T05-HALO |",
       "",
     ].join("\n"),
-  },
+  };
+}
+
+/**
+ * Follow a skill: a personal skill whose description matches the message, and whose body sends the model to a
+ * reference file in the skill's folder, outside the workspace, for a value it cannot guess. Passes when an `ok`
+ * `load_skill` step ran, an `ok` read step's text holds the value (only the reference file does, so that step read
+ * it), the answer holds it, and no workspace file changed. The message names neither the tool nor the folder.
+ */
+export const SKILL_SCENARIO: Scenario = {
+  name: "skill",
+  files: READ_FILES,
+  home: depotHome(),
   message: "What is the dispatch code of the Lyon depot? Reply with the exact code.",
   writes: {},
   check(entries) {
@@ -241,32 +250,48 @@ function dispatchCodeRead(entries: readonly ChatEntry[]): Verdict {
 }
 
 /**
+ * The check of the depot scenarios the user loads with `/depot-codes`: the first user entry loaded the skill, else
+ * `wrongTool` whatever the turn did after, since the scenario then measures nothing of the slash path; then
+ * `dispatchCodeRead`. No `load_skill` step is needed, and an `ok` one is allowed.
+ */
+function slashLoadedCodeRead(entries: readonly ChatEntry[]): Verdict {
+  const first = entries[0];
+  const skill = first?.role === "user" ? first.skill : undefined;
+  if (skill?.status !== "loaded") {
+    const status = skill ? skill.status : "none";
+    const steps = entries.filter((entry) => entry.role === "tool");
+    return {
+      pass: false,
+      category: "wrongTool",
+      detail: `the message did not load /depot-codes (skill: ${status}); steps: ${describeSteps(steps)}`,
+    };
+  }
+  return dispatchCodeRead(entries);
+}
+
+/**
  * Load a skill with `/<name>`: the skill scenario's workspace and personal skill, the message `/depot-codes` then the
  * same question, so the user, not the model, loads the skill. Passes when an `ok` read step's text holds the value, the
- * answer holds it, and no workspace file changed; no `load_skill` step is needed, and an `ok` one is allowed. A message
- * that loaded no skill is `wrongTool` whatever the turn did after, since the scenario then measures nothing of the
- * slash path.
+ * answer holds it, and no workspace file changed (`slashLoadedCodeRead`).
  */
 export const SLASH_SCENARIO: Scenario = {
   name: "slash",
   files: SKILL_SCENARIO.files,
-  ...(SKILL_SCENARIO.home ? { home: SKILL_SCENARIO.home } : {}),
+  home: depotHome(),
   message: `/depot-codes ${SKILL_SCENARIO.message}`,
   writes: {},
-  check(entries) {
-    const steps = entries.filter((entry) => entry.role === "tool");
-    const first = entries[0];
-    const skill = first?.role === "user" ? first.skill : undefined;
-    if (skill?.status !== "loaded") {
-      const status = skill ? skill.status : "none";
-      return {
-        pass: false,
-        category: "wrongTool",
-        detail: `the message did not load /depot-codes (skill: ${status}); steps: ${describeSteps(steps)}`,
-      };
-    }
-    return dispatchCodeRead(entries);
-  },
+  check: slashLoadedCodeRead,
+};
+
+/**
+ * Load a skill kept from the model with `/<name>`: the slash scenario with `disable-model-invocation: true` in the
+ * skill's frontmatter, so the prompt has no Skills section and no `load_skill`. Measures that the model follows a skill
+ * the user loaded although it was never listed to it, rather than refusing the loaded text. Judged as `slash`.
+ */
+export const HIDDEN_SCENARIO: Scenario = {
+  ...SLASH_SCENARIO,
+  name: "hidden",
+  home: depotHome(["disable-model-invocation: true"]),
 };
 
 /** Log files per month under `logs/<year>/<month>/`, uneven so the total cannot be guessed from the folder count. */
@@ -337,6 +362,7 @@ export const SCENARIOS: readonly Scenario[] = [
   SKILL_SCENARIO,
   COMMAND_SCENARIO,
   SLASH_SCENARIO,
+  HIDDEN_SCENARIO,
 ];
 
 /**
