@@ -123,5 +123,9 @@
   "exit code {0}": "code de sortie {0}",
   "killed by {0}": "tué par {0}",
   "stopped after {0} seconds": "arrêtée après {0} secondes",
-  "{0} (proposed change)": "{0} (modification proposée)"
+  "{0} (proposed change)": "{0} (modification proposée)",
+  "Skill and mentions": "Skill et mentions",
+  "Skill {0}": "Skill {0}",
+  "loaded": "chargée",
+  "could not be loaded": "n'a pas pu être chargée"
 }

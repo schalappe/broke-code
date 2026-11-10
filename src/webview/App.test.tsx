@@ -529,8 +529,11 @@ describe("error actions", () => {
 });
 
 describe("mentions", () => {
-  /** Panel markup for one user message with `mentions`, English strings. */
-  function renderMentions(mentions: (ChatEntry & { role: "user" })["mentions"]): string {
+  /** Panel markup for one user message with `mentions` and `skill`, English strings. */
+  function renderMentions(
+    mentions: (ChatEntry & { role: "user" })["mentions"],
+    skill?: (ChatEntry & { role: "user" })["skill"],
+  ): string {
     const state: ChatState = {
       providers: ["P"],
       skipped: [],
@@ -539,7 +542,7 @@ describe("mentions", () => {
       provider: "P",
       models: { status: "loaded", models: ["m"] },
       model: "m",
-      entries: [{ role: "user", content: "look", mentions }],
+      entries: [{ role: "user", content: "look", mentions, ...(skill ? { skill } : {}) }],
     };
     return renderToStaticMarkup(<App state={state} language="en" />);
   }
@@ -576,6 +579,17 @@ describe("mentions", () => {
       expect(html).toContain(expected);
     }
     expect(html.match(/<li class="chip/g)).toHaveLength(9);
+  });
+
+  test("shows the skill a message loaded before its mentions, a failed load marked", () => {
+    const mention = { path: "a.ts", kind: "file", status: "attached", lines: 1 } as const;
+    const loaded = renderMentions([mention], { name: "grilling", status: "loaded" });
+    expect(loaded).toContain(
+      '<ul class="mentions" aria-label="Skill and mentions"><li class="chip"><span class="chip-path">Skill grilling</span><span class="chip-status">loaded</span></li><li class="chip"><span class="kind file"',
+    );
+    expect(renderMentions([], { name: "grilling", status: "failed" })).toContain(
+      '<li class="chip failed"><span class="chip-path">Skill grilling</span><span class="chip-status">could not be loaded</span></li>',
+    );
   });
 });
 

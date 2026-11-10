@@ -384,7 +384,7 @@ function Entry({
       return (
         <div className="message user">
           {entry.content}
-          {entry.mentions.length > 0 && <Mentions entry={entry} />}
+          {(entry.mentions.length > 0 || entry.skill) && <Mentions entry={entry} />}
         </div>
       );
     case "assistant":
@@ -586,10 +586,22 @@ function StepHead({ name, args }: { name: string; args: Record<string, string> }
   );
 }
 
-/** One chip per mention of a user message: kind, path, and status; failed ones stand out. */
+/**
+ * The chips of a user message: the skill it loaded with `/<name>`, then one per mention, with kind, path, and status;
+ * failed ones stand out.
+ */
 function Mentions({ entry }: { entry: ChatEntry & { role: "user" } }) {
+  const { skill } = entry;
   return (
-    <ul className="mentions" aria-label={l10n.t("Mentions")}>
+    <ul className="mentions" aria-label={skill ? l10n.t("Skill and mentions") : l10n.t("Mentions")}>
+      {skill && (
+        <li className={skill.status === "loaded" ? "chip" : "chip failed"}>
+          <span className="chip-path">{l10n.t("Skill {0}", skill.name)}</span>
+          <span className="chip-status">
+            {skill.status === "loaded" ? l10n.t("loaded") : l10n.t("could not be loaded")}
+          </span>
+        </li>
+      )}
       {entry.mentions.map((mention) => {
         const attached = mention.status === "attached" || mention.status === "truncated";
         return (
