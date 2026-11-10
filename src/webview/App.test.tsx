@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, spyOn, test } from "bun:test";
 import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ChatEntry, ChatState } from "../core/protocol";
@@ -1003,18 +1003,25 @@ describe("slash commands in the composer", () => {
     });
   });
 
-  test("/model still focuses the model select where the browser refuses to open its list", async () => {
-    await withPanel(stateWith(true), async ({ host, type, press }) => {
-      const select = host.querySelector<HTMLSelectElement>('select[aria-label="Model"]');
-      if (!select) throw new Error("no model select");
-      select.showPicker = () => {
-        throw new DOMException("cross-origin iframe", "SecurityError");
-      };
-      await type("/model");
-      await press("Escape");
-      await press("Enter");
-      expect(document.activeElement).toBe(select);
-    });
+  test("/model still focuses the model select where the browser refuses to open its list, and logs the refusal", async () => {
+    const logged = spyOn(console, "info").mockImplementation(() => {});
+    try {
+      await withPanel(stateWith(true), async ({ host, type, press }) => {
+        const select = host.querySelector<HTMLSelectElement>('select[aria-label="Model"]');
+        if (!select) throw new Error("no model select");
+        const refusal = new DOMException("cross-origin iframe", "SecurityError");
+        select.showPicker = () => {
+          throw refusal;
+        };
+        await type("/model");
+        await press("Escape");
+        await press("Enter");
+        expect(document.activeElement).toBe(select);
+        expect(logged.mock.calls).toEqual([["broke-code: the model list could not be opened", refusal]]);
+      });
+    } finally {
+      logged.mockRestore();
+    }
   });
 
   test("/new and /model do nothing while a reply is in flight, and words after them make an ordinary message", async () => {
