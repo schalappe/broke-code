@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ChatEntry, ChatState } from "../core/protocol";
@@ -712,6 +712,8 @@ type Panel = {
   fill: (field: HTMLInputElement | HTMLTextAreaElement, value: string) => Promise<void>;
   /** Click the button labelled `label`. */
   click: (label: string) => Promise<void>;
+  /** Click the open menu's row labelled `label`. */
+  clickOption: (label: string) => Promise<void>;
 };
 
 /** Mount `App` over a DOM registered for the test's duration; `run` drives it, then the panel unmounts. */
@@ -756,6 +758,13 @@ async function withPanel(state: ChatState, run: (panel: Panel) => Promise<void>)
       click: async (label) => {
         const target = [...host.querySelectorAll("button")].find((element) => element.textContent === label);
         if (!target) throw new Error(`no ${label} button`);
+        await act(async () => target.click());
+      },
+      clickOption: async (label) => {
+        const target = [...host.querySelectorAll<HTMLElement>('[role="option"]')].find(
+          (row) => row.querySelector(".menu-label")?.textContent === label,
+        );
+        if (!target) throw new Error(`no ${label} row`);
         await act(async () => target.click());
       },
     });
@@ -985,43 +994,59 @@ describe("slash commands in the composer", () => {
     });
   });
 
-  test("sending /model empties the box, focuses the model select, and opens its list", async () => {
-    await withPanel(stateWith(true), async ({ host, textarea, type, press }) => {
-      const select = host.querySelector<HTMLSelectElement>('select[aria-label="Model"]');
-      if (!select) throw new Error("no model select");
-      let opened = 0;
-      select.showPicker = () => {
-        opened += 1;
-      };
+  test("sending /model asks the host for its model list and empties the box", async () => {
+    await withPanel(stateWith(true), async ({ textarea, type, press }) => {
       await type("/model ");
       posted.length = 0;
       await press("Enter");
-      expect(posted).toEqual([]);
+      expect(posted).toEqual([{ type: "chooseModel" }]);
       expect(textarea.value).toBe("");
-      expect(document.activeElement).toBe(select);
-      expect(opened).toBe(1);
     });
   });
 
-  test("/model still focuses the model select where the browser refuses to open its list, and logs the refusal", async () => {
-    const logged = spyOn(console, "info").mockImplementation(() => {});
-    try {
-      await withPanel(stateWith(true), async ({ host, type, press }) => {
-        const select = host.querySelector<HTMLSelectElement>('select[aria-label="Model"]');
-        if (!select) throw new Error("no model select");
-        const refusal = new DOMException("cross-origin iframe", "SecurityError");
-        select.showPicker = () => {
-          throw refusal;
-        };
-        await type("/model");
-        await press("Escape");
-        await press("Enter");
-        expect(document.activeElement).toBe(select);
-        expect(logged.mock.calls).toEqual([["broke-code: the model list could not be opened", refusal]]);
-      });
-    } finally {
-      logged.mockRestore();
-    }
+  test("one Enter on the highlighted /new row starts a new chat and empties the box", async () => {
+    await withPanel(stateWith(true, { entries: hi }), async ({ host, textarea, type, press }) => {
+      await type("/ne");
+      posted.length = 0;
+      await press("Enter");
+      expect(posted).toEqual([{ type: "newChat" }]);
+      expect(textarea.value).toBe("");
+      expect(host.querySelector("#slash-menu")).toBeNull();
+    });
+  });
+
+  test("Enter or Tab on the /model row and a click on the /new row run them at once", async () => {
+    await withPanel(stateWith(true), async ({ textarea, type, press, clickOption }) => {
+      await type("/m");
+      posted.length = 0;
+      await press("Enter");
+      expect(posted).toEqual([{ type: "chooseModel" }]);
+      expect(textarea.value).toBe("");
+
+      await type("/");
+      posted.length = 0;
+      await press("ArrowDown");
+      await press("Tab");
+      expect(posted).toEqual([{ type: "chooseModel" }]);
+      expect(textarea.value).toBe("");
+
+      await type("/");
+      posted.length = 0;
+      await clickOption("/new");
+      expect(posted).toEqual([{ type: "newChat" }]);
+      expect(textarea.value).toBe("");
+    });
+  });
+
+  test("while a reply is in flight, picking the /new row inserts /new and a space and runs nothing", async () => {
+    const replying: ChatEntry[] = [hi[0]!, { role: "assistant", reasoning: "", content: "", status: "waiting" }];
+    await withPanel(stateWith(true, { entries: replying }), async ({ textarea, type, press }) => {
+      await type("/ne");
+      posted.length = 0;
+      await press("Enter");
+      expect(posted).toEqual([]);
+      expect(textarea.value).toBe("/new ");
+    });
   });
 
   test("/new and /model do nothing while a reply is in flight, and words after them make an ordinary message", async () => {

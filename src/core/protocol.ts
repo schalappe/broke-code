@@ -187,6 +187,8 @@ export type WebviewMessage =
   | { type: "queryFiles"; query: string; id: number }
   /** Ask once per `/` menu opening for the skills; the webview filters them as the user types. `id`: as `queryFiles`. */
   | { type: "querySkills"; id: number }
+  /** `/model`: open the editor's model list over the selected provider's models; a pick goes as `selectModel`. */
+  | { type: "chooseModel" }
   | { type: "stop" }
   | { type: "newChat" }
   /** `id`: a conversation of `ChatState.conversations`. */
@@ -214,6 +216,15 @@ export function isReplying(state: ChatState): boolean {
   return last?.role === "assistant" && (last.status === "waiting" || last.status === "streaming");
 }
 
+/** A row of the model list `/model` opens. `current`: the model selected now. */
+export type ModelChoice = { model: string; current: boolean };
+
+/** Rows of the model list `/model` opens: the listed models in listing order, as the header's select; none until listed. */
+export function modelChoices(state: Pick<ChatState, "models" | "model">): ModelChoice[] {
+  if (state.models.status !== "loaded") return [];
+  return state.models.models.map((model) => ({ model, current: model === state.model }));
+}
+
 /** Longest menu query the host answers; the webview asks nothing past it. */
 export const MAX_QUERY_LENGTH = 1024;
 /** Longest picked mention path accepted. */
@@ -229,6 +240,7 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | undefined {
     case "retryModels":
     case "stop":
     case "newChat":
+    case "chooseModel":
     case "openSettings":
       return { type: message.type };
     case "selectProvider":

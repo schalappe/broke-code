@@ -51,7 +51,7 @@ export type SlashCommand = { name: string; description: string };
  * First `limit` of `commands` whose name starts with `query`, ignoring case, in the order given: commands are typed
  * from their first letter, unlike paths, which the `@` menu matches anywhere.
  */
-export function filterSlashCommands(commands: SlashCommand[], query: string, limit: number): SlashCommand[] {
+export function filterSlashCommands<T extends SlashCommand>(commands: T[], query: string, limit: number): T[] {
   const prefix = query.toLowerCase();
   return commands.filter((command) => command.name.toLowerCase().startsWith(prefix)).slice(0, limit);
 }

@@ -35,7 +35,7 @@ goes to the model as typed. Read `GLOSSARY.md` for the domain vocabulary and `do
   and deletes in call order), and the store's file access (`conversationFiles.ts`:
   the file port, and its implementation over a local directory with `node:fs`: missing versus failed, regular files
   only, atomic writes, leftover temporary files), the dialog queue, the host-webview message
-  protocol and its validation, workspace file access (`workspaceFiles.ts`: the inside-workspace check and its read-only
+  protocol and its validation (and `modelChoices`, the rows of the model list `/model` opens), workspace file access (`workspaceFiles.ts`: the inside-workspace check and its read-only
   roots (the loaded skills' folders outside the workspace, for reads only), capped reads, one-level listings, line truncation, the write boundary and atomic writes, with `node:fs`), mentions (`mentions.ts`: token detection, picked and typed
   mentions merged, reading, and the text the model receives), where a message holds Markdown code
   (`markdownCode.ts`), the menu logic (`suggestions.ts`: the `@` token at the caret, index entries,
@@ -73,10 +73,12 @@ goes to the model as typed. Read `GLOSSARY.md` for the domain vocabulary and `do
   `vscode.env.shell`, `$SHELL`, or `/bin/sh`), the write approval's editor side in
   `approval.ts` (the diff preview over `vscode.diff` and a content provider, the tabs, documents, and
   `brokeCode.autoApproveWrites` values it feeds the core decisions), the instruction reader and the skill reader from the home folder and the workspace folders, the latter logging the
-  skills of each send, and the same discovery, unlogged, for the `/` menu's `querySkills`).
+  skills of each send, and the same discovery, unlogged, for the `/` menu's `querySkills`; `chatView.ts` opens the
+  Quick Pick of `chooseModel`).
 - `src/webview/`: the React chat panel and its CSS, tool step rows and the approval controls included. `SuggestionMenu.tsx` is the autocomplete list the `@` and
   `/` menus share, a row with an optional description; `composer.ts` holds the message box's decisions without React
-  (the token at the caret, each menu's rows, what a key does, the built-in command a message runs).
+  (the token at the caret, each menu's rows, what a key does, what picking a `/` row does (`slashPick`), the built-in
+  command a message runs).
 - `src/l10n.test.ts`: checks that every `l10n.t` message has a French translation and that the
   `package.nls*.json` files match.
 - `l10n/bundle.l10n.fr.json`, `package.nls.json`, `package.nls.fr.json`: French strings for the host and
@@ -374,13 +376,18 @@ goes to the model as typed. Read `GLOSSARY.md` for the domain vocabulary and `do
   matching built-ins show, and no menu when none matches. When a skills folder cannot be listed (its
   `folderUnreadable` warning) or the discovery fails, the answer is `failed` and the menu says so, keeping the
   built-ins and the skills found elsewhere; a skipped skill is no listing failure. Keys and clicks work as in the `@`
-  menu; a pick replaces the token with `/<name> `.
+  menu. Picking a skill row replaces the token with `/<name> `, for its arguments. Picking a built-in row (Enter, Tab,
+  or a click) runs that command at once, as sending it would, when Send would act and nothing but whitespace follows
+  the token; otherwise it inserts `/<name> ` and nothing runs, so a draft after the token is never cleared.
 - A message whose trimmed text is exactly `/new` posts the New chat button's `newChat` request and closes History;
-  exactly `/model` focuses the header's Model select and calls `showPicker()` inside the key or click handler that
-  sends (it needs transient user activation), focus alone where the select is disabled or `showPicker` is absent or
-  throws (a cross-origin iframe, such as a VS Code webview, gets `SecurityError`). Both clear the box and act only
-  when Send would (a model chosen, no reply in flight); nothing reaches the model. `/new words` and `/model words` are
-  ordinary messages.
+  exactly `/model` posts `chooseModel`, and the host opens VS Code's Quick Pick over `controller.snapshot`: the
+  selected provider's listed models in listing order (`modelChoices`, the header select's list, never fetched again),
+  the selected one described "current", placeholder "Choose the model". Before the models are listed, it opens empty,
+  its placeholder saying why as the header's select does ("Loading models…", "Models unavailable", "No models"). A
+  pick goes through `controller.selectModel`, as the header select's change, so the header follows; Escape changes
+  nothing. (A webview cannot open the select's own list: Chromium refuses `showPicker()` in a cross-origin iframe.)
+  Both clear the box and act only when Send would (a model chosen, no reply in flight); nothing reaches the model.
+  `/new words` and `/model words` are ordinary messages.
 - The file index is built on the first menu query with `findFiles("**/*", "**/{node_modules,.git,dist,out,build}/**",
   5000)`: an explicit exclude adds to `files.exclude` (only `null` drops it). `.gitignore` is not read. Folders are
   derived from file paths, none inside a multi-root folder name that holds `/`. Paths are `asRelativePath` with its default prefix, the folder name in a multi-root
@@ -505,7 +512,7 @@ goes to the model as typed. Read `GLOSSARY.md` for the domain vocabulary and `do
   (`broke-code: skills listed to the model: ...`) to the extension host console.
 - The built-in slash commands are `/new` and `/model`, run by the webview and never sent (Harness, the `/` menu).
   Typing `/` lists them with every skill. A skill named `new` or `model` is listed too, after the built-ins, but a
-  message of exactly its `/<name>` runs the built-in.
+  message of exactly its `/<name>` runs the built-in; picking the skill's row inserts `/<name> ` like any skill.
 
 ## Verification
 

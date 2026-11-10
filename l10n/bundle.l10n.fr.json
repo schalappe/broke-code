@@ -86,6 +86,8 @@
   "Commands and skills": "Commandes et skills",
   "Start a new conversation": "Démarrer une nouvelle discussion",
   "Choose the model": "Choisir le modèle",
+  "current": "actuel",
+  "Could not open the model list: {0}": "Impossible d'ouvrir la liste des modèles : {0}",
   "History": "Historique",
   "Delete": "Supprimer",
   "No past conversations.": "Aucune discussion passée.",

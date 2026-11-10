@@ -11,6 +11,7 @@ import {
   pickedInText,
   replaceToken,
   slashMenuView,
+  slashPick,
 } from "./composer";
 
 const file = (path: string): Suggestion => ({ path, kind: "file" });
@@ -195,6 +196,29 @@ describe("builtInCommand", () => {
     for (const text of ["/new words", "/model gpt", "/news", "/grilling", "new", "/New", "see /new"]) {
       expect(builtInCommand(text)).toBeUndefined();
     }
+  });
+});
+
+describe("slashPick", () => {
+  test("a built-in row runs its command when Send would act, and inserts /<name> and a space otherwise", () => {
+    const row = { name: "new", description: "Start", builtIn: "new" as const };
+    expect(slashPick(row, true, "")).toEqual({ type: "run", command: "new" });
+    expect(slashPick({ ...row, name: "model", builtIn: "model" }, true, " \n")).toEqual({
+      type: "run",
+      command: "model",
+    });
+    expect(slashPick(row, false, "")).toEqual({ type: "insert", text: "/new " });
+  });
+
+  test("a built-in row inserts /<name> and a space when text follows the token, which running would discard", () => {
+    const row = { name: "new", description: "Start", builtIn: "new" as const };
+    expect(slashPick(row, true, " keep this draft")).toEqual({ type: "insert", text: "/new " });
+  });
+
+  test("a skill row inserts /<name> and a space for its arguments, even one named as a built-in", () => {
+    const grilling = { name: "grilling", description: "Grill" };
+    expect(slashPick(grilling, true, "")).toEqual({ type: "insert", text: "/grilling " });
+    expect(slashPick({ name: "new", description: "A skill" }, true, "")).toEqual({ type: "insert", text: "/new " });
   });
 });
 

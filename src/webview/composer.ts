@@ -66,8 +66,11 @@ export function menuView(answer: MenuAnswer | undefined, query: string): MenuVie
 /** Host answer to the skill query of the open `/` menu. `failed`: the skills could not be listed. */
 export type SkillAnswer = { items: SlashCommand[]; failed: boolean };
 
+/** A row of the `/` menu. `builtIn`: the command a built-in row runs; absent on a skill row, whatever its name. */
+export type SlashRow = SlashCommand & { builtIn?: BuiltInCommand };
+
 /** What the `/` menu shows. */
-export type SlashMenuView = { items: SlashCommand[]; failed: boolean };
+export type SlashMenuView = { items: SlashRow[]; failed: boolean };
 
 /**
  * `/` menu for `query`: the `builtIns`, then the skills of `answer`, those whose name starts with `query`. While the
@@ -75,7 +78,7 @@ export type SlashMenuView = { items: SlashCommand[]; failed: boolean };
  * never shows for a skill still to come.
  */
 export function slashMenuView(
-  builtIns: SlashCommand[],
+  builtIns: SlashRow[],
   answer: SkillAnswer | undefined,
   query: string,
 ): SlashMenuView | undefined {
@@ -91,6 +94,19 @@ export function slashMenuView(
 export function builtInCommand(text: string): BuiltInCommand | undefined {
   const trimmed = text.trim();
   return BUILT_IN_COMMANDS.find((name) => trimmed === `/${name}`);
+}
+
+/** What picking a `/` menu row does: `run` its built-in command, or `insert` text in place of the token. */
+export type SlashPick = { type: "run"; command: BuiltInCommand } | { type: "insert"; text: string };
+
+/**
+ * Picking `row`: a built-in row runs its command at once when Send would act (`canRun`) and only whitespace follows
+ * the token (`after`, the text after the caret), as sending the box would then; otherwise, and for a skill row, which
+ * takes arguments, it inserts `/<name> `, so no draft is cleared.
+ */
+export function slashPick(row: SlashRow, canRun: boolean, after: string): SlashPick {
+  if (row.builtIn && canRun && after.trim() === "") return { type: "run", command: row.builtIn };
+  return { type: "insert", text: `/${row.name} ` };
 }
 
 /** `text` with the token at `start` replaced, up to the caret, by `inserted`; the caret goes after it. */

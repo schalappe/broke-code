@@ -23,7 +23,9 @@ import {
   pickedInText,
   replaceToken,
   type SkillAnswer,
+  type SlashRow,
   slashMenuView,
+  slashPick,
 } from "./composer";
 import { moveHighlight, optionId, SuggestionMenu } from "./SuggestionMenu";
 import {
@@ -100,8 +102,6 @@ function EmptyState() {
 }
 
 const HISTORY_ID = "history";
-/** The header's Model select, which `/model` opens. */
-const MODEL_SELECT_ID = "model-select";
 
 /**
  * Provider and model pickers (with a provider configured), the context usage of the selected model, New chat, and the
@@ -170,7 +170,6 @@ function Pickers({ state }: { state: ChatState }) {
         ))}
       </select>
       <select
-        id={MODEL_SELECT_ID}
         aria-label={l10n.t("Model")}
         value={state.model ?? ""}
         disabled={replying || models.status !== "loaded" || models.models.length === 0}
@@ -188,24 +187,6 @@ function Pickers({ state }: { state: ChatState }) {
       </select>
     </div>
   );
-}
-
-/**
- * Focus the header's Model select and open its list, for `/model`. Called inside the key or click handler that sends,
- * since `showPicker` needs transient user activation.
- */
-function openModelPicker(): void {
-  const select = document.getElementById(MODEL_SELECT_ID);
-  if (!(select instanceof HTMLSelectElement)) return;
-  select.focus();
-  if (select.disabled || typeof select.showPicker !== "function") return;
-  try {
-    select.showPicker();
-  } catch (error) {
-    // [>]: Silenced on purpose: a browser may refuse to open the list (a cross-origin iframe, such as a VS Code
-    // webview, gets `SecurityError`); the focused select still opens from the keyboard.
-    console.info("broke-code: the model list could not be opened", error);
-  }
 }
 
 function modelPlaceholder(state: ChatState): string {
@@ -730,12 +711,12 @@ export function SlashMenu({
 }
 
 /** The `/` menu's built-in rows, in `BUILT_IN_COMMANDS` order. */
-function builtInRows(): SlashCommand[] {
+function builtInRows(): SlashRow[] {
   const descriptions: Record<BuiltInCommand, string> = {
     new: l10n.t("Start a new conversation"),
     model: l10n.t("Choose the model"),
   };
-  return BUILT_IN_COMMANDS.map((name) => ({ name, description: descriptions[name] }));
+  return BUILT_IN_COMMANDS.map((name) => ({ name, description: descriptions[name], builtIn: name }));
 }
 
 /**
@@ -765,8 +746,10 @@ function Reasoning({ entry }: { entry: ChatEntry & { role: "assistant" } }) {
  * Message box with the mention and slash menus. Typing `@` and a query asks the host for matching paths; a pick replaces
  * the token with `@<path> ` and records the path, so a path with spaces still counts as one mention. Picked paths are
  * sent while their `@<path>` text is still in the message. A `/` at the start of the message asks the host once for the
- * skills and lists them after the built-in commands, filtered as the user types; a pick inserts `/<name> `. Sending
- * exactly `/new` or `/model` runs that command in the panel (`startNewChat`, the header's Model select) instead.
+ * skills and lists them after the built-in commands, filtered as the user types; picking a skill inserts `/<name> `.
+ * Picking a built-in row, or sending exactly `/new` or `/model`, runs it when Send would act (`startNewChat`, or the
+ * editor's model list through `chooseModel`) and empties the box; otherwise, or with text after the token, the pick
+ * inserts `/<name> `.
  */
 function Composer({ state, startNewChat }: { state: ChatState; startNewChat: () => void }) {
   const [text, setText] = useState("");
@@ -857,10 +840,26 @@ function Composer({ state, startNewChat }: { state: ChatState; startNewChat: () 
     nextCaret.current = undefined;
   });
 
+  const canSend = ready && !replying;
+
+  const clear = () => {
+    setText("");
+    setCaret(0);
+    setPicked([]);
+  };
+
+  const run = (command: BuiltInCommand) => {
+    if (command === "new") startNewChat();
+    else post({ type: "chooseModel" });
+    clear();
+  };
+
   const pick = (index: number) => {
-    const command = slashMenu?.items[index];
+    const row = slashMenu?.items[index];
     const item = mentionMenu?.items[index];
-    const inserted = command ? `/${command.name} ` : item ? `@${item.path} ` : undefined;
+    const action = row ? slashPick(row, canSend, text.slice(caret)) : undefined;
+    if (action?.type === "run") return run(action.command);
+    const inserted = action ? action.text : item ? `@${item.path} ` : undefined;
     if (!token || inserted === undefined) return;
     const next = replaceToken(text, token, caret, inserted);
     setText(next.text);
@@ -870,14 +869,11 @@ function Composer({ state, startNewChat }: { state: ChatState; startNewChat: () 
   };
 
   const send = () => {
-    if (!ready || replying || text.trim() === "") return;
+    if (!canSend || text.trim() === "") return;
     const command = builtInCommand(text);
-    if (command === "new") startNewChat();
-    else if (command === "model") openModelPicker();
-    else post({ type: "send", text, mentions: pickedInText(picked, text) });
-    setText("");
-    setCaret(0);
-    setPicked([]);
+    if (command) return run(command);
+    post({ type: "send", text, mentions: pickedInText(picked, text) });
+    clear();
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {

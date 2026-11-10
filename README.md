@@ -233,15 +233,16 @@ rest of the instructions.
 
 Type `/` at the start of the message box to open a menu of commands: `/new`, `/model`, then each of your skills, each
 with its description. The menu keeps the commands whose name starts with what you type after `/`, ignoring case. Move
-with the arrow keys, pick with Enter, Tab, or a click, and close the menu with Escape; a pick puts `/<name> ` in the
-message box. A `/` anywhere else in a message, as in a path, opens no menu.
+with the arrow keys, pick with Enter, Tab, or a click, and close the menu with Escape. Picking `/new` or `/model` runs
+it at once; picking a skill puts `/<name> ` in the message box, so you can type its arguments. A `/` anywhere else in a
+message, as in a path, opens no menu.
 
-- `/new`: send it alone to start a new conversation, as **New chat** does.
-- `/model`: send it alone to open the model list in the header. Where the editor does not let broke-code open the
-  list, the list gets the keyboard focus instead.
+- `/new`: pick it, or send it alone, to start a new conversation, as **New chat** does.
+- `/model`: pick it, or send it alone, to open the editor's list of the provider's models, the current one marked. Pick
+  one to switch to it, as the **Model** list in the header does; Escape keeps the current model.
 
-Both work only when you could send a message: with a model chosen and no reply in progress. Nothing is sent to the
-model. With words after them, `/new` and `/model` are ordinary messages. The skills are read when the menu opens; if
+Both run only when you could send a message: with a model chosen and no reply in progress. Otherwise, or when text
+follows the command in the message box, picking one only puts its name there. Nothing is sent to the model. With words after them, `/new` and `/model` are ordinary messages. The skills are read when the menu opens; if
 they cannot be read, the menu says so and still shows `/new` and `/model`. A skipped skill is not listed; its warning
 shows after your next message.
 

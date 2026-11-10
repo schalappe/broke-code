@@ -4,12 +4,14 @@ import {
   chatStateOf,
   MAX_MENTION_PATH_LENGTH,
   MAX_QUERY_LENGTH,
+  modelChoices,
   parseWebviewMessage,
 } from "./protocol";
 
 describe("parseWebviewMessage", () => {
   test("accepts the messages without fields and those with a string field", () => {
     expect(parseWebviewMessage({ type: "stop" })).toEqual({ type: "stop" });
+    expect(parseWebviewMessage({ type: "chooseModel", model: "ignored" })).toEqual({ type: "chooseModel" });
     expect(parseWebviewMessage({ type: "selectModel", model: "m" })).toEqual({ type: "selectModel", model: "m" });
     expect(parseWebviewMessage({ type: "setApiKey", provider: "P" })).toEqual({ type: "setApiKey", provider: "P" });
   });
@@ -146,5 +148,21 @@ describe("chatStateOf", () => {
   test("leaves the chat state alone for file and skill suggestions", () => {
     expect(chatStateOf({ type: "fileSuggestions", id: 1, items: [], capped: false, failed: false })).toBeUndefined();
     expect(chatStateOf({ type: "skillSuggestions", id: 1, items: [], failed: false })).toBeUndefined();
+  });
+});
+
+describe("modelChoices", () => {
+  test("lists the selected provider's models in listing order, the selected one marked current", () => {
+    expect(modelChoices({ models: { status: "loaded", models: ["a", "b", "c"] }, model: "b" })).toEqual([
+      { model: "a", current: false },
+      { model: "b", current: true },
+      { model: "c", current: false },
+    ]);
+  });
+
+  test("lists nothing until the models are listed", () => {
+    expect(modelChoices({ models: { status: "loading" }, model: "b" })).toEqual([]);
+    expect(modelChoices({ models: { status: "noProvider" }, model: undefined })).toEqual([]);
+    expect(modelChoices({ models: { status: "loaded", models: [] }, model: undefined })).toEqual([]);
   });
 });

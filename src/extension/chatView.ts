@@ -5,7 +5,13 @@
 import * as vscode from "vscode";
 import type { ChatController } from "../core/chatController";
 import type { FileQueryAnswer } from "../core/fileIndex";
-import { type ChatState, type HostMessage, parseWebviewMessage } from "../core/protocol";
+import {
+  type ChatState,
+  type HostMessage,
+  type ModelsState,
+  modelChoices,
+  parseWebviewMessage,
+} from "../core/protocol";
 import { answerSkillQuery, type SkillDiscovery } from "../core/skills";
 import { renderWebviewHtml } from "../core/webviewHtml";
 
@@ -70,6 +76,22 @@ export class ChatView implements vscode.WebviewViewProvider {
     }
   }
 
+  /**
+   * The model list `/model` opens: the selected provider's listed models, the current one described as such. Before
+   * the models are listed, it opens empty and its placeholder says why, as the header's select does. A pick goes
+   * through `selectModel`, as the select's change; Escape changes nothing.
+   */
+  private async chooseModel(): Promise<void> {
+    const { models, model } = this.controller.snapshot;
+    const items = modelChoices({ models, model }).map((choice) => ({
+      label: choice.model,
+      description: choice.current ? vscode.l10n.t("current") : undefined,
+    }));
+    const placeHolder = items.length > 0 ? vscode.l10n.t("Choose the model") : noModelsText(models);
+    const picked = await vscode.window.showQuickPick(items, { placeHolder });
+    if (picked) this.controller.selectModel(picked.label);
+  }
+
   private receive(raw: unknown): void {
     const message = parseWebviewMessage(raw);
     if (!message) return;
@@ -98,6 +120,11 @@ export class ChatView implements vscode.WebviewViewProvider {
         return;
       case "newChat":
         return void controller.newChat();
+      case "chooseModel":
+        return void this.chooseModel().catch((error: unknown) => {
+          console.error("broke-code: could not open the model list", error);
+          void vscode.window.showErrorMessage(vscode.l10n.t("Could not open the model list: {0}", String(error)));
+        });
       case "openConversation":
         return void controller.openConversation(message.id);
       case "deleteConversation":
@@ -124,5 +151,18 @@ export class ChatView implements vscode.WebviewViewProvider {
         controller.reject(message.id, message.reason);
         return;
     }
+  }
+}
+
+/** Why the model list is empty, as the header's select says it. */
+function noModelsText(models: ModelsState): string {
+  switch (models.status) {
+    case "loading":
+      return vscode.l10n.t("Loading models…");
+    case "failed":
+      return vscode.l10n.t("Models unavailable");
+    case "loaded":
+    case "noProvider":
+      return vscode.l10n.t("No models");
   }
 }
