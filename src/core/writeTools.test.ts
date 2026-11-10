@@ -334,7 +334,7 @@ describe("fileApplier", () => {
     expect(await readFile(file, "utf8")).toBe("new\n");
     expect((await stat(file)).mode & 0o777).toBe(0o751);
     expect(await readFile(join(app.path, "swap-in", "hard-link.sh"), "utf8")).toBe("old\n");
-    expect(await readdir(join(app.path, "swap-in"))).toEqual(["a.sh", "hard-link.sh"]);
+    expect((await readdir(join(app.path, "swap-in"))).sort()).toEqual(["a.sh", "hard-link.sh"]);
   });
 
   test("creates a new file with the default permission bits", async () => {
