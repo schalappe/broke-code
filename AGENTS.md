@@ -271,10 +271,18 @@ command at once. Slash commands are not built yet. Read `GLOSSARY.md` for the do
     its exit code. macOS answers EPERM for a group of zombies, so only a group a signal 0 reaches counts as alive.
   - A signal that fails with ESRCH (the group is gone) or EPERM (zombies, or processes that changed user and could not
     be stopped anyway) is ignored. Any other failure adds a line `Sending <signal> to the command's processes failed
-    (<code>).` to the result, whose status still follows the exit code.
+    (<code>).` to the result, whose status still follows the exit code. When SIGKILL itself fails, the result never
+    says the command stopped: a timeout's first line is `timed out after N seconds; its processes could not be stopped
+    and may still be running` (the step row then shows the generic error status), a Stop's is `run_command: Stop could
+    not end the command; its processes may still be running.`.
   - Deactivation also calls `killRunningCommands` synchronously from `deactivate`: SIGKILL at once to every group still
-    running or in its grace, since the host may exit before a scheduled SIGKILL fires. Accepted limit: a host that
-    crashes never calls it, so a process that ignores SIGTERM can then outlive it.
+    running or in its grace, since the host may exit before a scheduled SIGKILL fires. Ownership is per run, not per
+    group id (`ownCommandGroup`): a run claims its group at spawn and releases its own claim, by identity, once the
+    group is gone, got SIGKILL, or the run settled, so a later run that gets the same id keeps its claim. Deactivation
+    releases every claim and tells each run, which cancels its pending SIGKILL and probes: once released, a run never
+    signals that id again, since the system may reuse it. A SIGKILL that fails there for another reason than ESRCH or
+    EPERM is logged. Accepted limit: a host that crashes never calls it, so a process that ignores SIGTERM can then
+    outlive it.
 - Reasoning output (`<think>` tags, `reasoning`, or `reasoning_content`) shows collapsed in the chat. The parser
   never looks for tool calls in it, and the conversation history sent back to the model drops it.
 - Each request of an agent turn sends a `system` message first, then the history: each user entry's composed text,

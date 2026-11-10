@@ -3,7 +3,15 @@ import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ApprovalRequest, Decision } from "./approval";
-import { type CommandEnv, commandShell, killRunningCommands, runCommand, runCommandTool } from "./commands";
+import {
+  type CommandEnv,
+  commandShell,
+  type KillFunction,
+  killRunningCommands,
+  ownCommandGroup,
+  runCommand,
+  runCommandTool,
+} from "./commands";
 import type { ToolCall } from "./tools";
 import type { WorkspaceRoot } from "./workspaceFiles";
 
@@ -55,6 +63,26 @@ function processExists(pid: number): boolean {
 }
 
 const MIB = 1024 * 1024;
+
+/**
+ * The signals `body` sends through `process.kill`, none of them delivered: each succeeds, or throws an error with
+ * `failWith` as its code. A run captures its own kill when it starts, so only calls made now are seen.
+ */
+function spyKill(body: () => void, failWith?: string): [number, NodeJS.Signals | number | undefined][] {
+  const sent: [number, NodeJS.Signals | number | undefined][] = [];
+  const original = process.kill;
+  process.kill = ((pid: number, signal?: NodeJS.Signals | number) => {
+    sent.push([pid, signal]);
+    if (failWith !== undefined) throw Object.assign(new Error(failWith), { code: failWith });
+    return true;
+  }) as typeof process.kill;
+  try {
+    body();
+  } finally {
+    process.kill = original;
+  }
+  return sent;
+}
 
 describe("runCommand", () => {
   test("a command that exits 0 is ok, with its stdout", async () => {
@@ -229,6 +257,79 @@ describe("runCommand", () => {
     await expectGroupGone(Number(result.text.split("\n")[2]));
   });
 
+  test.each([
+    [
+      "a timeout",
+      { timeoutMs: 100 },
+      false,
+      "timed out after 0.1 seconds; its processes could not be stopped and may still be running\nstdout:\n",
+    ],
+    [
+      "a Stop",
+      { timeoutMs: 10_000 },
+      true,
+      "run_command: Stop could not end the command; its processes may still be running.\n",
+    ],
+  ])("%s whose signals all fail never says the command stopped", async (_case, overrides, stopIt, first) => {
+    const kill: KillFunction = (pid, signal) => {
+      if (signal !== 0) throw Object.assign(new Error("not allowed"), { code: "EINVAL" });
+      process.kill(pid, signal);
+    };
+    const abort = new AbortController();
+    const pidFile = join(base, `unreachable-${stopIt}.pid`);
+    const running = run(
+      `echo $$ > '${pidFile}'; echo $$; sleep 5`,
+      { ...overrides, killGraceMs: 100, kill },
+      abort.signal,
+    );
+    await waitFor(async () => (await readFile(pidFile, "utf8").catch(() => "")).endsWith("\n"));
+    const pgid = Number(await readFile(pidFile, "utf8"));
+    try {
+      if (stopIt) abort.abort();
+      const result = await running;
+      expect(result.status).toBe("error");
+      expect(result.text).toStartWith(first);
+      expect(result.text).not.toContain("stopped after");
+      expect(result.text).toEndWith(
+        "\nSending SIGTERM to the command's processes failed (EINVAL).\nSending SIGKILL to the command's processes failed (EINVAL).",
+      );
+    } finally {
+      process.kill(-pgid, "SIGKILL");
+    }
+  });
+
+  test("a probe answering EPERM counts the group as gone, without waiting through the grace", async () => {
+    const kill: KillFunction = (pid, signal) => {
+      if (signal === 0) throw Object.assign(new Error("not permitted"), { code: "EPERM" });
+      process.kill(pid, signal);
+    };
+    const started = Date.now();
+    const result = await run("echo $$; sleep 5", { timeoutMs: 100, kill });
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(result.text).toStartWith("stopped after 0.1 seconds\n");
+    await expectGroupGone(Number(result.text.split("\n")[2]));
+  });
+
+  test("a process that left the group holding the output keeps the result at most a moment past the group's end", async () => {
+    const abort = new AbortController();
+    const escaped = join(base, "escaped.pid");
+    // [>]: The escaped process writes its pid once out of the group, holding stdout for 3 seconds.
+    const perl = `perl -MPOSIX -e 'setsid(); open(my $f, ">", $ARGV[0]); print $f "$$\\n"; close $f; sleep 3' '${escaped}'`;
+    const running = run(`${perl} & sleep 5`, {}, abort.signal);
+    await waitFor(async () => (await readFile(escaped, "utf8").catch(() => "")).endsWith("\n"));
+    try {
+      const stopped = Date.now();
+      abort.abort();
+      // [>]: The group is gone within a poll or two; the result then waits for the pipes until 500 ms past that.
+      await Bun.sleep(250);
+      expect(spyKill(() => killRunningCommands())).toEqual([]);
+      expect(await running).toEqual({ status: "error", text: "run_command: stopped before it finished." });
+      expect(Date.now() - stopped).toBeLessThan(1500);
+    } finally {
+      process.kill(Number(await readFile(escaped, "utf8")), "SIGKILL");
+    }
+  });
+
   test("a group no signal reaches is said to be maybe still running", async () => {
     const pids: number[] = [];
     const kill = (pid: number, signal: NodeJS.Signals | 0) => {
@@ -282,6 +383,79 @@ describe("killRunningCommands", () => {
     expect(Date.now() - killed).toBeLessThan(1000);
     abort.abort();
     await running;
+  });
+});
+
+describe("command group ownership", () => {
+  test("deactivation after a Stop sends no later signal, even to a reused group id", async () => {
+    const abort = new AbortController();
+    const pidFile = join(base, "reuse.pid");
+    let deactivated = false;
+    const late: string[] = [];
+    const kill: KillFunction = (pid, signal) => {
+      // [>]: Past deactivation, signal 0 finds a group: the id now names another command's group.
+      if (!deactivated) return void process.kill(pid, signal);
+      if (signal !== 0) late.push(`${signal} ${pid}`);
+    };
+    const running = run(
+      `trap '' TERM; echo $$ > '${pidFile}'; exec sleep 30`,
+      { killGraceMs: 250, kill },
+      abort.signal,
+    );
+    await waitFor(async () => (await readFile(pidFile, "utf8").catch(() => "")).endsWith("\n"));
+    const pgid = Number(await readFile(pidFile, "utf8"));
+    abort.abort();
+    killRunningCommands();
+    deactivated = true;
+    await running;
+    await Bun.sleep(400);
+    expect(late).toEqual([]);
+    await expectGroupGone(pgid);
+  });
+
+  test("an owner that releases late never releases a later owner of the same group id", () => {
+    const killed: boolean[] = [];
+    const releaseOld = ownCommandGroup(424242, () => killed.push(false));
+    const releaseNew = ownCommandGroup(424242, (sent) => killed.push(sent));
+    releaseOld();
+    releaseOld();
+    expect(spyKill(() => killRunningCommands())).toEqual([[-424242, "SIGKILL"]]);
+    expect(killed).toEqual([true]);
+    releaseNew();
+  });
+
+  test("a second deactivation signals nothing the first one released", () => {
+    const killed: boolean[] = [];
+    ownCommandGroup(424243, (sent) => killed.push(sent));
+    expect(spyKill(() => killRunningCommands())).toEqual([[-424243, "SIGKILL"]]);
+    expect(spyKill(() => killRunningCommands())).toEqual([]);
+    expect(killed).toEqual([true]);
+  });
+
+  test("a command that ended is no longer owned: deactivation afterwards signals nothing", async () => {
+    expect((await run("echo done")).status).toBe("ok");
+    expect(spyKill(() => killRunningCommands())).toEqual([]);
+  });
+
+  test("deactivation logs a SIGKILL that fails for another reason than a group gone, and nothing on success", () => {
+    const logged: unknown[][] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => void logged.push(args);
+    try {
+      const failed: boolean[] = [];
+      ownCommandGroup(424244, (sent) => failed.push(sent));
+      spyKill(() => killRunningCommands(), "EINVAL");
+      expect(failed).toEqual([false]);
+      expect(logged).toEqual([["broke-code: could not kill the command group 424244 (EINVAL)"]]);
+      logged.length = 0;
+      ownCommandGroup(424245, () => {});
+      spyKill(() => killRunningCommands());
+      ownCommandGroup(424246, () => {});
+      spyKill(() => killRunningCommands(), "ESRCH");
+      expect(logged).toEqual([]);
+    } finally {
+      console.error = original;
+    }
   });
 });
 
