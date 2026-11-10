@@ -275,17 +275,19 @@ export const COMMAND_SCENARIO: Scenario = {
       return { pass: false, category: "wrongTool", detail: `${lead}steps: ${describeSteps(steps)}` };
     }
     const answer = lastReply(entries).content;
-    if (wholeNumber(LOG_FILE_COUNT).test(answer)) return { pass: true };
+    if (numberTokens(answer).includes(String(LOG_FILE_COUNT))) return { pass: true };
     return { pass: false, category: "wrongAnswer", detail: `answer: ${excerpt(answer)}` };
   },
 };
 
 /**
- * `count` written as a whole number of its own: not part of a longer number (`161`, `610`, `1,061`, `61,000`), a
- * decimal (`61.5`, `0.61`), or a negative one (`-61`). A period after it that no digit follows ends a sentence.
+ * The numbers written in `text`, each whole as written: every longest run of digits, letters, `.`, `,`, `_`, signs,
+ * and U+2212 that holds a digit, less its trailing `.` and `,` (sentence punctuation). A count passes only as a token
+ * of its own, so `161`, `1,061`, `61,000`, `61.5`, `0,61`, `-61`, `\u221261`, `+61`, `61e3`, and `61k` never hold 61.
  */
-function wholeNumber(count: number): RegExp {
-  return new RegExp(`(?<![\\d.,-])${count}(?!\\d|[.,]\\d)`);
+function numberTokens(text: string): string[] {
+  const runs = text.match(/[0-9A-Za-z.,_+\-\u2212]+/g) ?? [];
+  return runs.filter((run) => /\d/.test(run)).map((run) => run.replace(/[.,]+$/, ""));
 }
 
 /** Every scenario the bench plays, in order. */

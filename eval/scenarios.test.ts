@@ -473,6 +473,8 @@ describe("judge on the command scenario", () => {
       `${FILE_COUNT}`,
       `**${FILE_COUNT}** files`,
       `(${FILE_COUNT}), done`,
+      `${FILE_COUNT} files`,
+      `The logs folder holds ${FILE_COUNT} files, in 18 month folders.`,
     ]) {
       const entries = [commandUser, ...counted, answer(right)];
       expect(judge(COMMAND_SCENARIO, entries, commandUntouched)).toEqual({ pass: true });
@@ -489,6 +491,11 @@ describe("judge on the command scenario", () => {
       "There are 61.5 files.",
       "There are 0.61 files.",
       "There are -61 files.",
+      "There are \u221261 files.",
+      "There are +61 files.",
+      "There are 61e3 files.",
+      "There are 61k files.",
+      "There are 0,61 files.",
     ]) {
       const entries = [commandUser, ...counted, answer(wrong)];
       expect(judge(COMMAND_SCENARIO, entries, commandUntouched)).toMatchObject({

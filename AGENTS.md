@@ -504,7 +504,7 @@ command at once. Slash commands are not built yet. Read `GLOSSARY.md` for the do
     `wrongTool`.
   - `command`: count the files under `logs/`, subfolders included: 61 files in 18 month folders under two year folders,
     more folders than the step limit lets the model list, and none hidden. The message does not name the tool. Passes
-    when an `ok` `run_command` step ran, the answer holds 61 as a whole number (not inside `161`, `61,000`, `61.5`, or `-61`; a sentence-final period is fine), and no file changed. Without an `ok`
+    when an `ok` `run_command` step ran, the answer holds 61 as a number token of its own (the answer is split into runs of digits, letters, `.`, `,`, `_`, `+`, `-`, and U+2212 holding a digit, trailing `.` and `,` dropped, so `161`, `61,000`, `61.5`, `0,61`, `-61`, `61e3`, and `61k` fail and `61.` passes), and no file changed. Without an `ok`
     `run_command` step it is `wrongTool`, its detail led by the first line of the last command step when one ran (a
     rejection, `stopped after 10 seconds`, an exit code).
 
