@@ -5,11 +5,15 @@
  */
 import { MASK, maskCode } from "./markdownCode";
 
-/** A tool as the model sees it. `args`: in the order the call shape and the system prompt list them. */
+/**
+ * A tool as the model sees it. `args`: in the order the call shape and the system prompt list them. `oneLine`: the
+ * value cannot hold a line break (a path, a name, a ripgrep pattern), so the parser drops every leading and trailing
+ * one, whatever the other side holds.
+ */
 export type ToolSpec = {
   name: string;
   description: string;
-  args: { name: string; required: boolean; description: string }[];
+  args: { name: string; required: boolean; oneLine?: boolean; description: string }[];
 };
 
 /**
@@ -84,6 +88,30 @@ export function parseToolCall(answer: string, tools: readonly ToolSpec[]): Parse
   return { kind: "none" };
 }
 
+/** How a tool result opens in the history. Only the extension writes one: a model that does invents the result. */
+export const TOOL_RESULT_OPENING = "<tool_result";
+
+/**
+ * Whether a reply streaming `answer` should stop, scanning the result openings from `from` on: `cut` is the end of the
+ * call that precedes an opening the model wrote itself, past which nothing is read; `scanned` is where the next scan
+ * starts, so a stream scans its text once. An opening with no complete call before it (inside a `write_file` value, or
+ * before any call) does not stop the reply.
+ */
+export function forgedResultCut(
+  answer: string,
+  tools: readonly ToolSpec[],
+  from: number,
+): { cut?: number; scanned: number } {
+  let index = answer.indexOf(TOOL_RESULT_OPENING, from);
+  while (index !== -1) {
+    const parsed = parseToolCall(answer.slice(0, index), tools);
+    if (parsed.kind === "call") return { cut: parsed.end, scanned: index };
+    index = answer.indexOf(TOOL_RESULT_OPENING, index + 1);
+  }
+  // [>]: An opening split across deltas starts within the last few characters; scan them again.
+  return { scanned: Math.max(from, answer.length - TOOL_RESULT_OPENING.length + 1) };
+}
+
 /**
  * How a call to `tool` looks, one child tag per argument, then each argument with whether it is required and its
  * description. The malformed messages and the system prompt both show it.
@@ -130,7 +158,9 @@ function readArgs(
     if (valueEnd === -1) {
       return { problem: `The <${name}> argument tag never closes: end its value with </${name}>.`, at: index };
     }
-    args[name] = trimLineBreaks(answer.slice(valueStart, valueEnd));
+    const value = answer.slice(valueStart, valueEnd);
+    const oneLine = tool.args.some((arg) => arg.name === name && arg.oneLine);
+    args[name] = oneLine ? value.replace(/^[\r\n]+|[\r\n]+$/g, "") : trimLineBreaks(value);
     index = skipWhitespace(answer, valueEnd + `</${name}>`.length);
   }
   return { args, end: index + callClose.length };

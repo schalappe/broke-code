@@ -43,6 +43,8 @@ const TOOL_RULES: Record<string, string> = {
   edit_file:
     "- edit_file replaces an exact passage that must appear once in the file: copy it from the file, line breaks and indentation included.",
   write_file: "- write_file replaces the whole file: give its complete content.",
+  run_command:
+    "- run_command runs the command with the user's shell, in the workspace folder unless cwd names another, and only once the user approves it: wait for its result.",
   load_skill:
     "- Read a loaded skill's files with read_file, list_files, or search by the absolute path the load_skill result gives. A skill folder outside the workspace is read-only.",
 };
@@ -52,7 +54,7 @@ const SKILLS_INTRO =
 
 /**
  * The system prompt for `tools`, the `skills` listed to the model, and the `instructions` files, in order. The rules
- * of `write_file`, `edit_file`, and `load_skill` follow the general rules when those tools are listed. Without a listed skill or a
+ * of `write_file`, `edit_file`, `run_command`, and `load_skill` follow the general rules when those tools are listed. Without a listed skill or a
  * file, it ends after the tools.
  */
 export function composeSystemPrompt(

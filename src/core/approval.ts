@@ -30,9 +30,12 @@ export type ApprovalRequest = {
  */
 export type Decision = { kind: "accept" } | { kind: "reject"; reason?: string } | { kind: "cancel" };
 
-/** The text of a rejected call's `error` result: a fixed first line, then the user's reason on its own line. */
-export function rejectionText(reason?: string): string {
-  const first = "The user rejected this change.";
+/**
+ * The text of a rejected call's `error` result: a fixed first line naming what was rejected (`subject`: a write's
+ * change, or a command), then the user's reason on its own line.
+ */
+export function rejectionText(reason?: string, subject: "change" | "command" = "change"): string {
+  const first = `The user rejected this ${subject}.`;
   return reason === undefined ? first : `${first}\n${reason}`;
 }
 

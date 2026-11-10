@@ -1,13 +1,20 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import type { ChatEntry } from "../src/core/protocol";
+import { readSkills } from "../src/core/skills";
 import {
+  COMMAND_SCENARIO,
   CREATE_SCENARIO,
   EDIT_SCENARIO,
   fileAt,
+  HIDDEN_SCENARIO,
   judge,
   READ_SCENARIO,
   SCENARIOS,
   SKILL_SCENARIO,
+  SLASH_SCENARIO,
   workspaceChanges,
 } from "./scenarios";
 
@@ -207,6 +214,15 @@ describe("judge on the edit scenario", () => {
     });
   });
 
+  test("wrongEdit: the file to write was replaced by a symlink, which the detail names", () => {
+    const linked = { ...renamed, [PRICING]: { symlink: "pricing.py" } };
+    expect(judge(EDIT_SCENARIO, edited, linked)).toEqual({
+      pass: false,
+      category: "wrongEdit",
+      detail: `${PRICING} is a symlink to "pricing.py"`,
+    });
+  });
+
   test("wrongEdit: the file was left as it was, even when the rename went to another file", () => {
     expect(judge(EDIT_SCENARIO, edited, EDIT_SCENARIO.files)).toMatchObject({ pass: false, category: "wrongEdit" });
     const elsewhere = { ...EDIT_SCENARIO.files, "pricing.py": renamed[PRICING] ?? "" };
@@ -319,6 +335,7 @@ describe("judge on the create scenario", () => {
 
 const DISPATCH_CODE = "LYN-7Q42-ORCA";
 const SKILL_FILE = ".agents/skills/depot-codes/SKILL.md";
+const DECOY_FILE = ".agents/skills/release-notes/SKILL.md";
 const SKILL_ROOT = "/tmp/home/.agents/skills/depot-codes";
 const skillHome = SKILL_SCENARIO.home ?? {};
 const skillUser: ChatEntry = { role: "user", content: SKILL_SCENARIO.message, mentions: [] };
@@ -395,8 +412,303 @@ describe("judge on the skill scenario", () => {
   });
 });
 
-test("SCENARIOS holds read, edit, create, and skill, in that order", () => {
-  expect(SCENARIOS.map((scenario) => scenario.name)).toEqual(["read", "edit", "create", "skill"]);
+const slashUser: ChatEntry = {
+  role: "user",
+  content: SLASH_SCENARIO.message,
+  mentions: [],
+  skill: { name: "depot-codes", status: "loaded" },
+};
+
+describe("slash scenario fixture", () => {
+  test("loads the skill scenario's skill with /depot-codes, then asks the same question", () => {
+    expect(SLASH_SCENARIO.files).toEqual(SKILL_SCENARIO.files);
+    expect(SLASH_SCENARIO.home).toEqual(SKILL_SCENARIO.home);
+    expect(SLASH_SCENARIO.message).toBe(`/depot-codes ${SKILL_SCENARIO.message}`);
+  });
+});
+
+describe("judge on the slash scenario", () => {
+  test("passes a turn that read the reference file and answered with the value, with no load_skill step", () => {
+    const entries = [slashUser, ...depotsRead, answer(`The Lyon code is ${DISPATCH_CODE}.`)];
+    expect(judge(SLASH_SCENARIO, entries, skillUntouched)).toEqual({ pass: true });
+  });
+
+  test("passes a turn that also loaded the skill with load_skill", () => {
+    const entries = [slashUser, loadCall, loadStep(), ...depotsRead, answer(DISPATCH_CODE)];
+    expect(judge(SLASH_SCENARIO, entries, skillUntouched)).toEqual({ pass: true });
+  });
+
+  test("wrongAnswer: the turn read the file but the answer lacks the value", () => {
+    const entries = [slashUser, ...depotsRead, answer("The Lyon code is LYN-7Q42.")];
+    expect(judge(SLASH_SCENARIO, entries, skillUntouched)).toMatchObject({ pass: false, category: "wrongAnswer" });
+  });
+
+  test("wrongTool: no read step got the value", () => {
+    const entries = [slashUser, answer(DISPATCH_CODE)];
+    expect(judge(SLASH_SCENARIO, entries, skillUntouched)).toMatchObject({ pass: false, category: "wrongTool" });
+  });
+
+  test("wrongTool: the message loaded no skill, whatever the turn did after", () => {
+    const { skill: _, ...unloaded } = slashUser as ChatEntry & { role: "user" };
+    const failed: ChatEntry = { ...unloaded, skill: { name: "depot-codes", status: "failed" } };
+    for (const user of [unloaded, failed]) {
+      const verdict = judge(SLASH_SCENARIO, [user, ...depotsRead, answer(DISPATCH_CODE)], skillUntouched);
+      expect(verdict).toMatchObject({
+        pass: false,
+        category: "wrongTool",
+        detail: expect.stringContaining("/depot-codes"),
+      });
+    }
+  });
+
+  test("workspaceChanged: the turn passed the check but changed a workspace file", () => {
+    const entries = [slashUser, ...depotsRead, answer(DISPATCH_CODE)];
+    const changed = { ...skillUntouched, "notes.txt": DISPATCH_CODE };
+    expect(judge(SLASH_SCENARIO, entries, changed)).toMatchObject({ pass: false, category: "workspaceChanged" });
+  });
+});
+
+const hiddenUser: ChatEntry = { ...slashUser, content: HIDDEN_SCENARIO.message };
+
+describe("hidden scenario fixture", () => {
+  test("is the slash scenario with its skill kept from the model, beside one unrelated listed skill", () => {
+    expect(HIDDEN_SCENARIO.files).toEqual(SLASH_SCENARIO.files);
+    expect(HIDDEN_SCENARIO.message).toBe(SLASH_SCENARIO.message);
+    const home = HIDDEN_SCENARIO.home ?? {};
+    expect(fileAt(home, SKILL_FILE)).toBe(
+      fileAt(skillHome, SKILL_FILE)?.replace("\n---\n", "\ndisable-model-invocation: true\n---\n"),
+    );
+    expect(Object.keys(home).sort()).toEqual([...Object.keys(skillHome), DECOY_FILE].sort());
+    const decoy = fileAt(home, DECOY_FILE) ?? "";
+    expect(decoy).toStartWith("---\nname: release-notes\ndescription: ");
+    for (const hint of ["depot", "dispatch", DISPATCH_CODE])
+      expect(decoy.toLowerCase()).not.toContain(hint.toLowerCase());
+  });
+
+  test("its depot skill is discovered and not listed to the model; the decoy is listed, so load_skill is offered", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "broke-code-hidden-"));
+    try {
+      for (const [path, text] of Object.entries(HIDDEN_SCENARIO.home ?? {})) {
+        mkdirSync(dirname(join(dir, path)), { recursive: true });
+        writeFileSync(join(dir, path), text);
+      }
+      const { skills, warnings } = await readSkills(dir, []);
+      expect(warnings).toEqual([]);
+      const listed = skills.map(({ name, listedToModel }) => ({ name, listedToModel }));
+      expect(listed.sort((a, b) => a.name.localeCompare(b.name))).toEqual([
+        { name: "depot-codes", listedToModel: false },
+        { name: "release-notes", listedToModel: true },
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("judge on the hidden scenario", () => {
+  test("passes a turn whose load_skill of the skill the user loaded answered already loaded", () => {
+    const alreadyLoaded: ChatEntry = {
+      role: "tool",
+      name: "load_skill",
+      args: { name: "depot-codes" },
+      status: "ok",
+      text: `Skill depot-codes is already loaded; its files live in ${SKILL_ROOT}; read them by that absolute path.`,
+    };
+    const entries = [hiddenUser, loadCall, alreadyLoaded, ...depotsRead, answer(DISPATCH_CODE)];
+    expect(judge(HIDDEN_SCENARIO, entries, skillUntouched)).toEqual({ pass: true });
+  });
+
+  test("passes a turn that read the reference file and answered with the value", () => {
+    const entries = [hiddenUser, ...depotsRead, answer(`The Lyon code is ${DISPATCH_CODE}.`)];
+    expect(judge(HIDDEN_SCENARIO, entries, skillUntouched)).toEqual({ pass: true });
+  });
+
+  test("wrongAnswer: the turn read the file but the answer lacks the value", () => {
+    const entries = [hiddenUser, ...depotsRead, answer("I cannot use that skill.")];
+    expect(judge(HIDDEN_SCENARIO, entries, skillUntouched)).toMatchObject({ pass: false, category: "wrongAnswer" });
+  });
+
+  test("wrongTool: no read step got the value, or the message loaded no skill", () => {
+    expect(judge(HIDDEN_SCENARIO, [hiddenUser, answer(DISPATCH_CODE)], skillUntouched)).toMatchObject({
+      pass: false,
+      category: "wrongTool",
+    });
+    const { skill: _, ...unloaded } = hiddenUser as ChatEntry & { role: "user" };
+    const verdict = judge(HIDDEN_SCENARIO, [unloaded, ...depotsRead, answer(DISPATCH_CODE)], skillUntouched);
+    expect(verdict).toMatchObject({
+      pass: false,
+      category: "wrongTool",
+      detail: expect.stringContaining("/depot-codes"),
+    });
+  });
+
+  test("workspaceChanged: the turn passed the check but changed a workspace file", () => {
+    const entries = [hiddenUser, ...depotsRead, answer(DISPATCH_CODE)];
+    const changed = { ...skillUntouched, "notes.txt": DISPATCH_CODE };
+    expect(judge(HIDDEN_SCENARIO, entries, changed)).toMatchObject({ pass: false, category: "workspaceChanged" });
+  });
+});
+
+const FILE_COUNT = 61;
+const commandUser: ChatEntry = { role: "user", content: COMMAND_SCENARIO.message, mentions: [] };
+const COUNT_COMMAND = "find logs -type f | wc -l";
+const commandCall: Reply = {
+  role: "assistant",
+  reasoning: "",
+  content: `<run_command>\n<command>${COUNT_COMMAND}</command>\n</run_command>`,
+  status: "done",
+  call: { name: "run_command", args: { command: COUNT_COMMAND }, start: 0, end: 0 },
+};
+const commandStep = (status: "ok" | "error", text: string): ChatEntry => ({
+  role: "tool",
+  name: "run_command",
+  args: { command: COUNT_COMMAND },
+  status,
+  text,
+});
+const counted = [commandCall, commandStep("ok", `exit code 0\nstdout:\n      ${FILE_COUNT}\nstderr: (empty)`)];
+const commandUntouched = { ...COMMAND_SCENARIO.files };
+
+describe("command scenario fixture", () => {
+  test("holds 61 files under logs/, nested two folders deep, none hidden", () => {
+    const logs = Object.keys(COMMAND_SCENARIO.files).filter((path) => path.startsWith("logs/"));
+    expect(logs).toHaveLength(FILE_COUNT);
+    expect(logs.every((path) => path.split("/").length === 4)).toBe(true);
+    expect(logs.some((path) => path.split("/").some((part) => part.startsWith(".")))).toBe(false);
+  });
+
+  test("spreads them over more folders than the step limit lets the model list one by one", () => {
+    const folders = new Set(
+      Object.keys(COMMAND_SCENARIO.files)
+        .filter((path) => path.startsWith("logs/"))
+        .flatMap((path) => [path.split("/").slice(0, 2).join("/"), path.split("/").slice(0, 3).join("/")]),
+    );
+    expect(folders.size).toBeGreaterThan(10);
+  });
+
+  test("asks for the count, subfolders included, without naming the tool or the count", () => {
+    expect(COMMAND_SCENARIO.message).toContain("logs");
+    expect(COMMAND_SCENARIO.message).toContain("subfolders");
+    for (const hint of ["run_command", String(FILE_COUNT)]) expect(COMMAND_SCENARIO.message).not.toContain(hint);
+    expect(COMMAND_SCENARIO.writes).toEqual({});
+  });
+});
+
+describe("judge on the command scenario", () => {
+  test("passes a turn that ran a command and answered with the count", () => {
+    const entries = [commandUser, ...counted, answer(`The logs folder holds ${FILE_COUNT} files.`)];
+    expect(judge(COMMAND_SCENARIO, entries, commandUntouched)).toEqual({ pass: true });
+  });
+
+  test("passes a turn whose first command failed and a later one succeeded", () => {
+    const entries = [
+      commandUser,
+      commandCall,
+      commandStep("error", "exit code 1\nstdout: (empty)\nstderr:\nfind: logz: No such file or directory"),
+      ...counted,
+      answer(String(FILE_COUNT)),
+    ];
+    expect(judge(COMMAND_SCENARIO, entries, commandUntouched)).toEqual({ pass: true });
+  });
+
+  test("passes the count as a whole number token, also before a sentence's final period", () => {
+    for (const right of [
+      `There are ${FILE_COUNT}.`,
+      `${FILE_COUNT}`,
+      `**${FILE_COUNT}** files`,
+      `(${FILE_COUNT}), done`,
+      `${FILE_COUNT} files`,
+      `${FILE_COUNT}, including the nested files`,
+      `The logs folder holds ${FILE_COUNT} files, in 18 month folders.`,
+    ]) {
+      const entries = [commandUser, ...counted, answer(right)];
+      expect(judge(COMMAND_SCENARIO, entries, commandUntouched)).toEqual({ pass: true });
+    }
+  });
+
+  test("wrongAnswer: the turn ran the command but answered another count, also one the right count prefixes", () => {
+    for (const wrong of [
+      "There are 60 files.",
+      "There are 610 files.",
+      "There are 161 files.",
+      "There are 61,000 files.",
+      "There are 1,061 files.",
+      "There are 61.5 files.",
+      "There are 0.61 files.",
+      "There are -61 files.",
+      "There are \u221261 files.",
+      "There are +61 files.",
+      "There are 61e3 files.",
+      "There are 61k files.",
+      "There are 0,61 files.",
+      "There are .61 files.",
+      "There are 61E3 files.",
+      "There are 61_000 files.",
+    ]) {
+      const entries = [commandUser, ...counted, answer(wrong)];
+      expect(judge(COMMAND_SCENARIO, entries, commandUntouched)).toMatchObject({
+        pass: false,
+        category: "wrongAnswer",
+        detail: `answer: ${wrong}`,
+      });
+    }
+  });
+
+  test("wrongTool: the turn answered with the count without any command step", () => {
+    const entries = [
+      commandUser,
+      callReply("list_files", "logs"),
+      step("list_files", "logs", "@logs (folder, 2 entries)\n2024/\n2025/"),
+      answer(`${FILE_COUNT} files.`),
+    ];
+    expect(judge(COMMAND_SCENARIO, entries, commandUntouched)).toMatchObject({
+      pass: false,
+      category: "wrongTool",
+      detail: "steps: list_files(path=logs) ok",
+    });
+  });
+
+  test("wrongTool: the command was rejected, with the step's first line as the detail", () => {
+    const rejected = commandStep("error", "The user rejected this command.\nToo slow.");
+    const entries = [commandUser, commandCall, rejected, answer(`${FILE_COUNT} files.`)];
+    expect(judge(COMMAND_SCENARIO, entries, commandUntouched)).toMatchObject({
+      pass: false,
+      category: "wrongTool",
+      detail: "The user rejected this command.; steps: run_command(command=find logs -type f | wc -l) error",
+    });
+  });
+
+  test("wrongTool: the command timed out, with the step's first line as the detail", () => {
+    const timedOut = commandStep("error", "stopped after 10 seconds\nstdout: (empty)\nstderr: (empty)");
+    const entries = [commandUser, commandCall, timedOut, answer("I could not count them.")];
+    expect(judge(COMMAND_SCENARIO, entries, commandUntouched)).toMatchObject({
+      pass: false,
+      category: "wrongTool",
+      detail: "stopped after 10 seconds; steps: run_command(command=find logs -type f | wc -l) error",
+    });
+  });
+
+  test("workspaceChanged: the count is right but the command left a file behind", () => {
+    const entries = [commandUser, ...counted, answer(String(FILE_COUNT))];
+    const changed = { ...commandUntouched, "count.txt": `${FILE_COUNT}\n` };
+    expect(judge(COMMAND_SCENARIO, entries, changed)).toMatchObject({
+      pass: false,
+      category: "workspaceChanged",
+      detail: "changed: count.txt",
+    });
+  });
+});
+
+test("SCENARIOS holds read, edit, create, skill, command, slash, and hidden, in that order", () => {
+  expect(SCENARIOS.map((scenario) => scenario.name)).toEqual([
+    "read",
+    "edit",
+    "create",
+    "skill",
+    "command",
+    "slash",
+    "hidden",
+  ]);
 });
 
 describe("workspaceChanges", () => {
@@ -405,6 +717,14 @@ describe("workspaceChanges", () => {
     const after = { "a.txt": "a\n", "c.txt": "C\n", "d/e.txt": "" };
     expect(workspaceChanges(fixture, after)).toEqual({ "b.txt": null, "c.txt": "C\n", "d/e.txt": "" });
     expect(workspaceChanges(fixture, { ...fixture })).toEqual({});
+  });
+
+  test("tells a symlink or a FIFO from a file holding the same text, and records a changed target", () => {
+    const fixture = { "a.txt": "target", "b.txt": "b\n" };
+    const after = { "a.txt": { symlink: "target" }, "b.txt": { special: "fifo" }, link: { symlink: "b.txt" } };
+    expect(workspaceChanges(fixture, after)).toEqual(after);
+    expect(workspaceChanges(after, structuredClone(after))).toEqual({});
+    expect(workspaceChanges(after, { ...after, link: { symlink: "a.txt" } })).toEqual({ link: { symlink: "a.txt" } });
   });
 
   test("records a file named __proto__ like any other: added, changed, or removed", () => {

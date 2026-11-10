@@ -1,15 +1,18 @@
 /**
  * @module run
- * One run of a scenario: the chat controller the extension runs, hosted through its ports with the read and write tools
- * and `load_skill` over a throwaway copy of the fixture under the system temporary directory, each write applied at once
- * and recorded, the skills discovered as the extension does but in a throwaway copy of the scenario's home fixture
- * (never the real home), no instruction file, an in-memory conversation store, and the bench's step limit. The copies
- * are removed when the run ends, also when it throws.
+ * One run of a scenario: the chat controller the extension runs, hosted through its ports with the read and write
+ * tools, `run_command`, and `load_skill` over a throwaway copy of the fixture under the system temporary directory, each
+ * write applied at once and recorded, each command approved at once and run with `/bin/sh` in the copy, the skills
+ * discovered as the extension does but in a throwaway copy of the scenario's home fixture (never the real home), no
+ * instruction file, an in-memory conversation store, and the bench's step limit. The copies are removed when the run
+ * ends, also when it throws.
  */
-import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import type { Dirent } from "node:fs";
+import { mkdir, mkdtemp, readdir, readFile, readlink, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, sep } from "node:path";
-import { ChatController, type ChoiceStore } from "../src/core/chatController";
+import { ChatController, type ChoiceStore, type ToolRunner } from "../src/core/chatController";
+import type { CommandEnv } from "../src/core/commands";
 import { ConversationStore } from "../src/core/conversationStore";
 import { DEFAULT_CONTEXT_SIZE, parseLimits } from "../src/core/limits";
 import type { ChatEntry } from "../src/core/protocol";
@@ -17,7 +20,14 @@ import { readSkills } from "../src/core/skills";
 import { workspaceToolRunner } from "../src/core/toolRunner";
 import { ripgrepCandidates } from "../src/core/tools";
 import { type ChangeApplier, fileApplier, type PlannedChange } from "../src/core/writeTools";
-import type { Scenario, WorkspaceFiles } from "./scenarios";
+import type { Scenario, WorkspaceFiles, WorkspaceSnapshot } from "./scenarios";
+
+/**
+ * How the bench runs a command: `/bin/sh`, the shell the extension falls back to, so a run reads no user profile, and
+ * 10 seconds, far above the milliseconds a command over a fixture takes, so a command that waits fails the run in
+ * seconds rather than after the extension's 120.
+ */
+export const BENCH_COMMAND_ENV: CommandEnv = { shell: "/bin/sh", timeoutMs: 10_000 };
 
 /**
  * Where and how a run plays. `baseUrl`: an OpenAI-compatible provider without a key. `maxToolSteps`: the turn's step
@@ -36,9 +46,9 @@ export type AppliedChange = Omit<PlannedChange, "target" | "before"> & {
 
 /**
  * What the bench reads after a run: the conversation's entries, each change handed to the applier in call order, and
- * the workspace copy's files.
+ * every entry of the workspace copy but its folders.
  */
-export type RunOutcome = { entries: ChatEntry[]; planned: AppliedChange[]; after: WorkspaceFiles };
+export type RunOutcome = { entries: ChatEntry[]; planned: AppliedChange[]; after: WorkspaceSnapshot };
 
 /**
  * Play `scenario` once on `target`: copy its workspace and home fixtures under `tmpRoot`, send its message, and wait
@@ -70,10 +80,13 @@ export async function playScenario(scenario: Scenario, target: RunTarget, tmpRoo
         },
       },
       store: new ConversationStore(undefined),
-      tools: workspaceToolRunner(
-        () => [root],
-        toolEnv,
-        (roots) => recording(fileApplier(roots), planned),
+      tools: approvingCommands(
+        workspaceToolRunner(
+          () => [root],
+          toolEnv,
+          (roots) => recording(fileApplier(roots), planned),
+          () => BENCH_COMMAND_ENV,
+        ),
       ),
       instructions: { read: async () => [] },
       // [!]: Never `homedir()`: the maintainer's own skills would change the prompt between runs and machines.
@@ -98,6 +111,18 @@ export async function playScenario(scenario: Scenario, target: RunTarget, tmpRoo
   }
 }
 
+/**
+ * `runner`, with every approval request of its runs accepted at once: the bench plays the model, not the user, and the
+ * product never auto-approves a command, so this lives in the run context the bench hands the tools, not in a setting.
+ * Only `run_command` asks; a write goes straight to the bench's applier.
+ */
+function approvingCommands(runner: ToolRunner): ToolRunner {
+  return {
+    tools: runner.tools,
+    run: (call, context) => runner.run(call, { ...context, requestApproval: async () => ({ kind: "accept" }) }),
+  };
+}
+
 /** `apply`, appending each change it is handed and its result's status to `planned`. */
 function recording(apply: ChangeApplier, planned: AppliedChange[]): ChangeApplier {
   return async (change) => {
@@ -118,16 +143,33 @@ async function writeWorkspace(directory: string, files: WorkspaceFiles): Promise
   }
 }
 
-/** Every regular file under `directory`, by POSIX path relative to it. */
-async function readWorkspace(directory: string): Promise<WorkspaceFiles> {
+/**
+ * Every entry under `directory` but its folders, by POSIX path relative to it: a command may add a symlink or a FIFO as
+ * well as a file, and the judge must see it. A symlink is recorded, never followed, a link to a folder included.
+ */
+async function readWorkspace(directory: string): Promise<WorkspaceSnapshot> {
   // [!]: Null prototype: a file named `__proto__` must land as a path, not reach the setter.
-  const files: WorkspaceFiles = Object.create(null);
-  for (const entry of await readdir(directory, { recursive: true, withFileTypes: true })) {
-    if (!entry.isFile()) continue;
-    const file = join(entry.parentPath, entry.name);
-    files[relative(directory, file).split(sep).join("/")] = await readFile(file, "utf8");
-  }
-  return files;
+  const entries: WorkspaceSnapshot = Object.create(null);
+  const walk = async (folder: string): Promise<void> => {
+    for (const entry of await readdir(folder, { withFileTypes: true })) {
+      const path = join(folder, entry.name);
+      const key = relative(directory, path).split(sep).join("/");
+      if (entry.isDirectory()) await walk(path);
+      else if (entry.isFile()) entries[key] = await readFile(path, "utf8");
+      else if (entry.isSymbolicLink()) entries[key] = { symlink: await readlink(path) };
+      else entries[key] = { special: specialKind(entry) };
+    }
+  };
+  await walk(directory);
+  return entries;
+}
+
+function specialKind(entry: Dirent): string {
+  if (entry.isFIFO()) return "fifo";
+  if (entry.isSocket()) return "socket";
+  if (entry.isBlockDevice()) return "blockDevice";
+  if (entry.isCharacterDevice()) return "characterDevice";
+  return "unknown";
 }
 
 function memoryChoices(): ChoiceStore {

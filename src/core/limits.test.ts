@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { contextOf, estimateTokens, fillsContext, parseContextSizeInput, parseLimits, withContextSize } from "./limits";
+import {
+  contextOf,
+  estimateTokens,
+  fillsContext,
+  parseCommandTimeout,
+  parseContextSizeInput,
+  parseLimits,
+  withContextSize,
+} from "./limits";
 
 describe("parseLimits", () => {
   test("reads a valid step limit and context table", () => {
@@ -106,5 +114,23 @@ describe("parseContextSizeInput", () => {
     for (const text of ["", "0", "-1", "1.5", "128k", "131,072", "1e5", "abc", "99999999999999999999"]) {
       expect(parseContextSizeInput(text)).toBeUndefined();
     }
+  });
+});
+
+describe("parseCommandTimeout", () => {
+  test("reads a whole number of seconds of at least 1", () => {
+    expect(parseCommandTimeout(1)).toBe(1);
+    expect(parseCommandTimeout(600)).toBe(600);
+  });
+
+  test("uses 120 seconds when the setting is missing or not an integer of at least 1", () => {
+    for (const raw of [undefined, "30", 0, -5, 2.5, Number.NaN, Number.POSITIVE_INFINITY, null, {}]) {
+      expect(parseCommandTimeout(raw)).toBe(120);
+    }
+  });
+
+  test("caps the timeout at the longest delay a timer can wait, about 24 days", () => {
+    expect(parseCommandTimeout(Number.MAX_SAFE_INTEGER)).toBe(2_147_483);
+    expect(parseCommandTimeout(2_147_483)).toBe(2_147_483);
   });
 });

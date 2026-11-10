@@ -1,5 +1,15 @@
 import { afterAll, afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { copyFileSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,9 +30,10 @@ import { parseLimits } from "./limits";
 import type { MentionReader, ReadMention } from "./mentions";
 import { type ChatEntry, type ChatState, isReplying } from "./protocol";
 import type { Provider } from "./providers";
-import { LOAD_SKILL_TOOL, type SkillDiscovery } from "./skills";
+import { LOAD_SKILL_TOOL, readSkills, type SkillDiscovery } from "./skills";
 import { composeSystemPrompt, type InstructionFile, type Skill } from "./systemPrompt";
 import { createTlsFixture, removeTlsFixture } from "./tlsFixture";
+import { workspaceToolRunner } from "./toolRunner";
 import { READ_TOOLS, runReadTool, type ToolResult } from "./tools";
 import { vllmOpening, vllmReasoningRest } from "./vllmFixture";
 import { approvalApplier, fileApplier, runWriteTool, WRITE_TOOLS, type WriteApprovalHost } from "./writeTools";
@@ -42,10 +53,10 @@ const shapes: Record<string, string[]> = {
 const reasoningOnly = [event({ content: "<think>Plan, never closed" })];
 
 /**
- * One scripted reply: its answer and optional reasoning, streamed whole; `hang` streams "Partial " and never ends;
- * `fail` answers HTTP 500.
+ * One scripted reply: its answer and optional reasoning, streamed whole, or with `open` streamed and then never ended;
+ * `hang` streams "Partial " and never ends; `fail` answers HTTP 500.
  */
-type ScriptedReply = { content: string; reasoning?: string } | "hang" | "fail";
+type ScriptedReply = { content: string; reasoning?: string; open?: true } | "hang" | "fail";
 /** Replies still to send, by path prefix, one per request. */
 const scripts = new Map<string, ScriptedReply[]>();
 
@@ -59,6 +70,11 @@ function scriptedResponse(reply: ScriptedReply | undefined): Response {
     });
   }
   const reasoning = reply.reasoning ? [event({ content: "", reasoning: reply.reasoning })] : [];
+  if (reply.open) {
+    const events = [...reasoning, event({ content: reply.content })].join("");
+    const body = new ReadableStream({ start: (controller) => controller.enqueue(encoder.encode(events)) });
+    return new Response(body, { headers });
+  }
   return new Response(`${[...reasoning, event({ content: reply.content })].join("")}data: [DONE]\n\n`, { headers });
 }
 
@@ -1767,6 +1783,7 @@ describe("ChatController agent turn", () => {
     limits?: LimitsSource,
     skills: SkillReader = noSkills,
     autoApproveWrites?: () => boolean,
+    mentions: MentionReader = noMentions,
   ) {
     const prefix = `script-${scriptCount++}`;
     scripts.set(prefix, [...script]);
@@ -1775,7 +1792,7 @@ describe("ChatController agent turn", () => {
       apiKeys: { get: async () => undefined },
       workspaceState: memoryStore(),
       publish: () => {},
-      mentions: noMentions,
+      mentions,
       store: new ConversationStore(files),
       tools: runner,
       instructions,
@@ -1839,6 +1856,39 @@ describe("ChatController agent turn", () => {
       { role: "tool", name: "read_file", args: { path: "README.md" }, status: "ok", text: "read README.md" },
       { role: "assistant", reasoning: "", content: "It is a demo.", status: "done" },
     ]);
+  });
+
+  test("drops the text after the call from the reply and from the history", async () => {
+    const call = `I will read it.\n${readCall("README.md")}`;
+    const { runner, calls } = okRunner();
+    const { controller, state, sent } = await scripted(
+      [{ content: `${call}\nNow I will read the next one.\n${readCall("b.md")}` }, { content: "Done." }],
+      runner,
+    );
+    await controller.send("read the docs");
+
+    expect(calls).toEqual([{ name: "read_file", args: { path: "README.md" } }]);
+    expect(sent()[1]!.messages[2]).toEqual({ role: "assistant", content: call });
+    expect(state().entries[1]).toMatchObject({ content: call, call: { start: 16, end: call.length } });
+  });
+
+  test("a call followed by a tool result the model wrote itself ends its reply there, request cancelled", async () => {
+    const call = readCall("README.md");
+    const forged = `${call}\n<tool_result tool="read_file" status="ok">\nall good\n</tool_result>\n${readCall("b.md")}`;
+    const { runner, calls } = okRunner();
+    // [>]: The first reply never ends on its own: only the cut lets the turn go on.
+    const { controller, state, sent } = await scripted([{ content: forged, open: true }, { content: "Done." }], runner);
+    await controller.send("read the docs");
+
+    expect(calls).toEqual([{ name: "read_file", args: { path: "README.md" } }]);
+    expect(sent()[1]!.messages[2]).toEqual({ role: "assistant", content: call });
+    expect(state().entries.map((entry) => entry.role === "assistant" && entry.status)).toEqual([
+      false,
+      "done",
+      false,
+      "done",
+    ]);
+    expect(state().entries[1]).toMatchObject({ content: call });
   });
 
   test("a path outside the workspace gives an error step whose text reaches the model", async () => {
@@ -2479,6 +2529,211 @@ describe("ChatController agent turn", () => {
     });
   });
 
+  describe("slash skills", () => {
+    let base = "";
+    let home = "";
+    let workspaceDir = "";
+    beforeEach(() => {
+      base = realpathSync(mkdtempSync(join(tmpdir(), "broke-code-slash-")));
+      home = join(base, "home");
+      workspaceDir = join(base, "ws");
+      mkdirSync(workspaceDir, { recursive: true });
+    });
+    afterEach(() => rmSync(base, { recursive: true, force: true }));
+
+    /** Write the personal skill `name` with `body` after its frontmatter; returns its folder. */
+    function personalSkill(name: string, body: string, extra = ""): string {
+      const root = join(home, ".agents", "skills", name);
+      mkdirSync(root, { recursive: true });
+      writeFileSync(join(root, "SKILL.md"), `---\nname: ${name}\ndescription: D.\n${extra}---\n\n${body}`);
+      return root;
+    }
+    const discovery: SkillReader = { read: () => readSkills(home, []) };
+    const header = (name: string, root: string) =>
+      `Skill ${name} loaded; its files live in ${root}; read them by that absolute path.`;
+    /** The user message of the first request. */
+    const firstUserMessage = (sent: () => { messages: { role: string; content: string }[] }[]) =>
+      sent()[0]!.messages[1];
+
+    test("/grilling my idea sends the body with $ARGUMENTS replaced; the entry keeps the text as typed and the skill", async () => {
+      const root = personalSkill("grilling", "Grill: $ARGUMENTS\n");
+      const { controller, state, sent, saved } = await scripted(
+        [{ content: "Ok." }],
+        undefined,
+        undefined,
+        undefined,
+        discovery,
+      );
+      await controller.send("/grilling my idea");
+      expect(firstUserMessage(sent)).toEqual({
+        role: "user",
+        content: `${header("grilling", root)}\n\nGrill: my idea\n`,
+      });
+      const entry: ChatEntry = {
+        role: "user",
+        content: "/grilling my idea",
+        mentions: [],
+        skill: { name: "grilling", status: "loaded" },
+      };
+      expect(state().entries[0]).toEqual(entry);
+      expect(saved()!.entries[0]).toEqual({ ...entry, modelText: `${header("grilling", root)}\n\nGrill: my idea\n` });
+    });
+
+    test("a body without $ARGUMENTS is followed by a blank line and the arguments", async () => {
+      const root = personalSkill("grilling", "Grill the user.\n");
+      const { controller, sent } = await scripted([{ content: "Ok." }], undefined, undefined, undefined, discovery);
+      await controller.send("/grilling my idea");
+      expect(firstUserMessage(sent)!.content).toBe(`${header("grilling", root)}\n\nGrill the user.\n\nmy idea`);
+    });
+
+    test("/grilling alone replaces $ARGUMENTS with the empty string", async () => {
+      const root = personalSkill("grilling", "Grill: [$ARGUMENTS]\n");
+      const { controller, sent } = await scripted([{ content: "Ok." }], undefined, undefined, undefined, discovery);
+      await controller.send("  /grilling  ");
+      expect(firstUserMessage(sent)!.content).toBe(`${header("grilling", root)}\n\nGrill: []\n`);
+    });
+
+    test("a skill kept from the model loads this way", async () => {
+      const root = personalSkill("deploy", "Deploy $ARGUMENTS.\n", "disable-model-invocation: true\n");
+      const { controller, state, sent } = await scripted(
+        [{ content: "Ok." }],
+        undefined,
+        undefined,
+        undefined,
+        discovery,
+      );
+      await controller.send("/deploy prod");
+      expect(firstUserMessage(sent)!.content).toBe(`${header("deploy", root)}\n\nDeploy prod.\n`);
+      expect(state().entries[0]).toMatchObject({ skill: { name: "deploy", status: "loaded" } });
+    });
+
+    test("/nothing here and /new reach the request as typed, with no skill", async () => {
+      personalSkill("grilling", "Grill.\n");
+      const { controller, state, sent } = await scripted(
+        [{ content: "a" }, { content: "b" }],
+        undefined,
+        undefined,
+        undefined,
+        discovery,
+      );
+      await controller.send("/nothing here");
+      await controller.send("/new");
+      expect(sent()[0]!.messages[1]).toEqual({ role: "user", content: "/nothing here" });
+      expect(sent()[1]!.messages.at(-1)).toEqual({ role: "user", content: "/new" });
+      expect(state().entries[0]).toEqual({ role: "user", content: "/nothing here", mentions: [] });
+      expect(state().entries[2]).toEqual({ role: "user", content: "/new", mentions: [] });
+    });
+
+    test("a SKILL.md gone since discovery still sends the message, saying the skill could not be loaded", async () => {
+      const root = personalSkill("grilling", "Grill: $ARGUMENTS\n");
+      const skill: Skill = { name: "grilling", description: "D.", root, listedToModel: true };
+      unlinkSync(join(root, "SKILL.md"));
+      const { controller, state, sent } = await scripted([{ content: "Ok." }], undefined, undefined, undefined, {
+        read: async () => ({ skills: [skill], warnings: [] }),
+      });
+      await controller.send("/grilling my idea");
+      expect(firstUserMessage(sent)!.content).toBe(
+        "Skill grilling could not be loaded: its SKILL.md could not be read (no such file).\n\nmy idea",
+      );
+      expect(state().entries[0]).toMatchObject({ skill: { name: "grilling", status: "failed" } });
+    });
+
+    test("mentions in the arguments are read and their blocks follow the skill text", async () => {
+      const root = personalSkill("grilling", "Grill: $ARGUMENTS\n");
+      const reader: MentionReader = {
+        read: async (path) => ({ path, kind: "file", status: "attached", lines: 1, content: "x\n", omitted: 0 }),
+      };
+      const { controller, state, sent } = await scripted(
+        [{ content: "Ok." }],
+        undefined,
+        undefined,
+        undefined,
+        discovery,
+        undefined,
+        reader,
+      );
+      await controller.send("/grilling @a.ts");
+      expect(firstUserMessage(sent)!.content).toBe(
+        `${header("grilling", root)}\n\nGrill: @a.ts\n\n\n@a.ts (file, 1 line)\n\`\`\`\nx\n\`\`\``,
+      );
+      expect(state().entries[0]).toMatchObject({ mentions: [{ path: "a.ts", status: "attached" }] });
+    });
+
+    test("after /grilling x, its folder outside the workspace is readable in the same turn and once reopened", async () => {
+      const root = personalSkill("grilling", "Read reference.md.\n");
+      writeFileSync(join(root, "reference.md"), "the reference\n");
+      const runner = workspaceToolRunner(
+        () => [{ name: "ws", path: workspaceDir }],
+        { ripgrepCandidates: [] },
+        (roots) => fileApplier(roots),
+      );
+      const reference = join(root, "reference.md");
+      const { controller, state } = await scripted(
+        [
+          { content: readCall(reference) },
+          { content: "Cannot." },
+          { content: readCall(reference) },
+          { content: "Read." },
+          { content: readCall(reference) },
+          { content: "Again." },
+        ],
+        runner,
+        undefined,
+        undefined,
+        discovery,
+      );
+      await controller.send("read it");
+      expect(state().entries[2]).toMatchObject({ role: "tool", status: "error" });
+      expect((state().entries[2] as { text: string }).text).toContain("outside the workspace");
+
+      await controller.send("/grilling x");
+      expect(state().entries[6]).toMatchObject({ role: "tool", status: "ok" });
+      expect((state().entries[6] as { text: string }).text).toContain("the reference");
+
+      const id = state().conversationId;
+      await controller.newChat();
+      await controller.openConversation(id);
+      await controller.send("again");
+      expect(state().entries[10]).toMatchObject({ role: "tool", status: "ok" });
+    });
+
+    test("after /<name> of a skill kept from the model, its load_skill is already loaded; before, it is refused", async () => {
+      const root = personalSkill("deploy", "Deploy $ARGUMENTS.\n", "disable-model-invocation: true\n");
+      personalSkill("review", "Review.\n");
+      const runner = workspaceToolRunner(
+        () => [{ name: "ws", path: workspaceDir }],
+        { ripgrepCandidates: [] },
+        (roots) => fileApplier(roots),
+      );
+      const loadCall = "<load_skill>\n<name>deploy</name>\n</load_skill>";
+      const { controller, state } = await scripted(
+        [{ content: loadCall }, { content: "Loaded." }, { content: loadCall }, { content: "Cannot." }],
+        runner,
+        undefined,
+        undefined,
+        discovery,
+      );
+      await controller.send("/deploy prod");
+      expect(state().entries[2]).toEqual({
+        role: "tool",
+        name: "load_skill",
+        args: { name: "deploy" },
+        status: "ok",
+        text: `Skill deploy is already loaded; its files live in ${root}; read them by that absolute path.`,
+      });
+
+      await controller.newChat();
+      await controller.send("deploy prod");
+      expect(state().entries[2]).toEqual({
+        role: "tool",
+        name: "load_skill",
+        args: { name: "deploy" },
+        status: "error",
+        text: "load_skill: deploy: no skill of that name can be loaded. Skills you can load: review.",
+      });
+    });
+  });
+
   test("without instruction files the system message is the prompt alone", async () => {
     const { controller, sent } = await scripted([{ content: "a" }]);
     await controller.send("hi");
@@ -2542,7 +2797,7 @@ describe("ChatController agent turn", () => {
 
     test("an open request shows in the state with its diff open while the reply stays streaming", async () => {
       const { state, previews, controller, done } = await waiting();
-      expect(state().approval).toEqual({ id: expect.any(Number), tool: "write_file", summary: "a.txt" });
+      expect(state().approval).toEqual({ id: expect.any(Number), kind: "write", tool: "write_file", summary: "a.txt" });
       expect(state().entries.at(-1)).toMatchObject({
         role: "assistant",
         status: "streaming",
@@ -2754,6 +3009,101 @@ describe("ChatController agent turn", () => {
       expect(decisions).toEqual([{ kind: "reject" }]);
     });
 
+    describe("commands", () => {
+      const commandCall = (command: string) => `<run_command>\n<command>\n${command}\n</command>\n</run_command>`;
+      const pidFile = () => join(workspaceDir, "command.pid");
+
+      /** A turn whose first reply runs `command` in the workspace, then answers "Done.", stopped at the request. */
+      async function waitingCommand(command: string) {
+        const runner = workspaceToolRunner(
+          () => [{ name: "ws", path: workspaceDir }],
+          { ripgrepCandidates: [] },
+          (roots) => fileApplier(roots),
+          () => ({ shell: "/bin/sh", timeoutMs: 10_000 }),
+        );
+        const turn = await scripted([{ content: commandCall(command) }, { content: "Done." }], runner);
+        const done = turn.controller.send("run it");
+        await until(turn.state, (s) => s.approval !== undefined);
+        return { ...turn, done };
+      }
+
+      test("Run shows the whole command, runs it, and the next request holds its output as an ok result", async () => {
+        const command = "echo ran > ran.txt\necho hello";
+        const { state, controller, done, sent } = await waitingCommand(command);
+        expect(state().approval).toEqual({
+          id: expect.any(Number),
+          kind: "command",
+          tool: "run_command",
+          summary: command,
+        });
+        expect(existsSync(join(workspaceDir, "ran.txt"))).toBe(false);
+        controller.approve(state().approval!.id);
+        await done;
+
+        expect(readFileSync(join(workspaceDir, "ran.txt"), "utf8")).toBe("ran\n");
+        expect(state().entries[2]).toEqual({
+          role: "tool",
+          name: "run_command",
+          args: { command },
+          status: "ok",
+          text: "exit code 0\nstdout:\nhello\nstderr: (empty)",
+          approval: "accepted",
+        });
+        expect(sent()[1]!.messages.at(-1)?.content).toBe(
+          '<tool_result tool="run_command" status="ok">\nexit code 0\nstdout:\nhello\nstderr: (empty)\n</tool_result>',
+        );
+        expect(state().entries.at(-1)).toMatchObject({ content: "Done.", status: "done" });
+      });
+
+      test("Reject with a reason runs nothing and sends the rejection and the reason as an error result", async () => {
+        const { state, controller, done, sent } = await waitingCommand("echo ran > ran.txt");
+        controller.reject(state().approval!.id, "Not now.");
+        await done;
+
+        expect(existsSync(join(workspaceDir, "ran.txt"))).toBe(false);
+        expect(state().entries[2]).toMatchObject({ status: "error", approval: "rejected" });
+        expect(sent()[1]!.messages.at(-1)?.content).toBe(
+          '<tool_result tool="run_command" status="error">\nThe user rejected this command.\nNot now.\n</tool_result>',
+        );
+      });
+
+      test("Stop during the wait runs nothing and ends the reply stopped", async () => {
+        const { state, controller, done, sent } = await waitingCommand("echo ran > ran.txt");
+        const id = state().approval!.id;
+        controller.stop();
+        await done;
+        controller.approve(id);
+        await Bun.sleep(20);
+
+        expect(existsSync(join(workspaceDir, "ran.txt"))).toBe(false);
+        expect(state().approval).toBeUndefined();
+        expect(state().entries.at(-1)).toMatchObject({
+          role: "assistant",
+          status: "stopped",
+          call: { name: "run_command" },
+        });
+        expect(sent()).toHaveLength(1);
+      });
+
+      test("Stop during the run kills the command's group and ends the reply stopped", async () => {
+        const { state, controller, done, sent } = await waitingCommand(`echo $$ > '${pidFile()}'; sleep 5 | cat`);
+        controller.approve(state().approval!.id);
+        await until(state, () => readFileOr(pidFile()).endsWith("\n"));
+        controller.stop();
+        await done;
+
+        expect(state().entries.at(-1)).toMatchObject({
+          role: "assistant",
+          status: "stopped",
+          call: { name: "run_command" },
+        });
+        expect(sent()).toHaveLength(1);
+        const pgid = Number(readFileSync(pidFile(), "utf8"));
+        await until(state, () => !groupAlive(pgid));
+        expect(groupAlive(pgid)).toBe(false);
+      });
+    });
+
     test("Stop while the diff opens closes it once open and gives no request", async () => {
       let open: (preview: Preview) => void = () => {};
       let closed = 0;
@@ -2962,3 +3312,22 @@ describe("ChatController context usage", () => {
     expect(usages.at(-1)).toMatchObject({ size: 131072, known: true });
   });
 });
+
+/** The text of the file at `path`, or empty when it cannot be read yet. */
+function readFileOr(path: string): string {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+/** True while a process of group `pgid` is alive. */
+function groupAlive(pgid: number): boolean {
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}

@@ -29,9 +29,9 @@ the message saying what is wrong count as a step too. The chat shows each step a
 _Avoid_: tool use, action, iteration
 
 **Approval**:
-The user's Accept or Reject of a tool call that changes the workspace or runs a command, given in the chat while the
-agent turn waits; a rejection, with its optional reason, goes back to the model as the call's result. A setting can
-approve writes without asking, never commands.
+The user's Accept (Run, for a command) or Reject of a tool call that changes the workspace or runs a command, given in
+the chat while the agent turn waits; a rejection, with its optional reason, goes back to the model as the call's
+result. A setting can approve writes without asking, never commands.
 _Avoid_: confirmation, permission, consent
 
 **Conversation**:
@@ -64,9 +64,9 @@ conversation.
 _Avoid_: plugin, prompt template, custom command
 
 **Loaded skill**:
-A skill the model loaded in this conversation: the conversation holds its instructions, and the read tools may read
-its folder until the conversation ends. A folder outside the workspace stays read-only; a workspace skill's folder
-follows the workspace rules.
+A skill the model or the user loaded in this conversation, the model with `load_skill`, the user with `/<name>`: the
+conversation holds its instructions, and the read tools may read its folder until the conversation ends. A folder outside the workspace stays read-only to the file tools (an
+approved command is held to no folder); a workspace skill's folder follows the workspace rules.
 _Avoid_: active skill, enabled skill
 
 **Personal skill**:

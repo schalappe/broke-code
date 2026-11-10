@@ -397,6 +397,21 @@ summary.step-row:focus-visible {
   font-family: var(--vscode-editor-font-family);
 }
 
+/* A command's row wraps: the command takes a line of its own under the tool name and status, whole, line breaks kept. */
+.step-row.command {
+  flex-wrap: wrap;
+}
+
+.step-command {
+  order: 1;
+  flex: 1 0 100%;
+  max-height: 12em;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--vscode-editor-font-family);
+}
+
 .step-status {
   flex: none;
   margin-left: auto;
@@ -467,7 +482,7 @@ summary.step-row:focus-visible {
   align-items: flex-end;
 }
 
-/* Mention menu: overlays the conversation right above the composer, so the composer never moves. */
+/* Mention and slash menus: overlay the conversation right above the composer, so the composer never moves. */
 .menu {
   position: absolute;
   left: 0;
@@ -513,6 +528,23 @@ summary.step-row:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* A slash command's name keeps its width; its description takes the rest of the row, cut at its end. */
+.menu-label:has(+ .menu-description) {
+  flex: none;
+}
+
+.menu-description {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--vscode-descriptionForeground);
+}
+
+.menu [role="option"].highlighted .menu-description {
+  color: inherit;
 }
 
 .menu-notice {

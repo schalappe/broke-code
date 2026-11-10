@@ -7,7 +7,7 @@ import { type ConversationSummary, isConversationId } from "./conversation";
 import type { MentionResult } from "./mentions";
 import type { ProviderError } from "./providerError";
 import type { SkippedProvider } from "./providers";
-import type { Suggestion } from "./suggestions";
+import type { SlashCommand, Suggestion } from "./suggestions";
 
 export type ModelsState =
   | { status: "noProvider" }
@@ -47,14 +47,23 @@ export type StepApproval = "accepted" | "rejected" | "auto";
 
 /**
  * The approval request open in the chat: the user's Accept or Reject of the call the reply runs. `id`: the request's,
- * carried by the decision, so a decision for a request no longer open is ignored. `summary`: what it acts on, such as
- * the file a write changes.
+ * carried by the decision, so a decision for a request no longer open is ignored. `kind`: `write` (Accept and Reject)
+ * or `command` (Run and Reject). `summary`: what it acts on, such as the file a write changes or the whole command.
  */
-export type PendingApproval = { id: number; tool: string; summary: string };
+export type PendingApproval = { id: number; kind: "write" | "command"; tool: string; summary: string };
+
+/**
+ * The skill a user message loads with `/<name>`: `loaded` when its text reached the model, `failed` when its `SKILL.md`
+ * could not be read at send, and the model got a notice instead.
+ */
+export type UserSkill = { name: string; status: "loaded" | "failed" };
 
 export type ChatEntry =
-  /** `content`: the text as typed. `mentions`: each mention read at send time, in order. */
-  | { role: "user"; content: string; mentions: MentionResult[] }
+  /**
+   * `content`: the text as typed. `mentions`: each mention read at send time, in order. `skill`: set when the message
+   * starts with `/<name>` of a discovered skill.
+   */
+  | { role: "user"; content: string; mentions: MentionResult[]; skill?: UserSkill }
   /**
    * `reasoning`: text the model writes before its answer, shown collapsed, never sent back. `content`: the whole
    * answer, its call block included, so the history resends exactly what the model wrote; the chat hides the block by
@@ -160,7 +169,12 @@ export type HostMessage =
    * Answer to the `queryFiles` of the same `id`. `capped`: the index stopped at its file limit. `failed`: the
    * workspace files could not be listed, so `items` is empty for that reason, not for lack of a match.
    */
-  | { type: "fileSuggestions"; id: number; items: Suggestion[]; capped: boolean; failed: boolean };
+  | { type: "fileSuggestions"; id: number; items: Suggestion[]; capped: boolean; failed: boolean }
+  /**
+   * Answer to the `querySkills` of the same `id`: every skill a send would discover, those kept from the model
+   * included, by name. `failed`: the skills could not be listed, so `items` is empty for that reason.
+   */
+  | { type: "skillSuggestions"; id: number; items: SlashCommand[]; failed: boolean };
 
 export type WebviewMessage =
   | { type: "ready" }
@@ -171,6 +185,10 @@ export type WebviewMessage =
   | { type: "send"; text: string; mentions: string[] }
   /** `id`: grows with each query, so the webview can drop stale answers. */
   | { type: "queryFiles"; query: string; id: number }
+  /** Ask once per `/` menu opening for the skills; the webview filters them as the user types. `id`: as `queryFiles`. */
+  | { type: "querySkills"; id: number }
+  /** `/model`: open the editor's model list over the selected provider's models; a pick goes as `selectModel`. */
+  | { type: "chooseModel" }
   | { type: "stop" }
   | { type: "newChat" }
   /** `id`: a conversation of `ChatState.conversations`. */
@@ -186,7 +204,7 @@ export type WebviewMessage =
 
 /** Chat state carried by `message`; `undefined` for a message that must leave the panel's state alone. */
 export function chatStateOf(message: HostMessage): ChatState | undefined {
-  return message.type === "fileSuggestions" ? undefined : message.state;
+  return message.type === "fileSuggestions" || message.type === "skillSuggestions" ? undefined : message.state;
 }
 
 /**
@@ -213,6 +231,7 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | undefined {
     case "retryModels":
     case "stop":
     case "newChat":
+    case "chooseModel":
     case "openSettings":
       return { type: message.type };
     case "selectProvider":
@@ -246,6 +265,8 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | undefined {
       if (!isRequestId(id)) return undefined;
       return { type: "queryFiles", query, id };
     }
+    case "querySkills":
+      return isRequestId(message.id) ? { type: "querySkills", id: message.id } : undefined;
     case "approve":
       return isRequestId(message.id) ? { type: "approve", id: message.id } : undefined;
     case "reject": {

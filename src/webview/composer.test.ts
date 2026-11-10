@@ -1,7 +1,18 @@
 import { describe, expect, test } from "bun:test";
 import { MAX_QUERY_LENGTH } from "../core/protocol";
-import type { Suggestion } from "../core/suggestions";
-import { composerKeyAction, type MenuAnswer, menuToken, menuView, openMenuToken, pickedInText } from "./composer";
+import type { SlashCommand, Suggestion } from "../core/suggestions";
+import {
+  builtInCommand,
+  composerKeyAction,
+  type MenuAnswer,
+  menuToken,
+  menuView,
+  openMenuToken,
+  pickedInText,
+  replaceToken,
+  slashMenuView,
+  slashPick,
+} from "./composer";
 
 const file = (path: string): Suggestion => ({ path, kind: "file" });
 
@@ -99,20 +110,31 @@ describe("pickedInText", () => {
 
 describe("menuToken", () => {
   test("is the @ token at the caret, read with the picked paths set aside", () => {
-    expect(menuToken("see @sr", 7, [])).toEqual({ start: 4, query: "sr" });
-    expect(menuToken("@a`b.ts @q", 10, ["a`b.ts"])).toEqual({ start: 8, query: "q" });
+    expect(menuToken("see @sr", 7, [])).toEqual({ trigger: "@", start: 4, query: "sr" });
+    expect(menuToken("@a`b.ts @q", 10, ["a`b.ts"])).toEqual({ trigger: "@", start: 8, query: "q" });
     expect(menuToken("plain word", 10, [])).toBeUndefined();
   });
 
   test("takes a query up to MAX_QUERY_LENGTH characters, and none past it", () => {
     const atLimit = `@${"a".repeat(MAX_QUERY_LENGTH)}`;
-    expect(menuToken(atLimit, atLimit.length, [])).toEqual({ start: 0, query: "a".repeat(MAX_QUERY_LENGTH) });
+    expect(menuToken(atLimit, atLimit.length, [])).toEqual({
+      trigger: "@",
+      start: 0,
+      query: "a".repeat(MAX_QUERY_LENGTH),
+    });
     expect(menuToken(`${atLimit}a`, atLimit.length + 1, [])).toBeUndefined();
+  });
+
+  test("is the / token at the start of the message, and an @ token after it once whitespace follows the /", () => {
+    expect(menuToken("/", 1, [])).toEqual({ trigger: "/", start: 0, query: "" });
+    expect(menuToken("/gri", 4, [])).toEqual({ trigger: "/", start: 0, query: "gri" });
+    expect(menuToken("/grilling @sr", 13, [])).toEqual({ trigger: "@", start: 10, query: "sr" });
+    expect(menuToken("see /etc", 8, [])).toBeUndefined();
   });
 });
 
 describe("openMenuToken", () => {
-  const token = { start: 4, query: "sr" };
+  const token = { trigger: "@" as const, start: 4, query: "sr" };
 
   test("opens the menu of the token while the message box has focus", () => {
     expect(openMenuToken(token, true, undefined)).toEqual(token);
@@ -121,8 +143,88 @@ describe("openMenuToken", () => {
   });
 
   test("keeps closed the token dismissed with Escape, and opens one at another place or with another query", () => {
-    expect(openMenuToken(token, true, { start: 4, query: "sr" })).toBeUndefined();
-    expect(openMenuToken(token, true, { start: 9, query: "sr" })).toEqual(token);
-    expect(openMenuToken(token, true, { start: 4, query: "s" })).toEqual(token);
+    expect(openMenuToken(token, true, { ...token })).toBeUndefined();
+    expect(openMenuToken(token, true, { ...token, start: 9 })).toEqual(token);
+    expect(openMenuToken(token, true, { ...token, query: "s" })).toEqual(token);
+  });
+
+  test("a / token is another token than an @ token at the same place with the same query", () => {
+    const slash = { trigger: "/" as const, start: 0, query: "x" };
+    expect(openMenuToken(slash, true, { ...slash, trigger: "@" })).toEqual(slash);
+    expect(openMenuToken(slash, true, { ...slash })).toBeUndefined();
+  });
+});
+
+describe("slashMenuView", () => {
+  const command = (name: string): SlashCommand => ({ name, description: `${name} text` });
+  const builtIns = [command("new"), command("model")];
+  const skills = { items: [command("grilling"), command("notes")], failed: false };
+
+  test("lists the built-in commands, then the skills, those whose name starts with the query", () => {
+    expect(slashMenuView(builtIns, skills, "")).toEqual({ items: [...builtIns, ...skills.items], failed: false });
+    expect(slashMenuView(builtIns, skills, "n")).toEqual({
+      items: [command("new"), command("notes")],
+      failed: false,
+    });
+    expect(slashMenuView(builtIns, skills, "zz")).toEqual({ items: [], failed: false });
+  });
+
+  test("shows at most MAX_SUGGESTIONS rows", () => {
+    const many = { items: Array.from({ length: 30 }, (_, index) => command(`skill-${index}`)), failed: false };
+    expect(slashMenuView(builtIns, many, "")?.items).toHaveLength(20);
+  });
+
+  test("while the skills are pending, shows the matching built-ins, and no menu when none match", () => {
+    expect(slashMenuView(builtIns, undefined, "m")).toEqual({ items: [command("model")], failed: false });
+    expect(slashMenuView(builtIns, undefined, "gr")).toBeUndefined();
+  });
+
+  test("when the skills could not be listed, still shows the built-ins and says so", () => {
+    const failed = { items: [], failed: true };
+    expect(slashMenuView(builtIns, failed, "")).toEqual({ items: builtIns, failed: true });
+    expect(slashMenuView(builtIns, failed, "gr")).toEqual({ items: [], failed: true });
+  });
+});
+
+describe("builtInCommand", () => {
+  test("is the built-in command a message is exactly, trimmed", () => {
+    expect(builtInCommand("/new")).toBe("new");
+    expect(builtInCommand("  /model \n")).toBe("model");
+  });
+
+  test("is none for a command with words after it, another word, or another case", () => {
+    for (const text of ["/new words", "/model gpt", "/news", "/grilling", "new", "/New", "see /new"]) {
+      expect(builtInCommand(text)).toBeUndefined();
+    }
+  });
+});
+
+describe("slashPick", () => {
+  test("a built-in row runs its command when Send would act, and inserts /<name> and a space otherwise", () => {
+    const row = { name: "new", description: "Start", builtIn: "new" as const };
+    expect(slashPick(row, true, "")).toEqual({ type: "run", command: "new" });
+    expect(slashPick({ ...row, name: "model", builtIn: "model" }, true, " \n")).toEqual({
+      type: "run",
+      command: "model",
+    });
+    expect(slashPick(row, false, "")).toEqual({ type: "insert", text: "/new " });
+  });
+
+  test("a built-in row inserts /<name> and a space when text follows the token, which running would discard", () => {
+    const row = { name: "new", description: "Start", builtIn: "new" as const };
+    expect(slashPick(row, true, " keep this draft")).toEqual({ type: "insert", text: "/new " });
+  });
+
+  test("a skill row inserts /<name> and a space for its arguments, even one named as a built-in", () => {
+    const grilling = { name: "grilling", description: "Grill" };
+    expect(slashPick(grilling, true, "")).toEqual({ type: "insert", text: "/grilling " });
+    expect(slashPick({ name: "new", description: "A skill" }, true, "")).toEqual({ type: "insert", text: "/new " });
+  });
+});
+
+describe("replaceToken", () => {
+  test("replaces the token up to the caret and puts the caret after the inserted text", () => {
+    expect(replaceToken("/gr", { start: 0 }, 3, "/grilling ")).toEqual({ text: "/grilling ", caret: 10 });
+    expect(replaceToken("see @sr now", { start: 4 }, 7, "@src/ ")).toEqual({ text: "see @src/  now", caret: 10 });
   });
 });

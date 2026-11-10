@@ -1,10 +1,16 @@
 /**
  * @module contextSizes
- * The turn limits from the user settings, and the chat's "Set context size" action, which saves a model's size to
- * `brokeCode.contextSizes`.
+ * The turn limits and the command timeout from the user settings, and the chat's "Set context size" action, which
+ * saves a model's size to `brokeCode.contextSizes`.
  */
 import * as vscode from "vscode";
-import { parseContextSizeInput, parseLimits, type TurnLimits, withContextSize } from "../core/limits";
+import {
+  parseCommandTimeout,
+  parseContextSizeInput,
+  parseLimits,
+  type TurnLimits,
+  withContextSize,
+} from "../core/limits";
 
 /** Settings whose change updates the limits. */
 export const LIMIT_SETTINGS = ["brokeCode.maxToolSteps", "brokeCode.contextSizes"] as const;
@@ -20,6 +26,16 @@ export function readLimits(): TurnLimits {
     maxToolSteps: config.inspect<unknown>("maxToolSteps")?.globalValue,
     contextSizes: config.inspect<unknown>("contextSizes")?.globalValue,
   });
+}
+
+/**
+ * `brokeCode.commandTimeoutSeconds` from the user settings, in seconds. [!]: User settings only, as `readLimits`: a
+ * repository must not lengthen how long a command may run.
+ */
+export function readCommandTimeoutSeconds(): number {
+  return parseCommandTimeout(
+    vscode.workspace.getConfiguration("brokeCode").inspect<unknown>("commandTimeoutSeconds")?.globalValue,
+  );
 }
 
 /**

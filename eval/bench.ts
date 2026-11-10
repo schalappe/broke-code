@@ -96,7 +96,7 @@ export async function trimIncompleteLine(path: string): Promise<number> {
 /**
  * One run as a line of the dump: its model, scenario, run number from 1, verdict, and whole milliseconds, then its
  * `entries` (tool steps with the arguments of their calls), `planned` (each change handed to the applier, in call
- * order, with its status), and `changes` (the files that differ from the fixture after the run, see `workspaceChanges`).
+ * order, with its status), and `changes` (the entries that differ from the fixture after the run, see `workspaceChanges`).
  */
 export function dumpLine(run: {
   model: string;

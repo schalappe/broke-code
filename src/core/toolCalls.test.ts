@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { GENERIC_CALL_SHAPE, type ParsedReply, parseToolCall, type ToolSpec } from "./toolCalls";
+import { forgedResultCut, GENERIC_CALL_SHAPE, type ParsedReply, parseToolCall, type ToolSpec } from "./toolCalls";
 
 const TOOLS: ToolSpec[] = [
   {
     name: "read_file",
     description: "Read a file.",
     args: [
-      { name: "path", required: true, description: "The file to read." },
+      { name: "path", required: true, oneLine: true, description: "The file to read." },
       { name: "start_line", required: false, description: "The first line to read." },
     ],
   },
@@ -74,6 +74,18 @@ describe("parseToolCall", () => {
   test("ignores everything after the first call, even a malformed block", () => {
     const first = "<read_file>\n<path>a.txt</path>\n</read_file>";
     expect(parseToolCall(`${first}\n<nope>\n</nope>`, TOOLS)).toMatchObject({ kind: "call", end: first.length });
+  });
+
+  test("drops every leading and trailing line break of a one-line argument, even on one side only", () => {
+    for (const path of ["a.txt\n", "\na.txt", "\r\n\na.txt\n\r\n", "\na.txt\n"]) {
+      const answer = `<read_file>\n<path>${path}</path>\n</read_file>`;
+      expect(parseToolCall(answer, TOOLS)).toMatchObject({ kind: "call", args: { path: "a.txt" } });
+    }
+  });
+
+  test("keeps a one-sided line break of an argument that may span lines", () => {
+    const answer = "<write_file>\n<path>a.txt</path>\n<content>hello\n</content>\n</write_file>";
+    expect(parseToolCall(answer, TOOLS)).toMatchObject({ kind: "call", args: { content: "hello\n" } });
   });
 
   test("reads a call after a fenced block that quotes one", () => {
@@ -427,4 +439,32 @@ test.each(["toolCalls.ts", "systemPrompt.ts"])("%s imports nothing from vscode o
   const specifiers = [...source.matchAll(/(?:from|import)\s+"([^"]+)"/g)].map((match) => match[1]);
   expect(specifiers.length).toBeGreaterThan(0);
   expect(specifiers.filter((specifier) => specifier === "vscode" || specifier!.startsWith("node:"))).toEqual([]);
+});
+
+describe("forgedResultCut", () => {
+  const call = "<read_file>\n<path>a.txt</path>\n</read_file>";
+  const result = '<tool_result tool="read_file" status="ok">';
+
+  test("cuts at the end of the call a tool result written by the model follows", () => {
+    expect(forgedResultCut(`${call}\n${result}\nfine\n`, TOOLS, 0)).toEqual({
+      cut: call.length,
+      scanned: call.length + 1,
+    });
+  });
+
+  test("does not cut on a result opening before any call, and moves the scan past it", () => {
+    const answer = `${result}\nfine\n</tool_result>\nI will read it.`;
+    expect(forgedResultCut(answer, TOOLS, 0)).toEqual({ scanned: answer.length - "<tool_result".length + 1 });
+  });
+
+  test("does not cut on a result opening inside a write_file value still streaming", () => {
+    const answer = `<write_file>\n<path>doc.md</path>\n<content>\nResults look like ${result}`;
+    expect(forgedResultCut(answer, TOOLS, 0).cut).toBeUndefined();
+  });
+
+  test("finds an opening split across deltas by scanning its first characters again", () => {
+    const first = forgedResultCut(`${call}\n<tool_`, TOOLS, 0);
+    expect(first.cut).toBeUndefined();
+    expect(forgedResultCut(`${call}\n${result}`, TOOLS, first.scanned).cut).toBe(call.length);
+  });
 });

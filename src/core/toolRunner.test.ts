@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolContext } from "./chatController";
+import { type CommandEnv, RUN_COMMAND_TOOL } from "./commands";
 import { LOAD_SKILL_TOOL } from "./skills";
 import type { Skill } from "./systemPrompt";
 import { workspaceToolRunner } from "./toolRunner";
@@ -36,7 +37,7 @@ const context: ToolContext = {
 };
 
 /** A runner over `root` whose applier records each change and the context it was built for, and writes nothing. */
-function recordingRunner() {
+function recordingRunner(commandEnv?: () => CommandEnv) {
   const applied: { change: PlannedChange; roots: WorkspaceRoot[]; context: ToolContext }[] = [];
   const runner = workspaceToolRunner(
     () => [root],
@@ -45,6 +46,7 @@ function recordingRunner() {
       applied.push({ change, roots, context: runContext });
       return { status: "ok", text: "applied" };
     },
+    commandEnv,
   );
   return { runner, applied };
 }
@@ -52,6 +54,23 @@ function recordingRunner() {
 describe("workspaceToolRunner", () => {
   test("lists the read tools, then the write tools, then load_skill", () => {
     expect(recordingRunner().runner.tools).toEqual([...READ_TOOLS, ...WRITE_TOOLS, LOAD_SKILL_TOOL]);
+  });
+
+  test("with a command environment, lists run_command before load_skill", () => {
+    const { runner } = recordingRunner(() => ({ shell: "/bin/sh", timeoutMs: 10_000 }));
+    expect(runner.tools).toEqual([...READ_TOOLS, ...WRITE_TOOLS, RUN_COMMAND_TOOL, LOAD_SKILL_TOOL]);
+  });
+
+  test("runs an approved command in the workspace with the environment read at the call", async () => {
+    let shell = "/bin/sh";
+    const { runner } = recordingRunner(() => ({ shell, timeoutMs: 10_000 }));
+    const call = { name: "run_command", args: { command: "pwd" } };
+    expect(await runner.run(call, context)).toEqual({
+      status: "ok",
+      text: `exit code 0\nstdout:\n${root.path}\nstderr: (empty)`,
+    });
+    shell = join(base, "no-shell");
+    expect((await runner.run(call, context)).text).toContain("could not start");
   });
 
   test("loads a skill of the run's discovery, and says so again once its folder is loaded", async () => {

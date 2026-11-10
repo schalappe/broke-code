@@ -66,7 +66,8 @@ call, which reloads as `stopped` by the existing rule, with nothing written.
 
 - A tool that changes the workspace must ask through `requestApproval`; the extension wires the write tools only
   behind it, so no build writes without a click unless the user turned auto-approve on.
-- `run_command` (#9) reuses the seam with kind `command`, which the setting never accepts.
+- `run_command` (#9) reuses the seam with kind `command`, which the setting never accepts. The chat labels its Accept
+  **Run** and shows the whole command; a rejection reads "The user rejected this command.", then the reason.
 - An open request does not survive a window reload, and the proposed side cannot be edited before Accept.
 - Residual race, accepted: text typed into an editor between the last unsaved check and the rename is not lost, but
   that editor then holds unsaved text over a file that changed on disk, which VS Code reports when it saves.
