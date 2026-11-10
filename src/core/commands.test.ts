@@ -217,6 +217,11 @@ describe("runCommand", () => {
     },
   );
 
+  test("output a background job writes within the drain is kept, and the job ends on its own", async () => {
+    const result = await run("(sleep 0.4; echo late) & echo early", { drainMs: 1500 });
+    expect(result).toEqual({ status: "ok", text: "exit code 0\nstdout:\nearly\nlate\nstderr: (empty)" });
+  });
+
   test("a stop after the shell exited, while the output drains, ends the wait at once", async () => {
     const abort = new AbortController();
     const pidFile = join(base, "drain.pid");
