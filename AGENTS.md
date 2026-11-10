@@ -371,8 +371,10 @@ goes to the model as typed. Read `GLOSSARY.md` for the domain vocabulary and `do
   once, since a discovery reads every `SKILL.md`; the host runs the send's discovery without its log line (its warnings
   wait for the next send) and answers `skillSuggestions { id, items, failed }`, which `chatStateOf` leaves out; the
   webview filters as the user types and drops an answer to an earlier opening. Until the answer comes, only the
-  matching built-ins show, and no menu when none matches; when the skills cannot be listed, the menu says so and keeps
-  the built-ins. Keys and clicks work as in the `@` menu; a pick replaces the token with `/<name> `.
+  matching built-ins show, and no menu when none matches. When a skills folder cannot be listed (its
+  `folderUnreadable` warning) or the discovery fails, the answer is `failed` and the menu says so, keeping the
+  built-ins and the skills found elsewhere; a skipped skill is no listing failure. Keys and clicks work as in the `@`
+  menu; a pick replaces the token with `/<name> `.
 - A message whose trimmed text is exactly `/new` posts the New chat button's `newChat` request and closes History;
   exactly `/model` focuses the header's Model select and calls `showPicker()` inside the key or click handler that
   sends (it needs transient user activation), focus alone where the select is disabled or `showPicker` is absent or

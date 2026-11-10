@@ -505,6 +505,31 @@ describe("answerSkillQuery", () => {
     });
   });
 
+  test("a skills folder that cannot be listed fails the answer, which keeps the skills found elsewhere", async () => {
+    await writeSkill(workspaceSkills(), "kept", skillText("kept", "Kept."));
+    await writeSkill(personal, "broken", "---\nname: broken\n---\nNo description.\n");
+    await chmod(personal, 0o000);
+    const answer = await answerSkillQuery(7, () => readSkills(home, single()));
+    expect(answer).toEqual({
+      type: "skillSuggestions",
+      id: 7,
+      items: [{ name: "kept", description: "Kept." }],
+      failed: true,
+    });
+  });
+
+  test("a skipped skill is no listing failure", async () => {
+    await writeSkill(personal, "grilling", skillText("grilling", "Grill the plan."));
+    await writeSkill(personal, "broken", "---\nname: broken\n---\nNo description.\n");
+    const answer = await answerSkillQuery(4, () => readSkills(home, []));
+    expect(answer).toEqual({
+      type: "skillSuggestions",
+      id: 4,
+      items: [{ name: "grilling", description: "Grill the plan." }],
+      failed: false,
+    });
+  });
+
   test("a reader that fails gives a failed answer with the query's id and no row", async () => {
     const original = console.error;
     console.error = () => {};

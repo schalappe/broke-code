@@ -939,6 +939,20 @@ describe("slash commands in the composer", () => {
     });
   });
 
+  test("when one skills folder cannot be listed, the menu says so and shows the skills found elsewhere", async () => {
+    await withPanel(stateWith(true), async ({ host, type, receive }) => {
+      await type("/");
+      await receive({
+        type: "skillSuggestions",
+        id: lastSkillQuery(),
+        items: [{ name: "kept", description: "Kept." }],
+        failed: true,
+      });
+      expect(labels(host)).toEqual(["/new", "/model", "/kept"]);
+      expect(host.querySelector(".menu-notice")?.textContent).toBe("Could not list the skills");
+    });
+  });
+
   test("Enter picks the highlighted row, inserting /<name> and a space without sending; Escape closes the menu", async () => {
     await withPanel(stateWith(true), async ({ host, textarea, type, press, receive }) => {
       await type("/gr");

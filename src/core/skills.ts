@@ -127,17 +127,19 @@ export async function readSkills(
 /**
  * The host's answer to the `/` menu's `querySkills` `id`: the name and description of each skill `read` discovers, those
  * kept from the model included, since the user may still load them with `/<name>`. Skipped skills are left out and
- * their warnings dropped: the next send shows them. A reader that fails is logged and answers `failed`, so the menu
- * says so and still shows the built-in commands.
+ * their warnings dropped: the next send shows them. The answer is `failed` when a skills folder could not be listed,
+ * with the skills found in the others, or when the reader fails, logged, with none; the menu then says so and still
+ * shows the built-in commands. A skipped skill is no listing failure.
  */
 export async function answerSkillQuery(
   id: number,
   read: () => Promise<SkillDiscovery>,
 ): Promise<HostMessage & { type: "skillSuggestions" }> {
   try {
-    const { skills } = await read();
+    const { skills, warnings } = await read();
     const items = skills.map(({ name, description }) => ({ name, description }));
-    return { type: "skillSuggestions", id, items, failed: false };
+    const failed = warnings.some((warning) => warning.problem.kind === "folderUnreadable");
+    return { type: "skillSuggestions", id, items, failed };
   } catch (error) {
     console.error("broke-code: could not list the skills for the / menu", error);
     return { type: "skillSuggestions", id, items: [], failed: true };
