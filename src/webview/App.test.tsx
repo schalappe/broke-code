@@ -1034,6 +1034,95 @@ describe("slash commands in the composer", () => {
   });
 });
 
+describe("composer menus", () => {
+  /** Id of the last query of `type` posted. */
+  const lastQuery = (type: "queryFiles" | "querySkills") =>
+    (posted.filter((message) => (message as { type: string }).type === type).at(-1) as { id: number }).id;
+  /** Label of the row marked selected. */
+  const selected = (host: HTMLElement) =>
+    host.querySelector('[role="option"][aria-selected="true"] .menu-label')?.textContent;
+  const skills = {
+    type: "skillSuggestions",
+    items: [
+      { name: "grilling", description: "Grill the plan." },
+      { name: "notes", description: "Take notes." },
+    ],
+    failed: false,
+  };
+
+  test("the message box controls the open menu, and none while closed", async () => {
+    await withPanel(stateWith(true), async ({ textarea, type, receive }) => {
+      expect(textarea.hasAttribute("aria-controls")).toBe(false);
+      await type("/");
+      expect(textarea.getAttribute("aria-controls")).toBe("slash-menu");
+      await type("@sr");
+      await receive({
+        type: "fileSuggestions",
+        id: lastQuery("queryFiles"),
+        items: [{ path: "src/a.ts", kind: "file" }],
+        capped: false,
+        failed: false,
+      });
+      expect(textarea.getAttribute("aria-controls")).toBe("mention-menu");
+      await type("hi");
+      expect(textarea.hasAttribute("aria-controls")).toBe(false);
+    });
+  });
+
+  test("the message box points at the highlighted row, and at none without rows or menu", async () => {
+    await withPanel(stateWith(true), async ({ textarea, type, press, receive }) => {
+      expect(textarea.hasAttribute("aria-activedescendant")).toBe(false);
+      await type("/");
+      expect(textarea.getAttribute("aria-activedescendant")).toBe("slash-menu-option-0");
+      await press("ArrowDown");
+      expect(textarea.getAttribute("aria-activedescendant")).toBe("slash-menu-option-1");
+      await receive({ ...skills, id: lastQuery("querySkills") });
+      await type("/zz");
+      expect(textarea.hasAttribute("aria-activedescendant")).toBe(false);
+    });
+  });
+
+  test("the highlight goes back to the first row when the filter changes", async () => {
+    await withPanel(stateWith(true), async ({ host, type, press, receive }) => {
+      await type("/");
+      await receive({ ...skills, id: lastQuery("querySkills") });
+      await press("ArrowDown");
+      await press("ArrowDown");
+      expect(selected(host)).toBe("/grilling");
+      await type("/n");
+      expect(selected(host)).toBe("/new");
+    });
+  });
+
+  test("a menu closed with Escape opens again on a new token once the old one is gone", async () => {
+    await withPanel(stateWith(true), async ({ host, type, press }) => {
+      await type("/");
+      await press("Escape");
+      expect(host.querySelector("#slash-menu")).toBeNull();
+      await type("");
+      await type("/");
+      expect(host.querySelector("#slash-menu")).not.toBeNull();
+    });
+  });
+
+  test("picking a path inserts @<path> and a space, and sends it as a mention", async () => {
+    await withPanel(stateWith(true), async ({ textarea, type, press, receive }) => {
+      await type("see @sr");
+      await receive({
+        type: "fileSuggestions",
+        id: lastQuery("queryFiles"),
+        items: [{ path: "src/a b.ts", kind: "file" }],
+        capped: false,
+        failed: false,
+      });
+      await press("Enter");
+      expect(textarea.value).toBe("see @src/a b.ts ");
+      await press("Enter");
+      expect(posted.at(-1)).toEqual({ type: "send", text: "see @src/a b.ts ", mentions: ["src/a b.ts"] });
+    });
+  });
+});
+
 describe("header actions", () => {
   test("the History toggle points at the list only while it is open", () => {
     const open = renderToStaticMarkup(
