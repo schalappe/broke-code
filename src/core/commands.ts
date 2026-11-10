@@ -30,6 +30,7 @@ export const RUN_COMMAND_TOOL: ToolSpec = {
     {
       name: "cwd",
       required: false,
+      oneLine: true,
       description:
         "Folder to run the command in, relative to the workspace folder. Leave it out to run in the workspace folder, the first one when the workspace has several.",
     },

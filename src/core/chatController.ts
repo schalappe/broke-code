@@ -36,7 +36,7 @@ import type { ParsedProviders, Provider } from "./providers";
 import { SerialQueue } from "./serialQueue";
 import { findSlashSkill, loadSkillText, type SkillDiscovery } from "./skills";
 import { composeSystemPrompt, type InstructionFile, type Skill } from "./systemPrompt";
-import { type ParsedReply, parseToolCall, type ToolSpec } from "./toolCalls";
+import { forgedResultCut, type ParsedReply, parseToolCall, type ToolSpec } from "./toolCalls";
 import type { ToolCall, ToolResult } from "./tools";
 
 /** API key lookup. `undefined` = no key; must not reject. */
@@ -456,7 +456,7 @@ export class ChatController {
         if (fillsContext(estimateTokens(messages), contextSize)) {
           return settle("halted", "contextFull");
         }
-        const outcome = await this.stream(access, model, messages, conversation, reply, signal);
+        const outcome = await this.stream(access, model, messages, tools, conversation, reply, signal);
         if (!outcome) return settle("stopped");
         if (outcome.status === "failed") reply.error = outcome.error;
         if (outcome.status !== "done") return settle(outcome.status);
@@ -467,6 +467,9 @@ export class ChatController {
         let step: ChatEntry & { role: "tool" };
         if (parsed.kind === "call") {
           const { name, args, start, end } = parsed;
+          // [!]: One call per reply. What follows it never reaches the chat or the history: a model that goes on writes
+          // calls that never run and results it invented, which it would then read back as true.
+          reply.content = reply.content.slice(0, end);
           // [>]: The reply stays `streaming` while its call runs, so the turn reads as in flight and a crash meanwhile
           // brings it back stopped.
           reply.call = { name, args, start, end };
@@ -531,27 +534,48 @@ export class ChatController {
   /**
    * Stream one reply of a turn into `reply`. `undefined` once `signal` aborts: Stop ends the reply at once, even if a
    * step inside `streamChat` never settles (a CA file read on a FIFO), and late deltas and the late outcome are
-   * dropped, so navigation never waits on work that cannot be aborted.
+   * dropped, so navigation never waits on work that cannot be aborted. A reply whose answer holds a complete call
+   * followed by a tool result the model wrote itself (`forgedResultCut`) ends `done` there: its request is cancelled
+   * and later deltas are dropped, so a model forging results costs no more time.
    */
-  private stream(
+  private async stream(
     access: ProviderAccess,
     model: string,
     messages: ChatMessage[],
+    tools: readonly ToolSpec[],
     conversation: Conversation,
     reply: ChatEntry & { role: "assistant" },
     signal: AbortSignal,
   ) {
+    const cut = new AbortController();
+    let scanned = 0;
     const delta = (field: "content" | "reasoning") => (text: string) => {
-      if (signal.aborted) return;
+      if (signal.aborted || cut.signal.aborted) return;
       reply[field] += text;
       reply.status = "streaming";
+      if (field === "content") {
+        const found = forgedResultCut(reply.content, tools, scanned);
+        scanned = found.scanned;
+        if (found.cut !== undefined) {
+          reply.content = reply.content.slice(0, found.cut);
+          cut.abort();
+        }
+      }
       this.emit();
       this.saveSoon(conversation);
     };
-    return unlessAborted(
-      streamChat(access, { model, messages, signal, onContent: delta("content"), onReasoning: delta("reasoning") }),
+    const outcome = await unlessAborted(
+      streamChat(access, {
+        model,
+        messages,
+        signal: AbortSignal.any([signal, cut.signal]),
+        onContent: delta("content"),
+        onReasoning: delta("reasoning"),
+      }),
       signal,
     );
+    if (outcome && cut.signal.aborted) return { status: "done" as const };
+    return outcome;
   }
 
   /** Run `call`. A runner that rejects despite its contract gives an `error` result, logged. */

@@ -141,3 +141,32 @@ Every model met the bar. One reply was empty (`gemma4` `edit` run 5, its `edit_f
 sent back, the model called `edit_file` and passed. The same run took 18 minutes, one reply's reasoning running on for
 about 98,000 characters. `qwen3.8` twice wrote the placeholder `<tool_name>` of the format example as a call
 (`read` runs 1 and 5); each got the unknown-tool message, recovered, and passed.
+
+## Amendment (2026-11-10): text after the call, and one-line arguments
+
+Decided by the maintainer (schalappe) on 2026-11-10, on live evidence: the first runs on the employer's service, with
+`gemma-4-31b-it`, `qwen-latest`, and `glm-latest`, none of them measured by the eval.
+
+- `gemma-4-31b-it` went on after its call: in one reply it wrote seven more `edit_file` calls, each followed by a
+  `<tool_result tool="edit_file" status="ok">` it wrote itself. Only the first call ran, yet the chat showed the
+  others as done, and the history sent them back, so the model read its invented results as true.
+- `qwen-latest` got ripgrep's `the literal "\n" is not allowed in a regex` for patterns that hold no line break: a
+  value ending with a line break but not starting with one keeps it under the rule "both or neither".
+
+**Decision.**
+
+- A reply's answer ends at its call: the text after the call block is dropped before the call runs, so the chat and
+  the history never hold it. One call per reply stays the rule; nothing after the call was ever run.
+- While a reply streams, a tool result opening (`<tool_result`) the model writes after a complete call ends the reply
+  there: the request is cancelled, and the reply ends `done`, as if the provider had stopped. An opening with no
+  complete call before it, such as one inside a `write_file` value still streaming, stops nothing.
+- An argument that cannot hold a line break (each `path`, `cwd`, the `search` pattern, and the `load_skill` name)
+  loses every leading and trailing line break, whatever the other side holds. The other arguments keep the "both or
+  neither" rule.
+
+**Cost, accepted.** A `write_file` value that holds an example call followed by a tool result opening, while its
+tags do not balance yet, ends the reply at that example: the diff shows the cut file before anything is written.
+
+**Open.** These models also wrap calls in `<tool_call>` (Gemma) or write `<parameter>` tags (Qwen's native format,
+garbled), and `glm-latest` ends with a plan and no call. Changing the parser for those waits for an eval run against
+the employer's service.

@@ -175,7 +175,9 @@ goes to the model as typed. Read `GLOSSARY.md` for the domain vocabulary and `do
   `</tool_name>`. A value may therefore hold `</write_file>`, `</content>`, other tools' tags, and code fences. Known
   cost, kept by maintainer decision: a value holding an unpaired `<argument>` pairs it with the real closing tag, so
   it runs on into the text after the call when that text holds `</argument>` then `</tool_name>`. The parser drops
-  one leading and one trailing line break of a value that sits on its own lines (both or neither). `write_file` then
+  one leading and one trailing line break of a value that sits on its own lines (both or neither); an argument marked
+  `oneLine` in its `ToolSpec` (each `path`, `cwd`, the `search` pattern, the `load_skill` name) loses every leading
+  and trailing line break instead (ADR 0001, 2026-11-10). `write_file` then
   drops every trailing line break of its content (`\n` or `\r\n`) and ends the file with exactly one, of the kind its
   last line break is; content left empty writes an empty file. Accepted cost, by maintainer decision (ADR 0001):
   `write_file` cannot create a file ending with an empty line; `edit_file` can.
@@ -305,7 +307,11 @@ goes to the model as typed. Read `GLOSSARY.md` for the domain vocabulary and `do
   reply without text is left out of the history, unless a tool step follows it: an empty reply goes back as an
   assistant message with `content: ""` before its step, so the roles keep alternating (Gemma's chat template requires
   it).
-- When a reply ends, its answer goes through the parser. Text and no call: the turn ends. A call: the tool runs with the
+- While a reply streams, a `<tool_result` the model writes after a complete call (`forgedResultCut`) cancels the request,
+  and the reply ends `done` at the end of that call (ADR 0001, 2026-11-10): models forge results of calls that never
+  ran. An opening with no complete call before it stops nothing.
+- When a reply ends, its answer goes through the parser. Text and no call: the turn ends. A call: the answer is cut
+  at the end of the call block, so the chat and the history never hold the text after it, then the tool runs with the
   turn's context (`ToolRunner.run(call, { signal, requestApproval })`, the abort signal and the approval request), a tool step entry records its name, arguments, status, text, and approval, and the loop requests again.
   A malformed call or an empty reply: a step entry with the message (for an empty reply, "Your reply was empty. Call a
   tool, or write your answer to the user."), and the loop requests again. The reply stays `streaming` while its
