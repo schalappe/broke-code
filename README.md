@@ -271,7 +271,7 @@ runs of each task, with the bar at nine. The bench has six tasks:
 - **Command**: count the files of a folder and its subfolders, by running a shell command.
 - **Slash**: answer the skill task's question sent after `/` and the skill's name, which loads the skill for the model.
 
-Both models pass the first five tasks, 10 runs of 10 on each. When a model thinks, then stops without a
+Both models pass every task, with at least 9 runs of 10 on each; the slash task passed 10 of 10 on both. When a model thinks, then stops without a
 word, broke-code tells it so and asks again. Contributors run the bench with `bun run eval`.
 
 ## Privacy

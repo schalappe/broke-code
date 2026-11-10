@@ -571,7 +571,10 @@ goes to the model as typed. Read `GLOSSARY.md` for the domain vocabulary and `do
   most after listing a level or two. On 9a67dd7, `gemma4` once failed `skill` (`wrongTool`: it listed the skill folder
   and answered without reading the reference file). Live, `qwen3.8:27b` proposes a command for that count, but on a
   small tree (7 files in 4 folders) it walks the folders with `list_files` instead, even when asked to count the
-  subfolders (#9 verification).
+  subfolders (#9 verification). On 9db1a52 the six scenarios took 55 min 45 s, one `gemma4` `edit` run alone 22 min 56 s
+  before it failed `malformed` (a `<read_file>` call never closed); every model met the bar: `slash` 10/10 on both
+  models, `command` 9/10 on `qwen3.8:27b` (`wrongTool`: it listed the folders, then searched, and ran no command),
+  `edit` 9/10 on `gemma4`, every other scenario 10/10.
 - v1 supports macOS only. Windows and Linux are planned for v2.
 
 ## Git and release workflow
