@@ -702,8 +702,8 @@ const hi: ChatEntry[] = [
 type Panel = {
   host: HTMLElement;
   textarea: HTMLTextAreaElement;
-  /** Replace the message box text, caret at its end. */
-  type: (value: string) => Promise<void>;
+  /** Replace the message box text, caret at `caret` (default: its end). */
+  type: (value: string, caret?: number) => Promise<void>;
   /** Key down in the message box. */
   press: (key: string) => Promise<void>;
   /** A message from the host. */
@@ -736,10 +736,10 @@ async function withPanel(state: ChatState, run: (panel: Panel) => Promise<void>)
     await run({
       host,
       textarea,
-      type: (value) =>
+      type: (value, caret = value.length) =>
         act(async () => {
           setValue(textarea, value);
-          textarea.setSelectionRange(value.length, value.length);
+          textarea.setSelectionRange(caret, caret);
           textarea.dispatchEvent(new Event("input", { bubbles: true }));
         }),
       press: (key) =>
@@ -1041,6 +1041,26 @@ describe("slash commands in the composer", () => {
   test("while a reply is in flight, picking the /new row inserts /new and a space and runs nothing", async () => {
     const replying: ChatEntry[] = [hi[0]!, { role: "assistant", reasoning: "", content: "", status: "waiting" }];
     await withPanel(stateWith(true, { entries: replying }), async ({ textarea, type, press }) => {
+      await type("/ne");
+      posted.length = 0;
+      await press("Enter");
+      expect(posted).toEqual([]);
+      expect(textarea.value).toBe("/new ");
+    });
+  });
+
+  test("Enter on the /new row with a draft after the caret inserts /new and a space, keeps the draft, and runs nothing", async () => {
+    await withPanel(stateWith(true, { entries: hi }), async ({ textarea, type, press }) => {
+      await type("/ne keep this draft", "/ne".length);
+      posted.length = 0;
+      await press("Enter");
+      expect(posted).toEqual([]);
+      expect(textarea.value).toBe("/new  keep this draft");
+    });
+  });
+
+  test("with no model chosen, Enter on the /new row inserts /new and a space and runs nothing", async () => {
+    await withPanel(stateWith(true, { entries: hi, model: undefined }), async ({ textarea, type, press }) => {
       await type("/ne");
       posted.length = 0;
       await press("Enter");
