@@ -520,12 +520,14 @@ command at once. Slash commands are not built yet. Read `GLOSSARY.md` for the do
   and the applier's status), and `changes` (each entry that differs from the fixture after the run, with its text,
   `{ symlink }`, or `{ special }`, `null` when removed) as JSON Lines, to read the
   failing replies; an incomplete last line left by an interrupted run is removed, with a notice, before the first
-  append. A full run of the four scenarios took 20 min 24 s on the maintainer's Mac on 9a67dd7, the first run of each
+  append. A full run of the five scenarios took 22 min 48 s on the maintainer's Mac on 394042c, the first run of each
   model including its load; the bench has no time limit per run, and one `gemma4` run whose reasoning ran on for about
-  98,000 characters once took 18 min on its own (b1049a2). It runs locally on demand and never in CI. On 9a67dd7 every
-  model met the bar on every scenario: 10/10 everywhere but `gemma4` on `skill`, 9/10 (one `wrongTool`: it listed the
-  skill folder and answered without reading the reference file). `command` came later: 10/10 on each model on 0904daa
-  (5 min 41 s for both), every passing run counting with `find logs -type f | wc -l`, most after listing a level or two.
+  98,000 characters once took 18 min on its own (b1049a2). It runs locally on demand and never in CI. On 394042c every
+  model met the bar on every scenario, 10/10 everywhere; every `command` run counted with `find logs -type f | wc -l`,
+  most after listing a level or two. On 9a67dd7, `gemma4` once failed `skill` (`wrongTool`: it listed the skill folder
+  and answered without reading the reference file). Live, `qwen3.8:27b` proposes a command for that count, but on a
+  small tree (7 files in 4 folders) it walks the folders with `list_files` instead, even when asked to count the
+  subfolders (#9 verification).
   Scenarios for slash commands come with #11.
 - v1 supports macOS only. Windows and Linux are planned for v2.
 

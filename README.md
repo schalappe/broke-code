@@ -242,7 +242,7 @@ runs of each task, with the bar at nine. The bench has five tasks:
 - **Skill**: answer a question that a personal skill covers, by loading the skill and reading a file in its folder.
 - **Command**: count the files of a folder and its subfolders, by running a shell command.
 
-Both models pass the five tasks: 10 runs of 10 each, except `gemma4:26b-a4b-it-qat` at 9 of 10 on the skill task. When a model thinks, then stops without a
+Both models pass the five tasks, 10 runs of 10 on each. When a model thinks, then stops without a
 word, broke-code tells it so and asks again. Contributors run the bench with `bun run eval`.
 
 ## Privacy
