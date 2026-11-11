@@ -477,7 +477,8 @@ goes to the model as typed. Read `GLOSSARY.md` for the domain vocabulary and `do
   match" when none is left. It filters in the webview over the listed titles (cut to 60 characters): no host message,
   no record read. Opening History focuses it (the one focus move DESIGN.md allows). Enter opens the first row listed,
   as a click on it does, and does nothing with no row or while an input method composes. Escape clears a non-empty
-  field; in an empty one it closes History and focuses the History button. Its text lives in the list mounted while
+  field; in an empty one it closes History and focuses the History button. A reply that ends while History is open
+  leaves the focus where it is, instead of moving it to the message box. Its text lives in the list mounted while
   History is open, so every close clears it; a list change (a delete, a save) is filtered with the same text. The
   listing-failure notice shows whatever the filter.
 
