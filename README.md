@@ -143,6 +143,23 @@ selection is empty, or when the file is outside the workspace folders, an untitl
 the diff of a change waiting for approval). `selection` is a reserved name like `problems`: a file named `selection`
 is `@./selection`.
 
+## From the editor
+
+Two entry points fill the chat's message box from the editor. Neither sends anything: you read the draft, add to it,
+and send it yourself. Both open the chat panel, close History when it is open, and put the focus in the message box;
+both work while a reply is running, since they only edit the draft.
+
+- **broke-code: Add selection to chat**, in the Command Palette and in the editor's context menu when text is
+  selected, inserts `@selection ` at the cursor of the message box, with a space before it when needed. The editor
+  keeps its selection: `@selection` attaches the selection as it stands when you send.
+- **Fix with broke-code**, a quick fix in the light bulb of each error or warning of a file inside the workspace
+  folders, puts `Fix this problem in @src/app.ts at line 12: <the message>` in the message box: the file as a mention,
+  the line, and the message on one line. An empty box is filled; a box holding a draft gets it on a new line after
+  that draft. The file counts as one mention even when its path holds spaces. Information and hints get no quick fix.
+
+The extension starts once the window has started, so the quick fix is there before you first open the chat. Without a
+provider, the chat opens with a notification asking you to add one, and the draft is dropped.
+
 ## How the agent works
 
 Each message starts an agent turn. The model may answer at once, or write a tool call in its reply; broke-code runs

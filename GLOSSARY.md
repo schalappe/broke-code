@@ -80,6 +80,11 @@ warnings VS Code holds for the workspace files), `@diff` (the uncommitted change
 from a path, and a file of that name is mentioned as `@./<name>`.
 _Avoid_: context item, attachment, reference
 
+**Draft**:
+The text in the chat's message box, not sent yet, with the paths picked in it. "Add selection to chat" and the quick fix
+"Fix with broke-code" edit it from the editor and never send it.
+_Avoid_: prompt, input
+
 **Skill**:
 A named set of instructions, stored as a `SKILL.md` file, that the model or the user can load into the
 conversation.

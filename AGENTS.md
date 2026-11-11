@@ -26,7 +26,9 @@ chat and writes the reply to the commit input box (ADR 0004). Each final code bl
 cursor. The reserved mention `@problems` attaches the errors and warnings VS Code holds for the workspace files, and
 `@diff` the uncommitted changes of their tracked files against `HEAD`, and `@selection` the selected text of the active
 editor with its file and line range. The command "broke-code: Add provider", also a button of the panel, adds a provider to the user settings and
-stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the decisions behind the design, starting with
+stores its key, with a preset for Ollama on this machine. From the editor, "broke-code: Add selection to chat" (Command
+Palette and the editor context menu) inserts `@selection ` in the message box, and the quick fix "Fix with broke-code"
+on an error or warning puts a request to fix it there, with its file as a mention; neither sends. Read `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the decisions behind the design, starting with
 `docs/adr/0001-body-tool-calls.md`.
 
 ## Structure
@@ -69,7 +71,8 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   (`git.ts`: `lookUpGit` over the extension handle the host passes, its availability checks and its wait for
   `initialized` with an injectable timeout, the structural typing of the members used, and `gitDiffReader`, the
   `@diff` port, with the repository-relative literal pathspec and git's `stderr` as the cause), `@selection` (`selection.ts`: the raw `EditorSelection` the
-  host's `SelectionReader` returns, `editorSelection`, that record from a structural text editor, and `readSelection`, the workspace check, the line range, and the caps), where a
+  host's `SelectionReader` returns, `editorSelection`, that record from a structural text editor, and `readSelection`, the workspace check, the line range, and the caps), the quick fix "Fix with broke-code" (`quickFix.ts`: `fixDraft`, the
+  diagnostics it is offered on and the draft it fills, and `parseDiagnostic`, the check of its command's argument), where a
   message holds Markdown code
   (`markdownCode.ts`; also `remarkFenceClosed`, the remark plugin marking a fenced block whose closing fence the parser read,
   `hasTextAfter`, whether rendered text follows a block, and `codeBlockText`,
@@ -118,7 +121,9 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   `brokeCode.autoApproveWrites` values it feeds the core decisions, and `writeAutoApproveWrites`, the user value the
   mode selector writes), the instruction reader and the skill reader from the home folder and the workspace folders, the latter logging the
   skills of each send, and the same discovery, unlogged, for the `/` menu's `querySkills`; `chatView.ts` opens the
-  Quick Pick of `chooseModel`, runs `insertCode` over the active text editor, and shows a failed mode write; `commitMessage.ts` registers `broke-code.generateCommitMessage`, its git port over the
+  Quick Pick of `chooseModel`, runs `insertCode` over the active text editor, shows a failed mode write, and holds an
+  editor draft until the webview is ready (`insertDraft`); `extension.ts` registers `broke-code.addSelectionToChat`,
+  `broke-code.fixDiagnostic`, and the code action provider of the quick fix; `commitMessage.ts` registers `broke-code.generateCommitMessage`, its git port over the
   built-in Git extension's API, the repository Quick Pick, the replace question, the progress notification, and the
   notifications).
 - `src/webview/`: the React chat panel and its CSS (`styles.css`: a token layer, then rules that consume it, every color
@@ -126,7 +131,9 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   the `pre` override of the answer's renderer) included. `SuggestionMenu.tsx` is the autocomplete list the `@` and
   `/` menus share, a row with an optional description; `composer.ts` holds the message box's decisions without React
   (the token at the caret, each menu's rows, what a key does, what picking a `/` row does (`slashPick`), the built-in
-  command a message runs). `turns.ts` groups the entries for rendering without React (`foldTurns`: each entry once,
+  command a message runs, and `applyDraft`, how an editor draft edits the message box's text, caret, and picked paths).
+  `Root.tsx` is the panel's root: it posts `ready`, renders each state, and queues the `insertDraft` drafts for the
+  message box; `main.tsx` mounts it. `turns.ts` groups the entries for rendering without React (`foldTurns`: each entry once,
   an ended turn's fold and its step counts), and `text.ts` words the fold's row (`describeFold`).
 - `src/l10n.test.ts`: checks that every `l10n.t` message has a French translation and that the
   `package.nls*.json` files match.
@@ -575,6 +582,32 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   `emptySelection`, "Not attached: the selection is empty.". The mention result carries the path and range in its
   optional `range` (`{ path, start, end }`, 1-based lines, `start` not after `end`), which the chip shows with the
   count: "src/app.ts 10-12, 3 lines", "src/app.ts 10, 1 line".
+- Two editor entry points fill the message box and never send (Send's rules stay in one place): the command
+  `broke-code.addSelectionToChat` ("broke-code: Add selection to chat", Command Palette, and `editor/context` when
+  `editorHasSelection`) and the quick fix "Fix with broke-code". Both go through `ChatView.insertDraft`, which runs the
+  view's `brokeCode.chat.focus` command (resolving the view on a first show) and posts `insertDraft { text, mode,
+  picked }` (`DraftInsert`), once, when the webview is ready and visible: a draft sent before the first open, or while
+  the view is hidden, waits for the webview's next `ready` and follows its `init`; hiding the view resets `ready`, since
+  a hidden webview drops what it is posted. Without a valid provider there is no message box: the panel shows, a
+  warning notification says to add a provider first, and the draft is dropped, never held. `chatStateOf` leaves
+  `insertDraft` out. The webview receives it in `Root`, not the composer, since it can arrive right behind `init`, before
+  the composer exists; the composer applies each queued draft in order with `applyDraft` (also while a reply is in
+  flight), History closes, and the message box takes the focus (the second focus move DESIGN.md allows); a draft that
+  arrives while the panel has no message box is dropped. `mode: caret` inserts at the box's caret, with a space before
+  it unless the text before is empty or ends with whitespace, and one after it unless whitespace follows, which the caret
+  then passes, so it follows whitespace and no menu opens; `fillOrAppend` fills a box empty or holding only whitespace,
+  else appends after one line break, the caret at the end. `picked` joins the box's picked paths. The selection command
+  inserts `@selection`, read at send like any mention, and leaves the editor's selection as it is.
+  - The quick fix: a `CodeActionProvider` of kind `QuickFix` for `{ scheme: "file" }`, registered at activation
+    (`activationEvents: ["onStartupFinished"]`, so it exists before the panel is opened; cost: the extension loads in
+    every window, after startup), one action per diagnostic of the request for which `fixDraft` gives a draft: errors
+    and warnings of a `file` document inside the workspace folders. Its text is `Fix this problem in @<path> at line
+    <n>: <message>`, `<path>` as the file index writes it (`workspacePath`), `./<name>` for a reserved name
+    (`pickedPath`), and picked; `<n>` 1-based; each line break of the message a space, as `@problems` writes it;
+    `fillOrAppend`. Known cost, accepted: a backtick in the message can pair with a stray backtick of the draft's last
+    paragraph and hide the mention. Its command `broke-code.fixDiagnostic` is hidden from the Command Palette (`when:
+    false`) and takes the raw `Diagnostic` record; since any extension can run it, it checks the record
+    (`parseDiagnostic`) and filters it through `fixDraft` again, and does nothing for anything else.
 - Mentions are read when the message is sent, never again: later turns resend the message as composed then. The
   composed text lives in the chat controller, outside the state posted to the webview. The message and its waiting
   reply show, with Stop, while the mentions are read.
