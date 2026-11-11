@@ -38,6 +38,12 @@ the chat while the agent turn waits; a rejection, with its optional reason, goes
 result. A setting can approve writes without asking, never commands.
 _Avoid_: confirmation, permission, consent
 
+**Mode**:
+How the agent's writes are approved, shown and picked in the message box: **Ask** waits for the user's approval of
+each write; **Auto-edit** approves writes without asking. It is the user setting `brokeCode.autoApproveWrites`, so it
+applies to every window. Commands wait for Run in every mode.
+_Avoid_: agent mode, approval mode, permission mode
+
 **Conversation**:
 One thread of messages in the chat panel, saved per workspace and listed in its history; a new chat starts a new
 one.

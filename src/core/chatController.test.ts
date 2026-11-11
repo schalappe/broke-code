@@ -13,7 +13,7 @@ import {
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Decision, Preview } from "./approval";
+import { autoApproveWrites, type Decision, type InspectedSetting, type Preview } from "./approval";
 import {
   ChatController,
   type ChatPorts,
@@ -3411,3 +3411,100 @@ function groupAlive(pgid: number): boolean {
     return false;
   }
 }
+
+describe("ChatController mode", () => {
+  /**
+   * Controller over a user setting `brokeCode.autoApproveWrites` held in `setting` (its scopes as `inspect` gives them),
+   * read through `autoApproveWrites` as the host does. `write` records each user value written; `failWrite` makes it
+   * reject. Its provider streams "Partial " and waits for `finishReply`.
+   */
+  async function withSetting(setting: InspectedSetting, { failWrite = false } = {}) {
+    // [>]: Read at `modeChanged`, as the host does at activation.
+    const written: boolean[] = [];
+    const states: ChatState[] = [];
+    const controller = new ChatController({
+      apiKeys: { get: async () => undefined },
+      workspaceState: memoryStore(),
+      publish: (state) => states.push(structuredClone(state)),
+      mentions: noMentions,
+      store: new ConversationStore(undefined),
+      ...noTools,
+      autoApproveWrites: () => autoApproveWrites(setting),
+      writeAutoApproveWrites: async (on) => {
+        if (failWrite) throw new Error("EACCES: settings.json");
+        written.push(on);
+        setting.globalValue = on;
+      },
+    });
+    const state = () => controller.snapshot;
+    controller.modeChanged();
+    controller.setProviders({ providers: [ollama], skipped: [] });
+    await until(state, (s) => s.model === "m");
+    return { controller, state, written, states };
+  }
+
+  test("follows the user value of the setting: absent or false is Ask, true is Auto-edit", async () => {
+    const setting: InspectedSetting = {};
+    const { controller, state } = await withSetting(setting);
+    expect(state().mode).toBe("ask");
+
+    setting.globalValue = true;
+    controller.modeChanged();
+    expect(state().mode).toBe("autoEdit");
+
+    setting.globalValue = false;
+    controller.modeChanged();
+    expect(state().mode).toBe("ask");
+  });
+
+  test("ignores a workspace value of the setting", async () => {
+    const { state } = await withSetting({ workspaceValue: true, workspaceFolderValue: true });
+    expect(state().mode).toBe("ask");
+    const user = await withSetting({ globalValue: true, workspaceValue: false, workspaceFolderValue: false });
+    expect(user.state().mode).toBe("autoEdit");
+  });
+
+  test("setMode writes the user value of the setting and shows the new mode", async () => {
+    const { controller, state, written } = await withSetting({});
+    expect(await controller.setMode("autoEdit")).toEqual({ kind: "written" });
+    expect(written).toEqual([true]);
+    expect(state().mode).toBe("autoEdit");
+
+    expect(await controller.setMode("ask")).toEqual({ kind: "written" });
+    expect(written).toEqual([true, false]);
+    expect(state().mode).toBe("ask");
+  });
+
+  test("setMode writes nothing when the setting already holds that mode", async () => {
+    const { controller, written } = await withSetting({ globalValue: true });
+    expect(await controller.setMode("autoEdit")).toEqual({ kind: "unchanged" });
+    const absent = await withSetting({});
+    expect(await absent.controller.setMode("ask")).toEqual({ kind: "unchanged" });
+    expect([...written, ...absent.written]).toEqual([]);
+  });
+
+  test("setMode while a reply is in flight is ignored", async () => {
+    const { controller, state, written } = await withSetting({});
+    const sent = controller.send("Hi");
+    await until(state, (s) => contentOf(s.entries.at(-1)) === "Partial ");
+    expect(await controller.setMode("autoEdit")).toEqual({ kind: "ignored" });
+    expect(written).toEqual([]);
+    expect(state().mode).toBe("ask");
+    finishReply();
+    await sent;
+  });
+
+  test("a failed write is logged and reported, and the mode stays the one the setting holds", async () => {
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { controller, state, states } = await withSetting({}, { failWrite: true });
+      const before = states.length;
+      expect(await controller.setMode("autoEdit")).toEqual({ kind: "failed", cause: "Error: EACCES: settings.json" });
+      expect(logged).toHaveBeenCalled();
+      expect(state().mode).toBe("ask");
+      expect(states.slice(before).every((published) => published.mode === "ask")).toBe(true);
+    } finally {
+      logged.mockRestore();
+    }
+  });
+});

@@ -21,7 +21,7 @@ import type { WorkspaceRoot } from "../core/workspaceFiles";
 import { approvalApplier, fileApplier, type WriteApprovalHost } from "../core/writeTools";
 import { runAddProvider } from "./addProvider";
 import { ApiKeys } from "./apiKeys";
-import { DiffPreviews, hasUnsavedChanges, readAutoApproveWrites } from "./approval";
+import { DiffPreviews, hasUnsavedChanges, readAutoApproveWrites, writeAutoApproveWrites } from "./approval";
 import { CHAT_VIEW_ID, ChatView } from "./chatView";
 import { registerCommitMessageCommand } from "./commitMessage";
 import { askContextSize, LIMIT_SETTINGS, readCommandTimeoutSeconds, readLimits } from "./contextSizes";
@@ -72,6 +72,7 @@ export function activate(context: vscode.ExtensionContext): void {
     skills,
     limits: { read: readLimits },
     autoApproveWrites: readAutoApproveWrites,
+    writeAutoApproveWrites,
   });
   const fileIndex = new WorkspaceFileIndex();
   view = new ChatView(context.extensionUri, controller, {
@@ -112,6 +113,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration("brokeCode.providers")) applySettings();
       if (LIMIT_SETTINGS.some((setting) => event.affectsConfiguration(setting))) controller.limitsChanged();
+      if (event.affectsConfiguration("brokeCode.autoApproveWrites")) controller.modeChanged();
     }),
     apiKeys.onDidChange((provider) => controller.keyChanged(provider)),
     fileIndex,
@@ -125,6 +127,7 @@ export function activate(context: vscode.ExtensionContext): void {
     },
   );
   applySettings();
+  controller.modeChanged();
   void controller.restore();
 }
 

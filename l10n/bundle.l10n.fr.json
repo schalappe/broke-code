@@ -176,5 +176,11 @@
   "Enter a name.": "Saisissez un nom.",
   "Another provider already uses this name.": "Un autre fournisseur porte déjà ce nom.",
   "Enter an http or https URL.": "Saisissez une URL http ou https.",
-  "Could not add the provider: {0}": "Impossible d'ajouter le fournisseur : {0}"
+  "Could not add the provider: {0}": "Impossible d'ajouter le fournisseur : {0}",
+  "Mode": "Mode",
+  "Ask": "Demander",
+  "Auto-edit": "Édition auto",
+  "Each change waits for Accept or Reject.": "Chaque modification attend Accepter ou Refuser.",
+  "Changes are written without asking. Commands still wait for Run.": "Les modifications sont écrites sans demander. Les commandes attendent toujours Exécuter.",
+  "Could not change the mode: {0}": "Impossible de changer le mode : {0}"
 }

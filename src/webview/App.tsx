@@ -19,7 +19,10 @@ import {
   type ChatEntry,
   type ChatState,
   type HostMessage,
+  isMode,
   isReplying,
+  MODES,
+  type Mode,
   type PendingApproval,
   type ReplyCall,
 } from "../core/protocol";
@@ -1145,6 +1148,8 @@ function Composer({
         onBlur={() => setFocused(false)}
         onKeyDown={onKeyDown}
       />
+      {/* [!]: After the message box, so Shift+Tab from it still reaches an open request's controls first. */}
+      <ModeSelect mode={state.mode} disabled={replying} />
       {replying ? (
         <button type="button" onClick={() => post({ type: "stop" })}>
           {l10n.t("Stop")}
@@ -1155,5 +1160,35 @@ function Composer({
         </button>
       )}
     </footer>
+  );
+}
+
+/**
+ * Ask or Auto-edit, from the setting the host reads. Controlled by the state, so a pick shows only once the host has
+ * written the setting; a failed write leaves the mode as it was.
+ */
+function ModeSelect({ mode, disabled }: { mode: Mode; disabled: boolean }) {
+  const labels: Record<Mode, string> = { ask: l10n.t("Ask"), autoEdit: l10n.t("Auto-edit") };
+  const hints: Record<Mode, string> = {
+    ask: l10n.t("Each change waits for Accept or Reject."),
+    autoEdit: l10n.t("Changes are written without asking. Commands still wait for Run."),
+  };
+  return (
+    <select
+      className="mode"
+      aria-label={l10n.t("Mode")}
+      title={hints[mode]}
+      value={mode}
+      disabled={disabled}
+      onChange={(event) => {
+        if (isMode(event.target.value)) post({ type: "setMode", mode: event.target.value });
+      }}
+    >
+      {MODES.map((option) => (
+        <option key={option} value={option}>
+          {labels[option]}
+        </option>
+      ))}
+    </select>
   );
 }

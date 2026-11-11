@@ -136,6 +136,16 @@ describe("parseWebviewMessage", () => {
     expect(parseWebviewMessage({ type: "insertCode", text: ["a"] })).toBeUndefined();
     expect(parseWebviewMessage({ type: "insertCode", text: "a".repeat(REPLY_MAX_LENGTH + 1) })).toBeUndefined();
   });
+  test("accepts a mode pick of Ask or Auto-edit", () => {
+    expect(parseWebviewMessage({ type: "setMode", mode: "ask" })).toEqual({ type: "setMode", mode: "ask" });
+    expect(parseWebviewMessage({ type: "setMode", mode: "autoEdit" })).toEqual({ type: "setMode", mode: "autoEdit" });
+  });
+
+  test("drops a mode pick of an unknown mode", () => {
+    for (const mode of [undefined, "plan", "Ask", "auto", "", true, 1, ["ask"]]) {
+      expect(parseWebviewMessage({ type: "setMode", mode })).toBeUndefined();
+    }
+  });
 });
 
 describe("chatStateOf", () => {
@@ -152,6 +162,7 @@ describe("chatStateOf", () => {
     listFailed: undefined,
     storageProblem: undefined,
     context: { used: 0, size: 32768, known: false },
+    mode: "ask",
   };
 
   test("takes the chat state from init and state messages", () => {

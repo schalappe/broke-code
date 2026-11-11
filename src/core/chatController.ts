@@ -5,7 +5,7 @@
  * conversations (new chat, reopen, delete). The conversation shown is saved when a message is sent, at most every 500 ms while a reply streams, when a
  * call starts, after each tool step, and when the turn ends, so a reload or crash loses at most the reply streaming.
  * vscode-free: host passes key store, workspace memento, mention reader, conversation store, tool runner, instruction
- * file reader, skill reader, limits source, and auto-approve setting through ports.
+ * file reader, skill reader, limits source, and the auto-approve setting's reader and writer through ports.
  */
 import type { ApprovalRequest, Decision, Preview } from "./approval";
 import { type ChatMessage, listModels, type ProviderAccess, streamChat } from "./client";
@@ -29,6 +29,7 @@ import {
   type ContextUsage,
   type HaltReason,
   isReplying,
+  type Mode,
   type ReplyStatus,
   type StepApproval,
   type StorageProblem,
@@ -93,8 +94,10 @@ export type LimitsSource = { read(): TurnLimits };
 /**
  * What the controller needs from the host. `limits`: absent gives the defaults (50 steps, 32,768 tokens for every
  * model). `autoApproveWrites`: the auto-approve setting, read at each write's approval request, so turning it off
- * reaches the next write of a turn in flight; absent or throwing means off. `now`: clock for record times, in
- * milliseconds since the epoch.
+ * reaches the next write of a turn in flight; absent or throwing means off. It also gives `ChatState.mode`, read at
+ * `modeChanged` and after each `setMode`.
+ * `writeAutoApproveWrites`: writes the user value of that setting; rejects when the write fails; absent, every write
+ * fails. `now`: clock for record times, in milliseconds since the epoch.
  */
 export type ChatPorts = {
   apiKeys: KeyStore;
@@ -107,8 +110,15 @@ export type ChatPorts = {
   skills: SkillReader;
   limits?: LimitsSource;
   autoApproveWrites?: () => boolean;
+  writeAutoApproveWrites?: (on: boolean) => Promise<void>;
   now?: () => number;
 };
+
+/**
+ * What a mode pick did: `written` the setting; `unchanged`, it already held that mode; `ignored`, a reply is in
+ * flight; `failed`, the write rejected with `cause`, logged, and the mode shown is still the setting's.
+ */
+export type ModeChange = { kind: "written" | "unchanged" | "ignored" } | { kind: "failed"; cause: string };
 
 /** Malformed calls in a row that halt an agent turn; a call that parses resets the count. */
 export const MAX_MALFORMED_IN_A_ROW = 3;
@@ -178,6 +188,7 @@ export class ChatController {
   private readonly skills: SkillReader;
   private readonly limitsSource: LimitsSource;
   private readonly autoApproveWrites: () => boolean;
+  private readonly writeAutoApproveWrites: (on: boolean) => Promise<void>;
   private readonly now: () => number;
   /** Limits the usage display reads, refreshed at each send and by `limitsChanged`. */
   private limits: TurnLimits;
@@ -201,6 +212,11 @@ export class ChatController {
     };
     this.limits = this.limitsSource.read();
     this.autoApproveWrites = ports.autoApproveWrites ?? (() => false);
+    this.writeAutoApproveWrites =
+      ports.writeAutoApproveWrites ??
+      (async () => {
+        throw new Error("no settings writer");
+      });
     this.now = ports.now ?? Date.now;
     // [>]: Instruction files and skills are read only at a send, never just to refresh the display.
     this.systemPrompt = composeSystemPrompt(offeredTools(this.tools.tools, []), [], []);
@@ -218,6 +234,9 @@ export class ChatController {
       listFailed: undefined,
       storageProblem: undefined,
       context: this.contextUsage(undefined),
+      // [>]: The setting is read at `modeChanged`, which the host calls at activation as it applies the providers; the
+      // constructor reads no setting.
+      mode: "ask",
     };
   }
 
@@ -329,6 +348,42 @@ export class ChatController {
   limitsChanged(): void {
     this.limits = this.limitsSource.read();
     this.emit();
+  }
+
+  /**
+   * Read the auto-approve setting into `ChatState.mode`: at activation, and whenever the setting changes, here or
+   * elsewhere (the settings editor, another window).
+   */
+  modeChanged(): void {
+    this.state.mode = this.readMode();
+    this.emit();
+  }
+
+  /**
+   * The user picks `mode` in the message box: write the setting's user value, unless it already holds that mode or a
+   * reply is in flight. The mode shown is read back from the setting after the write, whether it succeeded or not,
+   * since the settings change event may come before the write settles. Never rejects.
+   */
+  async setMode(mode: Mode): Promise<ModeChange> {
+    if (isReplying(this.state)) return { kind: "ignored" };
+    const on = mode === "autoEdit";
+    if (this.readAutoApprove() === on) {
+      this.modeChanged();
+      return { kind: "unchanged" };
+    }
+    try {
+      await this.writeAutoApproveWrites(on);
+      return { kind: "written" };
+    } catch (error) {
+      console.error("broke-code: could not write the auto-approve setting", error);
+      return { kind: "failed", cause: String(error) };
+    } finally {
+      this.modeChanged();
+    }
+  }
+
+  private readMode(): Mode {
+    return this.readAutoApprove() ? "autoEdit" : "ask";
   }
 
   /** Key of `provider` changed -> relist its models, since listing may have failed on old key. */

@@ -41,6 +41,10 @@ weaken approval. The controller reads it at each write's request, so turning it 
 in flight. The controller is the one place it applies, and only to requests of kind `write`: nothing auto-approves a
 command, which always waits for a click.
 
+2026-11-11 (#79): the panel writes the setting too. The mode selector of the message box shows **Ask** (off) or
+**Auto-edit** (on), writes the user value on a pick, and follows the setting, not the click; the reading rules above
+are unchanged.
+
 ## Cancellation
 
 Stop, New chat, opening another conversation, deleting the conversation shown, and the extension's deactivation all

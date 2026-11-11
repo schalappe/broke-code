@@ -145,6 +145,11 @@ export class ChatView implements vscode.WebviewViewProvider {
       case "reject":
         controller.reject(message.id, message.reason);
         return;
+      case "setMode":
+        return void controller.setMode(message.mode).then((change) => {
+          if (change.kind !== "failed") return;
+          void vscode.window.showErrorMessage(vscode.l10n.t("Could not change the mode: {0}", change.cause));
+        });
       case "insertCode":
         // [>]: The active text editor stays the last one focused while the chat has the focus, which stays there.
         return void insertCode(

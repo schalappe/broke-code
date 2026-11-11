@@ -13,9 +13,9 @@ twinny.
 The code so far covers the extension skeleton, a streaming chat with a provider, and the harness with the read and
 write tools and commands: a message starts an agent turn that runs `read_file`, `list_files`, `search`, `write_file`,
 `edit_file`, and `run_command` until the model answers without a call. Each write waits behind the approval (a diff and
-Accept or Reject in the chat, ADR 0002) unless the user setting auto-approves it; each command waits for Run or Reject,
-always. Each send discovers the skills and lists them to the model, which loads one with `load_skill` and may then read
-its folder (ADR 0003). `bun run eval` measures that loop on local Ollama models, applying each change and running each
+Accept or Reject in the chat, ADR 0002) unless the user setting auto-approves it, which the mode selector of the
+message box shows and writes (Ask or Auto-edit); each command waits for Run or Reject, always. Each send discovers the
+skills and lists them to the model, which loads one with `load_skill` and may then read its folder (ADR 0003). `bun run eval` measures that loop on local Ollama models, applying each change and running each
 command at once. Typing `/` at the start of a message lists `/new`, `/model`, and the skills; the panel runs `/new` and
 `/model` itself, and a message `/<name> args` loads that skill in the controller, with its arguments; any other `/word`
 goes to the model as typed. Outside the chat, the command "broke-code: Generate commit message", a button in the
@@ -93,13 +93,14 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   from `vscode.env.appRoot` and `PATH`, the write tools behind `approvalApplier`, the command shell from
   `vscode.env.shell`, `$SHELL`, or `/bin/sh`), the write approval's editor side in
   `approval.ts` (the diff preview over `vscode.diff` and a content provider, the tabs, documents, and
-  `brokeCode.autoApproveWrites` values it feeds the core decisions), the instruction reader and the skill reader from the home folder and the workspace folders, the latter logging the
+  `brokeCode.autoApproveWrites` values it feeds the core decisions, and `writeAutoApproveWrites`, the user value the
+  mode selector writes), the instruction reader and the skill reader from the home folder and the workspace folders, the latter logging the
   skills of each send, and the same discovery, unlogged, for the `/` menu's `querySkills`; `chatView.ts` opens the
-  Quick Pick of `chooseModel` and runs `insertCode` over the active text editor; `commitMessage.ts` registers `broke-code.generateCommitMessage`, its git port over the
+  Quick Pick of `chooseModel`, runs `insertCode` over the active text editor, and shows a failed mode write; `commitMessage.ts` registers `broke-code.generateCommitMessage`, its git port over the
   built-in Git extension's API, the repository Quick Pick, the replace question, the progress notification, and the
   notifications).
 - `src/webview/`: the React chat panel and its CSS (`styles.css`: a token layer, then rules that consume it, every color
-  from a `--vscode-*` variable; see `DESIGN.md`), tool step rows, the approval controls, and the answer's code blocks with Copy and Insert at cursor (`CodeBlock`,
+  from a `--vscode-*` variable; see `DESIGN.md`), tool step rows, the approval controls, the mode selector after the message box (`ModeSelect`), and the answer's code blocks with Copy and Insert at cursor (`CodeBlock`,
   the `pre` override of the answer's renderer) included. `SuggestionMenu.tsx` is the autocomplete list the `@` and
   `/` menus share, a row with an optional description; `composer.ts` holds the message box's decisions without React
   (the token at the caret, each menu's rows, what a key does, what picking a `/` row does (`slashPick`), the built-in
@@ -306,6 +307,17 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   - `brokeCode.autoApproveWrites` (boolean, default false, `application` scope, read from `globalValue` like the
     providers) accepts writes at once, without a diff, and is read at each write's request. The controller applies it
     to requests of kind `write` only: nothing auto-approves commands.
+  - The mode selector shows and writes that setting (#79). `ChatState.mode` is `ask` (user value false or absent) or
+    `autoEdit` (true), read from the user value by `ChatController.modeChanged`, which the host calls at activation
+    (the state says `ask` before) and on each change of the setting (the configuration listener), and after each pick. A pick posts `setMode
+    { mode }`, validated like the other messages (an unknown mode is dropped); `ChatController.setMode` ignores it while
+    a reply is in flight, writes nothing when the setting already holds that mode, and otherwise writes the user value
+    (`ConfigurationTarget.Global`) through the `writeAutoApproveWrites` port. The selector is controlled by the state,
+    so it follows the setting, not the click: a failed write is logged and shown as an error notification, and the
+    mode stays the one the setting holds. A user setting: Auto-edit in one window applies to every window. The
+    selector is disabled while a reply is in flight, like the pickers, and sits after the message box in the DOM, so
+    Shift+Tab from the message box still reaches an open request's controls first. The conversation record, the system
+    prompt, and the eval bench know nothing of the mode.
 - `run_command(command, cwd?)` runs `<shell> -c <command>` in a hidden child process, no login shell, the shell being
   `vscode.env.shell`, else `$SHELL`, else `/bin/sh`. `cwd` resolves like a read tool's path and must be an existing
   folder inside the workspace; left out, the command runs in the first workspace folder. Without a workspace folder,
@@ -792,7 +804,8 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
 ## Boundaries
 
 - broke-code collects no telemetry. It contacts only the configured providers.
-- Out of scope for v1, by maintainer decision: Windows and Linux, inline completion, multi-agent modes, MCP,
+- Out of scope for v1, by maintainer decision: Windows and Linux, inline completion, multi-agent modes (the Ask and
+  Auto-edit modes are approval settings of one agent, not such modes), MCP,
   code indexing and embeddings, a browser tool, git checkpoints, native or hybrid tool calling, skill
   directories other than `.agents`, `CLAUDE.md`, mentions of the editor selection or diagnostics, automatic
   context summarization, `/clear`, `/help`, and publishing from `develop`.

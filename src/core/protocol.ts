@@ -136,6 +136,17 @@ export type SkillWarning = { path: string; problem: SkillProblem };
  */
 export type ContextUsage = { used: number; size: number; known: boolean; leftOut?: number };
 
+/**
+ * How the agent's writes are approved: `ask` waits for Accept or Reject on each write, `autoEdit` accepts writes at
+ * once. Derived from the user value of `brokeCode.autoApproveWrites`. Commands wait for Run in every mode.
+ */
+export const MODES = ["ask", "autoEdit"] as const;
+export type Mode = (typeof MODES)[number];
+
+export function isMode(value: unknown): value is Mode {
+  return MODES.some((mode) => mode === value);
+}
+
 export type ChatState = {
   providers: string[];
   skipped: SkippedProvider[];
@@ -159,6 +170,8 @@ export type ChatState = {
   context: ContextUsage;
   /** The approval request the reply in flight waits on; at most one, since one call runs per reply. */
   approval?: PendingApproval;
+  /** The mode the setting holds, never the one last picked: a failed write leaves it as it was. */
+  mode: Mode;
 };
 
 /** L10n bundle as `vscode.l10n.bundle`: absent in English. */
@@ -206,7 +219,9 @@ export type WebviewMessage =
   | { type: "approve"; id: number }
   | { type: "reject"; id: number; reason?: string }
   /** Insert at cursor: replace every selection of the active text editor with a code block's `text`. */
-  | { type: "insertCode"; text: string };
+  | { type: "insertCode"; text: string }
+  /** Pick a mode in the message box: writes the user setting `brokeCode.autoApproveWrites`. */
+  | { type: "setMode"; mode: Mode };
 
 /** Chat state carried by `message`; `undefined` for a message that must leave the panel's state alone. */
 export function chatStateOf(message: HostMessage): ChatState | undefined {
@@ -290,6 +305,8 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | undefined {
       const value = text("text");
       return value === undefined || value.length > REPLY_MAX_LENGTH ? undefined : { type: "insertCode", text: value };
     }
+    case "setMode":
+      return isMode(message.mode) ? { type: "setMode", mode: message.mode } : undefined;
     default:
       return undefined;
   }
