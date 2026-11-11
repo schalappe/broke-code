@@ -20,15 +20,20 @@ export class DraftQueue {
   /** A delivery is running; another one asked meanwhile runs right after it, so no draft is posted twice. */
   private delivering = false;
   private again = false;
+  /** The last insert's show, settled either way: each insert shows and queues after the one called before it. */
+  private previousShow: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly port: DraftPort) {}
 
   /**
    * Show the chat, then queue `draft` and deliver what can be. `noProvider`: the panel has no message box, so the draft
    * is dropped; the caller says so. A `show` that rejects queues nothing and rejects, so a retry delivers it once.
+   * Overlapping inserts queue in call order, since each show waits for the one before it.
    */
   async insert(draft: DraftInsert, target: DraftTarget): Promise<"queued" | "noProvider"> {
-    await target.show();
+    const show = this.previousShow.then(() => target.show());
+    this.previousShow = show.catch(() => undefined);
+    await show;
     if (!target.hasProvider) return "noProvider";
     this.queued.push(draft);
     await this.deliver();

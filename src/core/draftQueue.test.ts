@@ -41,6 +41,28 @@ describe("DraftQueue", () => {
     expect(state.sent).toEqual(["a", "b"]);
   });
 
+  test("overlapping inserts keep their call order, whichever show settles first", async () => {
+    const { state, queue } = fixture();
+    let release = () => {};
+    const slow = { hasProvider: true, show: () => new Promise<void>((resolve) => (release = resolve)) };
+    const first = queue.insert(draft("first"), slow);
+    const second = queue.insert(draft("second"), shown);
+    await Promise.resolve();
+    release();
+    await Promise.all([first, second]);
+    expect(state.sent).toEqual(["first", "second"]);
+  });
+
+  test("a failed show does not hold back the inserts behind it", async () => {
+    const { state, queue } = fixture();
+    const failing = { hasProvider: true, show: () => Promise.reject(new Error("no view")) };
+    const first = queue.insert(draft("a"), failing);
+    const second = queue.insert(draft("b"), shown);
+    await expect(first).rejects.toThrow("no view");
+    await second;
+    expect(state.sent).toEqual(["b"]);
+  });
+
   test("a failed show queues nothing and rejects, so a retry delivers the draft once", async () => {
     const { state, queue } = fixture();
     const failing = { hasProvider: true, show: () => Promise.reject(new Error("no view")) };
