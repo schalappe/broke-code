@@ -1,13 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { brotliCompressSync, deflateSync, gzipSync } from "node:zlib";
-import {
-  buildChatRequest,
-  listModels,
-  MODEL_LIST_MAX_BYTES,
-  type ProviderAccess,
-  REPLY_MAX_LENGTH,
-  streamChat,
-} from "./client";
+import { buildChatRequest, listModels, MODEL_LIST_MAX_BYTES, type ProviderAccess, streamChat } from "./client";
+import { REPLY_MAX_LENGTH } from "./protocol";
 import { vllmOpening, vllmPlainStream, vllmReasoningRest } from "./vllmFixture";
 
 type Handler = (request: Request) => Response | Promise<Response>;

@@ -1,7 +1,19 @@
 import * as l10n from "@vscode/l10n";
-import { type KeyboardEvent, type ReactNode, type Ref, useEffect, useLayoutEffect, useRef, useState } from "react";
-import Markdown from "react-markdown";
+import {
+  type ComponentProps,
+  createContext,
+  type KeyboardEvent,
+  type ReactNode,
+  type Ref,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
+import Markdown, { type Components, type ExtraProps } from "react-markdown";
 import { type ConversationSummary, filterConversations } from "../core/conversation";
+import { codeBlockText, isCodeBlockClosed } from "../core/markdownCode";
 import { emptyModelsLabel } from "../core/modelList";
 import {
   type ChatEntry,
@@ -498,7 +510,9 @@ function Reply({
       {answer !== "" && (
         // [>]: The Markdown rules of the stylesheet apply inside this block only, never to the rows and blocks beside it.
         <div className="answer">
-          <Markdown>{answer}</Markdown>
+          <AnswerSource.Provider value={{ source: answer, ended: !inFlight }}>
+            <Markdown components={ANSWER_COMPONENTS}>{answer}</Markdown>
+          </AnswerSource.Provider>
         </div>
       )}
       {step ? (
@@ -521,6 +535,81 @@ function Reply({
       {entry.status === "stopped" && <p className="mark">{l10n.t("Stopped")}</p>}
       {entry.status === "halted" && entry.haltReason && <p className="mark">{describeHalt(entry.haltReason)}</p>}
       {entry.error && <ErrorBlock error={entry.error} />}
+    </div>
+  );
+}
+
+/**
+ * The answer the Markdown renderer draws, for its code blocks: `source`, the Markdown, which their positions point
+ * into; `ended`, the reply is no longer in flight, so its text is final.
+ */
+const AnswerSource = createContext<{ source: string; ended: boolean }>({ source: "", ended: false });
+
+/** How long Copy shows its outcome in place of its label. */
+const COPY_FEEDBACK_MS = 2000;
+
+/**
+ * A code block of the answer, with Copy and Insert at cursor in a header above the code once its text is final: its
+ * fence closed, text after it, or its reply ended (`isCodeBlockClosed`). A block still growing renders bare.
+ * [>]: One component for every render, so a block keeps its Copy outcome while the answer streams on.
+ */
+function CodeBlock({ node, ...props }: ComponentProps<"pre"> & ExtraProps) {
+  const { source, ended } = useContext(AnswerSource);
+  const start = node?.position?.start.offset;
+  const end = node?.position?.end.offset;
+  const code = node ? textOf(node) : "";
+  const final = start !== undefined && end !== undefined && (ended || isCodeBlockClosed(source, start, end, code));
+  if (!final) return <pre {...props} />;
+  return (
+    <div className="code-block">
+      <CodeActions text={codeBlockText(code)} />
+      <pre {...props} />
+    </div>
+  );
+}
+
+const ANSWER_COMPONENTS: Components = { pre: CodeBlock };
+
+/** The text of a rendered node: its own value, or its children's, in order. */
+function textOf(node: { value?: unknown; children?: unknown[] }): string {
+  if (typeof node.value === "string") return node.value;
+  return (node.children ?? []).map((child) => textOf(child as { value?: unknown; children?: unknown[] })).join("");
+}
+
+/**
+ * Copy and Insert at cursor for a code block's `text`, disabled when it is empty. Copy writes the webview's clipboard
+ * and shows Copied or Copy failed in its place for `COPY_FEEDBACK_MS`; Insert at cursor asks the host, which says
+ * itself when it fails. Neither moves the focus.
+ */
+function CodeActions({ text }: { text: string }) {
+  const [copied, setCopied] = useState<"copied" | "failed">();
+  const reset = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => () => clearTimeout(reset.current), []);
+  const copy = async () => {
+    let outcome: "copied" | "failed" = "copied";
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (error) {
+      console.error("broke-code: could not copy the code block", error);
+      outcome = "failed";
+    }
+    clearTimeout(reset.current);
+    setCopied(outcome);
+    reset.current = setTimeout(() => setCopied(undefined), COPY_FEEDBACK_MS);
+  };
+  return (
+    <div className="code-actions">
+      <button type="button" className="code-action" disabled={text === ""} onClick={() => void copy()}>
+        {copied === "copied" ? l10n.t("Copied") : copied === "failed" ? l10n.t("Copy failed") : l10n.t("Copy")}
+      </button>
+      <button
+        type="button"
+        className="code-action"
+        disabled={text === ""}
+        onClick={() => post({ type: "insertCode", text })}
+      >
+        {l10n.t("Insert at cursor")}
+      </button>
     </div>
   );
 }

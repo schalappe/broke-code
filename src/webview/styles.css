@@ -659,6 +659,62 @@ button.history-open:hover:not(:disabled) {
   line-height: 1.45;
 }
 
+/*
+ * A final code block of the answer: its frame holds a header with Copy and Insert at cursor, then the code, which
+ * still scrolls inside itself. The header keeps its room, so revealing it moves nothing; its buttons show while the
+ * pointer is over the block or the focus is inside it, and stay in the tab order when hidden. One class only, so
+ * `.answer > :last-child` still drops the last block's margin.
+ */
+.code-block {
+  margin: 0 0 0.75em;
+  background: var(--bc-fill);
+  border: 1px solid var(--bc-edge);
+  border-radius: var(--bc-radius);
+}
+
+.code-block > pre {
+  margin: 0;
+  padding-top: 0;
+  background: none;
+  border: none;
+}
+
+.code-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--bc-space-2);
+  padding: var(--bc-space-2) var(--bc-space-2) 0;
+  opacity: 0;
+  transition: opacity var(--bc-fast) var(--bc-ease);
+}
+
+.code-block:hover .code-actions,
+.code-block:focus-within .code-actions {
+  opacity: 1;
+}
+
+/* Without a pointer that hovers, nothing would reveal them. */
+@media (hover: none) {
+  .code-actions {
+    opacity: 1;
+  }
+}
+
+/* A quiet secondary action: never the primary button, which the conversation keeps for the decision block. */
+button.code-action {
+  padding: 0 var(--bc-space-3);
+  min-height: var(--bc-row);
+  color: var(--bc-fg);
+  background: transparent;
+  border-color: var(--bc-line);
+  font-size: var(--bc-fs-xs);
+}
+
+button.code-action:hover:not(:disabled) {
+  background: var(--bc-fill-strong);
+  border-color: var(--bc-line-active);
+}
+
 .step-result code,
 .answer pre code {
   padding: 0;

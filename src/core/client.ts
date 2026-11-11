@@ -11,6 +11,7 @@ import * as https from "node:https";
 import type { LookupFunction } from "node:net";
 import { pipeline, Readable, Transform } from "node:stream";
 import * as zlib from "node:zlib";
+import { REPLY_MAX_LENGTH } from "./protocol";
 import type { CutOffReason, ProviderError } from "./providerError";
 import type { Provider } from "./providers";
 import { readSseData, SseEventTooLargeError } from "./sse";
@@ -39,8 +40,6 @@ const DETAIL_LIMIT = 500;
 export const MODEL_LIST_MAX_BYTES = 8 * 1024 * 1024;
 /** Non-2xx body; only its first `DETAIL_LIMIT` characters are shown. */
 const ERROR_BODY_MAX_BYTES = 64 * 1024;
-/** Total `delta.content` plus reasoning fields of one reply, in UTF-16 code units. */
-export const REPLY_MAX_LENGTH = 4 * 1024 * 1024;
 /** Deadline for the response headers (DNS, connect, TLS included), then for each gap between body bytes. Node `fetch` used 300 s too. */
 const TIMEOUT_MS = 300_000;
 

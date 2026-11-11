@@ -200,7 +200,9 @@ export type WebviewMessage =
   | { type: "openSettings" }
   /** The user's decision on approval request `id` (`ChatState.approval`); `reason`: optional, as typed. */
   | { type: "approve"; id: number }
-  | { type: "reject"; id: number; reason?: string };
+  | { type: "reject"; id: number; reason?: string }
+  /** Insert at cursor: replace every selection of the active text editor with a code block's `text`. */
+  | { type: "insertCode"; text: string };
 
 /** Chat state carried by `message`; `undefined` for a message that must leave the panel's state alone. */
 export function chatStateOf(message: HostMessage): ChatState | undefined {
@@ -220,6 +222,11 @@ export function isReplying(state: ChatState): boolean {
 export const MAX_QUERY_LENGTH = 1024;
 /** Longest picked mention path accepted. */
 export const MAX_MENTION_PATH_LENGTH = 4096;
+/**
+ * Total `delta.content` plus reasoning fields of one reply, in UTF-16 code units: the client cuts a reply off past it.
+ * Also the longest `insertCode` text, since a code block cannot be longer than its reply.
+ */
+export const REPLY_MAX_LENGTH = 4 * 1024 * 1024;
 
 /** Validate a webview message's shape at the host boundary. Unknown or out of bounds -> `undefined`. */
 export function parseWebviewMessage(raw: unknown): WebviewMessage | undefined {
@@ -273,6 +280,10 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | undefined {
       const { id, reason } = message;
       if (!isRequestId(id) || (reason !== undefined && typeof reason !== "string")) return undefined;
       return reason === undefined ? { type: "reject", id } : { type: "reject", id, reason };
+    }
+    case "insertCode": {
+      const value = text("text");
+      return value === undefined || value.length > REPLY_MAX_LENGTH ? undefined : { type: "insertCode", text: value };
     }
     default:
       return undefined;

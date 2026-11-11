@@ -5,6 +5,7 @@ import {
   MAX_MENTION_PATH_LENGTH,
   MAX_QUERY_LENGTH,
   parseWebviewMessage,
+  REPLY_MAX_LENGTH,
 } from "./protocol";
 
 describe("parseWebviewMessage", () => {
@@ -120,6 +121,19 @@ describe("parseWebviewMessage", () => {
     for (const reason of [null, 3, ["no"]]) {
       expect(parseWebviewMessage({ type: "reject", id: 3, reason })).toBeUndefined();
     }
+  });
+  test("accepts an insert of a code block's text up to the reply length cap, the empty text included", () => {
+    expect(parseWebviewMessage({ type: "insertCode", text: "a\nb" })).toEqual({ type: "insertCode", text: "a\nb" });
+    expect(parseWebviewMessage({ type: "insertCode", text: "" })).toEqual({ type: "insertCode", text: "" });
+    const atCap = "a".repeat(REPLY_MAX_LENGTH);
+    expect(parseWebviewMessage({ type: "insertCode", text: atCap })).toEqual({ type: "insertCode", text: atCap });
+  });
+
+  test("drops an insert without text, with text that is not a string, or with text over the cap", () => {
+    expect(parseWebviewMessage({ type: "insertCode" })).toBeUndefined();
+    expect(parseWebviewMessage({ type: "insertCode", text: 3 })).toBeUndefined();
+    expect(parseWebviewMessage({ type: "insertCode", text: ["a"] })).toBeUndefined();
+    expect(parseWebviewMessage({ type: "insertCode", text: "a".repeat(REPLY_MAX_LENGTH + 1) })).toBeUndefined();
   });
 });
 

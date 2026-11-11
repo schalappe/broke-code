@@ -141,3 +141,26 @@ function backslashesBefore(text: string, index: number): number {
   while (text.charAt(index - 1 - count) === "\\") count++;
   return count;
 }
+
+/**
+ * True when a code block the Markdown renderer drew can no longer grow as its reply streams: a fenced block whose
+ * closing fence was written, or a block (fenced or indented) that rendered text follows, since the parser closed it.
+ * `source`: the Markdown rendered. `start`, `end`: the block's offsets there (react-markdown's `node.position`), the
+ * opening fence or the indent first. `code`: its text as rendered, which ends with one line break unless empty.
+ * [>]: An unclosed fence renders like a closed one, so closure is read from the source: a closed fenced block spans
+ * its code's lines plus the two fence lines, an open one plus its opening line only.
+ */
+export function isCodeBlockClosed(source: string, start: number, end: number, code: string): boolean {
+  if (source.slice(end).trim() !== "") return true;
+  const block = source.slice(start, end);
+  if (!/^(`{3,}|~{3,})/.test(block)) return false;
+  // [>]: An open block may end at the source's last line break, which ends a code line and starts no line.
+  const lines = (block.endsWith("\n") ? block.slice(0, -1) : block).split("\n").length;
+  const codeLines = code === "" ? 0 : code.split("\n").length - 1;
+  return lines === codeLines + 2;
+}
+
+/** A code block's text as the user takes it: its rendered code less the final line break. */
+export function codeBlockText(code: string): string {
+  return code.endsWith("\n") ? code.slice(0, -1) : code;
+}
