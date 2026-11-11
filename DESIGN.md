@@ -222,8 +222,10 @@ or Run (primary) and Reject (secondary).
 
 - The `@` and `/` menus overlay the conversation above the message box. The highlighted row takes the theme's active
   selection, or `--bc-fill-strong` where the theme has none, and `--bc-edge-active` in high contrast.
-- History: one row per conversation, title over date, Delete at the right. The current row has a fill, a title in
-  weight 600, and `--bc-edge-active` in high contrast.
+- History: the filter field ("Filter by title") on top, at full width, then one row per conversation, title over
+  date, Delete at the right. Only the rows scroll; the field stays in place. The current row has a fill, a title in
+  weight 600, and `--bc-edge-active` in high contrast. With no conversation saved, History shows its empty line and
+  no field; with no row left by the filter, "No match" as one dim centered line under the field.
 
 ### States
 
@@ -232,7 +234,7 @@ Each kind of state has one look, distinct from the others at a glance:
 | State | Look |
 | --- | --- |
 | Loading (waiting for the reply, thinking, tool running, models loading) | Dim text that breathes; a line of its own leads with a dot. The pickers are disabled. |
-| Empty (no provider, new conversation, empty History) | One dim line, centered in the room it has; a link under it when there is something to do. |
+| Empty (no provider, new conversation, empty History, no History row left by the filter) | One dim line, centered in the room it has; a link under it when there is something to do. |
 | Notice (unknown context size) | One small dim line with a link. Nothing went wrong, so no block. |
 | Warning (skipped providers and skills) | A block on the theme's warning fill. |
 | Error (models unavailable, failed reply, storage and listing problems) | A block on the theme's error fill: the message, its technical detail in the editor font, then its actions. |
@@ -254,7 +256,9 @@ the duration of a transition. Under `prefers-reduced-motion: reduce`, and when V
   their line, and outside a button (offset 2px), where a ring on the button's own fill would not show. The message
   box shows it on the border of its rounded field.
 - Focus never moves on its own. When an approval request opens, the focused element stays focused, so a key pressed
-  at that moment cannot accept a write or run a command. A webview test pins this.
+  at that moment cannot accept a write or run a command. A webview test pins this. One written exception: opening
+  History moves the focus into its filter field, since the user asked for History and no approval control sits
+  there. Escape in an empty filter field closes History and gives the focus back to the History button.
 - From the message box, Shift+Tab reaches Reject, then Accept or Run, then the reason field: the reason field comes
   first in the DOM, then Accept or Run, then Reject, and nothing focusable may be added between them and the message
   box.

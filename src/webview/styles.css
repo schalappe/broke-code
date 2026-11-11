@@ -386,13 +386,31 @@ button:focus-visible {
 
 /* ---------- History ---------- */
 
-/* Fills the conversation's place while open. */
+/* Fills the conversation's place while open. The rows scroll under the filter field, which stays in place. */
 .history {
   flex: 1 1 auto;
-  overflow-y: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--bc-space-2);
+}
+
+.history-filter {
+  flex: none;
+  width: 100%;
+}
+
+.history-none {
+  margin: 0;
+  padding: var(--bc-space-5) 0;
+  color: var(--bc-fg-dim);
+  text-align: center;
 }
 
 .history ul {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: var(--bc-space-1);

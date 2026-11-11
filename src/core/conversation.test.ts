@@ -3,6 +3,7 @@ import {
   type ConversationRecord,
   conversationsOverLimit,
   conversationTitle,
+  filterConversations,
   isConversationId,
   newConversationId,
   parseConversation,
@@ -326,5 +327,37 @@ describe("conversations over the limit", () => {
   test("never lists a kept conversation, even when it is the oldest", () => {
     expect(conversationsOverLimit(summaries(51), ["c0"])).toEqual(["c1"]);
     expect(conversationsOverLimit(summaries(52), ["c50", "c0", "absent"])).toEqual(["c1", "c2"]);
+  });
+});
+
+describe("history filter", () => {
+  const rows = [
+    { id: "a", title: "Fix the Parser", updatedAt: 3 },
+    { id: "b", title: "Résumé of the release", updatedAt: 2 },
+    { id: "c", title: "parse the logs", updatedAt: 1 },
+  ];
+  const ids = (query: string) => filterConversations(rows, query).map((row) => row.id);
+
+  test("keeps the titles containing the query, ignoring case, in the order given", () => {
+    expect(ids("PARSE")).toEqual(["a", "c"]);
+    expect(ids("the l")).toEqual(["c"]);
+  });
+
+  test("ignores the query's surrounding whitespace", () => {
+    expect(ids("  parser\t")).toEqual(["a"]);
+  });
+
+  test("an empty or whitespace-only query keeps every row", () => {
+    expect(ids("")).toEqual(["a", "b", "c"]);
+    expect(ids("   ")).toEqual(["a", "b", "c"]);
+  });
+
+  test("folds no accent", () => {
+    expect(ids("resume")).toEqual([]);
+    expect(ids("résumé")).toEqual(["b"]);
+  });
+
+  test("no title containing the query keeps no row", () => {
+    expect(ids("deploy")).toEqual([]);
   });
 });

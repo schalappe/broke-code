@@ -251,7 +251,9 @@ shows after your next message.
 broke-code saves each conversation of a workspace, so closing or reloading the window keeps it. **History** in the
 panel header lists the workspace's conversations, newest first, each with its first message and the date of its
 last change; the one shown is marked. Click a conversation to reopen it and continue where you left off, or
-**Delete** it. **New chat** starts a new conversation and keeps the previous one in the list. History works
+**Delete** it. Type in **Filter by title** at the top of History to keep the conversations whose title holds that
+text, ignoring case; Enter opens the first one listed, and Escape clears the field, then closes History. **New chat**
+starts a new conversation and keeps the previous one in the list. History works
 without a provider too; sending a message needs one. A workspace keeps its 50 most recent conversations; older ones
 are deleted.
 

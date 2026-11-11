@@ -33,7 +33,8 @@ goes to the model as typed. Read `GLOSSARY.md` for the domain vocabulary and `do
   HTTP client, the CA trust and certificate error classification (`tls.ts`), the SSE reader, the typed provider
   errors, the chat controller (conversation state, the agent turn loop with its tool runner, instruction reader, and
   skill reader ports, its limits source and step limits, the context budget check, streaming, Stop, saving, reopen, delete), the conversation record
-  (`conversation.ts`: version 2, its validation on load, title, id, the summary file's shape), its store
+  (`conversation.ts`: version 2, its validation on load, title, id, the summary file's shape, `filterConversations`, the
+  History filter), its store
   (`conversationStore.ts`: a record and a summary file per conversation, the list from the summaries, reads, writes,
   and deletes in call order), and the store's file access (`conversationFiles.ts`:
   the file port, and its implementation over a local directory with `node:fs`: missing versus failed, regular files
@@ -470,6 +471,15 @@ goes to the model as typed. Read `GLOSSARY.md` for the domain vocabulary and `do
   the provider or model. History works without a provider: past conversations can be read, reopened, and deleted; only
   the composer needs one. Without a folder or workspace open, there is no storage directory: the conversation stays in
   memory and the list is empty. A failed save, delete, listing, or open is logged and shown in the panel.
+- History has a text field "Filter by title" above its rows, shown when at least one conversation is listed; it stays
+  in place while the rows scroll. It keeps the rows whose title contains its text (`filterConversations`: the query
+  trimmed, lowercase on both sides, a substring, no accent folding, order kept; a blank query keeps all), and says "No
+  match" when none is left. It filters in the webview over the listed titles (cut to 60 characters): no host message,
+  no record read. Opening History focuses it (the one focus move DESIGN.md allows). Enter opens the first row listed,
+  as a click on it does, and does nothing with no row or while an input method composes. Escape clears a non-empty
+  field; in an empty one it closes History and focuses the History button. Its text lives in the list mounted while
+  History is open, so every close clears it; a list change (a delete, a save) is filtered with the same text. The
+  listing-failure notice shows whatever the filter.
 
 ### Skills and slash commands
 
