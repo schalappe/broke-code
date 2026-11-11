@@ -238,6 +238,87 @@ describe("agent turn", () => {
   });
 });
 
+describe("folded turn", () => {
+  const answer = "Look.\n<read_file>\n<path>a.ts</path>\n</read_file>";
+  const call: ChatEntry = {
+    role: "assistant",
+    reasoning: "",
+    content: answer,
+    status: "done",
+    call: { name: "read_file", args: { path: "a.ts" }, start: 6, end: answer.length },
+  };
+  const ok: ChatEntry = { role: "tool", name: "read_file", args: { path: "a.ts" }, status: "ok", text: "x" };
+  const failed: ChatEntry = { ...ok, status: "error", text: "read_file: gone." };
+  const rejected: ChatEntry = { ...ok, status: "error", approval: "rejected", text: "The user rejected this change." };
+  const final: ChatEntry = { role: "assistant", reasoning: "", content: "FINAL_ANSWER", status: "done" };
+  const user: ChatEntry = { role: "user", content: "Hi", mentions: [] };
+
+  /** The conversation section of the panel showing `entries`, as markup. */
+  function conversationOf(entries: ChatEntry[]): string {
+    const html = renderToStaticMarkup(<App state={stateWith(true, { entries })} language="en" />);
+    const start = html.indexOf('<section class="conversation"');
+    return html.slice(start, html.indexOf("</section>", start) + "</section>".length);
+  }
+
+  test("the row says the steps, the failed ones, and the rejected ones", () => {
+    const html = conversationOf([user, call, ok, call, failed, call, rejected, final]);
+    expect(html).toContain('<summary class="turn-fold-row">3 steps, 1 failed, 1 rejected</summary>');
+  });
+
+  test("the fold is a closed details and the final answer sits outside it, right after", () => {
+    const html = conversationOf([user, call, ok, call, ok, final]);
+    expect(html).toContain('<details class="turn-fold">');
+    expect(html).not.toContain('<details class="turn-fold" open');
+    expect(html).toContain(
+      '</div></div></details><div class="message assistant"><div class="answer"><p>FINAL_ANSWER</p></div></div>',
+    );
+    expect(html.indexOf('<div class="message user">Hi</div><details class="turn-fold">')).toBeGreaterThan(-1);
+  });
+
+  test("a click expands the fold, and a step row inside still toggles on its own", async () => {
+    await withPanel(stateWith(true, { entries: [user, call, ok, call, ok, final] }), async ({ host }) => {
+      const fold = host.querySelector<HTMLDetailsElement>("details.turn-fold");
+      if (!fold) throw new Error("no fold");
+      expect(fold.open).toBe(false);
+      await act(async () => fold.querySelector<HTMLElement>(":scope > summary")?.click());
+      expect(fold.open).toBe(true);
+      const step = fold.querySelector<HTMLDetailsElement>("details.step");
+      if (!step) throw new Error("no step");
+      await act(async () => step.querySelector<HTMLElement>(":scope > summary")?.click());
+      expect(step.open).toBe(true);
+      expect(fold.open).toBe(true);
+      await act(async () => step.querySelector<HTMLElement>(":scope > summary")?.click());
+      expect(step.open).toBe(false);
+      expect(fold.open).toBe(true);
+    });
+  });
+
+  test("a step waiting for a decision is never inside a fold", async () => {
+    const writeAnswer = "Writing.\n<write_file>\n<path>a.ts</path>\n<content>\nx\n</content>\n</write_file>";
+    const writing: ChatEntry = {
+      role: "assistant",
+      reasoning: "",
+      content: writeAnswer,
+      status: "streaming",
+      call: { name: "write_file", args: { path: "a.ts", content: "x" }, start: 9, end: writeAnswer.length },
+    };
+    const approval = { id: 3, kind: "write" as const, tool: "write_file", summary: "a.ts" };
+    const entries = [user, call, ok, call, ok, final, user, call, ok, call, ok, writing];
+    await withPanel(stateWith(true, { entries, approval }), async ({ host }) => {
+      expect(host.querySelectorAll("details.turn-fold").length).toBe(1);
+      const decision = host.querySelector(".decision");
+      expect(decision).not.toBeNull();
+      expect(decision?.closest(".turn-fold")).toBeNull();
+    });
+  });
+
+  test("a turn with one step renders the same markup as before folding existed", () => {
+    expect(conversationOf([user, call, ok, final])).toBe(
+      '<section class="conversation"><div class="message user">Hi</div><div class="message assistant"><div class="answer"><p>Look.</p></div><details class="step"><summary class="step-row"><span class="step-tool">read_file</span><span class="step-arg">a.ts</span><span class="step-status">ok, 1 line</span></summary><pre class="step-result"><code>x</code></pre></details></div><div class="message assistant"><div class="answer"><p>FINAL_ANSWER</p></div></div><div></div></section>',
+    );
+  });
+});
+
 describe("approval", () => {
   const answer = "Renaming.\n<write_file>\n<path>src/a.ts</path>\n<content>\nx\n</content>\n</write_file>";
   const writing: ChatEntry = {

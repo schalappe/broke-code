@@ -529,8 +529,11 @@ button.history-open:hover:not(:disabled) {
   margin-bottom: 0;
 }
 
-/* The replies and tool steps of one turn sit close; the turn's whitespace comes from the user's message. */
-.message.assistant + .message.assistant {
+/*
+ * The replies and tool steps of one turn sit close, a folded turn's row and its final reply too; the turn's whitespace
+ * comes from the user's message.
+ */
+:is(.message.assistant, .turn-fold) + .message.assistant {
   margin-top: calc(-1 * var(--bc-space-3));
 }
 
@@ -855,14 +858,16 @@ p.loading::before {
 }
 
 .reasoning summary,
-summary.step-row {
+summary.step-row,
+.turn-fold > summary {
   border-radius: var(--bc-radius-sm);
   cursor: pointer;
   list-style: none;
 }
 
 .reasoning summary::-webkit-details-marker,
-summary.step-row::-webkit-details-marker {
+summary.step-row::-webkit-details-marker,
+.turn-fold > summary::-webkit-details-marker {
   display: none;
 }
 
@@ -875,7 +880,8 @@ summary.step-row::-webkit-details-marker {
 
 /* The mark of a row that opens: a chevron drawn from two borders, turned down once open. */
 .reasoning summary::before,
-summary.step-row::before {
+summary.step-row::before,
+.turn-fold > summary::before {
   content: "";
   flex: none;
   align-self: center;
@@ -890,12 +896,14 @@ summary.step-row::before {
 }
 
 .reasoning[open] > summary::before,
-.step[open] > summary.step-row::before {
+.step[open] > summary.step-row::before,
+.turn-fold[open] > summary::before {
   transform: translateY(calc(-1 * var(--bc-space-1))) rotate(45deg);
 }
 
 .reasoning summary:hover,
-summary.step-row:hover {
+summary.step-row:hover,
+.turn-fold > summary:hover {
   color: var(--bc-fg);
 }
 
@@ -904,6 +912,29 @@ summary.step-row:hover {
   padding-left: var(--bc-space-3);
   border-left: 1px solid var(--bc-line);
   white-space: pre-wrap;
+}
+
+/* ---------- Folded turn ---------- */
+
+/*
+ * An ended turn's steps under one small dim row with the reasoning row's chevron (see "Reasoning"). Opened, they lie in
+ * their own column, spaced as in the conversation, so an expanded turn reads as it did before it folded. Child
+ * combinators only: the reasoning and step rows inside have chevrons of their own.
+ */
+.turn-fold > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--bc-space-3);
+  min-height: var(--bc-row);
+  color: var(--bc-fg-dim);
+  font-size: var(--bc-fs-sm);
+}
+
+.turn-fold-entries {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bc-space-4);
+  margin-top: var(--bc-space-2);
 }
 
 /* ---------- Tool steps ---------- */
