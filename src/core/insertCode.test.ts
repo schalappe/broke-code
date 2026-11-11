@@ -75,6 +75,13 @@ describe("insertCode", () => {
     expect(errors).toEqual(["fr:The editor refused the edit; its document may be read-only."]);
   });
 
+  test("a refused edit is refused even when every selection already holds the text", async () => {
+    const { editor } = fakeEditor("X", [{ start: 0, end: 1 }], { refuse: true });
+    const { errors, showError } = recordingErrors();
+    expect(await insertCode("X", { activeEditor: () => editor, showError }, french)).toBe("refused");
+    expect(errors).toEqual(["fr:The editor refused the edit; its document may be read-only."]);
+  });
+
   test("an edit the editor accepts but leaves unapplied, as on a read-only document, says so", async () => {
     const { editor, document } = fakeEditor("read only", [{ start: 0, end: 4 }], { ignore: true });
     const { errors, showError } = recordingErrors();

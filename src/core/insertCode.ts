@@ -5,6 +5,8 @@
  * [>]: VS Code's `TextEditor.edit` settles `true` on a read-only document although nothing applied (its main thread
  * ignores what the editor did), and `false` only on a version mismatch or a closed editor. So the document's version
  * is read before and after: an edit that left it unchanged is refused, unless every selection already held the text.
+ * Accepted gap: VS Code checks the version itself when it applies, so a change before that refuses the edit; only a
+ * change from elsewhere landing between a read-only no-op and its answer would pass that no-op as `done`.
  */
 import type { Translator } from "./modelList";
 
