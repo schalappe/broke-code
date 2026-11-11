@@ -50,7 +50,8 @@ cursor. Read `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the dec
   pick port the host fills with `showQuickPick`), workspace file access (`workspaceFiles.ts`: the inside-workspace check and its read-only
   roots (the loaded skills' folders outside the workspace, for reads only), capped reads, one-level listings, line truncation, the write boundary and atomic writes, with `node:fs`), mentions (`mentions.ts`: token detection, picked and typed
   mentions merged, reading, and the text the model receives), where a message holds Markdown code
-  (`markdownCode.ts`; also `isCodeBlockClosed`, whether a rendered code block's text is final, and `codeBlockText`,
+  (`markdownCode.ts`; also `remarkFenceClosed`, the remark plugin marking a fenced block whose closing fence the parser read,
+  `hasTextAfter`, whether rendered text follows a block, and `codeBlockText`,
   the text Copy and Insert at cursor take), Insert at cursor (`insertCode.ts`: `insertCode` over an editor port the
   host fills with `window.activeTextEditor`: no editor, edit refused, failed, or done), the menu logic (`suggestions.ts`: the `@` token at the caret, index entries,
   filtering, the index exclusions; the `/` token at the start of the message, `BUILT_IN_COMMANDS`, the slash command
@@ -321,10 +322,12 @@ cursor. Read `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the dec
   cursor in a header above its code once its text is final: its closing fence was written, rendered text follows it
   (the parser closed it), or its reply has ended (done, stopped, failed, halted, or cut off). While its reply is
   waiting or streaming, a block still open has none. React-markdown renders an open fence like a closed one, so
-  `isCodeBlockClosed` reads closure from the answer's source at the block's `node.position`: the block's last line (any
-  line ending), less the blockquote markers and list indent its opening line had, must be a closing fence (up to 3
-  spaces, the opening fence's character, at least its length, then only spaces or tabs); text after the block counts
-  only past whitespace and `>`, since a stream may end on a container prefix. The call block, tool step
+  the parser itself says it: `remarkFenceClosed`, a remark plugin on the answer's renderer only, adds an enter handler
+  for `codeFencedFence` to mdast-util-from-markdown (which has none of its own), marks the nearest `code` node when that
+  fence is the closing one (`flowCodeInside` already set), and the mark reaches the `pre`'s `code` element as the
+  `dataFenceClosed` property, which `CodeBlock` reads. Rendered text after the block, read from the answer's source past
+  the block's `node.position` end (`hasTextAfter`), counts only past whitespace and `>`, since a stream may end on a
+  container prefix; it completes an indented block and a fence its container ended. The call block, tool step
   rows, reasoning, and user messages are not Markdown and get no controls. The block's text is its code as rendered,
   without the fence lines and its final line break; an empty block's buttons are disabled. Copy writes it with the
   webview's `navigator.clipboard` and shows "Copied", or "Copy failed" when the write is refused, in the button's

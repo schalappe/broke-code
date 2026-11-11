@@ -13,7 +13,7 @@ import {
 } from "react";
 import Markdown, { type Components, type ExtraProps } from "react-markdown";
 import { type ConversationSummary, filterConversations } from "../core/conversation";
-import { codeBlockText, isCodeBlockClosed } from "../core/markdownCode";
+import { codeBlockText, FENCE_CLOSED, hasTextAfter, remarkFenceClosed } from "../core/markdownCode";
 import { emptyModelsLabel } from "../core/modelList";
 import {
   type ChatEntry,
@@ -511,7 +511,9 @@ function Reply({
         // [>]: The Markdown rules of the stylesheet apply inside this block only, never to the rows and blocks beside it.
         <div className="answer">
           <AnswerSource.Provider value={{ source: answer, ended: !inFlight }}>
-            <Markdown components={ANSWER_COMPONENTS}>{answer}</Markdown>
+            <Markdown components={ANSWER_COMPONENTS} remarkPlugins={ANSWER_PLUGINS}>
+              {answer}
+            </Markdown>
           </AnswerSource.Provider>
         </div>
       )}
@@ -550,15 +552,17 @@ const COPY_FEEDBACK_MS = 2000;
 
 /**
  * A code block of the answer, with Copy and Insert at cursor in a header above the code once its text is final: its
- * fence closed, text after it, or its reply ended (`isCodeBlockClosed`). A block still growing renders bare.
+ * closing fence read by the parser (`remarkFenceClosed`), rendered text after it (`hasTextAfter`: an indented block, or
+ * a fence its container ended), or its reply ended. A block still growing renders bare.
  * [>]: One component for every render, so a block keeps its Copy outcome while the answer streams on.
  */
 function CodeBlock({ node, ...props }: ComponentProps<"pre"> & ExtraProps) {
   const { source, ended } = useContext(AnswerSource);
-  const start = node?.position?.start.offset;
   const end = node?.position?.end.offset;
   const code = node ? textOf(node) : "";
-  const final = start !== undefined && end !== undefined && (ended || isCodeBlockClosed(source, start, end));
+  const child = node?.children[0];
+  const fenceClosed = child?.type === "element" && child.properties[FENCE_CLOSED] === true;
+  const final = ended || fenceClosed || (end !== undefined && hasTextAfter(source, end));
   if (!final) return <pre {...props} />;
   return (
     <div className="code-block">
@@ -569,6 +573,7 @@ function CodeBlock({ node, ...props }: ComponentProps<"pre"> & ExtraProps) {
 }
 
 const ANSWER_COMPONENTS: Components = { pre: CodeBlock };
+const ANSWER_PLUGINS = [remarkFenceClosed];
 
 /** The text of a rendered node: its own value, or its children's, in order. */
 function textOf(node: { value?: unknown; children?: unknown[] }): string {

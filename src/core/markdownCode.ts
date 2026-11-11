@@ -1,8 +1,13 @@
 /**
  * @module markdownCode
- * Where a message holds Markdown code, which never holds mentions or body tool calls. No `node:` or `vscode` import,
- * since the webview bundle loads it.
+ * Where a message holds Markdown code, which never holds mentions or body tool calls, and when an answer's code block
+ * is final. No `node:` or `vscode` import, since the webview bundle loads it.
  */
+import type { Root } from "mdast";
+import type { CompileContext } from "mdast-util-from-markdown";
+// [>]: Type only: it declares `fromMarkdownExtensions` on the processor data, which react-markdown parses with.
+import type {} from "remark-parse";
+import type { Plugin } from "unified";
 
 /** Stands in for code characters; not whitespace, so a token cannot start right after masked code. */
 export const MASK = "\0";
@@ -142,34 +147,35 @@ function backslashesBefore(text: string, index: number): number {
   return count;
 }
 
+/** The `code` element property `remarkFenceClosed` sets on a fenced block whose closing fence the parser read. */
+export const FENCE_CLOSED = "dataFenceClosed";
+
 /**
- * True when a code block the Markdown renderer drew can no longer grow as its reply streams: a fenced block whose
- * closing fence was written, or a block (fenced or indented) that rendered text follows, since the parser closed it.
- * `source`: the Markdown rendered. `start`, `end`: the block's offsets there (react-markdown's `node.position`), the
- * opening fence or the indent first.
- * [>]: An unclosed fence renders like a closed one, so closure is read from the source: the block's last line, less
- * the container prefixes its opening line had (blockquote markers, then a list item's indent), must be a closing
- * fence. Text after the block counts only past whitespace and `>`, since a stream may end on a container prefix.
+ * Remark plugin: marks each fenced code block whose closing fence was written, with `FENCE_CLOSED` on its `code`
+ * element. An open fence renders like a closed one, so this is the parser's own reading, containers and indents
+ * included. [>]: `codeFencedFence` has no enter handler of its own; at the opening fence `flowCodeInside` is unset, at
+ * the closing one it is set, and the block is the nearest `code` node on the stack (a buffer sits above it).
  */
-export function isCodeBlockClosed(source: string, start: number, end: number): boolean {
-  if (/[^\s>]/.test(source.slice(end))) return true;
-  const lines = source.slice(start, end).split(/\r\n|\r|\n/);
-  const opening = /^(`{3,}|~{3,})/.exec(lines[0] ?? "")?.[1];
-  if (!opening || lines.length < 2) return false;
-  const lineStart = Math.max(source.lastIndexOf("\n", start - 1), source.lastIndexOf("\r", start - 1)) + 1;
-  const prefix = source.slice(lineStart, start);
-  const quotes = prefix.split(">").length - 1;
-  const indent = stripQuotes(prefix, quotes).length;
-  const last = stripQuotes(lines.at(-1)!, quotes);
-  const fence = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(last.replace(new RegExp(`^ {0,${indent}}`), ""))?.[1];
-  return fence !== undefined && fence[0] === opening[0] && fence.length >= opening.length;
+export const remarkFenceClosed: Plugin<[], Root> = function remarkFenceClosed() {
+  const data = this.data();
+  data.fromMarkdownExtensions ??= [];
+  data.fromMarkdownExtensions.push({ enter: { codeFencedFence: markClosingFence } });
+};
+
+function markClosingFence(this: CompileContext): void {
+  if (!this.data.flowCodeInside) return;
+  const node = this.stack.findLast((entry) => entry.type === "code");
+  if (!node) return;
+  node.data ??= {};
+  node.data.hProperties = { ...node.data.hProperties, [FENCE_CLOSED]: true };
 }
 
-/** `line` less its first `count` blockquote markers, each with up to 3 spaces before it and one space after. */
-function stripQuotes(line: string, count: number): string {
-  let rest = line;
-  for (let marker = 0; marker < count; marker++) rest = rest.replace(/^ {0,3}> ?/, "");
-  return rest;
+/**
+ * True when text other than whitespace and blockquote markers follows `end` in `source`: the parser closed the block
+ * ending there, indented or fenced, since a stream may end on a container prefix (`> `) that renders nothing.
+ */
+export function hasTextAfter(source: string, end: number): boolean {
+  return /[^\s>]/.test(source.slice(end));
 }
 
 /** A code block's text as the user takes it: its rendered code less the final line break. */

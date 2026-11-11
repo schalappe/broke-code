@@ -1663,6 +1663,20 @@ describe("code blocks", () => {
     expect(streaming("```\nx\n``` y")).toBe(0);
   });
 
+  test("while its reply streams, the parser decides closure inside containers, tabs, and fence indents included", () => {
+    const streaming = (content: string) => controlled(renderEntries([reply(content, "streaming")]));
+    expect(streaming("   ```\nx\n    ```")).toBe(0);
+    expect(streaming("  ```\nx\n    ```")).toBe(0);
+    expect(streaming("- > ```\n  > x\n  >     ```")).toBe(0);
+    expect(streaming(">\t```\n>\tx\n>\t```")).toBe(1);
+    expect(streaming("-   item\n\n    > ```\n    > x\n    > ```")).toBe(1);
+    expect(streaming("-\t```\n\tx\n\t```")).toBe(1);
+    expect(streaming("~~~\n```\n~~~")).toBe(1);
+    expect(streaming("````\n```\n````")).toBe(1);
+    expect(streaming("```")).toBe(0);
+    expect(streaming("```js")).toBe(0);
+  });
+
   test("a block open in a blockquote stays without controls while the stream ends on a container prefix", () => {
     const streaming = (content: string) => controlled(renderEntries([reply(content, "streaming")]));
     expect(streaming("> ```\n> x\n> \n> ")).toBe(0);
