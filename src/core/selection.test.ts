@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { formatMention } from "./mentions";
-import { type EditorSelection, readSelection } from "./selection";
+import { type EditorSelection, editorSelection, type Position, readSelection } from "./selection";
 import type { WorkspaceRoot } from "./workspaceFiles";
 
 const root: WorkspaceRoot = { name: "app", path: "/w/app" };
@@ -147,5 +147,53 @@ describe("readSelection", () => {
     expect(Buffer.byteLength(mention.content)).toBeLessThanOrEqual(1024 * 1024);
     expect(mention.content.endsWith("€")).toBe(true);
     expect(formatMention(mention).endsWith("\n[truncated: 2 more lines not shown]")).toBe(true);
+  });
+});
+
+describe("editorSelection", () => {
+  /** An editor on `path` with `selections`, the first primary; `getText` records the range it is asked for. */
+  function editor(scheme: string, path: string, selections: { start: Position; end: Position }[]) {
+    const asked: unknown[] = [];
+    const [selection] = selections;
+    return {
+      asked,
+      editor: {
+        document: {
+          uri: { scheme, fsPath: path },
+          getText: (range: { start: Position; end: Position }) => {
+            asked.push(range);
+            return `text of ${range.start.line}:${range.start.character}-${range.end.line}:${range.end.character}`;
+          },
+        },
+        selection: selection!,
+        selections,
+      },
+    };
+  }
+
+  test("gives nothing without an active text editor", () => {
+    expect(editorSelection(undefined)).toBeUndefined();
+  });
+
+  test("maps the primary selection: scheme, path, range, and its text, other selections left out", () => {
+    const primary = { start: { line: 9, character: 2 }, end: { line: 11, character: 0 } };
+    const other = { start: { line: 1, character: 0 }, end: { line: 1, character: 4 } };
+    const { editor: active, asked } = editor("file", "/w/app/src/app.ts", [primary, other]);
+    expect(editorSelection(active)).toEqual({
+      scheme: "file",
+      path: "/w/app/src/app.ts",
+      start: { line: 9, character: 2 },
+      end: { line: 11, character: 0 },
+      text: "text of 9:2-11:0",
+    });
+    expect(asked).toEqual([primary]);
+  });
+
+  test("keeps another scheme as it is, for readSelection to refuse", () => {
+    const empty = { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } };
+    expect(editorSelection(editor("untitled", "Untitled-1", [empty]).editor)).toMatchObject({
+      scheme: "untitled",
+      path: "Untitled-1",
+    });
   });
 });

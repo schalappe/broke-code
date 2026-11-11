@@ -69,7 +69,7 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   (`git.ts`: `lookUpGit` over the extension handle the host passes, its availability checks and its wait for
   `initialized` with an injectable timeout, the structural typing of the members used, and `gitDiffReader`, the
   `@diff` port, with the repository-relative pathspec and git's `stderr` as the cause), `@selection` (`selection.ts`: the raw `EditorSelection` the
-  host's `SelectionReader` returns, and `readSelection`, the workspace check, the line range, and the caps), where a
+  host's `SelectionReader` returns, `editorSelection`, that record from a structural text editor, and `readSelection`, the workspace check, the line range, and the caps), where a
   message holds Markdown code
   (`markdownCode.ts`; also `remarkFenceClosed`, the remark plugin marking a fenced block whose closing fence the parser read,
   `hasTextAfter`, whether rendered text follows a block, and `codeBlockText`,
@@ -107,7 +107,7 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   `vscode.languages.getDiagnostics()` as raw records, the git diffs `@diff` reads, through the Git API lookup the
   commit message command shares, `git.ts` passing the core's `lookUpGit` the `vscode.git` extension and building
   `gitDiffs` with `Uri.file`),
-  and the selection `@selection` reads, the primary selection of `window.activeTextEditor` as a raw record, webview
+  and the selection `@selection` reads, the primary selection of `window.activeTextEditor` as a raw record through the core's `editorSelection`, webview
   view, API keys in `SecretStorage` and their dialog
   queue, the "Add provider" flow's Quick Pick, input boxes, and settings write in `addProvider.ts`, the
   file index's `findFiles` scan and watcher in `fileIndex.ts`, the turn limits and the command timeout from the user

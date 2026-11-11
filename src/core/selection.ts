@@ -16,6 +16,33 @@ export type Position = { line: number; character: number };
  */
 export type EditorSelection = { scheme: string; path: string; start: Position; end: Position; text: string };
 
+/**
+ * The members of a `vscode.TextEditor` read here, `S` its selection type: the document's URI and text, and the primary
+ * selection.
+ */
+export type TextEditorLike<S extends { start: Position; end: Position }> = {
+  document: { uri: { scheme: string; fsPath: string }; getText(range: NoInfer<S>): string };
+  selection: S;
+};
+
+/**
+ * The raw record of `editor`'s primary selection, other selections of a multi-cursor left out; `undefined` without an
+ * active text editor. The host passes `window.activeTextEditor`.
+ */
+export function editorSelection<S extends { start: Position; end: Position }>(
+  editor: TextEditorLike<S> | undefined,
+): EditorSelection | undefined {
+  if (!editor) return undefined;
+  const { document, selection } = editor;
+  return {
+    scheme: document.uri.scheme,
+    path: document.uri.fsPath,
+    start: { line: selection.start.line, character: selection.start.character },
+    end: { line: selection.end.line, character: selection.end.character },
+    text: document.getText(selection),
+  };
+}
+
 /** Reads the active text editor's primary selection; `undefined` when no text editor is active. May reject. */
 export type SelectionReader = { read(): Promise<EditorSelection | undefined> };
 
