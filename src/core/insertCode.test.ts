@@ -7,18 +7,30 @@ const french = { t: (message: string, ...args: (string | number | boolean)[]) =>
 type Range = { start: number; end: number };
 
 /**
- * An editor over `text` with `selections`. `refuse`: its edits resolve `false`, as a read-only document's do. Each
- * `edit` call is one undo stop, so `edits` counts them; the replacements of one edit apply together.
+ * An editor over `text` with `selections`. `refuse`: its edits resolve `false`, as a version mismatch does. `ignore`:
+ * its edits resolve `true` and change nothing, as VS Code's do on a read-only document. Each applied `edit` call is one
+ * undo stop and one version, so `edits` counts them; the replacements of one edit apply together.
  */
-function fakeEditor(text: string, selections: Range[], options: { refuse?: boolean; fail?: Error } = {}) {
+function fakeEditor(
+  text: string,
+  selections: Range[],
+  options: { refuse?: boolean; ignore?: boolean; fail?: Error } = {},
+) {
   const document = { text, edits: 0 };
   const editor: InsertEditor<Range> = {
     selections,
+    document: {
+      get version() {
+        return document.edits + 1;
+      },
+      getText: (range) => document.text.slice(range.start, range.end),
+    },
     edit: async (callback) => {
       const replacements: { range: Range; value: string }[] = [];
       callback({ replace: (range, value) => replacements.push({ range, value }) });
       if (options.fail) throw options.fail;
       if (options.refuse) return false;
+      if (options.ignore) return true;
       document.edits++;
       for (const { range, value } of [...replacements].sort((a, b) => b.range.start - a.range.start)) {
         document.text = document.text.slice(0, range.start) + value + document.text.slice(range.end);
@@ -61,6 +73,42 @@ describe("insertCode", () => {
     expect(document.text).toBe("read only");
     expect(document.edits).toBe(0);
     expect(errors).toEqual(["fr:The editor refused the edit; its document may be read-only."]);
+  });
+
+  test("an edit the editor accepts but leaves unapplied, as on a read-only document, says so", async () => {
+    const { editor, document } = fakeEditor("read only", [{ start: 0, end: 4 }], { ignore: true });
+    const { errors, showError } = recordingErrors();
+    expect(await insertCode("X", { activeEditor: () => editor, showError }, french)).toBe("refused");
+    expect(document.text).toBe("read only");
+    expect(errors).toEqual(["fr:The editor refused the edit; its document may be read-only."]);
+  });
+
+  test("an unapplied edit where every selection already holds the text is done, and shows nothing", async () => {
+    const { editor } = fakeEditor(
+      "X and X",
+      [
+        { start: 0, end: 1 },
+        { start: 6, end: 7 },
+      ],
+      { ignore: true },
+    );
+    const { errors, showError } = recordingErrors();
+    expect(await insertCode("X", { activeEditor: () => editor, showError }, french)).toBe("done");
+    expect(errors).toEqual([]);
+  });
+
+  test("an unapplied edit where only some selections hold the text is refused", async () => {
+    const { editor } = fakeEditor(
+      "X and Y",
+      [
+        { start: 0, end: 1 },
+        { start: 6, end: 7 },
+      ],
+      { ignore: true },
+    );
+    const { errors, showError } = recordingErrors();
+    expect(await insertCode("X", { activeEditor: () => editor, showError }, french)).toBe("refused");
+    expect(errors).toHaveLength(1);
   });
 
   test("an edit that throws is shown with its cause, never as a refusal", async () => {

@@ -335,8 +335,10 @@ cursor. Read `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the dec
   `REPLY_MAX_LENGTH` characters, since a block cannot be longer than its reply); the host replaces every selection of
   `window.activeTextEditor` with it, inserting at each caret, in one `editor.edit`, so one Undo restores it. No active
   text editor, an edit the editor refuses (a read-only document, such as the write approval's diff), and an edit that
-  throws each show a native error notification and change nothing. A success shows nothing, and neither button moves
-  the focus.
+  throws each show a native error notification and change nothing. VS Code's `edit` settles `true` on a read-only
+  document although nothing applied, so an edit counts as refused when it settles `false`, or when the document's
+  version did not change and some selection does not already hold the text (then nothing needed changing: `done`). A
+  success shows nothing, and neither button moves the focus.
 - Each request of an agent turn sends a `system` message first, then the history: each user entry's composed text,
   each assistant answer verbatim with its call block (reasoning never), and each tool step as a `user` message
   `<tool_result tool="<name>" status="ok|error">`, the text, then `</tool_result>`, never the OpenAI `tool` role

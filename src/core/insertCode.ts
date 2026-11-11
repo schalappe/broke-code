@@ -2,6 +2,9 @@
  * @module insertCode
  * Insert at cursor: a code block's text replacing every selection of the active text editor, as a paste does. No
  * `vscode` import: the host fills the editor port with `window.activeTextEditor`, whose shape matches.
+ * [>]: VS Code's `TextEditor.edit` settles `true` on a read-only document although nothing applied (its main thread
+ * ignores what the editor did), and `false` only on a version mismatch or a closed editor. So the document's version
+ * is read before and after: an edit that left it unchanged is refused, unless every selection already held the text.
  */
 import type { Translator } from "./modelList";
 
@@ -9,11 +12,13 @@ import type { Translator } from "./modelList";
 export type InsertEdit<Location> = { replace(location: Location, value: string): void };
 
 /**
- * A text editor: its selections (an empty one is a caret), and `edit`, which applies every replacement its callback
- * makes as one undoable edit and settles `false` when the editor cannot apply it (a read-only document).
+ * A text editor: its selections (an empty one is a caret), its document (`version` grows with each change, `getText`
+ * reads a selection's text), and `edit`, which applies every replacement its callback makes as one undoable edit and
+ * settles `false` when the editor cannot apply it (but see the module comment).
  */
 export type InsertEditor<Location> = {
   readonly selections: readonly Location[];
+  readonly document: { readonly version: number; getText(location: Location): string };
   edit(callback: (edit: InsertEdit<Location>) => void): PromiseLike<boolean>;
 };
 
@@ -25,7 +30,7 @@ export type InsertPorts<Location> = {
 
 /**
  * `done`: every selection holds the text. `noEditor`: no text editor is active. `refused`: the editor refused the
- * edit. `failed`: the edit threw. Each but `done` changed nothing and was shown.
+ * edit, or settled `true` and changed nothing. `failed`: the edit threw. Each but `done` changed nothing and was shown.
  */
 export type InsertOutcome = "done" | "noEditor" | "refused" | "failed";
 
@@ -43,11 +48,17 @@ export async function insertCode<Location>(
     ports.showError(l10n.t("No text editor is active: open a file to insert the code."));
     return "noEditor";
   }
+  // [>]: The selections as they were, which an edit that applied nothing leaves where they are.
+  const selections = [...editor.selections];
+  const version = editor.document.version;
   try {
     const applied = await editor.edit((edit) => {
-      for (const selection of editor.selections) edit.replace(selection, text);
+      for (const selection of selections) edit.replace(selection, text);
     });
-    if (applied) return "done";
+    const changed = editor.document.version !== version;
+    if (applied && (changed || selections.every((selection) => editor.document.getText(selection) === text))) {
+      return "done";
+    }
     ports.showError(l10n.t("The editor refused the edit; its document may be read-only."));
     return "refused";
   } catch (error) {
