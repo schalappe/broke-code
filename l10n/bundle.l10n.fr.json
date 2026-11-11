@@ -134,5 +134,20 @@
   "Skill and mentions": "Skill et mentions",
   "Skill {0}": "Skill {0}",
   "loaded": "chargée",
-  "could not be loaded": "n'a pas pu être chargée"
+  "could not be loaded": "n'a pas pu être chargée",
+  "A commit message is already being generated for {0}.": "Un message de commit est déjà en cours de génération pour {0}.",
+  "Choose a provider and a model in the broke-code chat first.": "Choisissez d'abord un fournisseur et un modèle dans la discussion broke-code.",
+  "The commit message covers only part of the staged changes: the diff did not fit the model's context.": "Le message de commit ne couvre qu'une partie des modifications indexées : le diff ne tenait pas dans le contexte du modèle.",
+  "Nothing is staged in {0}. Stage the changes to describe first.": "Rien n'est indexé dans {0}. Indexez d'abord les modifications à décrire.",
+  "The staged changes of {0} could not be read.": "Impossible de lire les modifications indexées de {0}.",
+  "The context size of {0} is too small for a commit message request. Set a larger one in brokeCode.contextSizes.": "La taille du contexte de {0} est trop petite pour une requête de message de commit. Indiquez-en une plus grande dans brokeCode.contextSizes.",
+  "The model's reply held no commit message.": "La réponse du modèle ne contenait aucun message de commit.",
+  "No git repository is open in this window.": "Aucun dépôt git n'est ouvert dans cette fenêtre.",
+  "The Git extension is not available. Check that the built-in Git extension is enabled.": "L'extension Git n'est pas disponible. Vérifiez que l'extension Git intégrée est activée.",
+  "The Git extension is disabled: git is turned off in the settings (git.enabled), or git was not found.": "L'extension Git est désactivée : git est désactivé dans les paramètres (git.enabled), ou git est introuvable.",
+  "Could not generate the commit message.": "Impossible de générer le message de commit.",
+  "Replace": "Remplacer",
+  "The commit message box of {0} already holds text. Replace it?": "La zone du message de commit de {0} contient déjà du texte. Le remplacer ?",
+  "Generating the commit message…": "Génération du message de commit…",
+  "Choose a repository": "Choisissez un dépôt"
 }

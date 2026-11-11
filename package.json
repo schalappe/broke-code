@@ -43,8 +43,23 @@
         "command": "broke-code.setApiKey",
         "title": "%command.setApiKey.title%",
         "category": "broke-code"
+      },
+      {
+        "command": "broke-code.generateCommitMessage",
+        "title": "%command.generateCommitMessage.title%",
+        "category": "broke-code",
+        "icon": "$(sparkle)"
       }
     ],
+    "menus": {
+      "scm/title": [
+        {
+          "command": "broke-code.generateCommitMessage",
+          "when": "scmProvider == git",
+          "group": "navigation"
+        }
+      ]
+    },
     "configuration": {
       "title": "broke-code",
       "properties": {

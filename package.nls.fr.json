@@ -3,6 +3,7 @@
   "viewContainer.title": "broke-code",
   "view.chat.name": "Discussion",
   "command.setApiKey.title": "Définir la clé d'API",
+  "command.generateCommitMessage.title": "Générer le message de commit",
   "config.providers.description": "Services LLM compatibles avec l'API de discussion d'OpenAI. Chaque entrée a un `name` unique, une `baseUrl`, la racine de l'API, par exemple `http://localhost:11434/v1`, et un `caFile` facultatif pour un certificat d'entreprise ou auto-signé. Les clés d'API sont conservées dans le stockage des secrets de l'éditeur, jamais ici. Liste lue uniquement dans les paramètres utilisateur : un espace de travail ne peut pas remplacer cette liste, donc un dépôt ne peut pas détourner une clé enregistrée.",
   "config.providers.name.description": "Nom unique affiché dans le panneau de discussion.",
   "config.providers.baseUrl.description": "Racine de l'API, par exemple `http://localhost:11434/v1`. broke-code y ajoute `/models` et `/chat/completions`.",
