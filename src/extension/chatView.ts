@@ -5,6 +5,7 @@
 import * as vscode from "vscode";
 import type { ChatController } from "../core/chatController";
 import type { FileQueryAnswer } from "../core/fileIndex";
+import { insertCode } from "../core/insertCode";
 import { chooseModel } from "../core/modelList";
 import { type ChatState, type HostMessage, parseWebviewMessage } from "../core/protocol";
 import { answerSkillQuery, type SkillDiscovery } from "../core/skills";
@@ -140,6 +141,16 @@ export class ChatView implements vscode.WebviewViewProvider {
       case "reject":
         controller.reject(message.id, message.reason);
         return;
+      case "insertCode":
+        // [>]: The active text editor stays the last one focused while the chat has the focus, which stays there.
+        return void insertCode(
+          message.text,
+          {
+            activeEditor: () => vscode.window.activeTextEditor,
+            showError: (error) => void vscode.window.showErrorMessage(error),
+          },
+          vscode.l10n,
+        );
     }
   }
 }

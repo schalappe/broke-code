@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, test } from "bun:test";
-import type { ReactElement } from "react";
+import { beforeEach, describe, expect, jest, test } from "bun:test";
+import { act, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ChatEntry, ChatState } from "../core/protocol";
 import type { ProviderError } from "../core/providerError";
@@ -1592,5 +1592,266 @@ describe("warnings", () => {
 
   test("shows no warning list when nothing is skipped", () => {
     expect(renderToStaticMarkup(<App state={stateWith(true)} language="en" />)).not.toContain('class="warnings"');
+  });
+});
+
+describe("code blocks", () => {
+  /** Panel markup for one question and `entries` after it. */
+  const renderEntries = (entries: ChatEntry[]) =>
+    renderToStaticMarkup(<App state={stateWith(true, { entries: [hi[0]!, ...entries] })} language="en" />);
+  const reply = (content: string, status: Reply["status"] = "done", fields: Partial<Reply> = {}): ChatEntry => ({
+    role: "assistant",
+    reasoning: "",
+    content,
+    status,
+    ...fields,
+  });
+  /** How many code blocks of the markup have controls. */
+  const controlled = (html: string) => html.split('<div class="code-actions">').length - 1;
+  const actionButtons = (html: string) => html.match(/<button[^>]*class="code-action"[^>]*>[^<]*<\/button>/g) ?? [];
+
+  test("a closed block has Copy and Insert at cursor, native buttons named by their labels, before its code", () => {
+    const html = renderEntries([reply("Run:\n\n```sh\nls -la\n```\n\nDone.")]);
+    expect(actionButtons(html)).toEqual([
+      '<button type="button" class="code-action">Copy</button>',
+      '<button type="button" class="code-action">Insert at cursor</button>',
+    ]);
+    expect(html.indexOf('class="code-actions"')).toBeLessThan(html.indexOf("ls -la"));
+  });
+
+  test("a closed block has its controls while its reply still streams", () => {
+    expect(controlled(renderEntries([reply("```\nls\n```\nmore", "streaming")]))).toBe(1);
+  });
+
+  test("a block whose fence is still open has none while its reply is in flight, and both once it stopped", () => {
+    for (const status of ["waiting", "streaming"] as const) {
+      expect(controlled(renderEntries([reply("Here:\n\n```ts\nconst a = 1;\n", status)]))).toBe(0);
+    }
+    expect(controlled(renderEntries([reply("Here:\n\n```ts\nconst a = 1;\n", "stopped")]))).toBe(1);
+  });
+
+  test("a block with an open fence gets its controls whichever way its reply ended", () => {
+    for (const fields of [
+      { status: "done" },
+      { status: "halted", haltReason: "stepLimit" },
+      { status: "failed", error: { kind: "cutOff", provider: "P", reason: "ended" } },
+    ] as const) {
+      expect(controlled(renderEntries([reply("```\nconst a = 1;", fields.status, fields)]))).toBe(1);
+    }
+  });
+
+  test("an indented block is complete once rendered text follows it or its reply ended", () => {
+    expect(controlled(renderEntries([reply("Code:\n\n    let x = 1;\n", "streaming")]))).toBe(0);
+    expect(controlled(renderEntries([reply("Code:\n\n    let x = 1;\n\nAfter.", "streaming")]))).toBe(1);
+    expect(controlled(renderEntries([reply("Code:\n\n    let x = 1;\n", "done")]))).toBe(1);
+  });
+
+  test("while its reply streams, a block is complete exactly when its closing fence was written", () => {
+    const streaming = (content: string) => controlled(renderEntries([reply(content, "streaming")]));
+    expect(streaming("```\nls\n```")).toBe(1);
+    expect(streaming("```\n\n```")).toBe(1);
+    expect(streaming("```js\rx\r```")).toBe(1);
+    expect(streaming("```js\r\nx\r\n```")).toBe(1);
+    expect(streaming("```\nx\n`````")).toBe(1);
+    expect(streaming("- item\n\n  ```\n  a\n  ```")).toBe(1);
+    expect(streaming("> - ```\n>   a\n>   ```")).toBe(1);
+    expect(streaming("```\n\n")).toBe(0);
+    expect(streaming("```\nx\n~~~")).toBe(0);
+    expect(streaming("````\nx\n```")).toBe(0);
+    expect(streaming("```\nx\n    ```")).toBe(0);
+    expect(streaming("```\n> ```")).toBe(0);
+    expect(streaming("```\nx\n``` y")).toBe(0);
+  });
+
+  test("while its reply streams, the parser decides closure inside containers, tabs, and fence indents included", () => {
+    const streaming = (content: string) => controlled(renderEntries([reply(content, "streaming")]));
+    expect(streaming("   ```\nx\n    ```")).toBe(0);
+    expect(streaming("  ```\nx\n    ```")).toBe(0);
+    expect(streaming("- > ```\n  > x\n  >     ```")).toBe(0);
+    expect(streaming(">\t```\n>\tx\n>\t```")).toBe(1);
+    expect(streaming("-   item\n\n    > ```\n    > x\n    > ```")).toBe(1);
+    expect(streaming("-\t```\n\tx\n\t```")).toBe(1);
+    expect(streaming("~~~\n```\n~~~")).toBe(1);
+    expect(streaming("````\n```\n````")).toBe(1);
+    expect(streaming("```")).toBe(0);
+    expect(streaming("```js")).toBe(0);
+  });
+
+  test("a block open in a blockquote stays without controls while the stream ends on a container prefix", () => {
+    const streaming = (content: string) => controlled(renderEntries([reply(content, "streaming")]));
+    expect(streaming("> ```\n> x\n> \n> ")).toBe(0);
+    expect(streaming("> ```\n> x\n> \n> y")).toBe(0);
+    expect(streaming("> ```\n> x\n\nafter")).toBe(1);
+  });
+
+  test("an empty closed block streaming has its controls, disabled", () => {
+    expect(actionButtons(renderEntries([reply("```\n\n```", "streaming")]))).toEqual([
+      '<button type="button" class="code-action" disabled="">Copy</button>',
+      '<button type="button" class="code-action" disabled="">Insert at cursor</button>',
+    ]);
+  });
+
+  test("an empty block's buttons are disabled", () => {
+    expect(actionButtons(renderEntries([reply("```\n```")]))).toEqual([
+      '<button type="button" class="code-action" disabled="">Copy</button>',
+      '<button type="button" class="code-action" disabled="">Insert at cursor</button>',
+    ]);
+  });
+
+  test("the call block, a tool step's result, the reasoning, and a user message get no controls", () => {
+    const content = "Look:\n<write_file>\n<path>a.md</path>\n<content>\n```\nx\n```\n</content>\n</write_file>";
+    const html = renderToStaticMarkup(
+      <App
+        state={stateWith(true, {
+          entries: [
+            { role: "user", content: "```\nmine\n```", mentions: [] },
+            reply(content, "done", {
+              reasoning: "```\nthought\n```",
+              call: {
+                name: "write_file",
+                args: { path: "a.md", content: "```\nx\n```" },
+                start: 6,
+                end: content.length,
+              },
+            }),
+            { role: "tool", name: "write_file", args: { path: "a.md" }, status: "ok", text: "```\nresult\n```" },
+            reply("Written."),
+          ],
+        })}
+        language="en"
+      />,
+    );
+    expect(controlled(html)).toBe(0);
+  });
+});
+
+describe("code block actions", () => {
+  const blockState = (content: string) =>
+    stateWith(true, { entries: [hi[0]!, { role: "assistant", reasoning: "", content, status: "done" }] });
+
+  /** Replace the webview's clipboard with one whose writes `write` answers; the texts written are recorded. */
+  function fakeClipboard(write: (text: string) => Promise<void> = async () => {}) {
+    const written: string[] = [];
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: (text: string) => {
+          written.push(text);
+          return write(text);
+        },
+      },
+    });
+    return written;
+  }
+
+  /** The labels of the code block buttons, in order. */
+  const labels = (host: HTMLElement) =>
+    [...host.querySelectorAll(".code-action")].map((element) => element.textContent);
+
+  test("Copy writes the block's text without its final line break, says Copied, then Copy again", async () => {
+    await withPanel(blockState("```js\nconst a = 1;\n\nconst b = 2;\n```"), async ({ host, click }) => {
+      const written = fakeClipboard();
+      jest.useFakeTimers();
+      try {
+        await click("Copy");
+        expect(written).toEqual(["const a = 1;\n\nconst b = 2;"]);
+        expect(labels(host)).toEqual(["Copied", "Insert at cursor"]);
+        await act(async () => jest.advanceTimersByTime(1900));
+        expect(labels(host)).toEqual(["Copied", "Insert at cursor"]);
+        await act(async () => jest.advanceTimersByTime(200));
+        expect(labels(host)).toEqual(["Copy", "Insert at cursor"]);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+  });
+
+  test("a second Copy before the outcome clears restarts its two seconds", async () => {
+    await withPanel(blockState("```\nx\n```"), async ({ host, click }) => {
+      fakeClipboard();
+      jest.useFakeTimers();
+      try {
+        await click("Copy");
+        await act(async () => jest.advanceTimersByTime(1500));
+        await click("Copied");
+        await act(async () => jest.advanceTimersByTime(1500));
+        expect(labels(host)).toEqual(["Copied", "Insert at cursor"]);
+        await act(async () => jest.advanceTimersByTime(600));
+        expect(labels(host)).toEqual(["Copy", "Insert at cursor"]);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+  });
+
+  test("a block removed while Copy shows its outcome clears its pending reset", async () => {
+    await withPanel(blockState("```\nx\n```"), async ({ click, show }) => {
+      fakeClipboard();
+      // [&]: React schedules timers of its own, so the reset is told apart by its delay and followed by its id.
+      const { setTimeout: realSet, clearTimeout: realClear } = globalThis;
+      const resets: unknown[] = [];
+      const cleared: unknown[] = [];
+      globalThis.setTimeout = ((handler: () => void, delay?: number) => {
+        const id = realSet(handler, delay);
+        if (delay === 2000) resets.push(id);
+        return id;
+      }) as typeof setTimeout;
+      globalThis.clearTimeout = ((id?: Parameters<typeof clearTimeout>[0]) => {
+        cleared.push(id);
+        realClear(id);
+      }) as typeof clearTimeout;
+      try {
+        await click("Copy");
+        expect(resets).toHaveLength(1);
+        expect(cleared).not.toContain(resets[0]);
+        await show(blockState("No code any more."));
+        expect(cleared).toContain(resets[0]);
+      } finally {
+        globalThis.setTimeout = realSet;
+        globalThis.clearTimeout = realClear;
+      }
+    });
+  });
+
+  test("a rejected clipboard write says Copy failed in the button's place, then Copy again", async () => {
+    await withPanel(blockState("```\nx\n```"), async ({ host, click }) => {
+      fakeClipboard(async () => {
+        throw new Error("denied");
+      });
+      jest.useFakeTimers();
+      try {
+        await click("Copy");
+        expect(labels(host)).toEqual(["Copy failed", "Insert at cursor"]);
+        await act(async () => jest.advanceTimersByTime(2100));
+        expect(labels(host)).toEqual(["Copy", "Insert at cursor"]);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+  });
+
+  test("Insert at cursor posts the same text, and its label stays", async () => {
+    await withPanel(blockState("```py\nprint(1)\n```"), async ({ host, click }) => {
+      posted.length = 0;
+      await click("Insert at cursor");
+      expect(posted).toEqual([{ type: "insertCode", text: "print(1)" }]);
+      expect(labels(host)).toEqual(["Copy", "Insert at cursor"]);
+    });
+  });
+
+  test("a block inside a list item and a ~~~ block holding backtick fences give their exact code", async () => {
+    const content = "1. Step:\n\n   ```sh\n   echo a\n     indented\n   ```\n\n~~~~md\n```js\nx\n```\n~~~~";
+    await withPanel(blockState(content), async ({ host }) => {
+      const insert = [...host.querySelectorAll<HTMLButtonElement>(".code-action")].filter(
+        (element) => element.textContent === "Insert at cursor",
+      );
+      expect(insert).toHaveLength(2);
+      posted.length = 0;
+      for (const element of insert) await act(async () => element.click());
+      expect(posted).toEqual([
+        { type: "insertCode", text: "echo a\n  indented" },
+        { type: "insertCode", text: "```js\nx\n```" },
+      ]);
+    });
   });
 });

@@ -44,6 +44,12 @@ The text a model writes before its answer to work the problem out, shown collaps
 to the model, and never read for body tool calls.
 _Avoid_: thoughts, chain of thought, thinking
 
+**Code block**:
+A block of code in an assistant answer's Markdown, fenced or indented. Once its text is final it has Copy and Insert
+at cursor, which take its code without the fence lines and its final line break. The call block, a tool step's result,
+reasoning, and a user's message are not code blocks.
+_Avoid_: snippet, code fence (for the whole block)
+
 ## Connection
 
 **Provider**:
