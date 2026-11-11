@@ -327,7 +327,7 @@ cursor. Read `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the dec
   fence is the closing one (`flowCodeInside` already set), and the mark reaches the `pre`'s `code` element as the
   `dataFenceClosed` property, which `CodeBlock` reads. Rendered text after the block, read from the answer's source past
   the block's `node.position` end (`hasTextAfter`), counts only past whitespace and `>`, since a stream may end on a
-  container prefix; it completes an indented block and a fence its container ended. The call block, tool step
+  container prefix; it completes an indented block and a fenced block whose container ended. The call block, tool step
   rows, reasoning, and user messages are not Markdown and get no controls. The block's text is its code as rendered,
   without the fence lines and its final line break; an empty block's buttons are disabled. Copy writes it with the
   webview's `navigator.clipboard` and shows "Copied", or "Copy failed" when the write is refused, in the button's

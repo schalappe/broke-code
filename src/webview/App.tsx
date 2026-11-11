@@ -553,7 +553,7 @@ const COPY_FEEDBACK_MS = 2000;
 /**
  * A code block of the answer, with Copy and Insert at cursor in a header above the code once its text is final: its
  * closing fence read by the parser (`remarkFenceClosed`), rendered text after it (`hasTextAfter`: an indented block, or
- * a fence its container ended), or its reply ended. A block still growing renders bare.
+ * a fenced block whose container ended), or its reply ended. A block still growing renders bare.
  * [>]: One component for every render, so a block keeps its Copy outcome while the answer streams on.
  */
 function CodeBlock({ node, ...props }: ComponentProps<"pre"> & ExtraProps) {
