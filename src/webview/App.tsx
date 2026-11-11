@@ -75,6 +75,9 @@ export function App({ state, language }: { state: ChatState; language: string })
       {!configured && <EmptyState />}
       <Warnings state={state} />
       {state.model !== undefined && !state.context.known && <ContextNotice model={state.model} />}
+      {state.model !== undefined && state.context.leftOut !== undefined && (
+        <LeftOutNotice count={state.context.leftOut} />
+      )}
       {state.listFailed && <TextBlock text={describeListFailure(state.listFailed)} />}
       {state.storageProblem && <TextBlock text={describeStorageProblem(state.storageProblem)} />}
       {state.models.status === "failed" && (
@@ -260,6 +263,17 @@ export function ContextNotice({ model }: { model: string }) {
       <button type="button" className="link" onClick={() => post({ type: "setContextSize", model })}>
         {l10n.t("Set context size")}
       </button>
+    </p>
+  );
+}
+
+/** The next request leaves `count` older tool results out to fit the context; derived from the state, never saved. */
+function LeftOutNotice({ count }: { count: number }) {
+  return (
+    <p className="notice" role="status">
+      {count === 1
+        ? l10n.t("1 older tool result is left out of the request to save context.")
+        : l10n.t("{0} older tool results are left out of the request to save context.", count)}
     </p>
   );
 }

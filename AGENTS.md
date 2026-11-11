@@ -60,7 +60,8 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   host fills with `window.activeTextEditor`: no editor, edit refused, failed, or done), the menu logic (`suggestions.ts`: the `@` token at the caret, index entries,
   filtering, the index exclusions; the `/` token at the start of the message, `BUILT_IN_COMMANDS`, the slash command
   filter), the menu's file index (`fileIndex.ts`: one scan shared until a file
-  changes, behind a scan port), the body tool call parser (`toolCalls.ts`: `ToolSpec`, the first call-shaped block,
+  changes, behind a scan port), the request history (`history.ts`: `toHistory`, the history a request sends, the
+  oldest tool results left out when it would fill the context, and `resultLineCount`, the step row's line count), the body tool call parser (`toolCalls.ts`: `ToolSpec`, the first call-shaped block,
   malformed-call messages), the system prompt composer (`systemPrompt.ts`: role, call format, rules, tools,
   skills, instruction files), the turn limits (`limits.ts`: `brokeCode.maxToolSteps` and `brokeCode.contextSizes` parsing,
   the token estimate, the context-full threshold, the typed size check, and `brokeCode.commandTimeoutSeconds` parsing),
@@ -81,7 +82,7 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   skills (`skills.ts`: discovery in `~/.agents/skills/` and each workspace folder's `.agents/skills/`, the frontmatter
   subset, validation, precedence, warnings, the line the extension logs at each send; `LOAD_SKILL_TOOL`, `loadSkill`
   for the model's call, `findSlashSkill`, the skill a `/<name> args` message loads, `loadSkillText`, the load result
-  whoever loads, the user's arguments substituted or appended, and `answerSkillQuery`, the `/` menu's answer). `markdownCode.ts`, `suggestions.ts`, `modelList.ts`, and `conversation.ts` import nothing from
+  whoever loads, the user's arguments substituted or appended, and `answerSkillQuery`, the `/` menu's answer). `markdownCode.ts`, `suggestions.ts`, `modelList.ts`, `conversation.ts`, and `history.ts` import nothing from
   `node:`, since the webview loads them. Unit tests sit next to them as `*.test.ts`, because `bun test` cannot load `vscode`. `tlsFixture.ts`
   generates test certificates with `/usr/bin/openssl` at test time; no private key is committed.
   `conversationFixture.ts` is the in-memory conversation file port for tests.
@@ -184,7 +185,8 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   read from `globalValue` like the providers) maps model names to sizes in tokens; a model absent from it, or with an
   entry that is not a positive integer, uses 32,768. While such a model is selected, the chat shows "Unknown context
   size, using 32k" with a link: the host asks for the size in an input box and merges it into the user value of the
-  setting. The header shows the next request's estimated size against the model's size.
+  setting. The header shows the next request's estimated size, as it would be sent (older tool results left out
+  included, see "Harness"), against the model's size.
 - Every provider request goes through Node's `http`/`https` modules. VS Code patches them in place in the
   extension host, adding its proxy support and, to requests without a `ca` option, the OS certificate store. A
   provider without a CA file sends no `ca`, so it trusts exactly what VS Code trusts.
@@ -372,7 +374,8 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   opens with, a known tool or not, and `tool="unknown"` only when no tool name can be read, as for an empty reply. A
   reply without text is left out of the history, unless a tool step follows it: an empty reply goes back as an
   assistant message with `content: ""` before its step, so the roles keep alternating (Gemma's chat template requires
-  it).
+  it). `toHistory` (`history.ts`) builds it, and leaves the oldest tool results out of a request that would fill the
+  context (below).
 - While a reply streams, a `<tool_result` the model writes after a complete call (`forgedResultCut`) cancels the request,
   and the reply ends `done` at the end of that call (ADR 0001, 2026-11-10): models forge results of calls that never
   ran. An opening with no complete call before it stops nothing.
@@ -390,14 +393,30 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   message, logged with its stack, so the composer never stays locked. Truncate tool results longer than about 2,000 lines and say so in the result.
 - Before each request of an agent turn, the first included, the controller estimates its size as the characters of the
   system prompt and of each history message's content (as `toHistory` builds it, reasoning excluded) divided by 4,
-  rounded up. Above `floor(size * 7 / 8)` of the model's context size, no request is sent and the reply that would
-  have carried it ends `halted` with reason `contextFull`, saved like the other halts; it is never a `ProviderError`,
-  which means a request was sent. A turn reads the step limit and context sizes once, when it starts; a settings
+  rounded up. Above `floor(size * 7 / 8)` of the model's context size (`fillsContext`, never a copy of its arithmetic),
+  the history sent replaces the text of tool steps, oldest first over the whole conversation as sent (earlier turns
+  included), with one line inside the same `<tool_result>` wrapper, same `tool` and `status`:
+  `[result left out to save context: N lines]` (`1 line` for one), N being the step row's line count
+  (`resultLineCount`: a trailing line break dropped, then split; 0 for an empty text). It replaces the fewest steps
+  that make the estimate fit. Never replaced: the system prompt, user messages (a `/<name>` skill message included),
+  assistant answers, the last 3 tool steps of the conversation (`KEPT_RECENT_STEPS`), whatever turn they belong to,
+  every `load_skill` step, whatever its status (a second load answers "already loaded" without the body), and a step
+  whose replacement line is not shorter than its text; a malformed-call step follows the same rule as the others. The
+  choice is a pure function of the entries, the system prompt, and the context size, linear in the entries, since the
+  usage display runs it at each streamed delta. Only what is sent changes: the record and the chat keep every result
+  whole, and the loaded skills are still derived from the entries. When the estimate is still over with every eligible
+  result replaced, the history goes whole, no request is sent, and the reply that would have carried it ends `halted`
+  with reason `contextFull`, saved like the other halts; it is never a `ProviderError`, which means a request was sent.
+  The usage display (`ChatState.context`) counts the request as it would be sent, and its optional `leftOut` counts the
+  results left out; while it is set, the panel shows "N older tool results are left out of the request to save
+  context." in the place and look of the unknown-size notice, derived from the state, never saved or sent. Known cost,
+  accepted: once at the threshold, most requests replace one more old step, which changes the prompt's prefix and
+  defeats a provider's prompt cache. A turn reads the step limit and context sizes once, when it starts; a settings
   change reaches the usage display at once (`limitsChanged`) and the turns from the next send. The display counts the
   system prompt the last send composed, in any conversation shown, since instruction files and skills are the
   workspace's; before the first send of the session, the one without instruction files or skills. It updates once a send has composed it, before the
   request goes.
-  v1 has no automatic summarization.
+  v1 has no automatic summarization: leaving results out is a deterministic cut, with no model call.
 - After the tools, the system prompt has a "Skills" section, one `- <name>: <description>` line per skill listed to
   the model, telling it to call `load_skill` first; without such a skill the section is absent, and so are the
   `load_skill` tool and its rule (reading a loaded skill's files by the absolute path the result gives, read-only

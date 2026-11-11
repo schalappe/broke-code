@@ -2124,6 +2124,86 @@ describe("ChatController agent turn", () => {
     expect(saved()?.entries.at(-1)).toMatchObject({ status: "halted", haltReason: "contextFull" });
   });
 
+  describe("old tool results left out", () => {
+    /** 100 lines of about 100 characters, named after `path`. */
+    const bigResult = (path: string) =>
+      Array.from({ length: 100 }, (_, i) => `${path} ${i} ${"x".repeat(90)}`).join("\n");
+    const leftOutResult = '<tool_result tool="read_file" status="ok">\n[result left out to save context: 100 lines]';
+    // [>]: Threshold 10,000 tokens (40,000 characters): the system prompt (about 2,200) and three results fit, four
+    // do not.
+    const contextSize = 11_429;
+    const threshold = 10_000;
+
+    async function readFiveFiles() {
+      const { runner } = fakeRunner(async (call) => ({ status: "ok", text: bigResult(call.args.path!) }));
+      const calls = ["f1.ts", "f2.ts", "f3.ts", "f4.ts", "f5.ts"].map((path) => ({ content: readCall(path) }));
+      const turn = await scripted(
+        [...calls, { content: "Done." }],
+        runner,
+        undefined,
+        fixedLimits({ sizes: { m: contextSize } }),
+      );
+      await turn.controller.send("read them all");
+      return turn;
+    }
+
+    test("a turn past the threshold goes on, its request carrying the replacement line for the oldest results", async () => {
+      const { state, sent } = await readFiveFiles();
+
+      expect(sent()).toHaveLength(6);
+      expect(state().entries.at(-1)).toMatchObject({ role: "assistant", content: "Done.", status: "done" });
+      const fourth = sent()[4]!.messages;
+      expect(fourth.filter((message) => message.content.startsWith(leftOutResult))).toHaveLength(1);
+      expect(fourth[3]!.content.startsWith(leftOutResult)).toBe(true);
+      const last = sent()[5]!.messages;
+      expect(last[3]!.content.startsWith(leftOutResult)).toBe(true);
+      expect(last[5]!.content.startsWith(leftOutResult)).toBe(true);
+      expect(last[7]!.content).toContain(bigResult("f3.ts"));
+      for (const request of sent()) {
+        expect(Math.ceil(request.messages.reduce((total, m) => total + m.content.length, 0) / 4)).toBeLessThanOrEqual(
+          threshold,
+        );
+      }
+      expect(state().context.leftOut).toBe(2);
+      expect(state().context.used).toBeLessThanOrEqual(threshold);
+    });
+
+    test("the saved record keeps every result whole, and reopening it rebuilds the same request", async () => {
+      const { controller, state, saved } = await readFiveFiles();
+      await settledSave(saved, 12);
+      const steps = saved()!.entries.filter((entry) => entry.role === "tool");
+      expect(steps.map((entry) => entry.role === "tool" && entry.text)).toEqual(
+        ["f1.ts", "f2.ts", "f3.ts", "f4.ts", "f5.ts"].map(bigResult),
+      );
+
+      const before = state().context;
+      const id = state().conversationId;
+      await controller.newChat();
+      expect(state().context.leftOut).toBeUndefined();
+      await controller.openConversation(id);
+      expect(state().context).toEqual(before);
+    });
+
+    test("a request still too large with every eligible result left out halts contextFull and sends nothing", async () => {
+      const { runner } = fakeRunner(async (call) => ({
+        status: "ok",
+        text: call.args.path === "f4.ts" ? "y\n".repeat(12_500) : bigResult(call.args.path!),
+      }));
+      const calls = ["f1.ts", "f2.ts", "f3.ts", "f4.ts"].map((path) => ({ content: readCall(path) }));
+      const { controller, state, sent } = await scripted(
+        [...calls, { content: "never sent" }],
+        runner,
+        undefined,
+        fixedLimits({ sizes: { m: contextSize } }),
+      );
+      await controller.send("read them all");
+
+      expect(sent()).toHaveLength(4);
+      expect(state().entries.at(-1)).toMatchObject({ role: "assistant", status: "halted", haltReason: "contextFull" });
+      expect(state().context.leftOut).toBeUndefined();
+    });
+  });
+
   test("a turn keeps the limits it started with when the settings change while it runs", async () => {
     let release: () => void = () => {};
     const { runner, signals } = fakeRunner(

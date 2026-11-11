@@ -1576,6 +1576,26 @@ describe("context usage", () => {
     expect(html).not.toContain("Unknown context size");
   });
 
+  test("results left out of the next request show one notice with their count", () => {
+    const plural = renderToStaticMarkup(
+      <App state={stateWith(true, { context: { ...usage, known: true, leftOut: 4 } })} language="en" />,
+    );
+    expect(plural).toContain(
+      '<p class="notice" role="status">4 older tool results are left out of the request to save context.</p>',
+    );
+    const singular = renderToStaticMarkup(
+      <App state={stateWith(true, { context: { ...usage, known: true, leftOut: 1 } })} language="en" />,
+    );
+    expect(singular).toContain("1 older tool result is left out of the request to save context.");
+  });
+
+  test("no notice when nothing is left out of the next request", () => {
+    const html = renderToStaticMarkup(
+      <App state={stateWith(true, { context: { ...usage, known: true } })} language="en" />,
+    );
+    expect(html).not.toContain("left out of the request");
+  });
+
   test("the link asks the host for the selected model's context size", () => {
     button(ContextNotice({ model: "qwen3:8b" }), "Set context size").props.onClick!();
     expect(posted).toEqual([{ type: "setContextSize", model: "qwen3:8b" }]);

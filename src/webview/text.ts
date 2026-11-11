@@ -4,6 +4,7 @@
  * usage, and saved conversations.
  */
 import * as l10n from "@vscode/l10n";
+import { resultLineCount } from "../core/history";
 import type { MentionResult } from "../core/mentions";
 import type { ChatEntry, ContextUsage, HaltReason, SkillWarning, StorageProblem } from "../core/protocol";
 import {
@@ -119,7 +120,7 @@ export function mainArgument(args: Record<string, string>): string | undefined {
 export function describeToolStep(step: ChatEntry & { role: "tool" }): string {
   if (step.status === "malformed") return step.text.split("\n")[0] ?? "";
   if (step.approval === "rejected") return l10n.t("rejected");
-  const count = step.text === "" ? 0 : step.text.replace(/\n$/, "").split("\n").length;
+  const count = resultLineCount(step.text);
   const size = count === 1 ? l10n.t("1 line") : l10n.t("{0} lines", count);
   const ending = step.name === "run_command" ? describeCommandEnding(step.text) : undefined;
   if (ending !== undefined) return l10n.t("{0}, {1}", ending, size);

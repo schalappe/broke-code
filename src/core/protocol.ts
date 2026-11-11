@@ -25,7 +25,8 @@ export type ReplyStatus = "waiting" | "streaming" | "done" | "stopped" | "failed
 
 /**
  * `malformedCalls`: three malformed calls in a row. `stepLimit`: the turn reached its tool step limit. `contextFull`:
- * the next request's estimate left less than one eighth of the model's context for the reply, so it was not sent.
+ * the next request's estimate left less than one eighth of the model's context for the reply, even with every older
+ * tool result that may go left out, so it was not sent.
  */
 export type HaltReason = "malformedCalls" | "stepLimit" | "contextFull";
 
@@ -129,10 +130,11 @@ export type SkillProblem =
 export type SkillWarning = { path: string; problem: SkillProblem };
 
 /**
- * The next request's estimated size against the selected model's context size, both in tokens. `known`: the model is
- * in `brokeCode.contextSizes`; else `size` is 32,768.
+ * The next request's estimated size, as it would be sent, against the selected model's context size, both in tokens.
+ * `known`: the model is in `brokeCode.contextSizes`; else `size` is 32,768. `leftOut`: the older tool results that
+ * request leaves out to fit the context (see `toHistory`), present only when there are any; the panel shows a notice.
  */
-export type ContextUsage = { used: number; size: number; known: boolean };
+export type ContextUsage = { used: number; size: number; known: boolean; leftOut?: number };
 
 export type ChatState = {
   providers: string[];

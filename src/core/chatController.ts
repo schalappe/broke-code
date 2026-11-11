@@ -20,6 +20,7 @@ import {
   summarize,
 } from "./conversation";
 import type { ConversationStore } from "./conversationStore";
+import { type HistoryBudget, toHistory } from "./history";
 import { contextOf, estimateTokens, fillsContext, parseLimits, type TurnLimits } from "./limits";
 import { composeUserMessage, findMentions, type MentionReader, type MentionResult, type ReadMention } from "./mentions";
 import {
@@ -367,7 +368,8 @@ export class ChatController {
    * Send user message with its mentions read now, and run the agent turn: stream the reply, run the body tool call
    * its answer holds, record the tool step, and request again, until a reply holds no call, a limit halts the turn,
    * the reply fails, or Stop. Limits: the step limit, three malformed calls in a row, and the context budget, checked
-   * before each request, the first included, so a request that would fill the model's context is never sent. The
+   * before each request, the first included: the oldest tool results are left out of a request that would fill the
+   * model's context (see `toHistory`), and one that fills it even so is never sent. The
    * turn reads the settings once, when it starts. Ignored while replying or without provider and model. `picked`:
    * paths chosen in the menu, mentions while their `@<path>` is still in the text. A mention that cannot be read is
    * reported to the model and in the entry; the message still goes. A message starting with `/<name>` of a discovered
@@ -451,7 +453,7 @@ export class ChatController {
       let steps = 0;
       let malformedInARow = 0;
       for (;;) {
-        const messages = this.requestMessages(system, conversation);
+        const { messages } = this.requestMessages(conversation, { system, contextSize });
         // [>]: Never a provider error: no request goes. The reply that would have carried it ends halted.
         if (fillsContext(estimateTokens(messages), contextSize)) {
           return settle("halted", "contextFull");
@@ -928,28 +930,16 @@ export class ChatController {
     this.emit();
   }
 
-  /** The messages of `conversation`'s next request: `system`, then its history. */
-  private requestMessages(system: string, conversation: Conversation): ChatMessage[] {
-    return [{ role: "system", content: system }, ...this.toHistory(conversation)];
-  }
-
   /**
-   * `conversation` as sent to the model: user messages as composed at send time, assistant answers verbatim, their
-   * call blocks included (stopped and cut-off partials too), and each tool step as a `user` message holding a
-   * `<tool_result>` tag, never the `tool` role, which needs native tool calling (ADR 0001). Reasoning never sent. A
-   * reply without text is left out, unless a tool step follows it: an empty answer goes back with its malformed step,
-   * so the roles keep alternating, which some chat templates (Gemma's) require.
+   * The messages of `conversation`'s next request: `budget.system`, then its history, the oldest tool results left out
+   * when the whole would fill `budget.contextSize` (see `toHistory`); `leftOut` counts them.
    */
-  private toHistory(conversation: Conversation): ChatMessage[] {
-    const messages: ChatMessage[] = [];
-    conversation.entries.forEach((entry, index) => {
-      if (entry.role === "user") messages.push({ role: "user", content: this.modelText.get(entry) ?? entry.content });
-      else if (entry.role === "tool") messages.push({ role: "user", content: toolResultMessage(entry) });
-      else if (entry.content !== "" || conversation.entries[index + 1]?.role === "tool") {
-        messages.push({ role: "assistant", content: entry.content });
-      }
-    });
-    return messages;
+  private requestMessages(
+    conversation: Conversation,
+    budget: HistoryBudget,
+  ): { messages: ChatMessage[]; leftOut: number } {
+    const history = toHistory(conversation.entries, (entry) => this.modelText.get(entry) ?? entry.content, budget);
+    return { messages: [{ role: "system", content: budget.system }, ...history.messages], leftOut: history.leftOut };
   }
 
   private currentProvider(): Provider | undefined {
@@ -977,10 +967,15 @@ export class ChatController {
     });
   }
 
-  /** Estimate of the next request of the conversation shown, against `model`'s context size. */
+  /**
+   * Estimate of the next request of the conversation shown, as it would be sent, against `model`'s context size, and
+   * the count of tool results it leaves out, when any.
+   */
   private contextUsage(model: string | undefined): ContextUsage {
-    const used = estimateTokens(this.requestMessages(this.systemPrompt, this.conversation));
-    return { used, ...contextOf(this.limits, model) };
+    const context = contextOf(this.limits, model);
+    const budget = { system: this.systemPrompt, contextSize: context.size };
+    const { messages, leftOut } = this.requestMessages(this.conversation, budget);
+    return { used: estimateTokens(messages), ...context, ...(leftOut > 0 ? { leftOut } : {}) };
   }
 
   private emit(): void {
@@ -1034,12 +1029,6 @@ function loadedSkillRoots(entries: readonly ChatEntry[], discovered: readonly Sk
     }),
   );
   return discovered.filter((skill) => names.has(skill.name)).map((skill) => skill.root);
-}
-
-/** A tool step as the model reads it. A malformed call goes back as an error. */
-function toolResultMessage(step: ChatEntry & { role: "tool" }): string {
-  const status = step.status === "malformed" ? "error" : step.status;
-  return `<tool_result tool="${step.name}" status="${status}">\n${step.text}\n</tool_result>`;
 }
 
 /**

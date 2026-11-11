@@ -157,8 +157,8 @@ told why.
 
 The agent turn ends when the model answers with text and no tool call. It also ends when you click **Stop**, at any step;
 after three malformed tool calls in a row, with a message saying so; after 50 tool steps (or the limit you set), with
-a message saying the step limit was reached; and before a request that would fill the model's context, with a
-message asking you to start a new chat. A malformed call is sent back to the model with what is wrong, so it can try
+a message saying the step limit was reached; and before a request that would fill the model's context even with its
+older tool results left out (below), with a message asking you to start a new chat. A malformed call is sent back to the model with what is wrong, so it can try
 again; so is an empty reply, which counts as a malformed call.
 
 ## Context size and step limit
@@ -167,8 +167,13 @@ The panel header shows, next to the model picker, how much of the model's contex
 tokens and as a percentage. It is an estimate: the characters of everything the request sends (the instructions,
 your messages with their attachments, the model's answers, and the tool results, but not its reasoning) divided by
 4. Before each request of an agent turn, broke-code checks that estimate: when it leaves less than one eighth of the
-context for the reply, the turn stops without sending the request, and the chat asks you to start a new chat with
-**New chat**. broke-code never shortens or summarizes the conversation by itself.
+context for the reply, broke-code leaves the oldest tool results out of that request, one at a time, until it fits.
+Each one left out goes to the model as a single line, `[result left out to save context: N lines]`. The last three
+tool steps of the conversation, every skill load, your messages, and the model's answers always go whole, and so does a
+result shorter than that line. The chat and the saved conversation keep every result whole; only the request changes.
+While the next request leaves results out, the panel says how many under the header, and the usage counts the request
+as it would be sent. When the request still does not fit, the turn stops without sending it, and the chat asks you to
+start a new chat with **New chat**. broke-code never summarizes the conversation by itself.
 
 LLM services do not report a model's context size, so broke-code reads it from the `brokeCode.contextSizes` table
 in your **user** settings, by model name as the provider lists it. A model absent from the table uses 32,768 tokens,
