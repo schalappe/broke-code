@@ -133,32 +133,36 @@ function withFailedFolders({ failedFolders }: MentionResult, text: string): stri
   return l10n.t("{0}, {1}", text, failed);
 }
 
+/** The unit a mention's count is in, per kind: one grouping for the count and the truncation wordings. */
+const COUNT_UNIT: Record<MentionKind, "line" | "entry" | "problem"> = {
+  file: "line",
+  diff: "line",
+  selection: "line",
+  folder: "entry",
+  problems: "problem",
+};
+
 /** What a mention of `kind` attached, `count` in the unit of its kind. */
 function describeCount(kind: MentionKind, count: number): string {
-  switch (kind) {
-    case "file":
-    case "diff":
+  switch (COUNT_UNIT[kind]) {
+    case "line":
       return count === 1 ? l10n.t("1 line") : l10n.t("{0} lines", count);
-    case "folder":
+    case "entry":
       return count === 1 ? l10n.t("1 entry") : l10n.t("{0} entries", count);
-    case "problems":
+    case "problem":
       return count === 1 ? l10n.t("1 problem") : l10n.t("{0} problems", count);
-    case "selection":
-      return count === 1 ? l10n.t("1 line") : l10n.t("{0} lines", count);
   }
 }
 
+/** What a cut mention of `kind` kept, `count` in the unit of its kind. */
 function describeTruncated(kind: MentionKind, count: number): string {
-  switch (kind) {
-    case "file":
-    case "diff":
+  switch (COUNT_UNIT[kind]) {
+    case "line":
       return l10n.t("truncated to {0} lines", count);
-    case "folder":
+    case "entry":
       return l10n.t("truncated to {0} entries", count);
-    case "problems":
+    case "problem":
       return l10n.t("truncated to {0} problems", count);
-    case "selection":
-      return l10n.t("truncated to {0} lines", count);
   }
 }
 
