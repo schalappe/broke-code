@@ -206,13 +206,24 @@ export function accessFailureReason(failure: AccessFailure, cause?: string): str
  * byte cap cut among them.
  */
 export function cutToMentionCaps(text: string): { text: string; lines: number; omitted: number } {
-  const prefix = bytePrefix([text], MAX_MENTION_BYTES);
+  if (Buffer.byteLength(text) <= MAX_MENTION_BYTES) return truncateLines(text, MAX_MENTION_LINES);
+  return cutOverByteCap([text], truncateLines(text, Number.POSITIVE_INFINITY).lines);
+}
+
+/**
+ * `pieces` joined, a text over 1 MiB of `wholeLines` lines, cut to the mention caps as `cutToMentionCaps` cuts it,
+ * without ever building more than 1 MiB of it: a caller with a huge text in pieces passes them and counts its lines.
+ */
+export function cutOverByteCap(
+  pieces: Iterable<string>,
+  wholeLines: number,
+): { text: string; lines: number; omitted: number } {
+  const prefix = bytePrefix(pieces, MAX_MENTION_BYTES);
   const cut = truncateLines(prefix, MAX_MENTION_LINES);
-  if (prefix.length === text.length) return cut;
   // [>]: Under the line cap, the byte cap cut the last line kept unless the prefix ends with its line break.
   const partial = cut.omitted === 0 && !/[\r\n]$/.test(prefix) ? 1 : 0;
   const lines = cut.lines - partial;
-  return { text: cut.text, lines, omitted: truncateLines(text, Number.POSITIVE_INFINITY).lines - lines };
+  return { text: cut.text, lines, omitted: wholeLines - lines };
 }
 
 function plural(count: number, one: string, many: string): string {

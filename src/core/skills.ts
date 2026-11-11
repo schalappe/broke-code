@@ -8,14 +8,19 @@
  */
 import { readdir, realpath } from "node:fs/promises";
 import { join } from "node:path";
-import { accessFailureReason, MAX_MENTION_BYTES, MAX_MENTION_LINES, truncationNotice } from "./mentions";
+import {
+  accessFailureReason,
+  cutOverByteCap,
+  MAX_MENTION_BYTES,
+  MAX_MENTION_LINES,
+  truncationNotice,
+} from "./mentions";
 import type { HostMessage, SkillProblem, SkillWarning } from "./protocol";
 import type { Skill } from "./systemPrompt";
 import type { ToolSpec } from "./toolCalls";
 import { excerpt, type ToolResult } from "./tools";
 import {
   type AccessFailure,
-  bytePrefix,
   compareNames,
   isInside,
   locateWorkspacePath,
@@ -500,11 +505,8 @@ function cutExpansion(segments: readonly string[], args: string): { text: string
     const cut = truncateLines(segments.join(args), MAX_MENTION_LINES);
     return { text: cut.text, omitted: cut.omitted };
   }
-  const prefix = bytePrefix(joined(segments, args), MAX_MENTION_BYTES);
-  const cut = truncateLines(prefix, MAX_MENTION_LINES);
-  // [>]: Under the line cap, the byte cap cut the last line shown unless the prefix ends with its line break.
-  const partial = cut.omitted === 0 && !/[\r\n]$/.test(prefix) ? 1 : 0;
-  return { text: cut.text, omitted: joinedLineCount(segments, args) - (cut.lines - partial) };
+  const cut = cutOverByteCap(joined(segments, args), joinedLineCount(segments, args));
+  return { text: cut.text, omitted: cut.omitted };
 }
 
 /** The pieces of `segments` joined by `args`, in order, `args` never copied. */
