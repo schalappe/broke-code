@@ -179,5 +179,6 @@ describe("describeFold", () => {
     expect(describeFold({ steps: 3, failed: 1, rejected: 0 })).toBe("3 steps, 1 failed");
     expect(describeFold({ steps: 3, failed: 2, rejected: 1 })).toBe("3 steps, 2 failed, 1 rejected");
     expect(describeFold({ steps: 4, failed: 0, rejected: 1 })).toBe("4 steps, 1 rejected");
+    expect(describeFold({ steps: 5, failed: 0, rejected: 2 })).toBe("5 steps, 2 rejected");
   });
 });
