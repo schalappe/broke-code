@@ -25,8 +25,10 @@
   --bc-space-2: 4px;
   --bc-space-3: 8px;
   --bc-space-4: 12px;
-  --bc-space-5: 16px;
-  --bc-space-6: 24px;
+  --bc-space-5: 24px;
+  /* Sizes that are not spacing: a one-line row, and a mark drawn in CSS (a dot, a chevron). */
+  --bc-row: 22px;
+  --bc-mark: 6px;
 
   /* Corners: controls, blocks, and the two large blocks (the message box, a user's message). */
   --bc-radius-sm: 4px;
@@ -47,10 +49,50 @@
   /* A drawn line keeps its hairline, and becomes the contrast border in high contrast. */
   --bc-line: var(--vscode-contrastBorder, var(--bc-rule));
 
+  /* A drawn line of the selected or hovered control, and of a pressed secondary button. */
+  --bc-line-active: var(--vscode-contrastActiveBorder, var(--bc-rule));
+
   --bc-focus: var(--vscode-focusBorder);
   --bc-link: var(--vscode-textLink-foreground);
+  --bc-link-active: var(--vscode-textLink-activeForeground, var(--bc-link));
+  --bc-code-fg: var(--vscode-textPreformat-foreground, var(--bc-fg));
   --bc-error: var(--vscode-errorForeground);
   --bc-warning: var(--vscode-editorWarning-foreground);
+
+  /* Each control and surface below takes the color the theme gives that exact job. */
+  --bc-field-fg: var(--vscode-input-foreground);
+  --bc-field-bg: var(--vscode-input-background);
+  --bc-field-border: var(--vscode-input-border, var(--bc-line));
+  --bc-field-placeholder: var(--vscode-input-placeholderForeground, var(--bc-fg-dim));
+  --bc-caret: var(--vscode-editorCursor-foreground, var(--bc-fg));
+  --bc-select-fg: var(--vscode-dropdown-foreground);
+  --bc-select-bg: var(--vscode-dropdown-background);
+  --bc-select-border: var(--vscode-dropdown-border, var(--bc-line));
+
+  --bc-button-fg: var(--vscode-button-foreground);
+  --bc-button-bg: var(--vscode-button-background);
+  --bc-button-bg-hover: var(--vscode-button-hoverBackground);
+  --bc-button-border: var(--vscode-button-border, var(--bc-edge));
+  --bc-button-border-hover: var(--vscode-contrastActiveBorder, var(--bc-button-border));
+
+  --bc-warning-fill: var(--vscode-inputValidation-warningBackground);
+  --bc-warning-edge: var(--vscode-contrastBorder, var(--vscode-inputValidation-warningBorder, transparent));
+  --bc-error-fill: var(--vscode-inputValidation-errorBackground);
+  --bc-error-edge: var(--vscode-contrastBorder, var(--vscode-inputValidation-errorBorder, transparent));
+  --bc-error-edge-soft: var(
+    --vscode-contrastBorder,
+    color-mix(in srgb, var(--vscode-errorForeground) 55%, transparent)
+  );
+
+  /* Rows of a list: hovered, the current one of History, the highlighted one of a menu. */
+  --bc-row-hover: var(--vscode-list-hoverBackground, var(--bc-fill));
+  --bc-row-current: var(--vscode-list-inactiveSelectionBackground, var(--bc-fill-strong));
+  --bc-row-selected: var(--vscode-list-activeSelectionBackground, var(--bc-fill-strong));
+  --bc-menu-fg: var(--vscode-quickInput-foreground, var(--bc-fg));
+  --bc-row-selected-fg: var(--vscode-list-activeSelectionForeground, var(--bc-menu-fg));
+  --bc-menu-bg: var(--vscode-quickInput-background, var(--vscode-editorWidget-background));
+  --bc-menu-border: var(--vscode-contrastBorder, var(--vscode-widget-border, var(--bc-rule)));
+  --bc-shadow: var(--vscode-widget-shadow, transparent);
   /* The text of an error or a warning block: the block's fill carries the kind, except in high contrast. */
   --bc-error-text: var(--bc-fg);
   --bc-warning-text: var(--bc-fg);
@@ -77,7 +119,7 @@ body.vscode-reduce-motion {
 /* High contrast keeps secondary text close to the foreground, and moves an alert's kind from its fill to its text. */
 body.vscode-high-contrast,
 body.vscode-high-contrast-light {
-  --bc-fg-dim: color-mix(in srgb, var(--vscode-foreground) 88%, transparent);
+  --bc-fg-dim: color-mix(in srgb, var(--bc-fg) 88%, transparent);
   --bc-error-text: var(--bc-error);
   --bc-warning-text: var(--bc-warning);
 }
@@ -113,24 +155,23 @@ select,
 textarea,
 input {
   box-sizing: border-box;
-  color: var(--vscode-input-foreground);
-  background: var(--vscode-input-background);
-  border: 1px solid var(--vscode-input-border, var(--bc-line));
+  color: var(--bc-field-fg);
+  background: var(--bc-field-bg);
+  border: 1px solid var(--bc-field-border);
   border-radius: var(--bc-radius-sm);
   font: inherit;
-  caret-color: var(--vscode-editorCursor-foreground, var(--bc-fg));
+  caret-color: var(--bc-caret);
 }
 
 input {
-  padding: 3px var(--bc-space-3);
+  padding: var(--bc-space-2) var(--bc-space-3);
 }
 
 select {
-  height: 26px;
-  padding: 0 var(--bc-space-2);
-  color: var(--vscode-dropdown-foreground);
-  background: var(--vscode-dropdown-background);
-  border-color: var(--vscode-dropdown-border, var(--bc-line));
+  padding: var(--bc-space-2);
+  color: var(--bc-select-fg);
+  background: var(--bc-select-bg);
+  border-color: var(--bc-select-border);
 }
 
 select:disabled {
@@ -138,17 +179,16 @@ select:disabled {
 }
 
 ::placeholder {
-  color: var(--vscode-input-placeholderForeground, var(--bc-fg-dim));
+  color: var(--bc-field-placeholder);
 }
 
 button {
-  padding: 3px 10px;
-  color: var(--vscode-button-foreground);
-  background: var(--vscode-button-background);
-  border: 1px solid var(--vscode-button-border, var(--bc-edge));
+  padding: var(--bc-space-2) var(--bc-space-4);
+  color: var(--bc-button-fg);
+  background: var(--bc-button-bg);
+  border: 1px solid var(--bc-button-border);
   border-radius: var(--bc-radius-sm);
   font: inherit;
-  line-height: 18px;
   cursor: pointer;
   transition:
     background-color var(--bc-fast) var(--bc-ease),
@@ -156,7 +196,7 @@ button {
 }
 
 button:hover:not(:disabled) {
-  background: var(--vscode-button-hoverBackground);
+  background: var(--bc-button-bg-hover);
 }
 
 button:disabled {
@@ -177,15 +217,15 @@ button.secondary:hover:not(:disabled) {
 
 button.secondary[aria-expanded="true"] {
   background: var(--bc-fill-strong);
-  border-color: var(--vscode-contrastActiveBorder, var(--bc-rule));
+  border-color: var(--bc-line-active);
 }
 
 button:hover:not(:disabled, .link, .history-open) {
-  border-color: var(--vscode-contrastActiveBorder, var(--vscode-button-border, var(--bc-edge)));
+  border-color: var(--bc-button-border-hover);
 }
 
 button.secondary:hover:not(:disabled) {
-  border-color: var(--vscode-contrastActiveBorder, var(--bc-rule));
+  border-color: var(--bc-line-active);
 }
 
 button.link {
@@ -196,11 +236,11 @@ button.link {
   border-radius: var(--bc-radius-sm);
   line-height: inherit;
   text-decoration: underline;
-  text-underline-offset: 2px;
+  text-underline-offset: var(--bc-space-1);
 }
 
 button.link:hover:not(:disabled) {
-  color: var(--vscode-textLink-activeForeground, var(--bc-link));
+  color: var(--bc-link-active);
   background: none;
 }
 
@@ -266,7 +306,7 @@ button:focus-visible {
 
 .header button,
 .history button.secondary {
-  padding: 1px var(--bc-space-3);
+  padding: var(--bc-space-1) var(--bc-space-3);
   font-size: var(--bc-fs-sm);
 }
 
@@ -281,7 +321,7 @@ button:focus-visible {
 
 .warnings,
 .error {
-  padding: var(--bc-space-3) 10px;
+  padding: var(--bc-space-3) var(--bc-space-4);
   border: 1px solid var(--bc-edge);
   border-radius: var(--bc-radius);
   overflow-wrap: anywhere;
@@ -292,16 +332,16 @@ button:focus-visible {
   flex-direction: column;
   gap: var(--bc-space-2);
   margin: 0;
-  padding-left: var(--bc-space-6);
+  padding-left: var(--bc-space-5);
   color: var(--bc-warning-text);
-  background: var(--vscode-inputValidation-warningBackground);
-  border-color: var(--vscode-contrastBorder, var(--vscode-inputValidation-warningBorder, transparent));
+  background: var(--bc-warning-fill);
+  border-color: var(--bc-warning-edge);
   font-size: var(--bc-fs-sm);
 }
 
 .error {
-  background: var(--vscode-inputValidation-errorBackground);
-  border-color: var(--vscode-contrastBorder, var(--vscode-inputValidation-errorBorder, transparent));
+  background: var(--bc-error-fill);
+  border-color: var(--bc-error-edge);
 }
 
 .error p {
@@ -336,7 +376,7 @@ button:focus-visible {
 }
 
 .empty {
-  padding: var(--bc-space-6) 0;
+  padding: var(--bc-space-5) 0;
 }
 
 .empty p,
@@ -371,13 +411,21 @@ button:focus-visible {
   outline-offset: -1px;
 }
 
+/*
+ * A row's title is a button without a box, since the row is what the eye reads; so is a link. In high contrast the
+ * row takes the active edge when hovered (dashed) and when its title has the keyboard focus (solid).
+ */
 .history li:hover {
-  background: var(--vscode-list-hoverBackground, var(--bc-fill));
+  background: var(--bc-row-hover);
   outline: 1px dashed var(--bc-edge-active);
 }
 
+.history li:has(.history-open:focus-visible) {
+  outline: 1px solid var(--bc-edge-active);
+}
+
 .history li.current {
-  background: var(--vscode-list-inactiveSelectionBackground, var(--bc-fill-strong));
+  background: var(--bc-row-current);
   outline: 1px solid var(--bc-edge-active);
 }
 
@@ -522,7 +570,7 @@ button.history-open:hover:not(:disabled) {
 }
 
 .answer blockquote {
-  padding: 0 0 0 10px;
+  padding: 0 0 0 var(--bc-space-4);
   color: var(--bc-fg-dim);
   background: none;
   border: none;
@@ -559,11 +607,11 @@ button.history-open:hover:not(:disabled) {
 .answer a {
   color: var(--bc-link);
   text-decoration: underline;
-  text-underline-offset: 2px;
+  text-underline-offset: var(--bc-space-1);
 }
 
 .answer a:hover {
-  color: var(--vscode-textLink-activeForeground, var(--bc-link));
+  color: var(--bc-link-active);
 }
 
 .answer a:focus-visible {
@@ -574,8 +622,8 @@ button.history-open:hover:not(:disabled) {
 
 /* What is code is set in the editor font: inline code on a faint ground, a block on a filled one. */
 .answer code {
-  padding: 1px var(--bc-space-2);
-  color: var(--vscode-textPreformat-foreground, var(--bc-fg));
+  padding: 0 var(--bc-space-2);
+  color: var(--bc-code-fg);
   background: var(--bc-fill-strong);
   border-radius: var(--bc-radius-sm);
   font-family: var(--bc-mono);
@@ -585,7 +633,7 @@ button.history-open:hover:not(:disabled) {
 .answer pre,
 .step-result {
   margin: 0 0 0.75em;
-  padding: var(--bc-space-3) 10px;
+  padding: var(--bc-space-3) var(--bc-space-4);
   overflow-x: auto;
   background: var(--bc-fill);
   border: 1px solid var(--bc-edge);
@@ -619,10 +667,10 @@ button.history-open:hover:not(:disabled) {
 .chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--bc-space-2);
   max-width: 100%;
   box-sizing: border-box;
-  padding: 1px 6px;
+  padding: 0 var(--bc-space-2);
   background: var(--bc-fill-strong);
   border: 1px solid var(--bc-edge);
   border-radius: var(--bc-radius-sm);
@@ -646,7 +694,7 @@ button.history-open:hover:not(:disabled) {
 }
 
 .chip.failed {
-  border-color: var(--vscode-contrastBorder, color-mix(in srgb, var(--bc-error) 55%, transparent));
+  border-color: var(--bc-error-edge-soft);
 }
 
 /* Kind marker: a page for a file, a tabbed box for a folder. */
@@ -687,8 +735,8 @@ p.loading {
 p.loading::before {
   content: "";
   flex: none;
-  width: 6px;
-  height: 6px;
+  width: var(--bc-mark);
+  height: var(--bc-mark);
   background: var(--bc-fg-dim);
   border-radius: 50%;
 }
@@ -743,7 +791,7 @@ summary.step-row::-webkit-details-marker {
   display: flex;
   align-items: center;
   gap: var(--bc-space-3);
-  min-height: 22px;
+  min-height: var(--bc-row);
 }
 
 /* The mark of a row that opens: a chevron drawn from two borders, turned down once open. */
@@ -753,9 +801,9 @@ summary.step-row::before {
   flex: none;
   align-self: center;
   box-sizing: border-box;
-  width: 6px;
-  height: 6px;
-  margin: 0 1px 0 2px;
+  width: var(--bc-mark);
+  height: var(--bc-mark);
+  margin: 0 var(--bc-space-1);
   border-right: 1px solid var(--bc-fg-dim);
   border-bottom: 1px solid var(--bc-fg-dim);
   transform: rotate(-45deg);
@@ -764,7 +812,7 @@ summary.step-row::before {
 
 .reasoning[open] > summary::before,
 .step[open] > summary.step-row::before {
-  transform: translateY(-2px) rotate(45deg);
+  transform: translateY(calc(-1 * var(--bc-space-1))) rotate(45deg);
 }
 
 .reasoning summary:hover,
@@ -773,8 +821,8 @@ summary.step-row:hover {
 }
 
 .reasoning-text {
-  margin: var(--bc-space-2) 0 0 5px;
-  padding-left: 10px;
+  margin: var(--bc-space-2) 0 0 var(--bc-space-2);
+  padding-left: var(--bc-space-3);
   border-left: 1px solid var(--bc-line);
   white-space: pre-wrap;
 }
@@ -793,7 +841,7 @@ summary.step-row:hover {
   align-items: baseline;
   gap: var(--bc-space-3);
   min-width: 0;
-  min-height: 22px;
+  min-height: var(--bc-row);
 }
 
 /* A call without a result has no chevron: a dot holds its place, filled while the call runs or waits. */
@@ -802,9 +850,9 @@ div.step-row::before {
   flex: none;
   align-self: center;
   box-sizing: border-box;
-  width: 6px;
-  height: 6px;
-  margin: 0 1px 0 2px;
+  width: var(--bc-mark);
+  height: var(--bc-mark);
+  margin: 0 var(--bc-space-1);
   border: 1px solid var(--bc-fg-dim);
   border-radius: 50%;
 }
@@ -841,6 +889,8 @@ div.step-row:has(.step-status.loading)::before {
 
 .step-command {
   order: 1;
+  font-family: var(--bc-mono);
+  font-size: var(--bc-fs-mono);
   flex: 1 0 100%;
   box-sizing: border-box;
   max-height: 12em;
@@ -885,7 +935,7 @@ div.step-row:has(.step-status.loading)::before {
  */
 .decision {
   margin: var(--bc-space-3) 0;
-  padding: var(--bc-space-2) 10px 10px;
+  padding: var(--bc-space-2) var(--bc-space-4) var(--bc-space-4);
   background: var(--bc-fill);
   border: 1px solid var(--bc-line);
   border-radius: var(--bc-radius);
@@ -941,9 +991,9 @@ div.step-row:has(.step-status.loading)::before {
   display: flex;
   gap: var(--bc-space-2);
   align-items: flex-end;
-  padding: 6px;
-  background: var(--vscode-input-background);
-  border: 1px solid var(--vscode-input-border, var(--bc-line));
+  padding: var(--bc-space-3);
+  background: var(--bc-field-bg);
+  border: 1px solid var(--bc-field-border);
   border-radius: var(--bc-radius-lg);
 }
 
@@ -977,11 +1027,11 @@ div.step-row:has(.step-status.loading)::before {
   margin-bottom: var(--bc-space-2);
   max-height: 50vh;
   overflow-y: auto;
-  color: var(--vscode-quickInput-foreground, var(--bc-fg));
-  background: var(--vscode-quickInput-background, var(--vscode-editorWidget-background));
-  border: 1px solid var(--vscode-contrastBorder, var(--vscode-widget-border, var(--bc-rule)));
+  color: var(--bc-menu-fg);
+  background: var(--bc-menu-bg);
+  border: 1px solid var(--bc-menu-border);
   border-radius: var(--bc-radius);
-  box-shadow: 0 4px 12px var(--vscode-widget-shadow, transparent);
+  box-shadow: 0 var(--bc-space-2) var(--bc-space-4) var(--bc-shadow);
   font-size: var(--bc-fs-sm);
 }
 
@@ -1005,14 +1055,14 @@ div.step-row:has(.step-status.loading)::before {
 }
 
 .menu [role="option"]:hover {
-  background: var(--vscode-list-hoverBackground, var(--bc-fill));
+  background: var(--bc-row-hover);
   outline: 1px dashed var(--bc-edge-active);
 }
 
 /* The highlighted row: the theme's selection, or the panel's stronger fill, and an edge in high contrast. */
 .menu [role="option"].highlighted {
-  color: var(--vscode-list-activeSelectionForeground, inherit);
-  background: var(--vscode-list-activeSelectionBackground, var(--bc-fill-strong));
+  color: var(--bc-row-selected-fg);
+  background: var(--bc-row-selected);
   outline: 1px solid var(--bc-edge-active);
 }
 

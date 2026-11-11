@@ -26,8 +26,7 @@ spacing:
   "2": 4px
   "3": 8px
   "4": 12px
-  "5": 16px
-  "6": 24px
+  "5": 24px
 ---
 
 # Design System: broke-code chat panel
@@ -39,9 +38,16 @@ The chat panel is a tool people work in all day, in the VS Code side bar, beside
 runs flush on the panel, whitespace separates the turns, and greys do most of the work. It must look native in any
 VS Code theme, so it owns no color: every color comes from the active theme.
 
-The stylesheet has two layers. The token layer (`--bc-*` custom properties on `:root`) comes first; every rule after
-it reads tokens, or a `--vscode-*` variable that names the exact job (a button's background, an input's border). A
-new screen follows the same order: pick tokens first, add a token only when no existing one says what you mean.
+The stylesheet has two layers. The token layer (`--bc-*` custom properties on `:root`) comes first and is the only
+place that reads a `--vscode-*` variable; every rule after it reads tokens only. A new screen follows the same
+order: pick tokens first, and add a token, under a name that says its role, only when no existing one says what you
+mean. To check that no rule reaches past the token layer:
+
+```sh
+awk 'f; /^}/{f=1}' src/webview/styles.css | rg 'var\(--vscode'
+```
+
+It must print nothing (the first `}` of the file closes the token layer).
 
 Constraints that shape everything here:
 
@@ -74,16 +80,38 @@ It must print nothing.
 | `--bc-fill` | 6% of the foreground | A surface a shade off the panel: the user's message, a code block, the decision block. |
 | `--bc-fill-strong` | 11% of the foreground | One step stronger: inline code, chips, a hovered or pressed secondary button. |
 
-### Theme colors used for their own job
+### Role tokens
 
-- Primary button: `--vscode-button-background`, `-foreground`, `-hoverBackground`, `-border`.
-- Fields: `--vscode-input-*` and `--vscode-dropdown-*`.
-- Menus: `--vscode-quickInput-*`, `--vscode-list-hoverBackground`, `--vscode-list-activeSelection*`,
-  `--vscode-widget-shadow`.
-- Links: `--vscode-textLink-foreground` and `-activeForeground`. Links stay underlined, so color is never the only cue.
-- Status: `--vscode-errorForeground`, `--vscode-editorWarning-foreground`, and the fills and borders of
-  `--vscode-inputValidation-error*` and `-warning*`.
-- Focus: `--vscode-focusBorder`, for the focus ring only.
+Each takes the color the theme gives that exact job, so a button is the theme's button and a link the theme's link.
+
+| Token | Theme variable (then its fallback) | Use |
+| --- | --- | --- |
+| `--bc-field-fg`, `--bc-field-bg` | `input.foreground`, `input.background` | Inputs and the message box. |
+| `--bc-field-border` | `input.border`, then `--bc-line` | Their border. |
+| `--bc-field-placeholder` | `input.placeholderForeground`, then `--bc-fg-dim` | Placeholder text. |
+| `--bc-caret` | `editorCursor.foreground`, then `--bc-fg` | The text caret. |
+| `--bc-select-fg`, `--bc-select-bg`, `--bc-select-border` | `dropdown.foreground`, `.background`, `.border` (then `--bc-line`) | The pickers. |
+| `--bc-button-fg`, `--bc-button-bg`, `--bc-button-bg-hover` | `button.foreground`, `.background`, `.hoverBackground` | The primary button. |
+| `--bc-button-border` | `button.border`, then `--bc-edge` | Its border. |
+| `--bc-button-border-hover` | `contrastActiveBorder`, then `--bc-button-border` | Its border when hovered. |
+| `--bc-link`, `--bc-link-active` | `textLink.foreground`, `textLink.activeForeground` | Links, always underlined, so color is never the only cue. |
+| `--bc-code-fg` | `textPreformat.foreground`, then `--bc-fg` | Inline code. |
+| `--bc-error`, `--bc-warning` | `errorForeground`, `editorWarning.foreground` | Status text and marks. |
+| `--bc-error-fill`, `--bc-warning-fill` | `inputValidation.errorBackground`, `.warningBackground` | The fill of an error or a warning block. |
+| `--bc-error-edge`, `--bc-warning-edge` | `contrastBorder`, then `inputValidation.errorBorder` or `.warningBorder` | Its border. |
+| `--bc-error-edge-soft` | `contrastBorder`, then 55% of `errorForeground` | The border of a failed chip. |
+| `--bc-error-text`, `--bc-warning-text` | `--bc-fg`; the status color in high contrast | The text of an error or a warning block. |
+| `--bc-row-hover` | `list.hoverBackground`, then `--bc-fill` | A hovered row of a menu or of History. |
+| `--bc-row-current` | `list.inactiveSelectionBackground`, then `--bc-fill-strong` | The current History row. |
+| `--bc-row-selected`, `--bc-row-selected-fg` | `list.activeSelectionBackground` (then `--bc-fill-strong`), `list.activeSelectionForeground` (then `--bc-menu-fg`) | The highlighted menu row. |
+| `--bc-menu-fg`, `--bc-menu-bg` | `quickInput.foreground` (then `--bc-fg`), `quickInput.background` (then `editorWidget.background`) | The `@` and `/` menus. |
+| `--bc-menu-border` | `contrastBorder`, then `widget.border`, then `--bc-rule` | Their border. |
+| `--bc-shadow` | `widget.shadow` | Their shadow. |
+| `--bc-focus` | `focusBorder` | The focus ring only. |
+| `--bc-line-active` | `contrastActiveBorder`, then `--bc-rule` | The border of a hovered or pressed secondary button. |
+
+A theme variable is written `--vscode-` plus its name with `.` turned into `-` (`input.border` is
+`--vscode-input-border`).
 
 ### The high-contrast rule
 
@@ -100,6 +128,12 @@ high-contrast theme defines `--vscode-contrastBorder` and `--vscode-contrastActi
   button, the decision block, a rule) becomes the contrast border in high contrast.
 - In high contrast an error and a warning block share the same border and no fill, so their text takes the status
   color (`--bc-error-text`, `--bc-warning-text`); elsewhere the fill says it and the text stays the foreground.
+
+Two controls are buttons in the markup and not to the eye, so they get no box, in high contrast either (maintainer
+decision): a link button (`button.link`), which is underlined at rest in every theme, and a History row's title
+(`button.history-open`), which is told apart by its row: title over date, Delete at the right. A History row takes
+`--bc-edge-active` when hovered (dashed) and when its title has the keyboard focus (solid), as the current row does
+at rest.
 
 The rule needs no theme class: it follows the variables, so it holds in High Contrast Light and in any theme that
 defines the contrast borders. Anything new that is a block, a button, or a selected row takes one of the three
@@ -124,7 +158,12 @@ from weight, not from size or color. Numbers that change in place (usage, dates)
 One column, at the side bar's width; nothing scrolls sideways. The panel has 12px of side padding and an 8px gap
 between its regions: header, notices, the conversation (or History in its place), the message box.
 
-- Spacing comes from the `--bc-space-*` scale (2, 4, 8, 12, 16, 24). Tight inside a group, wider between groups.
+- Spacing (padding, gap, margin) comes from the `--bc-space-*` scale: 2, 4, 8, 12, 24. Tight inside a group, wider
+  between groups. Four kinds of length are not spacing and stay off the scale: a line (every border, rule, and
+  outline is 1px, and the menu is pulled 1px over the message box's border); the focus ring's offset (see "Keyboard
+  and focus"); the two size tokens, `--bc-row` (22px, the least height of a one-line row) and `--bc-mark` (6px, a
+  dot or a chevron drawn in CSS), with the file and folder markers sized in `em`; and Markdown's vertical rhythm,
+  set in `em` so it follows the text size.
 - Whitespace separates turns: 12px between entries, 8px more above a user's message; the replies and tool steps of
   one turn sit 4px apart.
 - Long content never widens the panel: a path or a title on one line is cut with an ellipsis; a message, a command,
@@ -137,7 +176,7 @@ between its regions: header, notices, the conversation (or History in its place)
 ## Elevation & Depth
 
 Flat. Depth comes from fills, not shadows. The one shadow belongs to the `@` and `/` menus, which overlay the
-conversation: `0 4px 12px var(--vscode-widget-shadow)`.
+conversation: 4px down, 12px of blur, in `--bc-shadow`.
 
 ## Shapes
 
@@ -227,8 +266,9 @@ the duration of a transition. Under `prefers-reduced-motion: reduce`, and when V
 
 ### Do
 
-- Take every color from a `--vscode-*` variable, and prefer the variable that names the job.
+- Take every color from a `--vscode-*` variable, through a token, and prefer the variable that names the job.
 - Give every new filled surface `--bc-edge`, every new selected row `--bc-edge-active`, every drawn line `--bc-line`.
+- Read `--vscode-*` variables in the token layer only, under a role name.
 - Use the editor font only for what is code.
 - Keep one primary button per region.
 - Look at a change in Default Light Modern, Default Dark Modern, and Default High Contrast before calling it done.
