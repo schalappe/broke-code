@@ -146,18 +146,30 @@ function backslashesBefore(text: string, index: number): number {
  * True when a code block the Markdown renderer drew can no longer grow as its reply streams: a fenced block whose
  * closing fence was written, or a block (fenced or indented) that rendered text follows, since the parser closed it.
  * `source`: the Markdown rendered. `start`, `end`: the block's offsets there (react-markdown's `node.position`), the
- * opening fence or the indent first. `code`: its text as rendered, which ends with one line break unless empty.
- * [>]: An unclosed fence renders like a closed one, so closure is read from the source: a closed fenced block spans
- * its code's lines plus the two fence lines, an open one plus its opening line only.
+ * opening fence or the indent first.
+ * [>]: An unclosed fence renders like a closed one, so closure is read from the source: the block's last line, less
+ * the container prefixes its opening line had (blockquote markers, then a list item's indent), must be a closing
+ * fence. Text after the block counts only past whitespace and `>`, since a stream may end on a container prefix.
  */
-export function isCodeBlockClosed(source: string, start: number, end: number, code: string): boolean {
-  if (source.slice(end).trim() !== "") return true;
-  const block = source.slice(start, end);
-  if (!/^(`{3,}|~{3,})/.test(block)) return false;
-  // [>]: An open block may end at the source's last line break, which ends a code line and starts no line.
-  const lines = (block.endsWith("\n") ? block.slice(0, -1) : block).split("\n").length;
-  const codeLines = code === "" ? 0 : code.split("\n").length - 1;
-  return lines === codeLines + 2;
+export function isCodeBlockClosed(source: string, start: number, end: number): boolean {
+  if (/[^\s>]/.test(source.slice(end))) return true;
+  const lines = source.slice(start, end).split(/\r\n|\r|\n/);
+  const opening = /^(`{3,}|~{3,})/.exec(lines[0] ?? "")?.[1];
+  if (!opening || lines.length < 2) return false;
+  const lineStart = Math.max(source.lastIndexOf("\n", start - 1), source.lastIndexOf("\r", start - 1)) + 1;
+  const prefix = source.slice(lineStart, start);
+  const quotes = prefix.split(">").length - 1;
+  const indent = stripQuotes(prefix, quotes).length;
+  const last = stripQuotes(lines.at(-1)!, quotes);
+  const fence = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(last.replace(new RegExp(`^ {0,${indent}}`), ""))?.[1];
+  return fence !== undefined && fence[0] === opening[0] && fence.length >= opening.length;
+}
+
+/** `line` less its first `count` blockquote markers, each with up to 3 spaces before it and one space after. */
+function stripQuotes(line: string, count: number): string {
+  let rest = line;
+  for (let marker = 0; marker < count; marker++) rest = rest.replace(/^ {0,3}> ?/, "");
+  return rest;
 }
 
 /** A code block's text as the user takes it: its rendered code less the final line break. */

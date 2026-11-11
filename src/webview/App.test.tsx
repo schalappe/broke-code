@@ -1646,6 +1646,37 @@ describe("code blocks", () => {
     expect(controlled(renderEntries([reply("Code:\n\n    let x = 1;\n", "done")]))).toBe(1);
   });
 
+  test("while its reply streams, a block is complete exactly when its closing fence was written", () => {
+    const streaming = (content: string) => controlled(renderEntries([reply(content, "streaming")]));
+    expect(streaming("```\nls\n```")).toBe(1);
+    expect(streaming("```\n\n```")).toBe(1);
+    expect(streaming("```js\rx\r```")).toBe(1);
+    expect(streaming("```js\r\nx\r\n```")).toBe(1);
+    expect(streaming("```\nx\n`````")).toBe(1);
+    expect(streaming("- item\n\n  ```\n  a\n  ```")).toBe(1);
+    expect(streaming("> - ```\n>   a\n>   ```")).toBe(1);
+    expect(streaming("```\n\n")).toBe(0);
+    expect(streaming("```\nx\n~~~")).toBe(0);
+    expect(streaming("````\nx\n```")).toBe(0);
+    expect(streaming("```\nx\n    ```")).toBe(0);
+    expect(streaming("```\n> ```")).toBe(0);
+    expect(streaming("```\nx\n``` y")).toBe(0);
+  });
+
+  test("a block open in a blockquote stays without controls while the stream ends on a container prefix", () => {
+    const streaming = (content: string) => controlled(renderEntries([reply(content, "streaming")]));
+    expect(streaming("> ```\n> x\n> \n> ")).toBe(0);
+    expect(streaming("> ```\n> x\n> \n> y")).toBe(0);
+    expect(streaming("> ```\n> x\n\nafter")).toBe(1);
+  });
+
+  test("an empty closed block streaming has its controls, disabled", () => {
+    expect(actionButtons(renderEntries([reply("```\n\n```", "streaming")]))).toEqual([
+      '<button type="button" class="code-action" disabled="">Copy</button>',
+      '<button type="button" class="code-action" disabled="">Insert at cursor</button>',
+    ]);
+  });
+
   test("an empty block's buttons are disabled", () => {
     expect(actionButtons(renderEntries([reply("```\n```")]))).toEqual([
       '<button type="button" class="code-action" disabled="">Copy</button>',
@@ -1717,6 +1748,53 @@ describe("code block actions", () => {
         expect(labels(host)).toEqual(["Copy", "Insert at cursor"]);
       } finally {
         jest.useRealTimers();
+      }
+    });
+  });
+
+  test("a second Copy before the outcome clears restarts its two seconds", async () => {
+    await withPanel(blockState("```\nx\n```"), async ({ host, click }) => {
+      fakeClipboard();
+      jest.useFakeTimers();
+      try {
+        await click("Copy");
+        await act(async () => jest.advanceTimersByTime(1500));
+        await click("Copied");
+        await act(async () => jest.advanceTimersByTime(1500));
+        expect(labels(host)).toEqual(["Copied", "Insert at cursor"]);
+        await act(async () => jest.advanceTimersByTime(600));
+        expect(labels(host)).toEqual(["Copy", "Insert at cursor"]);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+  });
+
+  test("a block removed while Copy shows its outcome clears its pending reset", async () => {
+    await withPanel(blockState("```\nx\n```"), async ({ click, show }) => {
+      fakeClipboard();
+      // [&]: React schedules timers of its own, so the reset is told apart by its delay and followed by its id.
+      const { setTimeout: realSet, clearTimeout: realClear } = globalThis;
+      const resets: unknown[] = [];
+      const cleared: unknown[] = [];
+      globalThis.setTimeout = ((handler: () => void, delay?: number) => {
+        const id = realSet(handler, delay);
+        if (delay === 2000) resets.push(id);
+        return id;
+      }) as typeof setTimeout;
+      globalThis.clearTimeout = ((id?: Parameters<typeof clearTimeout>[0]) => {
+        cleared.push(id);
+        realClear(id);
+      }) as typeof clearTimeout;
+      try {
+        await click("Copy");
+        expect(resets).toHaveLength(1);
+        expect(cleared).not.toContain(resets[0]);
+        await show(blockState("No code any more."));
+        expect(cleared).toContain(resets[0]);
+      } finally {
+        globalThis.setTimeout = realSet;
+        globalThis.clearTimeout = realClear;
       }
     });
   });

@@ -558,7 +558,7 @@ function CodeBlock({ node, ...props }: ComponentProps<"pre"> & ExtraProps) {
   const start = node?.position?.start.offset;
   const end = node?.position?.end.offset;
   const code = node ? textOf(node) : "";
-  const final = start !== undefined && end !== undefined && (ended || isCodeBlockClosed(source, start, end, code));
+  const final = start !== undefined && end !== undefined && (ended || isCodeBlockClosed(source, start, end));
   if (!final) return <pre {...props} />;
   return (
     <div className="code-block">

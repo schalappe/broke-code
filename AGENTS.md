@@ -321,7 +321,10 @@ cursor. Read `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the dec
   cursor in a header above its code once its text is final: its closing fence was written, rendered text follows it
   (the parser closed it), or its reply has ended (done, stopped, failed, halted, or cut off). While its reply is
   waiting or streaming, a block still open has none. React-markdown renders an open fence like a closed one, so
-  `isCodeBlockClosed` reads closure from the answer's source at the block's `node.position`. The call block, tool step
+  `isCodeBlockClosed` reads closure from the answer's source at the block's `node.position`: the block's last line (any
+  line ending), less the blockquote markers and list indent its opening line had, must be a closing fence (up to 3
+  spaces, the opening fence's character, at least its length, then only spaces or tabs); text after the block counts
+  only past whitespace and `>`, since a stream may end on a container prefix. The call block, tool step
   rows, reasoning, and user messages are not Markdown and get no controls. The block's text is its code as rendered,
   without the fence lines and its final line break; an empty block's buttons are disabled. Copy writes it with the
   webview's `navigator.clipboard` and shows "Copied", or "Copy failed" when the write is refused, in the button's
