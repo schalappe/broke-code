@@ -25,7 +25,9 @@ _Avoid_: run, task, iteration
 
 **Tool step**:
 One body tool call inside an agent turn and the result sent back to the model; a malformed call, or an empty reply, and
-the message saying what is wrong count as a step too. The chat shows each step as a compact row.
+the message saying what is wrong count as a step too. The chat shows each step as a compact row. Once an agent turn
+has ended, the steps and replies before its last reply fold under one row ("3 steps, 1 failed, 1 rejected") when they
+hold at least two steps; the last reply, and a step after it, stay in view.
 _Avoid_: tool use, action, iteration
 
 **Approval**:

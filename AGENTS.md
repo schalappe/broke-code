@@ -102,7 +102,8 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   the `pre` override of the answer's renderer) included. `SuggestionMenu.tsx` is the autocomplete list the `@` and
   `/` menus share, a row with an optional description; `composer.ts` holds the message box's decisions without React
   (the token at the caret, each menu's rows, what a key does, what picking a `/` row does (`slashPick`), the built-in
-  command a message runs).
+  command a message runs). `turns.ts` groups the entries for rendering without React (`foldTurns`: each entry once,
+  an ended turn's fold and its step counts), and `text.ts` words the fold's row (`describeFold`).
 - `src/l10n.test.ts`: checks that every `l10n.t` message has a French translation and that the
   `package.nls*.json` files match.
 - `l10n/bundle.l10n.fr.json`, `package.nls.json`, `package.nls.fr.json`: French strings for the host and
@@ -342,6 +343,16 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
     EPERM is logged and reaches that run's result as a failed-signal line, so the run never says it stopped; a run not
     yet stopping ends as stopped, a timeout or a leftover cleanup keeps its reason. Accepted limit: a host that crashes never calls it, so a process that ignores SIGTERM can then
     outlive it.
+- A turn runs from a user message to the entry before the next one; it has ended unless it is the last turn and a
+  reply is in flight. An ended turn keeps its last reply, and any tool step after it (a `stepLimit` or `malformedCalls`
+  halt), in view, and folds every entry between its user message and that reply under one row when the fold holds at
+  least 2 tool steps (`foldTurns`); any other turn renders as before, with no wrapper. The row is an uncontrolled
+  `<details>`, closed when the turn ends, like the reasoning block: "N steps", N the tool steps inside the fold
+  (malformed calls and empty replies included), then ", M failed" (status `error` or `malformed`, not rejected) and
+  ", K rejected" (`approval` `rejected`) when not zero, in words. The turn in flight never folds, so a running step and
+  an open approval always show; a row opened inside comes back closed once its turn folds, since its entries remount.
+  Entries before the first user message, and a turn with no reply, never fold. Rendering only: the state, the record,
+  and the history sent to the model are unchanged.
 - Reasoning output (`<think>` tags, `reasoning`, or `reasoning_content`) shows collapsed in the chat. The parser
   never looks for tool calls in it, and the conversation history sent back to the model drops it.
 - A code block of an assistant answer (fenced or indented, rendered by the answer's Markdown) has Copy and Insert at

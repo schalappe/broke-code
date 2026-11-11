@@ -11,7 +11,7 @@ with files and folders attached, and the model reads files, lists folders, searc
 files, and runs shell commands until it is done. Each change opens as a diff and waits for your **Accept** or **Reject**
 in the chat, unless you turn on auto-approval in your user settings; each command waits for your **Run** or **Reject**,
 always. You can follow each step, stop the agent at any time, read the model's reasoning collapsed above its answer,
-and come back to past conversations. The model also sees the name and description of each of your skills, and loads a
+find a finished task's steps folded under one row above its answer, and come back to past conversations. The model also sees the name and description of each of your skills, and loads a
 skill's instructions when your task matches it. Type `/` at the start of a message to start a new conversation, choose
 the model, or pick a skill; a message `/<name> args` loads that skill itself, with your arguments. In the Source
 Control view, a button writes a commit message for your staged changes.
@@ -152,6 +152,9 @@ approval is the guard, so read the whole command before you click **Run**.
 
 Each tool call shows as a compact row under the model's text: the tool, its main argument (a path, a search pattern,
 or the whole command), and whether it worked with the size of its result, or for a command, its exit code. Click the row to see the result the model received.
+Once an agent turn has ended, its steps fold under one row above the final answer, such as "3 steps, 1 failed, 1
+rejected", so the answer sits right under your message; click the row to see the steps again. A turn with a single
+step stays unfolded, and the turn in progress never folds, so a running step and a change waiting for you always show.
 A file tool's path outside the workspace, and outside the folders of the loaded skills, is refused, and the model is
 told why.
 
@@ -308,7 +311,8 @@ without a provider too; sending a message needs one. A workspace keeps its 50 mo
 are deleted.
 
 A reopened conversation resends your earlier messages as they were sent, with the files and folders attached then,
-and the tool results the model received; broke-code does not read them again. A reply that was still streaming when the window closed comes back stopped,
+and the tool results the model received; broke-code does not read them again. Its finished turns show folded, as
+they did when they ended. A reply that was still streaming when the window closed comes back stopped,
 with the text received so far. Conversations stay on your machine, in the editor's storage for that workspace, and
 never hold an API key. A window with no folder open keeps its conversation in memory only.
 
