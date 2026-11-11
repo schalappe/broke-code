@@ -55,34 +55,42 @@ function standsAlone(text: string, index: number, length: number): boolean {
 
 /** `text` with fenced blocks and inline code spans masked with `MASK`, lengths and newlines kept. */
 export function maskCode(text: string): string {
-  return maskCodeSpans(maskFences(text));
+  const { masked, blockStarts } = maskFences(text);
+  return maskCodeSpans(masked, blockStarts);
 }
 
-function maskFences(text: string): string {
+/** `text` with each fenced block masked whole. `blockStarts`: where each block's opening line starts, in order. */
+function maskFences(text: string): { masked: string; blockStarts: number[] } {
   let fence: { char: string; length: number } | undefined;
-  return text
+  const blockStarts: number[] = [];
+  let lineStart = 0;
+  const masked = text
     .split("\n")
     .map((line) => {
+      const start = lineStart;
+      lineStart += line.length + 1;
       const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
       if (!fence) {
         if (!marker) return line;
         fence = { char: marker[0]!, length: marker.length };
+        blockStarts.push(start);
       } else if (marker?.[0] === fence.char && marker.length >= fence.length && line.trim() === marker) {
         fence = undefined;
       }
       return MASK.repeat(line.length);
     })
     .join("\n");
+  return { masked, blockStarts };
 }
 
 /**
- * A run of N backticks opens a span closed by the next run of exactly N in the same paragraph (no blank line
- * between); an unmatched run is literal. A backslash escapes the first backtick of an opening run, but not a closing
+ * A run of N backticks opens a span closed by the next run of exactly N in the same paragraph (no blank line or
+ * fenced block between, as a fenced block ends the paragraph in CommonMark); an unmatched run is literal. A backslash escapes the first backtick of an opening run, but not a closing
  * one, as in CommonMark. [>]: Each lookup moves forward only, so a message full of spans stays linear.
  */
-function maskCodeSpans(text: string): string {
+function maskCodeSpans(text: string, blockStarts: readonly number[]): string {
   const runs = [...text.matchAll(/`+/g)].map((run) => ({ index: run.index, length: run[0].length }));
-  const paragraphs = paragraphOf(text, runs);
+  const paragraphs = paragraphOf(text, runs, blockStarts);
   const runsByLength = new Map<number, { runs: number[]; next: number }>();
   runs.forEach((run, index) => {
     const entry = runsByLength.get(run.length) ?? { runs: [], next: 0 };
@@ -106,12 +114,16 @@ function maskCodeSpans(text: string): string {
   return masked + text.slice(copied);
 }
 
-/** For each run, how many blank lines stand before it: runs with the same count share a paragraph. */
-function paragraphOf(text: string, runs: readonly { index: number }[]): number[] {
+/**
+ * For each run, how many paragraph breaks (blank lines and fenced blocks) stand before it: runs with the same count
+ * share a paragraph. A fenced block counts at its start, since its masked text holds no run.
+ */
+function paragraphOf(text: string, runs: readonly { index: number }[], blockStarts: readonly number[]): number[] {
   const blankLines = [...text.matchAll(/\n[ \t\r]*\n/g)].map((match) => match.index);
+  const breaks = [...blankLines, ...blockStarts].sort((a, b) => a - b);
   let before = 0;
   return runs.map((run) => {
-    while (before < blankLines.length && blankLines[before]! < run.index) before++;
+    while (before < breaks.length && breaks[before]! < run.index) before++;
     return before;
   });
 }

@@ -48,6 +48,15 @@ describe("findMentionToken", () => {
     expect(findMentionToken(paragraphs, 7)).toEqual({ start: 5, query: "a" });
   });
 
+  test("opens the menu after a fenced block between two lone backticks, and not inside the block", () => {
+    for (const fence of ["~~~", "```"]) {
+      const after = `\`literal\n${fence}\nx\n${fence}\n@a \``;
+      expect(findMentionToken(after, after.indexOf("@a") + 2)).toEqual({ start: after.indexOf("@a"), query: "a" });
+      const inside = `\`literal\n${fence}\n@a\n${fence}\n \``;
+      expect(findMentionToken(inside, inside.indexOf("@a") + 2)).toBeUndefined();
+    }
+  });
+
   test("opens no menu where either reading, with or without picked paths, puts the token in code", () => {
     expect(findMentionToken("@a`b.ts @q", 10, ["a`b.ts"])).toEqual({ start: 8, query: "q" });
     expect(findMentionToken("@a`b.ts @q `", 10, ["a`b.ts"])).toBeUndefined();

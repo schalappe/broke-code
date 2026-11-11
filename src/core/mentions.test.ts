@@ -75,6 +75,14 @@ describe("findMentions code span rules", () => {
     expect(findMentions("one `\n\n@a.ts\n\ntwo `")).toEqual(["a.ts"]);
     expect(findMentions("`one\ntwo @b.ts`")).toEqual([]);
   });
+
+  test("keeps a mention between backticks a fenced block separates, and masks the block and later spans", () => {
+    for (const fence of ["~~~", "```"]) {
+      expect(findMentions(`\`literal\n${fence}\nx\n${fence}\n@a.ts \``)).toEqual(["a.ts"]);
+      expect(findMentions(`\`literal\n${fence}\n@b.ts\n${fence}\n@a.ts \``)).toEqual(["a.ts"]);
+      expect(findMentions(`\`literal\n${fence}\nx\n${fence}\n\`@a.ts\` @c.ts`)).toEqual(["c.ts"]);
+    }
+  });
 });
 
 describe("findMentions with picked paths", () => {

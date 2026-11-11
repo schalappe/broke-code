@@ -350,7 +350,8 @@ goes to the model as typed. Read `GLOSSARY.md` for the domain vocabulary and `do
 - A mention `@file` attaches the file content. A mention `@folder` attaches its direct children, folders suffixed
   with `/`, sorted by name; never a recursive listing.
 - A mention is `@` at the start of the message or after whitespace, up to the next whitespace, less trailing
-  `.,;:!?)`. Fenced code blocks and inline code spans hold no mentions. A path mentioned twice is attached once.
+  `.,;:!?)`. Fenced code blocks and inline code spans hold no mentions. A code span opens and closes in one paragraph: a
+  blank line or a fenced block between two backticks leaves both literal. A path mentioned twice is attached once.
 - Mentions are read when the message is sent, never again: later turns resend the message as composed then. The
   composed text lives in the chat controller, outside the state posted to the webview. The message and its waiting
   reply show, with Stop, while the mentions are read.

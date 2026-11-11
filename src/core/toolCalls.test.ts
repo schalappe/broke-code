@@ -59,6 +59,12 @@ describe("parseToolCall", () => {
     });
   });
 
+  test("parses a call after a fenced block between two lone backticks, which form no span", () => {
+    const call = "<read_file>\n<path>a.txt</path>\n</read_file>";
+    const answer = `A \` here.\n~~~\nx\n~~~\n${call}\nand \` there.`;
+    expect(parseToolCall(answer, TOOLS)).toMatchObject({ kind: "call", name: "read_file", args: { path: "a.txt" } });
+  });
+
   test("returns the first of two calls and ignores the second, with no error", () => {
     const first = "<read_file>\n<path>a.txt</path>\n</read_file>";
     const answer = `${first}\n<read_file>\n<path>b.txt</path>\n</read_file>`;
