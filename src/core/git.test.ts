@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -179,7 +180,7 @@ describe("gitDiffReader", () => {
     expect(asked).toEqual([repositoryRoot]);
   });
 
-  test("diffs the repository root as `.`, and a folder below it by its path relative to the real root", async () => {
+  test("diffs the repository root as `.` and a folder below it by its literal path relative to the real root", async () => {
     const { repo, paths } = repository(repositoryRoot, async (path) => `+${path}\n`);
     const reader = gitDiffReader(
       found(() => repo),
@@ -193,13 +194,74 @@ describe("gitDiffReader", () => {
     expect(await reader.read(roots)).toEqual({
       kind: "read",
       folders: [
-        { kind: "diff", text: "+.\n" },
-        { kind: "diff", text: "+packages/app\n" },
-        { kind: "diff", text: "+packages/app\n" },
+        { kind: "diff", text: "+:(literal).\n" },
+        { kind: "diff", text: "+:(literal)packages/app\n" },
+        { kind: "diff", text: "+:(literal)packages/app\n" },
       ],
     });
     // [>]: The folders are diffed concurrently, so the calls may come in any order.
-    expect(paths.toSorted()).toEqual([".", "packages/app", "packages/app"]);
+    expect(paths.toSorted()).toEqual([":(literal).", ":(literal)packages/app", ":(literal)packages/app"]);
+  });
+
+  describe("against real git", () => {
+    const gitRoot = join(scratch, "git");
+    const git = (...args: string[]) => {
+      const run = spawnSync("git", args, { cwd: gitRoot, encoding: "utf8" });
+      if (run.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${run.stderr}`);
+      return run.stdout;
+    };
+    // [>]: Each folder a repository could name to read as a wildcard or pathspec magic, beside the path it would match.
+    const folders = ["app*", "k[x]", "m?", ":e", ":(glob)d"];
+    const siblings = ["app-private/secret.txt", "kx", "mz", "e/secret.txt", "d/secret.txt", "f/g/secret.txt"];
+    mkdirSync(gitRoot);
+    git("init", "-q");
+    for (const path of [...folders.map((folder) => `${folder}/own.txt`), ...siblings, "f\\g/own.txt"]) {
+      mkdirSync(join(gitRoot, path, ".."), { recursive: true });
+      writeFileSync(join(gitRoot, path), "one\n");
+    }
+    git("add", "-A");
+    git(
+      "-c",
+      "user.name=test",
+      "-c",
+      "user.email=test@example.com",
+      "-c",
+      "commit.gpgsign=false",
+      "commit",
+      "-qm",
+      "init",
+    );
+    for (const path of [...folders.map((folder) => `${folder}/own.txt`), ...siblings, "f\\g/own.txt"]) {
+      writeFileSync(join(gitRoot, path), "two\n");
+    }
+
+    /** `diffWith` as the Git extension runs it: `git diff <ref> -- <path>`, each backslash of the path turned into `/`. */
+    const { repo, paths } = repository(gitRoot, async (path) => git("diff", "HEAD", "--", path.replace(/\\/g, "/")));
+    const reader = gitDiffReader(
+      found(() => repo),
+      uri,
+    );
+    const changedFiles = (text: string) => [...text.matchAll(/^diff --git a\/(.*) b\//gm)].map((match) => match[1]);
+
+    test("diffs only the folder's own files, whatever wildcard or magic its name holds", async () => {
+      const read = await reader.read(folders.map((name) => ({ name, path: join(gitRoot, name) })));
+      if (read.kind !== "read") throw new Error(`unexpected ${read.kind}`);
+      expect(read.folders.map((folder) => (folder.kind === "diff" ? changedFiles(folder.text) : folder))).toEqual(
+        folders.map((folder) => [`${folder}/own.txt`]),
+      );
+    });
+
+    test("refuses a folder whose name holds a backslash, without running git", async () => {
+      const before = paths.length;
+      const read = await reader.read([{ name: "f\\g", path: join(gitRoot, "f\\g") }]);
+      expect(read).toEqual({
+        kind: "read",
+        folders: [
+          { kind: "failed", cause: "its path holds a backslash, which the Git extension reads as a folder separator" },
+        ],
+      });
+      expect(paths.length).toBe(before);
+    });
   });
 
   test("gives git's own stderr as a failed folder's cause, else the error's message", async () => {

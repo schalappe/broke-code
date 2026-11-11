@@ -5,7 +5,7 @@
  * passes the extension and builds URIs (`src/extension/git.ts`), so everything here is tested without `vscode`.
  */
 import { realpath } from "node:fs/promises";
-import { relative } from "node:path";
+import { relative, sep } from "node:path";
 import type { DiffReader, FolderDiff } from "./diff";
 import type { WorkspaceRoot } from "./workspaceFiles";
 
@@ -25,7 +25,8 @@ export type GitRepository = {
   diff(cached?: boolean): Promise<string>;
   /**
    * With a path, `git diff <ref> -- <path>` run in the repository root: staged and unstaged changes together against
-   * `ref`. Never `diffWithHEAD(path)`, which runs `git diff -- <path>`, unstaged only.
+   * `ref`, a relative `path` given to git as a pathspec with each `\` turned into `/`. Never `diffWithHEAD(path)`,
+   * which runs `git diff -- <path>`, unstaged only.
    */
   diffWith(ref: string, path: string): Promise<string>;
 };
@@ -135,17 +136,27 @@ export function gitDiffReader(lookUp: () => Promise<GitLookup>, toUri: (path: st
 }
 
 /**
- * `git diff HEAD -- <folder>` in the repository holding `root`, staged and unstaged together. The folder goes as a path
- * relative to the repository's real root, `.` for the root itself: `diffWith` turns an absolute path equal to the root
- * into an empty pathspec, which git refuses.
+ * `git diff HEAD -- :(literal)<folder>` in the repository holding `root`, staged and unstaged together. The folder goes
+ * as a path relative to the repository's real root, `.` for the root itself: `diffWith` turns an absolute path equal to
+ * the root into an empty pathspec, which git refuses.
  */
 async function folderDiff(api: GitApi, root: WorkspaceRoot, toUri: (path: string) => GitUri): Promise<FolderDiff> {
   const repository = api.getRepository(toUri(root.path));
   if (!repository) return { kind: "noRepository" };
   try {
     const [repositoryRoot, folder] = await Promise.all([realpath(repository.rootUri.fsPath), realpath(root.path)]);
-    const path = relative(repositoryRoot, folder) || ".";
-    return { kind: "diff", text: await repository.diffWith("HEAD", path) };
+    const path = (relative(repositoryRoot, folder) || ".").split(sep).join("/");
+    // [!]: `diffWith` hands git a relative path with each `\` turned into `/`, so a name holding one would name another
+    // folder: refused rather than diff a folder outside the workspace.
+    if (path.includes("\\")) {
+      return {
+        kind: "failed",
+        cause: "its path holds a backslash, which the Git extension reads as a folder separator",
+      };
+    }
+    // [!]: `:(literal)`: a repository can name a folder `app*`, `[x]`, `?`, or `:e`, which git would otherwise read as a
+    // wildcard or pathspec magic matching paths outside the folder, such as `app-private`.
+    return { kind: "diff", text: await repository.diffWith("HEAD", `:(literal)${path}`) };
   } catch (error) {
     return { kind: "failed", cause: gitErrorCause(error) };
   }

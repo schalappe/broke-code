@@ -68,7 +68,7 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   `readDiff`, the status, the multi-root layout, the failed folders of a partial diff, and caps), the Git API lookup
   (`git.ts`: `lookUpGit` over the extension handle the host passes, its availability checks and its wait for
   `initialized` with an injectable timeout, the structural typing of the members used, and `gitDiffReader`, the
-  `@diff` port, with the repository-relative pathspec and git's `stderr` as the cause), `@selection` (`selection.ts`: the raw `EditorSelection` the
+  `@diff` port, with the repository-relative literal pathspec and git's `stderr` as the cause), `@selection` (`selection.ts`: the raw `EditorSelection` the
   host's `SelectionReader` returns, `editorSelection`, that record from a structural text editor, and `readSelection`, the workspace check, the line range, and the caps), where a
   message holds Markdown code
   (`markdownCode.ts`; also `remarkFenceClosed`, the remark plugin marking a fenced block whose closing fence the parser read,
@@ -539,8 +539,11 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   (`lookUpGit`, the commit message's: the same missing and disabled checks and the same wait, at most 10 seconds, for
   `initialized`; Stop during it ends the turn as during any mention read), then, per folder in workspace order,
   `getRepository(<folder URI>)`, the deepest open repository holding the folder, and `diffWith("HEAD", <path>)`, which
-  runs `git diff HEAD -- <path>` in the repository root; `<path>` is the folder relative to the repository's real root,
-  `.` for the root itself (an absolute path equal to the root becomes an empty pathspec, which git refuses). Never
+  runs `git diff HEAD -- <path>` in the repository root; `<path>` is `:(literal)` then the folder relative to the
+  repository's real root, `.` for the root itself (an absolute path equal to the root becomes an empty pathspec, which
+  git refuses). The literal pathspec keeps a folder a repository names `app*`, `[x]`, `?`, or `:e` from matching paths
+  outside it, such as `app-private`; `diffWith` turns each `\` of the path into `/`, so a folder whose path holds one
+  fails, "its path holds a backslash, which the Git extension reads as a folder separator", and git is not run. Never
   `diffWithHEAD(path)`: it runs `git diff -- <path>`, unstaged only. Untracked files are left out, and a repository
   nested in a folder that is not itself in one is not looked for; nor is a repository the Git extension has not
   opened, such as one above the folder that `git.openRepositoryInParentFolders` keeps closed. `readDiff` builds the
