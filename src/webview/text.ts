@@ -1,6 +1,6 @@
 /**
  * @module text
- * Localized panel text for provider errors (worded in the core, translated here), skipped providers and skills, mentions, tool steps, halted agent turns, context
+ * Localized panel text for provider errors (worded in the core, translated here), skipped providers and skills, mentions, tool steps, folded turns, halted agent turns, context
  * usage, and saved conversations.
  */
 import * as l10n from "@vscode/l10n";
@@ -12,6 +12,7 @@ import {
   type ProviderError,
 } from "../core/providerError";
 import type { SkippedProvider } from "../core/providers";
+import type { FoldCounts } from "./turns";
 
 export type { ErrorText };
 
@@ -140,6 +141,20 @@ function describeCommandEnding(text: string): string | undefined {
   const timeout = /^stopped after (\d+(?:\.\d+)?) seconds$/.exec(first);
   if (timeout) return l10n.t("stopped after {0} seconds", timeout[1]!);
   return undefined;
+}
+
+/** The row of a folded turn: its steps, then the failed and the rejected ones when there are any, in words. */
+export function describeFold(counts: FoldCounts): string {
+  let text = l10n.t("{0} steps", counts.steps);
+  if (counts.failed > 0) {
+    const failed = counts.failed === 1 ? l10n.t("1 failed") : l10n.t("{0} failed", counts.failed);
+    text = l10n.t("{0}, {1}", text, failed);
+  }
+  if (counts.rejected > 0) {
+    const rejected = counts.rejected === 1 ? l10n.t("1 rejected") : l10n.t("{0} rejected", counts.rejected);
+    text = l10n.t("{0}, {1}", text, rejected);
+  }
+  return text;
 }
 
 /** Why an agent turn halted, shown after its last step, or on the reply whose request was not sent. */
