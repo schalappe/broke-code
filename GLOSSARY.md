@@ -81,3 +81,11 @@ _Avoid_: project skill, local skill
 **Slash command**:
 A word starting with `/` typed in the chat box: either a built-in action or the name of a skill to load.
 _Avoid_: command, shortcut
+
+## Source control
+
+**Generated commit message**:
+A commit message the model writes from the staged diff of a git repository, at the user's click in the Source Control
+view, with the provider and model selected in the chat. It is written to the commit input box once the reply has
+ended; it is no agent turn and belongs to no conversation.
+_Avoid_: AI commit, commit suggestion, auto-commit

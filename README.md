@@ -13,7 +13,8 @@ in the chat, unless you turn on auto-approval in your user settings; each comman
 always. You can follow each step, stop the agent at any time, read the model's reasoning collapsed above its answer,
 and come back to past conversations. The model also sees the name and description of each of your skills, and loads a
 skill's instructions when your task matches it. Type `/` at the start of a message to start a new conversation, choose
-the model, or pick a skill; a message `/<name> args` loads that skill itself, with your arguments.
+the model, or pick a skill; a message `/<name> args` loads that skill itself, with your arguments. In the Source
+Control view, a button writes a commit message for your staged changes.
 
 ## Requirements
 
@@ -246,6 +247,27 @@ follows the command in the message box, picking one only puts its name there. No
 they cannot be read, the menu says so and still shows `/new` and `/model`. A skipped skill is not listed; its warning
 shows after your next message.
 
+## Commit messages
+
+In the Source Control view, the **Generate commit message** button (a sparkle) in the title of a git repository asks
+the model selected in the chat for a commit message describing that repository's staged changes, and writes it in the
+commit message box. The command **broke-code: Generate commit message** in the Command Palette does the same for the
+only repository open, or the one you pick when there are several.
+
+- Stage the changes first: only staged changes are described. broke-code never stages, commits, or pushes.
+- The message follows [Conventional Commits](https://www.conventionalcommits.org/), in English: a subject of at most
+  72 characters (asked of the model, not checked), and a body saying why when the change needs one.
+- When the commit message box already holds text, broke-code asks before replacing it; **Cancel** keeps your text
+  and sends nothing.
+- A notification shows while the model writes; its **Cancel** stops the request and leaves the box as it was. The
+  message appears once the reply has ended, without the model's reasoning or a code block or quotes around it.
+- The request uses the provider, model, and context size of the chat. A diff too large for the model's context is
+  cut between files, keeping the first ones whole (a first file larger than the room is cut to it), and a
+  notification then says the message covers only part of the changes.
+- It needs the Git extension built into VS Code and VSCodium. When it is disabled, nothing is staged, no provider or
+  model is chosen, or the provider fails, a notification says so and the box is left as it was. It works while the
+  chat replies and adds nothing to your conversations.
+
 ## Past conversations
 
 broke-code saves each conversation of a workspace, so closing or reloading the window keeps it. **History** in the
@@ -281,7 +303,8 @@ word, broke-code tells it so and asks again. Contributors run the bench with `bu
 
 ## Privacy
 
-broke-code collects no telemetry. It contacts only the providers you configure.
+broke-code collects no telemetry. It contacts only the providers you configure. When you generate a commit message,
+the staged diff of that repository is sent to the provider selected in the chat.
 
 ## Credits
 
