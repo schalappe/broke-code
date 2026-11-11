@@ -511,6 +511,25 @@ describe("CommitMessageGenerator", () => {
     expect(calls.requests).toEqual([]);
   });
 
+  test("cancel or deactivation while the staged diff is read ends quietly, even when the read then fails", async () => {
+    for (const stop of ["cancel", "dispose"] as const) {
+      let fail: (error: Error) => void = () => {};
+      const reading = new Promise<string>((_, reject) => (fail = reject));
+      const repository = { ...fakeRepository(), stagedDiff: () => reading };
+      const { ports, calls } = fakePorts({});
+      const generator = new CommitMessageGenerator(ports, english);
+      const run = generator.run(found(repository));
+      await waitFor(() => calls.progress === 1);
+      if (stop === "cancel") calls.cancel();
+      else generator.dispose();
+      fail(new Error("git failed"));
+      await run;
+      expect(calls.errors).toEqual([]);
+      expect(calls.requests).toEqual([]);
+      expect(repository.writes).toEqual([]);
+    }
+  });
+
   test("an unexpected failure is shown, never rejected, and frees the repository", async () => {
     const repository = fakeRepository();
     const { ports, calls } = fakePorts({});

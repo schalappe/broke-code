@@ -277,6 +277,7 @@ export class CommitMessageGenerator {
     try {
       diff = await repository.stagedDiff();
     } catch (error) {
+      if (signal.aborted) return { kind: "stopped" };
       return {
         kind: "error",
         text: {
