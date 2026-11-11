@@ -1654,7 +1654,7 @@ describe("composer @problems", () => {
     });
   });
 
-  test("keeps the reserved rows when the files cannot be listed, saying so", async () => {
+  test("keeps the reserved rows, each with its description, when the files cannot be listed, saying so", async () => {
     await withPanel(stateWith(true), async ({ host, type, receive }) => {
       await type("@");
       await receive({ type: "fileSuggestions", id: lastFileQuery(), items: [], capped: false, failed: true });
@@ -1662,6 +1662,11 @@ describe("composer @problems", () => {
         "@problems",
         "@diff",
         "@selection",
+      ]);
+      expect([...host.querySelectorAll('[role="option"] .menu-description')].map((row) => row.textContent)).toEqual([
+        "Errors and warnings of the workspace files",
+        "Uncommitted changes of the tracked files",
+        "Selected text of the active editor",
       ]);
       expect(host.querySelector(".menu-notice")?.textContent).toBe("Could not list the workspace files");
     });
