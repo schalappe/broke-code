@@ -108,4 +108,13 @@ describe("foldTurns", () => {
     expect(rendered(foldTurns([T(), T(), T()]))).toEqual([0, 1, 2]);
     expect(foldTurns([])).toEqual([]);
   });
+
+  test("folds every ended turn of a long conversation", () => {
+    const turn = [U, A(), T(), A(), T("error"), A("done")];
+    const entries = Array.from({ length: 20_000 }, () => turn).flat();
+    const parts = foldTurns(entries);
+    expect(parts).toHaveLength(60_000);
+    expect(shape(parts.slice(-3))).toEqual(["119994", "fold 119995-119999 2/1/0", "119999"]);
+    expect(rendered(parts)).toEqual(entries.map((_, index) => index));
+  });
 });

@@ -26,33 +26,35 @@ const MIN_FOLDED_STEPS = 2;
  */
 export function foldTurns(entries: ChatEntry[]): ConversationPart[] {
   const parts: ConversationPart[] = [];
-  const single = (from: number, to: number) => {
-    for (let index = from; index < to; index++) parts.push({ kind: "entry", index });
-  };
-  let turnStart = entries.findIndex((entry) => entry.role === "user");
-  if (turnStart === -1) {
-    single(0, entries.length);
-    return parts;
-  }
-  single(0, turnStart);
-  while (turnStart < entries.length) {
-    const next = entries.findIndex((entry, index) => index > turnStart && entry.role === "user");
-    const turnEnd = next === -1 ? entries.length : next;
-    const lastReply = entries.findLastIndex(
-      (entry, index) => index > turnStart && index < turnEnd && entry.role === "assistant",
-    );
-    const ended = next !== -1 || !inFlight(entries.at(-1));
-    const counts = countSteps(lastReply === -1 ? [] : entries.slice(turnStart + 1, lastReply));
-    if (ended && counts.steps >= MIN_FOLDED_STEPS) {
-      single(turnStart, turnStart + 1);
-      parts.push({ kind: "fold", start: turnStart + 1, end: lastReply, counts });
-      single(lastReply, turnEnd);
-    } else {
-      single(turnStart, turnEnd);
-    }
-    turnStart = turnEnd;
+  const lastEnded = !inFlight(entries.at(-1));
+  // [>]: One pass: each turn's bounds come from the next user message, and its last reply from a backward scan of the
+  // turn alone, so every entry is visited a bounded number of times. This runs at every render, streamed deltas included.
+  let turnStart = -1;
+  for (let index = 0; index <= entries.length; index++) {
+    if (index < entries.length && entries[index]!.role !== "user") continue;
+    if (turnStart === -1) pushEntries(parts, 0, index);
+    else foldTurn(entries, turnStart, index, index < entries.length || lastEnded, parts);
+    turnStart = index;
   }
   return parts;
+}
+
+/** Appends the parts of the turn from `start` (its user message) up to `end` (excluded); `ended`: it may fold. */
+function foldTurn(entries: ChatEntry[], start: number, end: number, ended: boolean, parts: ConversationPart[]): void {
+  let lastReply = end - 1;
+  while (lastReply > start && entries[lastReply]!.role !== "assistant") lastReply--;
+  const counts = lastReply > start ? countSteps(entries, start + 1, lastReply) : undefined;
+  if (ended && counts && counts.steps >= MIN_FOLDED_STEPS) {
+    pushEntries(parts, start, start + 1);
+    parts.push({ kind: "fold", start: start + 1, end: lastReply, counts });
+    pushEntries(parts, lastReply, end);
+  } else {
+    pushEntries(parts, start, end);
+  }
+}
+
+function pushEntries(parts: ConversationPart[], from: number, to: number): void {
+  for (let index = from; index < to; index++) parts.push({ kind: "entry", index });
 }
 
 /** Whether `entry` is a reply still waiting or streaming. */
@@ -60,9 +62,11 @@ function inFlight(entry: ChatEntry | undefined): boolean {
   return entry?.role === "assistant" && (entry.status === "waiting" || entry.status === "streaming");
 }
 
-function countSteps(entries: ChatEntry[]): FoldCounts {
+/** The tool steps among `entries` from `from` up to `to` (excluded). */
+function countSteps(entries: ChatEntry[], from: number, to: number): FoldCounts {
   const counts: FoldCounts = { steps: 0, failed: 0, rejected: 0 };
-  for (const entry of entries) {
+  for (let index = from; index < to; index++) {
+    const entry = entries[index]!;
     if (entry.role !== "tool") continue;
     counts.steps++;
     if (entry.approval === "rejected") counts.rejected++;
