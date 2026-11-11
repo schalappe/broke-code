@@ -783,7 +783,7 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   `lookUpGit`, which the `@diff` mention shares, never an `extensionDependencies` entry. The members used are typed
   structurally in `src/core/git.ts` (`enabled`, `getAPI(1)`, `state`, `onDidChangeState`, `repositories`,
   `Repository.rootUri`, `inputBox.value`, `diff(true)`, and, for `@diff`, `getRepository` and `diffWith`), and the
-  exports are checked at run time. No extension or exports of another shape: "not available";
+  exports and the API `getAPI(1)` returns are checked at run time. No extension, or exports or an API of another shape: "not available";
   `enabled` false or `getAPI` throwing (`git.enabled` off, git not found): "disabled". While the API's `state` is
   `uninitialized` its repository list is empty, so a run waits for `initialized`, at most 10 seconds, then goes on with
   the repositories opened so far.

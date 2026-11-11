@@ -80,6 +80,7 @@ export async function lookUpGit(
     // [>]: `getAPI` throws when git is disabled or not found; `enabled` may have changed since the check above.
     return { kind: "gitDisabled" };
   }
+  if (!isGitApi(api)) return { kind: "gitUnavailable" };
   await initialized(api, timeoutMs);
   return { kind: "found", api };
 }
@@ -88,6 +89,17 @@ function isGitExtension(value: unknown): value is GitExtension {
   if (typeof value !== "object" || value === null) return false;
   const candidate = value as Partial<GitExtension>;
   return typeof candidate.enabled === "boolean" && typeof candidate.getAPI === "function";
+}
+
+function isGitApi(value: unknown): value is GitApi {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Partial<GitApi>;
+  return (
+    typeof candidate.state === "string" &&
+    typeof candidate.onDidChangeState === "function" &&
+    Array.isArray(candidate.repositories) &&
+    typeof candidate.getRepository === "function"
+  );
 }
 
 /** Settles once `api` is `initialized`, or after `timeoutMs`. */
@@ -140,11 +152,12 @@ async function folderDiff(api: GitApi, root: WorkspaceRoot, toUri: (path: string
 }
 
 /**
- * Why a git call failed: the Git extension's `GitError` says "Failed to execute git" and keeps git's own message in
- * `stderr`, such as `fatal: bad revision 'HEAD'` in a repository without a commit.
+ * Why a git call failed, on one line, since the notice that quotes it is one line: the Git extension's `GitError` says
+ * "Failed to execute git" and keeps git's own message in `stderr`, such as `fatal: bad revision 'HEAD'` in a repository
+ * without a commit, its line breaks becoming single spaces.
  */
 function gitErrorCause(error: unknown): string {
   const stderr = typeof error === "object" && error !== null && "stderr" in error ? error.stderr : undefined;
-  if (typeof stderr === "string" && stderr.trim() !== "") return stderr.trim();
+  if (typeof stderr === "string" && stderr.trim() !== "") return stderr.trim().replace(/\s*[\r\n]+\s*/g, " ");
   return error instanceof Error ? error.message : String(error);
 }

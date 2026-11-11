@@ -73,6 +73,14 @@ describe("lookUpGit", () => {
     }
   });
 
+  test("reports gitUnavailable when getAPI returns an API of another shape", async () => {
+    const { api } = fakeApi("initialized");
+    const shapes = [undefined, null, "api", { ...api, state: 1 }, { ...api, onDidChangeState: undefined }];
+    for (const shape of [...shapes, { ...api, repositories: {} }, { ...api, getRepository: "repo" }]) {
+      expect(await lookUpGit(active({ enabled: true, getAPI: () => shape }))).toEqual({ kind: "gitUnavailable" });
+    }
+  });
+
   test("reports gitDisabled when git is disabled, or when getAPI throws", async () => {
     const { api } = fakeApi("initialized");
     expect(await lookUpGit(active(gitExports(api, false)))).toEqual({ kind: "gitDisabled" });
@@ -199,6 +207,9 @@ describe("gitDiffReader", () => {
     const causes = [
       gitError,
       Object.assign(new Error("Failed to execute git"), { stderr: "  " }),
+      Object.assign(new Error("Failed to execute git"), {
+        stderr: "fatal: bad revision 'HEAD'\r\n\nhint: commit first\n",
+      }),
       new Error("spawn git ENOENT"),
       "plain failure",
     ];
@@ -215,6 +226,7 @@ describe("gitDiffReader", () => {
     expect(folders).toEqual([
       { kind: "failed", cause: "fatal: bad revision 'HEAD'" },
       { kind: "failed", cause: "Failed to execute git" },
+      { kind: "failed", cause: "fatal: bad revision 'HEAD' hint: commit first" },
       { kind: "failed", cause: "spawn git ENOENT" },
       { kind: "failed", cause: "plain failure" },
     ]);
