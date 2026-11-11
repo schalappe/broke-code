@@ -68,6 +68,24 @@ export class ApiKeys {
   }
 
   /**
+   * Run `task` as a key dialog: it waits for the open one, and the automatic prompts queued meanwhile wait for it, so
+   * none opens over it or asks for a key it is about to store.
+   */
+  runDialog<T>(task: () => Promise<T>): Promise<T> {
+    return this.dialogs.run(task);
+  }
+
+  /** Store `key` for `provider`; `""` = no key. Rejects on failure, for the caller to show. */
+  async store(provider: string, key: string): Promise<void> {
+    await this.secrets.store(SECRET_PREFIX + provider, key);
+  }
+
+  /** Delete the stored entry of `provider`, so it counts as never set. Rejects on failure, for the caller to show. */
+  async delete(provider: string): Promise<void> {
+    await this.secrets.delete(SECRET_PREFIX + provider);
+  }
+
+  /**
    * `broke-code: Set API key`: pick provider (unless given), then set, replace, or clear its key.
    * Waits behind any open key dialog.
    * @param preselected - Provider name passed by chat panel action.
@@ -118,7 +136,7 @@ export class ApiKeys {
     });
     if (key === undefined) return "cancelled";
     try {
-      await this.secrets.store(SECRET_PREFIX + name, key.trim());
+      await this.store(name, key.trim());
     } catch (error) {
       void vscode.window.showErrorMessage(
         vscode.l10n.t("Could not save the API key for {0}: {1}", name, String(error)),

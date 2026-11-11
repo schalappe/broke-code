@@ -21,6 +21,8 @@ export type ChatViewActions = {
   queryFiles: (query: string) => Promise<FileQueryAnswer>;
   /** The skills a send would discover, for the `/` menu; no log line, since nothing is sent. */
   querySkills: () => Promise<SkillDiscovery>;
+  /** "broke-code: Add provider"; shows its own failures and never rejects. */
+  addProvider: () => Promise<void>;
 };
 
 export class ChatView implements vscode.WebviewViewProvider {
@@ -135,6 +137,8 @@ export class ChatView implements vscode.WebviewViewProvider {
         });
       case "openSettings":
         return void vscode.commands.executeCommand("workbench.action.openSettings", "brokeCode.providers");
+      case "addProvider":
+        return void this.actions.addProvider();
       case "approve":
         controller.approve(message.id);
         return;

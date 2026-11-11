@@ -11,6 +11,7 @@ import {
 describe("parseWebviewMessage", () => {
   test("accepts the messages without fields and those with a string field", () => {
     expect(parseWebviewMessage({ type: "stop" })).toEqual({ type: "stop" });
+    expect(parseWebviewMessage({ type: "addProvider", name: "ignored" })).toEqual({ type: "addProvider" });
     expect(parseWebviewMessage({ type: "chooseModel", model: "ignored" })).toEqual({ type: "chooseModel" });
     expect(parseWebviewMessage({ type: "selectModel", model: "m" })).toEqual({ type: "selectModel", model: "m" });
     expect(parseWebviewMessage({ type: "setApiKey", provider: "P" })).toEqual({ type: "setApiKey", provider: "P" });

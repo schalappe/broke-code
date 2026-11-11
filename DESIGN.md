@@ -189,9 +189,9 @@ user's message). Borders and rules are 1px. No colored side stripe.
 
 ### Buttons
 
-- Primary (Send, Stop, Accept, Run, Set API key): the theme's button colors. At most one per region; in the
+- Primary (Send, Stop, Accept, Run, Set API key, Add provider in the empty state): the theme's button colors. At most one per region; in the
   conversation, only the decision block has one.
-- Secondary (New chat, History, Delete, Reject, Retry): a hairline box on the panel (`--bc-line`), the foreground as
+- Secondary (New chat, History, Delete, Reject, Retry, Add provider under the skipped providers): a hairline box on the panel (`--bc-line`), the foreground as
   text; `--bc-fill-strong` when hovered or pressed (`aria-expanded="true"`).
 - Link (Open provider settings, Set context size): the link color, underlined.
 - Code block action (Copy, Insert at cursor): a secondary button two pixels down (`--bc-fs-xs`), at least a row high
@@ -241,9 +241,9 @@ Each kind of state has one look, distinct from the others at a glance:
 | State | Look |
 | --- | --- |
 | Loading (waiting for the reply, thinking, tool running, models loading) | Dim text that breathes; a line of its own leads with a dot. The pickers are disabled. |
-| Empty (no provider, new conversation, empty History, no History row left by the filter) | One dim line, centered in the room it has; a link under it when there is something to do. |
+| Empty (no provider, new conversation, empty History, no History row left by the filter) | One dim line, centered in the room it has; a link under it when there is something to do. No provider: Add provider (primary) and the Open provider settings link side by side under it. |
 | Notice (unknown context size) | One small dim line with a link. Nothing went wrong, so no block. |
-| Warning (skipped providers and skills) | A block on the theme's warning fill. |
+| Warning (skipped providers and skills) | A block on the theme's warning fill; under skipped providers, with a provider configured, Add provider (secondary) below the block. |
 | Error (models unavailable, failed reply, storage and listing problems) | A block on the theme's error fill: the message, its technical detail in the editor font, then its actions. |
 | Failed step or chip | The error color on the status text; no block. |
 | Waiting for a decision | The decision block. |

@@ -156,5 +156,18 @@
   "Insert at cursor": "Insérer au curseur",
   "No text editor is active: open a file to insert the code.": "Aucun éditeur de texte n'est actif : ouvrez un fichier pour insérer le code.",
   "The editor refused the edit; its document may be read-only.": "L'éditeur a refusé la modification ; son document est peut-être en lecture seule.",
-  "Could not insert the code: {0}": "Impossible d'insérer le code : {0}"
+  "Could not insert the code: {0}": "Impossible d'insérer le code : {0}",
+  "Add provider": "Ajouter un fournisseur",
+  "Ollama on this machine": "Ollama sur cette machine",
+  "Other OpenAI-compatible service": "Autre service compatible OpenAI",
+  "Choose the provider to add": "Choisissez le fournisseur à ajouter",
+  "The provider's name, shown in the chat.": "Le nom du fournisseur, affiché dans la discussion.",
+  "For example Lab": "Par exemple Lab",
+  "The base URL of its OpenAI-compatible API, version path included.": "L'URL de base de son API compatible OpenAI, chemin de version compris.",
+  "Could not add the provider {0}: {1}": "Impossible d'ajouter le fournisseur {0} : {1}",
+  "Could not delete the API key for {0}: {1}": "Impossible de supprimer la clé d'API de {0} : {1}",
+  "Enter a name.": "Saisissez un nom.",
+  "Another provider already uses this name.": "Un autre fournisseur porte déjà ce nom.",
+  "Enter an http or https URL.": "Saisissez une URL http ou https.",
+  "Could not add the provider: {0}": "Impossible d'ajouter le fournisseur : {0}"
 }

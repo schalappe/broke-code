@@ -2,7 +2,7 @@
  * @module extension
  * Activation entry point: wires settings, API keys, mentions, read tools, write tools and commands behind their approval,
  * instruction files, skills, turn limits, file index, saved conversations, chat controller, chat view,
- * `broke-code.setApiKey`, and `broke-code.generateCommitMessage`.
+ * `broke-code.setApiKey`, `broke-code.addProvider`, and `broke-code.generateCommitMessage`.
  */
 import { homedir } from "node:os";
 import * as vscode from "vscode";
@@ -19,6 +19,7 @@ import { workspaceToolRunner } from "../core/toolRunner";
 import { ripgrepCandidates } from "../core/tools";
 import type { WorkspaceRoot } from "../core/workspaceFiles";
 import { approvalApplier, fileApplier, type WriteApprovalHost } from "../core/writeTools";
+import { runAddProvider } from "./addProvider";
 import { ApiKeys } from "./apiKeys";
 import { DiffPreviews, hasUnsavedChanges, readAutoApproveWrites } from "./approval";
 import { CHAT_VIEW_ID, ChatView } from "./chatView";
@@ -29,8 +30,9 @@ import { WorkspaceFileIndex } from "./fileIndex";
 export function activate(context: vscode.ExtensionContext): void {
   // [!]: User settings only. A workspace value could reuse a provider name with another base URL and receive its stored key.
   // The manifest's `application` scope already makes VS Code ignore it; reading `globalValue` keeps that explicit here.
-  const readProviders = () =>
-    parseProviders(vscode.workspace.getConfiguration("brokeCode").inspect<unknown>("providers")?.globalValue);
+  const providersSetting = () =>
+    vscode.workspace.getConfiguration("brokeCode").inspect<unknown>("providers")?.globalValue;
+  const readProviders = () => parseProviders(providersSetting());
   const apiKeys = new ApiKeys(context.secrets, () => readProviders().providers);
   const setApiKey = (provider?: string) => apiKeys.runSetCommand(provider);
 
@@ -77,6 +79,7 @@ export function activate(context: vscode.ExtensionContext): void {
     setContextSize: askContextSize,
     queryFiles: (query) => fileIndex.query(query),
     querySkills: discoverSkills,
+    addProvider: () => addProvider(),
   });
 
   // [>]: The chat's selection, its key, and its context size, read when a commit message run starts.
@@ -92,12 +95,20 @@ export function activate(context: vscode.ExtensionContext): void {
     controller.setProviders(readProviders());
     apiKeys.promptMissing();
   };
+  // [>]: Applied here too, since the settings change event may come after the write settles; applying twice is harmless.
+  // `selectProvider` leaves the selection alone while a reply is in flight.
+  const addProvider = () =>
+    runAddProvider(apiKeys, providersSetting, (name) => {
+      applySettings();
+      controller.selectProvider(name);
+    });
 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(CHAT_VIEW_ID, view),
     vscode.commands.registerCommand("broke-code.setApiKey", (provider?: unknown) =>
       setApiKey(typeof provider === "string" ? provider : undefined),
     ),
+    vscode.commands.registerCommand("broke-code.addProvider", addProvider),
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration("brokeCode.providers")) applySettings();
       if (LIMIT_SETTINGS.some((setting) => event.affectsConfiguration(setting))) controller.limitsChanged();
