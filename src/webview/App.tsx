@@ -896,6 +896,8 @@ function reservedDescription(name: ReservedMention): string {
   switch (name) {
     case "problems":
       return l10n.t("Errors and warnings of the workspace files");
+    case "selection":
+      return l10n.t("Selected text of the active editor");
   }
 }
 

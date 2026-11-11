@@ -69,7 +69,7 @@ function problemLine({ path, line, character, severity, message, source }: Diagn
  * written, led by that folder's name in a multi-root workspace. `undefined` outside every root, and for a root itself,
  * which is no file.
  */
-function workspacePath(roots: readonly WorkspaceRoot[], path: string): string | undefined {
+export function workspacePath(roots: readonly WorkspaceRoot[], path: string): string | undefined {
   const root = roots
     .filter((candidate) => isInside(candidate.path, path))
     .sort((a, b) => b.path.length - a.path.length)[0];

@@ -2938,6 +2938,7 @@ describe("ChatController agent turn", () => {
             },
           ],
         },
+        selection: { read: async () => undefined },
       });
       const { controller, state, sent } = await scripted(
         [{ content: "Ok." }],

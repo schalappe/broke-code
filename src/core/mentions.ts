@@ -4,7 +4,14 @@
  * that is exactly a reserved name (`reservedMentions`) is read from its source instead, by `mentionReader`.
  */
 import { MASK, maskMessage } from "./markdownCode";
-import { isNothingToAttach, type MentionKind, type NothingToAttach, reservedMention } from "./reservedMentions";
+import {
+  isNothingToAttach,
+  isReservedFailure,
+  type MentionKind,
+  type NothingToAttach,
+  type ReservedFailure,
+  reservedMention,
+} from "./reservedMentions";
 import {
   type AccessFailure,
   bytePrefix,
@@ -25,13 +32,22 @@ export const MAX_MENTION_BYTES = 1024 * 1024;
  * `attached`: content sent whole. `truncated`: content cut to its first lines. Any other status: nothing
  * attached; the model gets a notice instead, `NothingToAttach` ones saying what was absent rather than what failed.
  */
-export type MentionStatus = "attached" | "truncated" | AccessFailure | NothingToAttach;
+export type MentionStatus = "attached" | "truncated" | AccessFailure | NothingToAttach | ReservedFailure;
+
+/** Where an attached selection lies: its workspace path as the file index writes it, and its 1-based lines. */
+export type LineRange = { path: string; start: number; end: number };
 
 /**
  * One mention as the chat shows and keeps it. `lines`: what was attached, counted in the unit of its kind (lines of a
- * file, entries of a folder, problems).
+ * file, entries of a folder, problems, lines of the selection). `range`: where the attached `@selection` lies.
  */
-export type MentionResult = { path: string; kind: MentionKind; status: MentionStatus; lines?: number };
+export type MentionResult = {
+  path: string;
+  kind: MentionKind;
+  status: MentionStatus;
+  lines?: number;
+  range?: LineRange;
+};
 
 /**
  * A mention read at send time. `content`: attached text, empty when nothing is attached. `omitted`: lines cut
@@ -81,9 +97,13 @@ const COUNT_UNITS: Record<MentionKind, readonly [string, string]> = {
   file: ["line", "lines"],
   folder: ["entry", "entries"],
   problems: ["problem", "problems"],
+  selection: ["line", "lines"],
 };
 
-/** Model-facing block of one mention: header `@<path> (<kind>, <count or status>)`, then content or notice. */
+/**
+ * Model-facing block of one mention: header `@<path> (<kind>, <count or status>)`, the count led by the range when the
+ * mention has one (`src/app.ts lines 10-12, 3 lines`), then content or notice.
+ */
 export function formatMention(mention: ReadMention): string {
   const { path, kind, status } = mention;
   if (status !== "attached" && status !== "truncated") {
@@ -91,7 +111,7 @@ export function formatMention(mention: ReadMention): string {
   }
 
   const [one, many] = COUNT_UNITS[kind];
-  const count = plural(mention.lines ?? 0, one, many);
+  const count = `${mention.range ? `${describeRange(mention.range)}, ` : ""}${plural(mention.lines ?? 0, one, many)}`;
   const header = `@${path} (${kind}, ${count}${status === "truncated" ? ", truncated" : ""})`;
   // [!]: No spread into Math.max: a 1 MiB file can hold more backtick runs than a call takes arguments.
   const longestRun = (mention.content.match(/`+/g) ?? []).reduce((longest, run) => Math.max(longest, run.length), 0);
@@ -111,14 +131,30 @@ export function composeUserMessage(text: string, mentions: ReadMention[]): strin
   return [text, ...mentions.map(formatMention)].join("\n\n");
 }
 
+/** `src/app.ts lines 10-12`, or `line 10` for one line. */
+function describeRange({ path, start, end }: LineRange): string {
+  return start === end ? `${path} line ${start}` : `${path} lines ${start}-${end}`;
+}
+
 /** Why a reserved mention attached nothing although nothing failed. */
 const NOTHING_TO_ATTACH_REASONS: Record<NothingToAttach, string> = {
   noProblems: "VS Code holds no error or warning for the workspace files",
 };
 
+/** Why a reserved mention attached nothing: its source lacks what it asks for. */
+const RESERVED_FAILURE_REASONS: Record<ReservedFailure, string> = {
+  noEditor: "no text editor is active",
+  emptySelection: "the selection is empty",
+};
+
 function notice(mention: ReadMention & { status: Exclude<MentionStatus, "attached" | "truncated"> }): string {
   const { kind, status, cause } = mention;
   if (isNothingToAttach(status)) return `Not attached: ${NOTHING_TO_ATTACH_REASONS[status]}.`;
+  if (isReservedFailure(status)) return `Not attached: ${RESERVED_FAILURE_REASONS[status]}.`;
+  // [>]: `@selection` names no path: its document is what lies outside.
+  if (status === "outsideWorkspace" && kind === "selection") {
+    return "Not attached: the selected file is outside the workspace folders.";
+  }
   // [>]: A reserved mention reads no path: an `unreadable` one is its source failing.
   if (status === "unreadable" && reservedMention(kind)) {
     return `Not attached: the ${kind} could not be read (${cause ?? "unknown error"}).`;

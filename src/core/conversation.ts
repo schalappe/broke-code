@@ -4,7 +4,7 @@
  * history row saved beside the record, so a valid summary spares the list parsing the record. Files read from disk are
  * untrusted: `parseConversation` and `parseSummary` check every field and keep only known ones.
  */
-import type { MentionResult, MentionStatus } from "./mentions";
+import type { LineRange, MentionResult, MentionStatus } from "./mentions";
 import type {
   ChatEntry,
   HaltReason,
@@ -15,7 +15,7 @@ import type {
   UserSkill,
 } from "./protocol";
 import type { ProviderError } from "./providerError";
-import { type MentionKind, NOTHING_TO_ATTACH, RESERVED_MENTIONS } from "./reservedMentions";
+import { type MentionKind, NOTHING_TO_ATTACH, RESERVED_FAILURES, RESERVED_MENTIONS } from "./reservedMentions";
 
 /**
  * A user entry as saved: `modelText` is the text the model received, typed text (or the text of the skill it loads)
@@ -177,6 +177,7 @@ const MENTION_STATUSES: readonly MentionStatus[] = [
   "tooLarge",
   "unreadable",
   ...NOTHING_TO_ATTACH,
+  ...RESERVED_FAILURES,
 ];
 
 function parseEntry(raw: unknown): StoredEntry | undefined {
@@ -259,8 +260,27 @@ function parseMention(raw: unknown): MentionResult | undefined {
   if (!MENTION_KINDS.includes(raw.kind as MentionKind) || !MENTION_STATUSES.includes(raw.status as MentionStatus))
     return undefined;
   if (!isOptional(raw.lines, (lines) => Number.isSafeInteger(lines) && (lines as number) >= 0)) return undefined;
-  const { path, kind, status, lines } = raw as MentionResult;
-  return { path, kind, status, ...(lines !== undefined ? { lines } : {}) };
+  if (!isOptional(raw.range, isLineRange)) return undefined;
+  const { path, kind, status, lines, range } = raw as MentionResult;
+  return {
+    path,
+    kind,
+    status,
+    ...(lines !== undefined ? { lines } : {}),
+    ...(range !== undefined ? { range: { path: range.path, start: range.start, end: range.end } } : {}),
+  };
+}
+
+/** A path and 1-based lines, the first not after the last. */
+function isLineRange(raw: unknown): raw is LineRange {
+  if (!isObject(raw) || !isString(raw.path)) return false;
+  const { start, end } = raw;
+  return (
+    Number.isSafeInteger(start) &&
+    Number.isSafeInteger(end) &&
+    (start as number) >= 1 &&
+    (start as number) <= (end as number)
+  );
 }
 
 /** Field types of each provider error kind; `?` marks an optional field, an array lists the allowed values. */

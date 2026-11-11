@@ -791,7 +791,8 @@ button.code-action:hover:not(:disabled) {
   color: var(--bc-fg-dim);
 }
 
-/* Kind marker: a page for a file, a tabbed box for a folder, a ring for the problems. */
+/* Kind marker: a page for a file, a tabbed box for a folder, a ring for the problems, a pair of brackets for the
+   selection. */
 .kind {
   flex: none;
   box-sizing: border-box;
@@ -811,6 +812,13 @@ button.code-action:hover:not(:disabled) {
   width: 0.8em;
   height: 0.8em;
   border-radius: 50%;
+}
+
+.kind.selection {
+  width: 0.8em;
+  height: 0.8em;
+  border-top: none;
+  border-bottom: none;
 }
 
 .chip.failed .kind {

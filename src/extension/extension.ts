@@ -1,6 +1,7 @@
 /**
  * @module extension
- * Activation entry point: wires settings, API keys, mentions (and the diagnostics `@problems` reads), read tools, write tools and commands behind their approval,
+ * Activation entry point: wires settings, API keys, mentions (and the diagnostics `@problems` and the selection
+ * `@selection` read), read tools, write tools and commands behind their approval,
  * instruction files, skills, turn limits, file index, saved conversations, chat controller, chat view,
  * `broke-code.setApiKey`, `broke-code.addProvider`, and `broke-code.generateCommitMessage`.
  */
@@ -15,6 +16,7 @@ import { contextOf } from "../core/limits";
 import { mentionReader } from "../core/mentionReader";
 import type { Diagnostic } from "../core/problems";
 import { parseProviders } from "../core/providers";
+import type { EditorSelection } from "../core/selection";
 import { describeSkillDiscovery, readSkills, type SkillDiscovery } from "../core/skills";
 import { workspaceToolRunner } from "../core/toolRunner";
 import { ripgrepCandidates } from "../core/tools";
@@ -38,7 +40,11 @@ export function activate(context: vscode.ExtensionContext): void {
   const setApiKey = (provider?: string) => apiKeys.runSetCommand(provider);
 
   // [>]: Roots read at each mention, since folders can be added or removed while the window is open.
-  const mentions = mentionReader({ roots: workspaceRoots, diagnostics: { read: async () => readDiagnostics() } });
+  const mentions = mentionReader({
+    roots: workspaceRoots,
+    diagnostics: { read: async () => readDiagnostics() },
+    selection: { read: async () => readEditorSelection() },
+  });
   const toolEnv = { ripgrepCandidates: ripgrepCandidates(vscode.env.appRoot, process.env.PATH) };
   const previews = new DiffPreviews();
   const writeHost: WriteApprovalHost = { preview: (change) => previews.preview(change), hasUnsavedChanges };
@@ -146,7 +152,6 @@ function logSkills(discovery: SkillDiscovery): SkillDiscovery {
   return discovery;
 }
 
-/** Workspace folders on disk. Folders of other schemes (remote, virtual) hold no path to read: v1 is local only. */
 /** Every diagnostic VS Code holds now, as the raw records `@problems` filters and formats. */
 function readDiagnostics(): Diagnostic[] {
   return vscode.languages.getDiagnostics().flatMap(([uri, diagnostics]) =>
@@ -175,6 +180,24 @@ function severityName(severity: vscode.DiagnosticSeverity): Diagnostic["severity
   }
 }
 
+/**
+ * The active text editor's primary selection now, as the raw record `@selection` checks and cuts; `undefined` without
+ * an active text editor. Other selections of a multi-cursor are left out.
+ */
+function readEditorSelection(): EditorSelection | undefined {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor) return undefined;
+  const { document, selection } = editor;
+  return {
+    scheme: document.uri.scheme,
+    path: document.uri.fsPath,
+    start: { line: selection.start.line, character: selection.start.character },
+    end: { line: selection.end.line, character: selection.end.character },
+    text: document.getText(selection),
+  };
+}
+
+/** Workspace folders on disk. Folders of other schemes (remote, virtual) hold no path to read: v1 is local only. */
 function workspaceRoots(): WorkspaceRoot[] {
   return (vscode.workspace.workspaceFolders ?? [])
     .filter((folder) => folder.uri.scheme === "file")

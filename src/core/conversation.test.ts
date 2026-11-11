@@ -85,6 +85,54 @@ describe("conversation record", () => {
     expect(parseConversation(serializeConversation(withProblems))).toEqual({ ok: true, record: withProblems });
   });
 
+  test("reads back @selection mentions: attached with their range, noEditor, and emptySelection", () => {
+    const withSelection = record({
+      entries: [
+        {
+          role: "user",
+          content: "explain @selection",
+          mentions: [
+            {
+              path: "selection",
+              kind: "selection",
+              status: "attached",
+              lines: 3,
+              range: { path: "src/app.ts", start: 10, end: 12 },
+            },
+          ],
+          modelText: "explain @selection",
+        },
+        {
+          role: "user",
+          content: "again @selection",
+          mentions: [
+            { path: "selection", kind: "selection", status: "noEditor" },
+            { path: "selection", kind: "selection", status: "emptySelection" },
+            { path: "selection", kind: "selection", status: "outsideWorkspace" },
+          ],
+          modelText: "again @selection",
+        },
+      ],
+    });
+    expect(parseConversation(serializeConversation(withSelection))).toEqual({ ok: true, record: withSelection });
+  });
+
+  test("refuses a mention whose range has another shape", () => {
+    const mention = { path: "selection", kind: "selection", status: "attached", lines: 1 };
+    for (const range of [
+      null,
+      "src/app.ts 1-2",
+      { start: 1, end: 2 },
+      { path: "a.ts", start: 0, end: 2 },
+      { path: "a.ts", start: 3, end: 2 },
+      { path: "a.ts", start: 1.5, end: 2 },
+      { path: "a.ts", start: 1 },
+    ]) {
+      const entries = [{ role: "user", content: "x", mentions: [{ ...mention, range }], modelText: "x" }];
+      expect(parse({ ...record(), entries })).toEqual({ ok: false, reason: "invalid entry 0" });
+    }
+  });
+
   test("reads back how each write step was approved: accepted, rejected, or auto", () => {
     const step = { role: "tool", name: "write_file", args: { path: "a.ts", content: "x" }, text: "t" } as const;
     const turn = record({
