@@ -109,4 +109,13 @@ describe("isTemporaryName", () => {
       expect(isTemporaryName(name)).toBe(false);
     }
   });
+
+  test("refuses a long run of hyphens after .json. at once", () => {
+    const name = `a.json.${"-".repeat(255)}x`;
+    for (const candidate of [name, `${name}.tmp`]) {
+      const start = performance.now();
+      expect(isTemporaryName(candidate)).toBe(false);
+      expect(performance.now() - start).toBeLessThan(1000);
+    }
+  });
 });

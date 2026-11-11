@@ -20,17 +20,33 @@ export type ConversationFiles = {
   remove(name: string): Promise<void>;
 };
 
-const TEMPORARY_PATTERN = /^(.+?)(?:\.summary)?\.json\.([^./]+-[^./]+-[^./]+-[^./]+-[^./]+)\.tmp$/;
+/** Length of a conversation id and of the uuid in a temporary file's name. */
+const UUID_LENGTH = 36;
 
 /** Temporary file a write of `name` goes through: unique per write, never ending in `.json`. */
 function temporaryName(name: string): string {
   return `${name}.${crypto.randomUUID()}.tmp`;
 }
 
-/** True for a leftover temporary file of a conversation's record or summary: `<id>[.summary].json.<uuid>.tmp`. */
+/**
+ * True for a leftover temporary file of a conversation's record or summary: `<id>[.summary].json.<uuid>.tmp`.
+ * Cuts fixed-length parts from the end instead of matching a pattern, so any name costs time linear in its length:
+ * the listing tests every name of the storage directory in the extension host.
+ */
 export function isTemporaryName(name: string): boolean {
-  const match = TEMPORARY_PATTERN.exec(name);
-  return match !== null && isConversationId(match[1]) && isConversationId(match[2]);
+  const stem = withoutSuffix(name, ".tmp");
+  if (stem === undefined) return false;
+  const uuid = stem.slice(-UUID_LENGTH);
+  const target = withoutSuffix(stem.slice(0, -UUID_LENGTH), ".");
+  if (target === undefined || !isConversationId(uuid)) return false;
+  const base = withoutSuffix(target, ".json");
+  if (base === undefined) return false;
+  return isConversationId(withoutSuffix(base, ".summary") ?? base);
+}
+
+/** `text` less `suffix`; `undefined` when it does not end with it. */
+function withoutSuffix(text: string, suffix: string): string | undefined {
+  return text.endsWith(suffix) ? text.slice(0, -suffix.length) : undefined;
 }
 
 /** Files in `directory`; `undefined` without a storage directory, so conversations stay in memory. */
