@@ -283,8 +283,13 @@ broke-code collects no telemetry. It contacts only the providers you configure.
 
 ## Credits
 
-The chat panel's visual style and the `@` token detection of the mention menu follow
-[twinny](https://github.com/twinnydotdev/twinny), released under the MIT license.
+broke-code follows two things from [twinny](https://github.com/twinnydotdev/twinny), released under the MIT license,
+and copies none of its files:
+
+- The chat panel's look: one layer of design tokens derived from the VS Code theme, the user's message as a soft
+  filled block with the reply flush on the panel, a tool step as one small quiet line that opens to its result, the
+  VS Code UI font for prose and the editor font for code, and surfaces set apart by a fill instead of a border.
+- The `@` token detection of the mention menu.
 
 ## License
 

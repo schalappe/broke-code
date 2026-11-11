@@ -412,7 +412,7 @@ function Entry({
 /**
  * One reply of an agent turn: its reasoning, its answer as Markdown less its call block, the row of its tool step
  * (`step`: the entry after it), the decision its call waits on (`approval`, the request open, given while this is the
- * last reply), and how the turn ended when it ended here.
+ * last reply), in one `decision` block with the call's row, and how the turn ended when it ended here.
  */
 function Reply({
   entry,
@@ -427,20 +427,28 @@ function Reply({
   const answer = call ? (entry.content.slice(0, call.start) + entry.content.slice(call.end)).trim() : entry.content;
   const inFlight = entry.status === "waiting" || entry.status === "streaming";
   const deciding = inFlight && call !== undefined && step === undefined ? approval : undefined;
-  const unfinished: PendingCall["outcome"] = deciding
-    ? "deciding"
-    : inFlight
-      ? "running"
-      : entry.status === "stopped"
-        ? "stopped"
-        : "noResult";
+  const unfinished: PendingCall["outcome"] = inFlight ? "running" : entry.status === "stopped" ? "stopped" : "noResult";
   return (
     <div className="message assistant">
       {entry.reasoning !== "" && <Reasoning key="reasoning" entry={entry} />}
-      {answer !== "" && <Markdown>{answer}</Markdown>}
-      {step ? <ToolStep result={step} /> : call && <ToolStep call={call} outcome={unfinished} />}
-      {/* [>]: Keyed by request, so a new request starts with an empty reason. */}
-      {deciding && <Approval key={deciding.id} approval={deciding} />}
+      {answer !== "" && (
+        // [>]: The Markdown rules of the stylesheet apply inside this block only, never to the rows and blocks beside it.
+        <div className="answer">
+          <Markdown>{answer}</Markdown>
+        </div>
+      )}
+      {step ? (
+        <ToolStep result={step} />
+      ) : deciding && call ? (
+        // [>]: One block for the call and its controls: the decision is the one element that asks for attention.
+        <div className="decision">
+          <ToolStep call={call} outcome="deciding" />
+          {/* [>]: Keyed by request, so a new request starts with an empty reason. */}
+          <Approval key={deciding.id} approval={deciding} />
+        </div>
+      ) : (
+        call && <ToolStep call={call} outcome={unfinished} />
+      )}
       {entry.status === "waiting" && (
         <p className="loading" role="status">
           {l10n.t("Waiting for the reply…")}
