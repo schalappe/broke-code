@@ -354,7 +354,10 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   ", K rejected" (`approval` `rejected`) when not zero, in words. The turn in flight never folds, so a running step and
   an open approval always show; a row opened inside comes back closed once its turn folds, since its entries remount.
   Entries before the first user message, and a turn with no reply, never fold. Rendering only: the state, the record,
-  and the history sent to the model are unchanged.
+  and the history sent to the model are unchanged. The conversation follows its bottom while the user is within 24px of
+  it; scrolled up, a turn that folds keeps its question row (its user message) at the same offset in the scroll box,
+  set in a layout effect before paint, the browser's scroll anchoring being off (maintainer decision, 2026-11-11). It
+  moves no focus.
 - Reasoning output (`<think>` tags, `reasoning`, or `reasoning_content`) shows collapsed in the chat. The parser
   never looks for tool calls in it, and the conversation history sent back to the model drops it.
 - A code block of an assistant answer (fenced or indented, rendered by the answer's Markdown) has Copy and Insert at

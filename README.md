@@ -153,8 +153,9 @@ approval is the guard, so read the whole command before you click **Run**.
 Each tool call shows as a compact row under the model's text: the tool, its main argument (a path, a search pattern,
 or the whole command), and whether it worked with the size of its result, or for a command, its exit code. Click the row to see the result the model received.
 Once an agent turn has ended, its steps fold under one row above the final answer, such as "3 steps, 1 failed, 1
-rejected", so the answer sits right under your message; click the row to see the steps again. A turn with a single
-step stays unfolded, and the turn in progress never folds, so a running step and a change waiting for you always show.
+rejected", so the answer sits right under your message; click the row to see the steps again. If you scrolled up to
+read, your message stays where it is on screen when its turn folds. A turn with a single step stays unfolded, and the
+turn in progress never folds, so a running step and a change waiting for you always show.
 A file tool's path outside the workspace, and outside the folders of the loaded skills, is refused, and the model is
 told why.
 

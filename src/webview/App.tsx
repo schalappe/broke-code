@@ -446,10 +446,24 @@ function Conversation({
   const end = useRef<HTMLDivElement>(null);
   const list = useRef<HTMLElement>(null);
   const [pinned, setPinned] = useState(true);
+  const parts = foldTurns(entries);
+  const lastFold = parts.findLast((part) => part.kind === "fold");
+  // [>]: Where the last question row sat in the scroll box at the last commit or scroll while unpinned, and the last
+  // fold then: when a fold appears since, the effect below puts that row back where it was, whatever moved it.
+  const anchor = useRef<{ row: HTMLElement; offset: number } | undefined>(undefined);
+  const foldedUpTo = useRef(lastFold?.start);
 
-  // Follow stream only while user stays at bottom.
+  // Follow stream only while user stays at bottom. Unpinned, a turn that folds keeps its question row in place.
   useLayoutEffect(() => {
+    const box = list.current;
+    const folded = lastFold?.start !== foldedUpTo.current;
+    foldedUpTo.current = lastFold?.start;
     if (pinned) end.current?.scrollIntoView({ block: "end" });
+    else if (box && folded && anchor.current?.row.isConnected) {
+      box.scrollTop += offsetIn(box, anchor.current.row) - anchor.current.offset;
+    }
+    // [>]: Measuring forces a layout; while pinned nothing reads it, and the scroll that unpins records it.
+    anchor.current = pinned ? undefined : recordAnchor(box);
   });
 
   // [>]: Keyed by index: a conversation's entries are only appended, and another one remounts the list. An entry moving
@@ -480,9 +494,10 @@ function Conversation({
       onScroll={() => {
         const element = list.current;
         if (element) setPinned(element.scrollHeight - element.scrollTop - element.clientHeight < 24);
+        anchor.current = recordAnchor(element);
       }}
     >
-      {foldTurns(entries).map((part) =>
+      {parts.map((part) =>
         part.kind === "entry" ? (
           entry(part.index)
         ) : (
@@ -498,6 +513,19 @@ function Conversation({
       <div ref={end} />
     </section>
   );
+}
+
+/** The last question row of the scroll box `box` and its offset there; nothing while hidden, since nothing is laid out. */
+function recordAnchor(box: HTMLElement | null): { row: HTMLElement; offset: number } | undefined {
+  if (!box || box.hidden) return undefined;
+  let row = box.lastElementChild;
+  while (row && !row.matches(".message.user")) row = row.previousElementSibling;
+  return row instanceof HTMLElement ? { row, offset: offsetIn(box, row) } : undefined;
+}
+
+/** How far the top of `row` sits below the top of the scroll box `box`, negative when scrolled past. */
+function offsetIn(box: HTMLElement, row: HTMLElement): number {
+  return row.getBoundingClientRect().top - box.getBoundingClientRect().top;
 }
 
 /**

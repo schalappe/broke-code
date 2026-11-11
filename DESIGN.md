@@ -174,6 +174,11 @@ between its regions: header, notices, the conversation (or History in its place)
   would fall under 16em.
 - The conversation keeps 4px of side padding inside its scroll box, so a focus ring on a row at its edge is not
   clipped.
+- The conversation follows its bottom while the user is there (within 24px of it) and stays where it is once they
+  scroll up. When a turn ends and folds while they are scrolled up, the turn's question row (the user's message above
+  the fold) stays at the same place on screen: its offset in the scroll box is recorded at each scroll and at each
+  render while scrolled up, and restored before the fold paints. Several turns folding at once keep the last question
+  row in place. The browser's own scroll anchoring is off (`overflow-anchor: none`), so only the panel moves the view.
 
 ## Elevation & Depth
 

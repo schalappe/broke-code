@@ -312,6 +312,67 @@ describe("folded turn", () => {
     });
   });
 
+  /**
+   * Stubs the layout of the conversation `host` shows: the scroll box at 40px from the top of the window, 200px high,
+   * 1,000px of content, `scrollTop` a plain value that never fires `scroll`, and the last question row 400px down the
+   * content, 250px less once a fold renders, as when a shift the browser makes moves it. Returns the scroll box and the
+   * `scrollTop` writes made after the call.
+   */
+  function stubLayout(host: HTMLElement): { box: HTMLElement; writes: number[] } {
+    const box = host.querySelector<HTMLElement>("section.conversation");
+    const question = [...host.querySelectorAll<HTMLElement>("section.conversation > .message.user")].at(-1);
+    if (!box || !question) throw new Error("no conversation");
+    const writes: number[] = [];
+    let scrollTop = 0;
+    const rect = (top: number) => ({ top }) as DOMRect;
+    Object.defineProperties(box, {
+      scrollTop: {
+        get: () => scrollTop,
+        set: (value: number) => {
+          scrollTop = value;
+          writes.push(value);
+        },
+      },
+      scrollHeight: { get: () => 1000 },
+      clientHeight: { get: () => 200 },
+      getBoundingClientRect: { value: () => rect(40) },
+    });
+    const shift = () => (box.querySelector("details.turn-fold") ? 250 : 0);
+    Object.defineProperty(question, "getBoundingClientRect", { value: () => rect(40 + 400 - shift() - scrollTop) });
+    return { box, writes };
+  }
+
+  const streaming: ChatEntry = { ...final, status: "streaming" };
+
+  test("a turn that folds while the user is scrolled up keeps its question row in place", async () => {
+    await withPanel(stateWith(true, { entries: [user, call, ok, call, ok, streaming] }), async ({ host, show }) => {
+      const { box, writes } = stubLayout(host);
+      box.scrollTop = 300;
+      await act(async () => box.dispatchEvent(new Event("scroll")));
+      writes.length = 0;
+      await show(stateWith(true, { entries: [user, call, ok, call, ok, { ...streaming, content: "FINAL" }] }));
+      expect(writes).toEqual([]);
+      await show(stateWith(true, { entries: [user, call, ok, call, ok, final] }));
+      expect(host.querySelectorAll("details.turn-fold").length).toBe(1);
+      expect(writes).toEqual([50]);
+      expect(box.contains(document.activeElement)).toBe(false);
+    });
+  });
+
+  test("a turn that folds while the conversation is pinned to the bottom keeps following it", async () => {
+    await withPanel(stateWith(true, { entries: [user, call, ok, call, ok, streaming] }), async ({ host, show }) => {
+      const { writes } = stubLayout(host);
+      const scrolled = jest.fn();
+      Object.defineProperty(host.querySelector("section.conversation > div:last-child"), "scrollIntoView", {
+        value: scrolled,
+      });
+      await show(stateWith(true, { entries: [user, call, ok, call, ok, final] }));
+      expect(host.querySelectorAll("details.turn-fold").length).toBe(1);
+      expect(writes).toEqual([]);
+      expect(scrolled).toHaveBeenCalledWith({ block: "end" });
+    });
+  });
+
   test("a turn with one step renders the same markup as before folding existed", () => {
     expect(conversationOf([user, call, ok, final])).toBe(
       '<section class="conversation"><div class="message user">Hi</div><div class="message assistant"><div class="answer"><p>Look.</p></div><details class="step"><summary class="step-row"><span class="step-tool">read_file</span><span class="step-arg">a.ts</span><span class="step-status">ok, 1 line</span></summary><pre class="step-result"><code>x</code></pre></details></div><div class="message assistant"><div class="answer"><p>FINAL_ANSWER</p></div></div><div></div></section>',
