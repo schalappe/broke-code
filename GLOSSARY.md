@@ -75,8 +75,9 @@ _Avoid_: profile, endpoint, backend, connection
 **Mention**:
 A reference to a workspace file or folder typed as `@path` in a chat message, whose content is attached to
 that message. A reserved mention is one whose path is exactly a reserved name, such as `@problems` (the errors and
-warnings VS Code holds for the workspace files) or `@diff` (the uncommitted changes of their tracked files): it is read from the editor, never from a path, and a file of that
-name is mentioned as `@./<name>`.
+warnings VS Code holds for the workspace files), `@diff` (the uncommitted changes of their tracked files), or
+`@selection` (the selected text of the active editor, with its file and line range): it is read from the editor, never
+from a path, and a file of that name is mentioned as `@./<name>`.
 _Avoid_: context item, attachment, reference
 
 **Skill**:

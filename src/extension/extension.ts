@@ -1,8 +1,9 @@
 /**
  * @module extension
- * Activation entry point: wires settings, API keys, mentions (and the diagnostics `@problems` reads, the git diffs
- * `@diff` reads), read tools, write tools and commands behind their approval, instruction files, skills, turn limits,
- * file index, saved conversations, chat controller, chat view, `broke-code.setApiKey`, `broke-code.addProvider`, and `broke-code.generateCommitMessage`.
+ * Activation entry point: wires settings, API keys, mentions (and the diagnostics `@problems`, the git diffs `@diff`,
+ * and the selection `@selection` read), read tools, write tools and commands behind their approval, instruction files,
+ * skills, turn limits, file index, saved conversations, chat controller, chat view, `broke-code.setApiKey`,
+ * `broke-code.addProvider`, and `broke-code.generateCommitMessage`.
  */
 import { homedir } from "node:os";
 import * as vscode from "vscode";
@@ -15,6 +16,7 @@ import { contextOf } from "../core/limits";
 import { mentionReader } from "../core/mentionReader";
 import type { Diagnostic } from "../core/problems";
 import { parseProviders } from "../core/providers";
+import type { EditorSelection } from "../core/selection";
 import { describeSkillDiscovery, readSkills, type SkillDiscovery } from "../core/skills";
 import { workspaceToolRunner } from "../core/toolRunner";
 import { ripgrepCandidates } from "../core/tools";
@@ -43,6 +45,7 @@ export function activate(context: vscode.ExtensionContext): void {
     roots: workspaceRoots,
     diagnostics: { read: async () => readDiagnostics() },
     diff: gitDiffs,
+    selection: { read: async () => readEditorSelection() },
   });
   const toolEnv = { ripgrepCandidates: ripgrepCandidates(vscode.env.appRoot, process.env.PATH) };
   const previews = new DiffPreviews();
@@ -177,6 +180,23 @@ function severityName(severity: vscode.DiagnosticSeverity): Diagnostic["severity
     case vscode.DiagnosticSeverity.Hint:
       return "hint";
   }
+}
+
+/**
+ * The active text editor's primary selection now, as the raw record `@selection` checks and cuts; `undefined` without
+ * an active text editor. Other selections of a multi-cursor are left out.
+ */
+function readEditorSelection(): EditorSelection | undefined {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor) return undefined;
+  const { document, selection } = editor;
+  return {
+    scheme: document.uri.scheme,
+    path: document.uri.fsPath,
+    start: { line: selection.start.line, character: selection.start.character },
+    end: { line: selection.end.line, character: selection.end.character },
+    text: document.getText(selection),
+  };
 }
 
 /** Workspace folders on disk. Folders of other schemes (remote, virtual) hold no path to read: v1 is local only. */

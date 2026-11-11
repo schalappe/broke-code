@@ -91,9 +91,9 @@ export function describeMention(mention: MentionResult): string {
   const count = mention.lines ?? 0;
   switch (mention.status) {
     case "attached":
-      return describeCount(mention.kind, count);
+      return withRange(mention, describeCount(mention.kind, count));
     case "truncated":
-      return describeTruncated(mention.kind, count);
+      return withRange(mention, describeTruncated(mention.kind, count));
     case "missing":
       return l10n.t("not found");
     case "outsideWorkspace":
@@ -112,7 +112,18 @@ export function describeMention(mention: MentionResult): string {
       return l10n.t("not a git repository");
     case "gitUnavailable":
       return l10n.t("git not available");
+    case "noEditor":
+      return l10n.t("no active text editor");
+    case "emptySelection":
+      return l10n.t("empty selection");
   }
+}
+
+/** `count` led by the mention's range when it has one: `src/app.ts 10-12, 3 lines`, `src/app.ts 10, 1 line`. */
+function withRange({ range }: MentionResult, count: string): string {
+  if (!range) return count;
+  const lines = range.start === range.end ? `${range.start}` : `${range.start}-${range.end}`;
+  return l10n.t("{0} {1}, {2}", range.path, lines, count);
 }
 
 /** What a mention of `kind` attached, `count` in the unit of its kind. */
@@ -125,6 +136,8 @@ function describeCount(kind: MentionKind, count: number): string {
       return count === 1 ? l10n.t("1 entry") : l10n.t("{0} entries", count);
     case "problems":
       return count === 1 ? l10n.t("1 problem") : l10n.t("{0} problems", count);
+    case "selection":
+      return count === 1 ? l10n.t("1 line") : l10n.t("{0} lines", count);
   }
 }
 
@@ -137,6 +150,8 @@ function describeTruncated(kind: MentionKind, count: number): string {
       return l10n.t("truncated to {0} entries", count);
     case "problems":
       return l10n.t("truncated to {0} problems", count);
+    case "selection":
+      return l10n.t("truncated to {0} lines", count);
   }
 }
 

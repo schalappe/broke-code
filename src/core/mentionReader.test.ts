@@ -14,6 +14,7 @@ describe("mentionReader", () => {
     root = { name: "w", path: await mkdtemp(join(tmpdir(), "broke-code-reserved-")) };
     await writeFile(join(root.path, "problems"), "a file named problems\n");
     await writeFile(join(root.path, "diff"), "a file named diff\n");
+    await writeFile(join(root.path, "selection"), "a file named selection\n");
   });
   afterAll(() => rm(root.path, { recursive: true, force: true }));
 
@@ -37,6 +38,15 @@ describe("mentionReader", () => {
         },
       },
       diff: { read: async () => ({ kind: "read", folders: [{ kind: "diff", text: "+changed\n" }] }) },
+      selection: {
+        read: async () => ({
+          scheme: "file",
+          path: join(root.path, "src.ts"),
+          start: { line: 4, character: 0 },
+          end: { line: 4, character: 5 },
+          text: "x = 1",
+        }),
+      },
     });
     return Promise.all(findMentions(text).map((path) => reader.read(path)));
   }
@@ -84,5 +94,23 @@ describe("mentionReader", () => {
 
   test("finds no mention in @problems inside inline code or a fence", async () => {
     expect(await readAll("run `@problems` and\n```\n@problems\n```")).toEqual([]);
+  });
+
+  test("reads @selection as the reserved mention, not the workspace file of that name", async () => {
+    const [mention] = await readAll("explain @selection");
+    expect(mention).toMatchObject({
+      path: "selection",
+      kind: "selection",
+      status: "attached",
+      lines: 1,
+      range: { path: "src.ts", start: 5, end: 5 },
+      content: "x = 1",
+    });
+  });
+
+  test("reads @./selection as the workspace file of that name", async () => {
+    const [mention] = await readAll("see @./selection");
+    expect(mention).toMatchObject({ path: "./selection", kind: "file", status: "attached" });
+    expect(mention!.content).toBe("a file named selection\n");
   });
 });

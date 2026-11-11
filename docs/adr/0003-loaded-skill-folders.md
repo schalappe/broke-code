@@ -93,4 +93,5 @@ The rule above covers an optional key added to an entry, which an older build dr
 an existing field, such as the mention kind `problems` and its status `noProblems` (#81): an older build validates
 the field, finds the value unknown, and skips the whole record as invalid, keeping it on disk. The record still stays
 version 2, since a version bump would hide the conversation from an older build all the same. Accepted by the
-scout of #81 on 2026-11-11: such a record shows again once the newer build is back.
+scout of #81 on 2026-11-11: such a record shows again once the newer build is back. The same holds for the mention
+kind `selection` and its statuses `noEditor` and `emptySelection` (#83); its optional `range` follows the rule above.

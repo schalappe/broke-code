@@ -792,7 +792,7 @@ button.code-action:hover:not(:disabled) {
 }
 
 /* Kind marker: a page for a file, a tabbed box for a folder, a ring for the problems, a box with a change bar on its
-   left for the diff. */
+   left for the diff, a pair of brackets for the selection. */
 .kind {
   flex: none;
   box-sizing: border-box;
@@ -818,6 +818,13 @@ button.code-action:hover:not(:disabled) {
   width: 0.8em;
   height: 0.8em;
   border-left-width: 3px;
+}
+
+.kind.selection {
+  width: 0.8em;
+  height: 0.8em;
+  border-top: none;
+  border-bottom: none;
 }
 
 .chip.failed .kind {

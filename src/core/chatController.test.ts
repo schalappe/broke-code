@@ -2939,6 +2939,7 @@ describe("ChatController agent turn", () => {
           ],
         },
         diff: { read: async () => ({ kind: "gitUnavailable" }) },
+        selection: { read: async () => undefined },
       });
       const { controller, state, sent } = await scripted(
         [{ content: "Ok." }],

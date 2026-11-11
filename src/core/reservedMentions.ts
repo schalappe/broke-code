@@ -5,12 +5,13 @@
  * `node:` or `vscode` import, since the webview bundle loads it.
  *
  * Adding a reserved name: append it to `RESERVED_MENTIONS`, then follow the type errors (its reader in `mentionReader`,
- * its count unit in `mentions`, its chip wording and menu description in the webview).
+ * its count unit in `mentions`, its chip wording and menu description in the webview), then add its statuses to
+ * `NOTHING_TO_ATTACH` or `RESERVED_FAILURES`.
  */
 import type { EntryKind } from "./workspaceFiles";
 
 /** The reserved names, in the order the `@` menu lists them, before the files. */
-export const RESERVED_MENTIONS = ["problems", "diff"] as const;
+export const RESERVED_MENTIONS = ["problems", "diff", "selection"] as const;
 export type ReservedMention = (typeof RESERVED_MENTIONS)[number];
 
 /** What a mention names: a workspace file or folder, or a reserved mention, whose kind is its name. */
@@ -24,11 +25,11 @@ export const NOTHING_TO_ATTACH = ["noProblems", "noChanges"] as const;
 export type NothingToAttach = (typeof NOTHING_TO_ATTACH)[number];
 
 /**
- * Statuses of a reserved mention whose source is absent or off, other than `unreadable`, which says it failed. The chip
- * shows them failed.
+ * Statuses of a reserved mention whose source lacks what the mention asks for, or is absent or off: the user asked for
+ * something that is not there, so the chip is failed, as for an access failure.
  */
-export const SOURCE_FAILURES = ["noRepository", "gitUnavailable"] as const;
-export type SourceFailure = (typeof SOURCE_FAILURES)[number];
+export const RESERVED_FAILURES = ["noRepository", "gitUnavailable", "noEditor", "emptySelection"] as const;
+export type ReservedFailure = (typeof RESERVED_FAILURES)[number];
 
 /**
  * The reserved mention `path` names: exactly a reserved name, lowercase, as `findMentions` returns it (trailing
@@ -51,7 +52,7 @@ export function isNothingToAttach(status: string): status is NothingToAttach {
   return (NOTHING_TO_ATTACH as readonly string[]).includes(status);
 }
 
-/** True for a status saying a reserved mention's source is absent or off. */
-export function isSourceFailure(status: string): status is SourceFailure {
-  return (SOURCE_FAILURES as readonly string[]).includes(status);
+/** True for a status of a reserved mention whose source lacks what it asks for. */
+export function isReservedFailure(status: string): status is ReservedFailure {
+  return (RESERVED_FAILURES as readonly string[]).includes(status);
 }

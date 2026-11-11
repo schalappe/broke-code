@@ -128,6 +128,19 @@ a note saying how many lines were left out.
 `diff` is a reserved name like `problems`: a file named `diff` is `@./diff`, and in a multi-root workspace a workspace
 folder named `diff` is reached by `@diff/` and `@diff/<path>`, no longer by `@diff`.
 
+### Mention the selection
+
+`@selection` attaches the text you selected in the active editor, as it stands when you send the message, with its
+file and line range: the model gets `src/app.ts lines 10-12`, and the chip shows "src/app.ts 10-12, 3 lines". Select
+the lines, click in the message box, and send; the editor keeps its selection while the chat has the focus. With
+several cursors, only the primary selection is attached. A selection that ends at the start of a line does not count
+that line. Over 2,000 lines or 1 MiB, the text is cut and the model is told so.
+
+Nothing is attached, the chip in the error color and the message still sent, when no text editor is active, when the
+selection is empty, or when the file is outside the workspace folders, an untitled document, or not a file (such as
+the diff of a change waiting for approval). `selection` is a reserved name like `problems`: a file named `selection`
+is `@./selection`.
+
 ## How the agent works
 
 Each message starts an agent turn. The model may answer at once, or write a tool call in its reply; broke-code runs

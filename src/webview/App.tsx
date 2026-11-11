@@ -898,6 +898,8 @@ function reservedDescription(name: ReservedMention): string {
       return l10n.t("Errors and warnings of the workspace files");
     case "diff":
       return l10n.t("Uncommitted changes of the tracked files");
+    case "selection":
+      return l10n.t("Selected text of the active editor");
   }
 }
 
