@@ -106,6 +106,12 @@ export function describeMention(mention: MentionResult): string {
       return l10n.t("could not be read");
     case "noProblems":
       return l10n.t("no errors or warnings");
+    case "noChanges":
+      return l10n.t("no changes");
+    case "noRepository":
+      return l10n.t("not a git repository");
+    case "gitUnavailable":
+      return l10n.t("git not available");
   }
 }
 
@@ -113,6 +119,7 @@ export function describeMention(mention: MentionResult): string {
 function describeCount(kind: MentionKind, count: number): string {
   switch (kind) {
     case "file":
+    case "diff":
       return count === 1 ? l10n.t("1 line") : l10n.t("{0} lines", count);
     case "folder":
       return count === 1 ? l10n.t("1 entry") : l10n.t("{0} entries", count);
@@ -124,6 +131,7 @@ function describeCount(kind: MentionKind, count: number): string {
 function describeTruncated(kind: MentionKind, count: number): string {
   switch (kind) {
     case "file":
+    case "diff":
       return l10n.t("truncated to {0} lines", count);
     case "folder":
       return l10n.t("truncated to {0} entries", count);

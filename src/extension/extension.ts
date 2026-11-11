@@ -1,8 +1,8 @@
 /**
  * @module extension
- * Activation entry point: wires settings, API keys, mentions (and the diagnostics `@problems` reads), read tools, write tools and commands behind their approval,
- * instruction files, skills, turn limits, file index, saved conversations, chat controller, chat view,
- * `broke-code.setApiKey`, `broke-code.addProvider`, and `broke-code.generateCommitMessage`.
+ * Activation entry point: wires settings, API keys, mentions (and the diagnostics `@problems` reads, the git diffs
+ * `@diff` reads), read tools, write tools and commands behind their approval, instruction files, skills, turn limits,
+ * file index, saved conversations, chat controller, chat view, `broke-code.setApiKey`, `broke-code.addProvider`, and `broke-code.generateCommitMessage`.
  */
 import { homedir } from "node:os";
 import * as vscode from "vscode";
@@ -27,6 +27,7 @@ import { CHAT_VIEW_ID, ChatView } from "./chatView";
 import { registerCommitMessageCommand } from "./commitMessage";
 import { askContextSize, LIMIT_SETTINGS, readCommandTimeoutSeconds, readLimits } from "./contextSizes";
 import { WorkspaceFileIndex } from "./fileIndex";
+import { gitDiffs } from "./git";
 
 export function activate(context: vscode.ExtensionContext): void {
   // [!]: User settings only. A workspace value could reuse a provider name with another base URL and receive its stored key.
@@ -38,7 +39,11 @@ export function activate(context: vscode.ExtensionContext): void {
   const setApiKey = (provider?: string) => apiKeys.runSetCommand(provider);
 
   // [>]: Roots read at each mention, since folders can be added or removed while the window is open.
-  const mentions = mentionReader({ roots: workspaceRoots, diagnostics: { read: async () => readDiagnostics() } });
+  const mentions = mentionReader({
+    roots: workspaceRoots,
+    diagnostics: { read: async () => readDiagnostics() },
+    diff: gitDiffs,
+  });
   const toolEnv = { ripgrepCandidates: ripgrepCandidates(vscode.env.appRoot, process.env.PATH) };
   const previews = new DiffPreviews();
   const writeHost: WriteApprovalHost = { preview: (change) => previews.preview(change), hasUnsavedChanges };
@@ -146,7 +151,6 @@ function logSkills(discovery: SkillDiscovery): SkillDiscovery {
   return discovery;
 }
 
-/** Workspace folders on disk. Folders of other schemes (remote, virtual) hold no path to read: v1 is local only. */
 /** Every diagnostic VS Code holds now, as the raw records `@problems` filters and formats. */
 function readDiagnostics(): Diagnostic[] {
   return vscode.languages.getDiagnostics().flatMap(([uri, diagnostics]) =>
@@ -175,6 +179,7 @@ function severityName(severity: vscode.DiagnosticSeverity): Diagnostic["severity
   }
 }
 
+/** Workspace folders on disk. Folders of other schemes (remote, virtual) hold no path to read: v1 is local only. */
 function workspaceRoots(): WorkspaceRoot[] {
   return (vscode.workspace.workspaceFolders ?? [])
     .filter((folder) => folder.uri.scheme === "file")

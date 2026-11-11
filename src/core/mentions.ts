@@ -4,7 +4,14 @@
  * that is exactly a reserved name (`reservedMentions`) is read from its source instead, by `mentionReader`.
  */
 import { MASK, maskMessage } from "./markdownCode";
-import { isNothingToAttach, type MentionKind, type NothingToAttach, reservedMention } from "./reservedMentions";
+import {
+  isNothingToAttach,
+  isSourceFailure,
+  type MentionKind,
+  type NothingToAttach,
+  reservedMention,
+  type SourceFailure,
+} from "./reservedMentions";
 import {
   type AccessFailure,
   bytePrefix,
@@ -23,13 +30,14 @@ export const MAX_MENTION_BYTES = 1024 * 1024;
 
 /**
  * `attached`: content sent whole. `truncated`: content cut to its first lines. Any other status: nothing
- * attached; the model gets a notice instead, `NothingToAttach` ones saying what was absent rather than what failed.
+ * attached; the model gets a notice instead, `NothingToAttach` ones saying what was absent rather than what failed,
+ * `SourceFailure` ones why a reserved mention's source cannot be read.
  */
-export type MentionStatus = "attached" | "truncated" | AccessFailure | NothingToAttach;
+export type MentionStatus = "attached" | "truncated" | AccessFailure | NothingToAttach | SourceFailure;
 
 /**
  * One mention as the chat shows and keeps it. `lines`: what was attached, counted in the unit of its kind (lines of a
- * file, entries of a folder, problems).
+ * file or a diff, entries of a folder, problems).
  */
 export type MentionResult = { path: string; kind: MentionKind; status: MentionStatus; lines?: number };
 
@@ -81,6 +89,7 @@ const COUNT_UNITS: Record<MentionKind, readonly [string, string]> = {
   file: ["line", "lines"],
   folder: ["entry", "entries"],
   problems: ["problem", "problems"],
+  diff: ["line", "lines"],
 };
 
 /** Model-facing block of one mention: header `@<path> (<kind>, <count or status>)`, then content or notice. */
@@ -111,14 +120,17 @@ export function composeUserMessage(text: string, mentions: ReadMention[]): strin
   return [text, ...mentions.map(formatMention)].join("\n\n");
 }
 
-/** Why a reserved mention attached nothing although nothing failed. */
-const NOTHING_TO_ATTACH_REASONS: Record<NothingToAttach, string> = {
+/** Why a reserved mention attached nothing: nothing to attach, or its source absent or off. */
+const RESERVED_REASONS: Record<NothingToAttach | SourceFailure, string> = {
   noProblems: "VS Code holds no error or warning for the workspace files",
+  noChanges: "no tracked file differs from HEAD",
+  noRepository: "no workspace folder is a git repository",
+  gitUnavailable: "git is not available in VS Code",
 };
 
 function notice(mention: ReadMention & { status: Exclude<MentionStatus, "attached" | "truncated"> }): string {
   const { kind, status, cause } = mention;
-  if (isNothingToAttach(status)) return `Not attached: ${NOTHING_TO_ATTACH_REASONS[status]}.`;
+  if (isNothingToAttach(status) || isSourceFailure(status)) return `Not attached: ${RESERVED_REASONS[status]}.`;
   // [>]: A reserved mention reads no path: an `unreadable` one is its source failing.
   if (status === "unreadable" && reservedMention(kind)) {
     return `Not attached: the ${kind} could not be read (${cause ?? "unknown error"}).`;

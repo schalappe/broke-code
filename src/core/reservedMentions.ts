@@ -10,7 +10,7 @@
 import type { EntryKind } from "./workspaceFiles";
 
 /** The reserved names, in the order the `@` menu lists them, before the files. */
-export const RESERVED_MENTIONS = ["problems"] as const;
+export const RESERVED_MENTIONS = ["problems", "diff"] as const;
 export type ReservedMention = (typeof RESERVED_MENTIONS)[number];
 
 /** What a mention names: a workspace file or folder, or a reserved mention, whose kind is its name. */
@@ -20,8 +20,15 @@ export type MentionKind = EntryKind | ReservedMention;
  * Statuses of a reserved mention that found nothing to attach without failing, each saying what was absent. The chip
  * is then neutral, not failed.
  */
-export const NOTHING_TO_ATTACH = ["noProblems"] as const;
+export const NOTHING_TO_ATTACH = ["noProblems", "noChanges"] as const;
 export type NothingToAttach = (typeof NOTHING_TO_ATTACH)[number];
+
+/**
+ * Statuses of a reserved mention whose source is absent or off, other than `unreadable`, which says it failed. The chip
+ * shows them failed.
+ */
+export const SOURCE_FAILURES = ["noRepository", "gitUnavailable"] as const;
+export type SourceFailure = (typeof SOURCE_FAILURES)[number];
 
 /**
  * The reserved mention `path` names: exactly a reserved name, lowercase, as `findMentions` returns it (trailing
@@ -42,4 +49,9 @@ export function pickedPath(path: string): string {
 /** True for a status that attached nothing without failing. */
 export function isNothingToAttach(status: string): status is NothingToAttach {
   return (NOTHING_TO_ATTACH as readonly string[]).includes(status);
+}
+
+/** True for a status saying a reserved mention's source is absent or off. */
+export function isSourceFailure(status: string): status is SourceFailure {
+  return (SOURCE_FAILURES as readonly string[]).includes(status);
 }

@@ -760,6 +760,31 @@ describe("mentions", () => {
     }
   });
 
+  test("shows a @diff chip with its kind and line count, neutral without changes, failed without git", () => {
+    const html = renderMentions([
+      { path: "diff", kind: "diff", status: "attached", lines: 9 },
+      { path: "diff", kind: "diff", status: "attached", lines: 1 },
+      { path: "diff", kind: "diff", status: "truncated", lines: 2000 },
+      { path: "diff", kind: "diff", status: "noChanges" },
+      { path: "diff", kind: "diff", status: "noRepository" },
+      { path: "diff", kind: "diff", status: "gitUnavailable" },
+      { path: "diff", kind: "diff", status: "unreadable" },
+    ]);
+    const chip = (state: string, status: string) =>
+      `<li class="${state}"><span class="kind diff" aria-hidden="true"></span><span class="chip-path">@diff</span><span class="chip-status">${status}</span></li>`;
+    for (const expected of [
+      chip("chip", "9 lines"),
+      chip("chip", "1 line"),
+      chip("chip", "truncated to 2000 lines"),
+      chip("chip neutral", "no changes"),
+      chip("chip failed", "not a git repository"),
+      chip("chip failed", "git not available"),
+      chip("chip failed", "could not be read"),
+    ]) {
+      expect(html).toContain(expected);
+    }
+  });
+
   test("shows the skill a message loaded before its mentions, a failed load marked", () => {
     const mention = { path: "a.ts", kind: "file", status: "attached", lines: 1 } as const;
     const loaded = renderMentions([mention], { name: "grilling", status: "loaded" });
@@ -820,6 +845,12 @@ describe("mention menu", () => {
     );
     expect(html).toContain(
       '<span class="kind file" aria-hidden="true"></span><span class="menu-label">@problems</span></div>',
+    );
+  });
+
+  test("shows the @diff row with its marker and description", () => {
+    expect(menu([{ path: "diff", kind: "diff" }])).toContain(
+      '<span class="kind diff" aria-hidden="true"></span><span class="menu-label">@diff</span><span class="menu-description">Uncommitted changes of the tracked files</span></div>',
     );
   });
 
@@ -1577,6 +1608,7 @@ describe("composer @problems", () => {
       await receive({ type: "fileSuggestions", id: lastFileQuery(), items: [], capped: false, failed: true });
       expect([...host.querySelectorAll('[role="option"] .menu-label')].map((row) => row.textContent)).toEqual([
         "@problems",
+        "@diff",
       ]);
       expect(host.querySelector(".menu-notice")?.textContent).toBe("Could not list the workspace files");
     });

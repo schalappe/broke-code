@@ -15,7 +15,7 @@ import type {
   UserSkill,
 } from "./protocol";
 import type { ProviderError } from "./providerError";
-import { type MentionKind, NOTHING_TO_ATTACH, RESERVED_MENTIONS } from "./reservedMentions";
+import { type MentionKind, NOTHING_TO_ATTACH, RESERVED_MENTIONS, SOURCE_FAILURES } from "./reservedMentions";
 
 /**
  * A user entry as saved: `modelText` is the text the model received, typed text (or the text of the skill it loads)
@@ -177,6 +177,7 @@ const MENTION_STATUSES: readonly MentionStatus[] = [
   "tooLarge",
   "unreadable",
   ...NOTHING_TO_ATTACH,
+  ...SOURCE_FAILURES,
 ];
 
 function parseEntry(raw: unknown): StoredEntry | undefined {

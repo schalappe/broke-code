@@ -85,6 +85,27 @@ describe("conversation record", () => {
     expect(parseConversation(serializeConversation(withProblems))).toEqual({ ok: true, record: withProblems });
   });
 
+  test("reads back @diff mentions: attached with their line count, noChanges, noRepository, and gitUnavailable", () => {
+    const statuses = ["noChanges", "noRepository", "gitUnavailable"] as const;
+    const withDiff = record({
+      entries: [
+        {
+          role: "user",
+          content: "review @diff",
+          mentions: [{ path: "diff", kind: "diff", status: "attached", lines: 9 }],
+          modelText: "review @diff",
+        },
+        ...statuses.map((status) => ({
+          role: "user" as const,
+          content: "again @diff",
+          mentions: [{ path: "diff", kind: "diff" as const, status }],
+          modelText: "again @diff",
+        })),
+      ],
+    });
+    expect(parseConversation(serializeConversation(withDiff))).toEqual({ ok: true, record: withDiff });
+  });
+
   test("reads back how each write step was approved: accepted, rejected, or auto", () => {
     const step = { role: "tool", name: "write_file", args: { path: "a.ts", content: "x" }, text: "t" } as const;
     const turn = record({

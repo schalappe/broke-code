@@ -13,6 +13,7 @@ describe("mentionReader", () => {
   beforeAll(async () => {
     root = { name: "w", path: await mkdtemp(join(tmpdir(), "broke-code-reserved-")) };
     await writeFile(join(root.path, "problems"), "a file named problems\n");
+    await writeFile(join(root.path, "diff"), "a file named diff\n");
   });
   afterAll(() => rm(root.path, { recursive: true, force: true }));
 
@@ -35,6 +36,7 @@ describe("mentionReader", () => {
           return [{ ...diagnostic, path: join(root.path, "src.ts") }];
         },
       },
+      diff: { read: async () => ({ kind: "read", folders: [{ kind: "diff", text: "+changed\n" }] }) },
     });
     return Promise.all(findMentions(text).map((path) => reader.read(path)));
   }
@@ -58,6 +60,12 @@ describe("mentionReader", () => {
         omitted: 0,
       },
     ]);
+  });
+
+  test("reads @diff as the reserved mention and @./diff as the workspace file of that name", async () => {
+    const [reserved, file] = await readAll("compare @diff with @./diff");
+    expect(reserved).toMatchObject({ path: "diff", kind: "diff", status: "attached", lines: 1, content: "+changed\n" });
+    expect(file).toMatchObject({ path: "./diff", kind: "file", status: "attached", content: "a file named diff\n" });
   });
 
   test("reads a token that is not exactly the lowercase name as a workspace path", async () => {
