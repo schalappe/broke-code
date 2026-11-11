@@ -5,7 +5,7 @@
  * Every key dialog (automatic prompt, `broke-code: Set API key`) runs through one queue -> boxes never overlap.
  */
 import * as vscode from "vscode";
-import { isHeaderSafeKey } from "../core/apiKey";
+import { apiKeyBox } from "../core/apiKey";
 import type { Provider } from "../core/providers";
 import { SerialQueue } from "../core/serialQueue";
 
@@ -56,7 +56,7 @@ export class ApiKeys {
         .run(async () => {
           const stillConfigured = this.readProviders().some((provider) => provider.name === name);
           if (!stillConfigured || (await this.get(name)) !== undefined) return;
-          await this.askAndStore(name, vscode.l10n.t("broke-code sends this key to {0} as a bearer token.", name));
+          await this.askAndStore(name, "new");
         })
         .catch((error: unknown) => {
           void vscode.window.showErrorMessage(
@@ -65,6 +65,24 @@ export class ApiKeys {
         })
         .finally(() => this.prompting.delete(name));
     }
+  }
+
+  /**
+   * Run `task` as a key dialog: it waits for the open one, and the automatic prompts queued meanwhile wait for it, so
+   * none opens over it or asks for a key it is about to store.
+   */
+  runDialog<T>(task: () => Promise<T>): Promise<T> {
+    return this.dialogs.run(task);
+  }
+
+  /** Store `key` for `provider`; `""` = no key. Rejects on failure, for the caller to show. */
+  async store(provider: string, key: string): Promise<void> {
+    await this.secrets.store(SECRET_PREFIX + provider, key);
+  }
+
+  /** Delete the stored entry of `provider`, so it counts as never set. Rejects on failure, for the caller to show. */
+  async delete(provider: string): Promise<void> {
+    await this.secrets.delete(SECRET_PREFIX + provider);
   }
 
   /**
@@ -92,10 +110,7 @@ export class ApiKeys {
         )?.label;
       if (!name) return;
 
-      const outcome = await this.askAndStore(
-        name,
-        vscode.l10n.t("Enter a new key to set or replace it. Leave empty to clear it."),
-      );
+      const outcome = await this.askAndStore(name, "change");
       if (outcome === "stored")
         void vscode.window.showInformationMessage(vscode.l10n.t("API key for {0} saved.", name));
       if (outcome === "cleared")
@@ -104,21 +119,22 @@ export class ApiKeys {
   }
 
   /** Password box for `name`; empty submit stores `""` (no key), Escape stores nothing. Save failure shown. */
-  private async askAndStore(name: string, prompt: string): Promise<"stored" | "cleared" | "cancelled" | "failed"> {
+  private async askAndStore(
+    name: string,
+    purpose: "new" | "change",
+  ): Promise<"stored" | "cleared" | "cancelled" | "failed"> {
+    const box = apiKeyBox(name, purpose, vscode.l10n);
     const key = await vscode.window.showInputBox({
-      title: vscode.l10n.t("API key for {0}", name),
-      prompt,
-      placeHolder: vscode.l10n.t("Leave empty for a provider that needs no key, such as Ollama"),
+      title: box.title,
+      prompt: box.prompt,
+      placeHolder: box.placeholder,
       password: true,
       ignoreFocusOut: true,
-      validateInput: (value) =>
-        isHeaderSafeKey(value.trim())
-          ? undefined
-          : vscode.l10n.t("An API key can contain only visible ASCII characters, with no spaces or accents."),
+      validateInput: box.validate,
     });
     if (key === undefined) return "cancelled";
     try {
-      await this.secrets.store(SECRET_PREFIX + name, key.trim());
+      await this.store(name, key.trim());
     } catch (error) {
       void vscode.window.showErrorMessage(
         vscode.l10n.t("Could not save the API key for {0}: {1}", name, String(error)),

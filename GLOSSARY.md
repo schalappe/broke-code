@@ -54,7 +54,8 @@ _Avoid_: snippet, code fence (for the whole block)
 
 **Provider**:
 An LLM service broke-code talks to, identified by a base URL and an optional API key, that serves one or more
-models through the OpenAI chat contract.
+models through the OpenAI chat contract. Configured in the user settings, by hand or with "Add provider", which also
+stores its key.
 _Avoid_: profile, endpoint, backend, connection
 
 ## Commands and skills

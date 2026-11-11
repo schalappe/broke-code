@@ -25,12 +25,24 @@ Control view, a button writes a commit message for your staged changes.
 
 ## Configure a provider
 
-A provider is an LLM service broke-code talks to. List your providers in your **user** settings
+A provider is an LLM service broke-code talks to. The quickest way to add one is **broke-code: Add provider**, from
+the Command Palette or the button in the chat panel:
+
+- **Ollama on this machine** adds `ollama` at `http://localhost:11434/v1`, with no key. If a provider named
+  `ollama` already exists, it is selected instead. Start Ollama first: broke-code does not check it is running, and
+  the chat shows the usual error with Retry when it cannot reach it.
+- **Other OpenAI-compatible service** asks for a name, the base URL (ending in its version path, such as `/v1`),
+  and the API key, which you can leave empty.
+
+The provider is added to your user settings, its key to the editor's secret storage, and the chat selects it. Press
+Escape at any step to change nothing. To edit or remove a provider, or to set its `caFile`, edit the settings.
+
+You can also list your providers by hand in your **user** settings
 (`settings.json`) under `brokeCode.providers`. Each entry has a unique `name` and a `baseUrl`, the API root:
 
 ```json
 "brokeCode.providers": [
-  { "name": "Ollama", "baseUrl": "http://localhost:11434/v1" },
+  { "name": "ollama", "baseUrl": "http://localhost:11434/v1" },
   { "name": "Work", "baseUrl": "https://llm.example.com/v1" }
 ]
 ```
@@ -54,7 +66,8 @@ verification cannot be turned off.
 
 ## Set an API key
 
-broke-code asks for the key of each new provider. To set, replace, or clear a key later, run
+broke-code asks for the key of each new provider added in `settings.json`; **Add provider** asks for it as part
+of the flow. To set, replace, or clear a key later, run
 **broke-code: Set API key** from the Command Palette and pick the provider. Leave the box empty for a provider
 that needs no key, such as Ollama.
 

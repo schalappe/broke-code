@@ -11,8 +11,18 @@ const posted: unknown[] = [];
 (globalThis as { acquireVsCodeApi?: () => { postMessage(message: unknown): void } }).acquireVsCodeApi = () => ({
   postMessage: (message) => posted.push(message),
 });
-const { App, ApprovalControls, ContextNotice, ConversationList, Header, HistoryPanel, MentionMenu, SlashMenu } =
-  await import("./App");
+const {
+  App,
+  ApprovalControls,
+  ContextNotice,
+  ConversationList,
+  EmptyState,
+  Header,
+  HistoryPanel,
+  MentionMenu,
+  SlashMenu,
+  Warnings,
+} = await import("./App");
 const { moveHighlight } = await import("./SuggestionMenu");
 
 type Reply = ChatEntry & { role: "assistant" };
@@ -891,6 +901,14 @@ describe("history without a provider", () => {
     expect(html).not.toContain("<select");
   });
 
+  test("offers Add provider beside Open provider settings, and the button asks the host to add one", () => {
+    const html = renderToStaticMarkup(<App state={stateWith(false)} language="en" />);
+    expect(html).toContain(">Add provider</button>");
+    expect(html).toContain(">Open provider settings</button>");
+    button(EmptyState(), "Add provider").props.onClick!();
+    expect(posted).toEqual([{ type: "addProvider" }]);
+  });
+
   test("shows a reopened conversation read-only: no composer", () => {
     const html = renderToStaticMarkup(<App state={stateWith(false, { entries: hi })} language="en" />);
     expect(html).toContain("Hello");
@@ -1588,6 +1606,28 @@ describe("warnings", () => {
     });
     const html = renderToStaticMarkup(<App state={state} language="en" />);
     expect(html).toContain("The skills in ~/.agents/skills are skipped: the folder cannot be read (EACCES).");
+  });
+
+  test("offers Add provider under the skipped providers, and the button asks the host to add one", () => {
+    const state = stateWith(true, { skipped: [{ position: 2, reason: "missingName" }] });
+    const html = renderToStaticMarkup(<App state={state} language="en" />);
+    expect(html).toMatch(/<\/ul>.*>Add provider<\/button>/);
+    button(Warnings({ state }), "Add provider").props.onClick!();
+    expect(posted).toEqual([{ type: "addProvider" }]);
+  });
+
+  test("with skipped entries and no valid provider, shows one Add provider, the empty state's", () => {
+    const state = stateWith(false, { skipped: [{ position: 1, name: "P", reason: "invalidUrl" }] });
+    const html = renderToStaticMarkup(<App state={state} language="en" />);
+    expect(html.match(/>Add provider<\/button>/g)).toHaveLength(1);
+    expect(html).toMatch(/class="empty".*>Add provider<\/button>.*<ul class="warnings"/);
+  });
+
+  test("offers no Add provider under skill warnings alone", () => {
+    const state = stateWith(true, {
+      skillWarnings: [{ path: "~/.agents/skills", problem: { kind: "folderUnreadable", cause: "EACCES" } }],
+    });
+    expect(renderToStaticMarkup(<App state={state} language="en" />)).not.toContain("Add provider");
   });
 
   test("shows no warning list when nothing is skipped", () => {

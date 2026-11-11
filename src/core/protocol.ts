@@ -198,6 +198,8 @@ export type WebviewMessage =
   /** Ask the user for `model`'s context size and save it to `brokeCode.contextSizes`. */
   | { type: "setContextSize"; model: string }
   | { type: "openSettings" }
+  /** "broke-code: Add provider": the guided flow in the editor's Quick Pick and input boxes. */
+  | { type: "addProvider" }
   /** The user's decision on approval request `id` (`ChatState.approval`); `reason`: optional, as typed. */
   | { type: "approve"; id: number }
   | { type: "reject"; id: number; reason?: string }
@@ -240,6 +242,7 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | undefined {
     case "newChat":
     case "chooseModel":
     case "openSettings":
+    case "addProvider":
       return { type: message.type };
     case "selectProvider":
     case "setApiKey": {

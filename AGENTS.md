@@ -21,7 +21,8 @@ command at once. Typing `/` at the start of a message lists `/new`, `/model`, an
 goes to the model as typed. Outside the chat, the command "broke-code: Generate commit message", a button in the
 Source Control title of a git repository, sends that repository's staged diff to the provider and model selected in the
 chat and writes the reply to the commit input box (ADR 0004). Each final code block of an answer has Copy and Insert at
-cursor. Read `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the decisions behind the design, starting with
+cursor. The command "broke-code: Add provider", also a button of the panel, adds a provider to the user settings and
+stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the decisions behind the design, starting with
 `docs/adr/0001-body-tool-calls.md`.
 
 ## Structure
@@ -32,7 +33,10 @@ cursor. Read `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the dec
 - `DESIGN.md`: the design rules of the chat panel, written from `src/webview/styles.css`: the token layer, the two
   fonts, spacing and radii, the high-contrast rule, the look of each state, motion, and the keyboard and focus rules.
   Read it before changing the panel's markup or styles.
-- `src/core/`: modules that import nothing from `vscode`: settings parsing, the API key shape check, the provider
+- `src/core/`: modules that import nothing from `vscode`: settings parsing (`providers.ts`; `readCandidate`, how the
+  parser reads a new entry appended to the setting, the one rule of what may be added), the "Add provider" flow
+  (`addProvider.ts`: the Ollama preset, the input boxes' validation, the key then the setting, over ports the host
+  fills), the API key shape check, the provider
   HTTP client, the CA trust and certificate error classification (`tls.ts`), the SSE reader, the typed provider
   errors and their wording (`providerError.ts`: `describeProviderError` with a translator, for the panel and the
   host's notifications), the generated commit message (`commitMessage.ts`: the request's system prompt, the diff cut to
@@ -81,7 +85,8 @@ cursor. Read `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the dec
   `node:`, since the webview loads them. Unit tests sit next to them as `*.test.ts`, because `bun test` cannot load `vscode`. `tlsFixture.ts`
   generates test certificates with `/usr/bin/openssl` at test time; no private key is committed.
   `conversationFixture.ts` is the in-memory conversation file port for tests.
-- `src/extension/`: the extension host glue (activation, webview view, API keys in `SecretStorage`, the
+- `src/extension/`: the extension host glue (activation, webview view, API keys in `SecretStorage` and their dialog
+  queue, the "Add provider" flow's Quick Pick, input boxes, and settings write in `addProvider.ts`, the
   file index's `findFiles` scan and watcher in `fileIndex.ts`, the turn limits and the command timeout from the user
   settings and the "Set context size" input box in `contextSizes.ts`, the tool runner's wiring (the ripgrep candidates
   from `vscode.env.appRoot` and `PATH`, the write tools behind `approvalApplier`, the command shell from
@@ -151,6 +156,27 @@ cursor. Read `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the dec
 - Providers (name and base URL) live in the VS Code user settings only (`application` scope). A workspace
   `settings.json` must not override them, because keys are stored by provider name and a repository could
   otherwise point that name at its own URL. Each API key lives in `SecretStorage`, never in `settings.json`.
+- One writer of `brokeCode.providers`: "broke-code: Add provider" (`broke-code.addProvider`, in the Command Palette,
+  beside "Open provider settings" in the no-provider state, and under the skipped providers while a valid provider
+  exists; without one, the empty state's button is the only one, maintainer decision). A Quick Pick offers
+  "Ollama on this machine" (`ollama`, `http://localhost:11434/v1`, the empty key; never probed) and "Other
+  OpenAI-compatible service", which asks the name, the base URL, then the key in a password box, no Back. A box
+  accepts a value when `parseProviders`, given the user value plus the candidate entry, keeps it (`readCandidate`),
+  each reason with a short message of its own; the key passes the shape check and may be empty. When a valid
+  `ollama` exists, the preset writes nothing and selects it. On completion, in order: the key is stored under the
+  name (`""` for no key, so no key prompt follows), then the entry `{ name, baseUrl }`, base URL as the parser
+  normalizes it, is appended to the user value (`ConfigurationTarget.Global`); other entries, skipped ones and
+  `caFile` included, keep their order and fields, and a value that is not an array becomes the one-entry array. Key
+  first because keys are never deleted with their provider: a setting written first would send a removed provider's
+  leftover key to a new URL of the same name. A failed key write is shown and writes no setting; a failed settings
+  write is shown and deletes the key just stored. The entry is checked against the setting before the key is stored
+  and again after, and the write appends to that second read, so a providers change made meanwhile (another window,
+  a `settings.json` edit) is kept; an entry refused by then (its name taken) is shown and deletes the key, writing
+  nothing. Accepted race: a change landing between that read and the write is overwritten, since settings have no
+  compare-and-swap. Then the host applies the settings and selects the new provider,
+  except while a reply is in flight. The flow runs in the API key dialog queue, so the missing-key prompt the settings
+  write triggers runs after it and finds the key. Escape at any step writes nothing. Editing or removing a provider
+  stays in `settings.json`.
 - Requests never follow HTTP redirects; a redirect is reported as an error. Provider response bodies are read
   under size caps that cancel the download when exceeded. Responses may be compressed with gzip, deflate, or br;
   the caps count decoded bytes, and any other `Content-Encoding` is reported as an error.

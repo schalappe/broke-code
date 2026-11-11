@@ -116,13 +116,19 @@ export function App({ state, language }: { state: ChatState; language: string })
   );
 }
 
-function EmptyState() {
+/** No provider: add one in the editor's guided flow, or write the settings by hand. */
+export function EmptyState() {
   return (
     <section className="empty">
       <p>{l10n.t("No provider is configured.")}</p>
-      <button type="button" className="link" onClick={() => post({ type: "openSettings" })}>
-        {l10n.t("Open provider settings")}
-      </button>
+      <div className="actions">
+        <button type="button" onClick={() => post({ type: "addProvider" })}>
+          {l10n.t("Add provider")}
+        </button>
+        <button type="button" className="link" onClick={() => post({ type: "openSettings" })}>
+          {l10n.t("Open provider settings")}
+        </button>
+      </div>
     </section>
   );
 }
@@ -219,18 +225,30 @@ function Pickers({ state }: { state: ChatState }) {
   );
 }
 
-/** Skipped providers, from the settings, then skipped skills, from the last send. */
-function Warnings({ state }: { state: ChatState }) {
+/**
+ * Skipped providers, from the settings, then skipped skills, from the last send. Under skipped providers, Add provider,
+ * unless the empty state above already offers it.
+ */
+export function Warnings({ state }: { state: ChatState }) {
   if (state.skipped.length === 0 && state.skillWarnings.length === 0) return null;
   return (
-    <ul className="warnings" role="status">
-      {state.skipped.map((skipped) => (
-        <li key={`provider-${skipped.position}`}>{describeSkippedProvider(skipped)}</li>
-      ))}
-      {state.skillWarnings.map((warning) => (
-        <li key={`skill-${warning.path}`}>{describeSkillWarning(warning)}</li>
-      ))}
-    </ul>
+    <>
+      <ul className="warnings" role="status">
+        {state.skipped.map((skipped) => (
+          <li key={`provider-${skipped.position}`}>{describeSkippedProvider(skipped)}</li>
+        ))}
+        {state.skillWarnings.map((warning) => (
+          <li key={`skill-${warning.path}`}>{describeSkillWarning(warning)}</li>
+        ))}
+      </ul>
+      {state.skipped.length > 0 && state.providers.length > 0 && (
+        <div className="actions">
+          <button type="button" className="secondary" onClick={() => post({ type: "addProvider" })}>
+            {l10n.t("Add provider")}
+          </button>
+        </div>
+      )}
+    </>
   );
 }
 

@@ -384,6 +384,11 @@ button:focus-visible {
   margin: 0;
 }
 
+/* Add provider and the settings link share one line, centered on each other. */
+.empty .actions {
+  align-items: center;
+}
+
 /* ---------- History ---------- */
 
 /* Fills the conversation's place while open. The rows scroll under the filter field, which stays in place. */
