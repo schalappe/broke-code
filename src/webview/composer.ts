@@ -5,6 +5,7 @@
  * runs.
  */
 import { MAX_QUERY_LENGTH } from "../core/protocol";
+import { type MentionKind, pickedPath, RESERVED_MENTIONS, reservedMention } from "../core/reservedMentions";
 import {
   BUILT_IN_COMMANDS,
   type BuiltInCommand,
@@ -49,18 +50,39 @@ export function openMenuToken(
   return same ? undefined : token;
 }
 
+/** A row of the `@` menu: a reserved mention, its kind being its name, or a workspace entry of the file index. */
+export type MentionRow = { path: string; kind: MentionKind };
+
 /** What the menu shows. */
-export type MenuView = { items: Suggestion[]; capped: boolean; failed: boolean };
+export type MenuView = { items: MentionRow[]; capped: boolean; failed: boolean };
 
 /**
- * Menu for `query` from the latest `answer`. While the answer to `query` is pending, only the earlier rows that
- * match `query` show, so a row picked always matches what is typed; with none, no menu until the answer comes.
+ * Menu for `query`: the reserved mentions whose name starts with `query`, ignoring case, as the `/` menu filters, then
+ * the rows of the latest `answer`, 20 rows in all. The reserved rows need no answer, so they show before the files do
+ * and when they cannot be listed. While the answer to `query` is pending, only the earlier rows that match `query`
+ * show, so a row picked always matches what is typed; with no row at all, no menu until the answer comes.
  */
 export function menuView(answer: MenuAnswer | undefined, query: string): MenuView | undefined {
-  if (!answer) return undefined;
-  if (answer.query === query) return { items: answer.items, capped: answer.capped, failed: answer.failed };
-  const items = filterSuggestions(answer.items, query, MAX_SUGGESTIONS);
-  return items.length > 0 ? { items, capped: answer.capped, failed: false } : undefined;
+  const prefix = query.toLowerCase();
+  const reserved = RESERVED_MENTIONS.filter((name) => name.startsWith(prefix)).map((name) => ({
+    path: name,
+    kind: name,
+  }));
+  const rows = (files: Suggestion[]) => [...reserved, ...files].slice(0, MAX_SUGGESTIONS);
+  if (answer?.query === query) return { items: rows(answer.items), capped: answer.capped, failed: answer.failed };
+  const items = rows(answer ? filterSuggestions(answer.items, query, MAX_SUGGESTIONS) : []);
+  return items.length > 0 ? { items, capped: answer?.capped ?? false, failed: false } : undefined;
+}
+
+/**
+ * What picking `row` inserts in place of the `@` token, and the path it records as picked: `@<name> ` for a reserved
+ * row, which records nothing; for a workspace entry `@<path> `, `@./<name> ` when the entry is named like a reserved
+ * mention, which `@<name>` would not reach.
+ */
+export function mentionPick(row: MentionRow): { text: string; picked?: string } {
+  if (reservedMention(row.kind)) return { text: `@${row.path} ` };
+  const path = pickedPath(row.path);
+  return { text: `@${path} `, picked: path };
 }
 
 /** Host answer to the skill query of the open `/` menu. `failed`: the skills could not be listed. */

@@ -28,6 +28,7 @@ import { type ConversationRecord, newConversationId, serializeSummary } from "./
 import { type MemoryFiles, memoryFiles } from "./conversationFixture";
 import { ConversationStore } from "./conversationStore";
 import { parseLimits } from "./limits";
+import { mentionReader } from "./mentionReader";
 import type { MentionReader, ReadMention } from "./mentions";
 import { type ChatEntry, type ChatState, isReplying } from "./protocol";
 import type { Provider } from "./providers";
@@ -517,6 +518,27 @@ describe("ChatController mentions", () => {
     );
     expect(controller.snapshot.entries[0]).toMatchObject({ mentions: [{ path: "x.ts", status: "unreadable" }] });
     expect(controller.snapshot.entries[1]).toMatchObject({ status: "done", content: "Answer" });
+  });
+
+  test("reports a reserved mention whose reader throws unreadable with its own kind", async () => {
+    const failing: MentionReader = {
+      read: async () => {
+        throw new Error("gone");
+      },
+    };
+    const { controller } = await ready(mentionsProvider, failing);
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await controller.send("fix @problems");
+    } finally {
+      logged.mockRestore();
+    }
+    expect(lastRequest().messages.at(-1)?.content).toBe(
+      "fix @problems\n\n@problems (problems, unreadable)\nNot attached: the problems could not be read (Error: gone).",
+    );
+    expect(controller.snapshot.entries[0]).toMatchObject({
+      mentions: [{ path: "problems", kind: "problems", status: "unreadable" }],
+    });
   });
 
   /** Reader whose reads wait for `release`, each then reporting its path missing. */
@@ -2898,6 +2920,41 @@ describe("ChatController agent turn", () => {
         `${header("grilling", root)}\n\nGrill: @a.ts\n\n\n@a.ts (file, 1 line)\n\`\`\`\nx\n\`\`\``,
       );
       expect(state().entries[0]).toMatchObject({ mentions: [{ path: "a.ts", status: "attached" }] });
+    });
+
+    test("@problems in the arguments is read from the diagnostics, and its block follows the skill text", async () => {
+      const root = personalSkill("grilling", "Grill: $ARGUMENTS\n");
+      const reader = mentionReader({
+        roots: () => [{ name: "ws", path: workspaceDir }],
+        diagnostics: {
+          read: async () => [
+            {
+              scheme: "file",
+              path: join(workspaceDir, "a.ts"),
+              line: 1,
+              character: 2,
+              severity: "error",
+              message: "Bad.",
+            },
+          ],
+        },
+      });
+      const { controller, state, sent } = await scripted(
+        [{ content: "Ok." }],
+        undefined,
+        undefined,
+        undefined,
+        discovery,
+        undefined,
+        reader,
+      );
+      await controller.send("/grilling @problems");
+      expect(firstUserMessage(sent)!.content).toBe(
+        `${header("grilling", root)}\n\nGrill: @problems\n\n\n@problems (problems, 1 problem)\n\`\`\`\na.ts:2:3 error Bad.\n\`\`\``,
+      );
+      expect(state().entries[0]).toMatchObject({
+        mentions: [{ path: "problems", kind: "problems", status: "attached", lines: 1 }],
+      });
     });
 
     test("after /grilling x, its folder outside the workspace is readable in the same turn and once reopened", async () => {

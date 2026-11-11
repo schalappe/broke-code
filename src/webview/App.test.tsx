@@ -4,7 +4,7 @@ import { act, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ChatEntry, ChatState } from "../core/protocol";
 import type { ProviderError } from "../core/providerError";
-import type { Suggestion } from "../core/suggestions";
+import type { MentionRow } from "./composer";
 
 // [&]: `vscodeApi` calls the webview global on import -> stub it before App loads.
 /** Messages the panel posted to the host. */
@@ -737,6 +737,29 @@ describe("mentions", () => {
     expect(html.match(/<li class="chip/g)).toHaveLength(9);
   });
 
+  test("shows a @problems chip with its kind and count, and a neutral one when there was nothing to attach", () => {
+    const html = renderMentions([
+      { path: "problems", kind: "problems", status: "attached", lines: 2 },
+      { path: "problems", kind: "problems", status: "attached", lines: 1 },
+      { path: "problems", kind: "problems", status: "truncated", lines: 2000 },
+      { path: "problems", kind: "problems", status: "noProblems" },
+      { path: "problems", kind: "problems", status: "unreadable" },
+      { path: "gone.txt", kind: "file", status: "missing" },
+    ]);
+    const chip = (state: string, kind: string, path: string, status: string) =>
+      `<li class="${state}"><span class="kind ${kind}" aria-hidden="true"></span><span class="chip-path">@${path}</span><span class="chip-status">${status}</span></li>`;
+    for (const expected of [
+      chip("chip", "problems", "problems", "2 problems"),
+      chip("chip", "problems", "problems", "1 problem"),
+      chip("chip", "problems", "problems", "truncated to 2000 problems"),
+      chip("chip neutral", "problems", "problems", "no errors or warnings"),
+      chip("chip failed", "problems", "problems", "could not be read"),
+      chip("chip failed", "file", "gone.txt", "not found"),
+    ]) {
+      expect(html).toContain(expected);
+    }
+  });
+
   test("shows the skill a message loaded before its mentions, a failed load marked", () => {
     const mention = { path: "a.ts", kind: "file", status: "attached", lines: 1 } as const;
     const loaded = renderMentions([mention], { name: "grilling", status: "loaded" });
@@ -750,7 +773,7 @@ describe("mentions", () => {
 });
 
 describe("mention menu", () => {
-  const menu = (items: Suggestion[], capped = false, highlighted = 0, failed = false) =>
+  const menu = (items: MentionRow[], capped = false, highlighted = 0, failed = false) =>
     renderToStaticMarkup(
       <MentionMenu items={items} capped={capped} failed={failed} highlighted={highlighted} onPick={() => {}} />,
     );
@@ -785,6 +808,19 @@ describe("mention menu", () => {
     expect(html).toContain('<p class="menu-notice">Could not list the workspace files</p>');
     expect(html).not.toContain("No match");
     expect(html).not.toContain('role="option"');
+  });
+
+  test("shows the @problems row with its marker and description", () => {
+    const html = menu([
+      { path: "problems", kind: "problems" },
+      { path: "problems", kind: "file" },
+    ]);
+    expect(html).toContain(
+      '<div id="mention-menu-option-0" role="option" tabindex="-1" aria-selected="true" class="highlighted"><span class="kind problems" aria-hidden="true"></span><span class="menu-label">@problems</span><span class="menu-description">Errors and warnings of the workspace files</span></div>',
+    );
+    expect(html).toContain(
+      '<span class="kind file" aria-hidden="true"></span><span class="menu-label">@problems</span></div>',
+    );
   });
 
   test("ends with the index limit when the index is capped", () => {
@@ -1516,6 +1552,51 @@ describe("composer menus", () => {
       expect(textarea.value).toBe("see @src/a b.ts ");
       await press("Enter");
       expect(posted.at(-1)).toEqual({ type: "send", text: "see @src/a b.ts ", mentions: ["src/a b.ts"] });
+    });
+  });
+});
+
+describe("composer @problems", () => {
+  const lastFileQuery = () =>
+    (posted.filter((message) => (message as { type: string }).type === "queryFiles").at(-1) as { id: number }).id;
+
+  test("lists @problems before the files answer; picking it inserts @problems and records no path", async () => {
+    await withPanel(stateWith(true), async ({ host, textarea, type, press }) => {
+      await type("fix @pro");
+      expect(host.querySelector('[role="option"] .menu-label')?.textContent).toBe("@problems");
+      await press("Enter");
+      expect(textarea.value).toBe("fix @problems ");
+      await press("Enter");
+      expect(posted.at(-1)).toEqual({ type: "send", text: "fix @problems ", mentions: [] });
+    });
+  });
+
+  test("keeps @problems when the files cannot be listed, saying so", async () => {
+    await withPanel(stateWith(true), async ({ host, type, receive }) => {
+      await type("@");
+      await receive({ type: "fileSuggestions", id: lastFileQuery(), items: [], capped: false, failed: true });
+      expect([...host.querySelectorAll('[role="option"] .menu-label')].map((row) => row.textContent)).toEqual([
+        "@problems",
+      ]);
+      expect(host.querySelector(".menu-notice")?.textContent).toBe("Could not list the workspace files");
+    });
+  });
+
+  test("picking a file named problems inserts @./problems and sends that path", async () => {
+    await withPanel(stateWith(true), async ({ textarea, type, press, receive }) => {
+      await type("see @problems");
+      await receive({
+        type: "fileSuggestions",
+        id: lastFileQuery(),
+        items: [{ path: "problems", kind: "file" }],
+        capped: false,
+        failed: false,
+      });
+      await press("ArrowDown");
+      await press("Enter");
+      expect(textarea.value).toBe("see @./problems ");
+      await press("Enter");
+      expect(posted.at(-1)).toEqual({ type: "send", text: "see @./problems ", mentions: ["./problems"] });
     });
   });
 });

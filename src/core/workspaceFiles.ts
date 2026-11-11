@@ -161,6 +161,22 @@ export function truncateLines(text: string, max: number): { text: string; lines:
   return { text: parts.slice(0, 2 * max - 1).join(""), lines: max, omitted: lines - max };
 }
 
+/** The first `max` UTF-8 bytes of `pieces` joined, cut between characters. */
+export function bytePrefix(pieces: Iterable<string>, max: number): string {
+  const buffer = new Uint8Array(max);
+  const encoder = new TextEncoder();
+  const kept: string[] = [];
+  let used = 0;
+  for (const piece of pieces) {
+    // [>]: `encodeInto` writes whole characters only, so `read` ends between two of them.
+    const { read, written } = encoder.encodeInto(piece, buffer.subarray(used));
+    kept.push(piece.slice(0, read));
+    used += written;
+    if (read < piece.length) break;
+  }
+  return kept.join("");
+}
+
 /**
  * A path that passed the boundary check: its real path, the real roots it must stay in (every workspace folder's, or
  * the one read-only root it is written in), and the first of them that holds it.

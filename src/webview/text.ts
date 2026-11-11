@@ -13,6 +13,7 @@ import {
   type ProviderError,
 } from "../core/providerError";
 import type { SkippedProvider } from "../core/providers";
+import type { MentionKind } from "../core/reservedMentions";
 import type { FoldCounts } from "./turns";
 
 export type { ErrorText };
@@ -88,13 +89,11 @@ export function describeSkillWarning({ path, problem }: SkillWarning): string {
 /** Short status of a mention: what was attached, or why nothing was. */
 export function describeMention(mention: MentionResult): string {
   const count = mention.lines ?? 0;
-  const file = mention.kind === "file";
   switch (mention.status) {
     case "attached":
-      if (file) return count === 1 ? l10n.t("1 line") : l10n.t("{0} lines", count);
-      return count === 1 ? l10n.t("1 entry") : l10n.t("{0} entries", count);
+      return describeCount(mention.kind, count);
     case "truncated":
-      return file ? l10n.t("truncated to {0} lines", count) : l10n.t("truncated to {0} entries", count);
+      return describeTruncated(mention.kind, count);
     case "missing":
       return l10n.t("not found");
     case "outsideWorkspace":
@@ -105,6 +104,31 @@ export function describeMention(mention: MentionResult): string {
       return l10n.t("over 1 MiB, not attached");
     case "unreadable":
       return l10n.t("could not be read");
+    case "noProblems":
+      return l10n.t("no errors or warnings");
+  }
+}
+
+/** What a mention of `kind` attached, `count` in the unit of its kind. */
+function describeCount(kind: MentionKind, count: number): string {
+  switch (kind) {
+    case "file":
+      return count === 1 ? l10n.t("1 line") : l10n.t("{0} lines", count);
+    case "folder":
+      return count === 1 ? l10n.t("1 entry") : l10n.t("{0} entries", count);
+    case "problems":
+      return count === 1 ? l10n.t("1 problem") : l10n.t("{0} problems", count);
+  }
+}
+
+function describeTruncated(kind: MentionKind, count: number): string {
+  switch (kind) {
+    case "file":
+      return l10n.t("truncated to {0} lines", count);
+    case "folder":
+      return l10n.t("truncated to {0} entries", count);
+    case "problems":
+      return l10n.t("truncated to {0} problems", count);
   }
 }
 

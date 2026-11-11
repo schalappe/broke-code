@@ -5,6 +5,7 @@ import {
   builtInCommand,
   composerKeyAction,
   type MenuAnswer,
+  mentionPick,
   menuToken,
   menuView,
   openMenuToken,
@@ -50,6 +51,43 @@ describe("menuView", () => {
       capped: true,
       failed: false,
     });
+  });
+});
+
+describe("menuView reserved rows", () => {
+  const problems = { path: "problems", kind: "problems" } as const;
+  const files = Array.from({ length: 20 }, (_, index) => file(`f${index}.ts`));
+
+  test("lists @problems first, then the files, 20 rows at most", () => {
+    const view = menuView({ query: "", items: files, capped: false, failed: false }, "");
+    expect(view?.items).toEqual([problems, ...files.slice(0, 19)]);
+  });
+
+  test("keeps @problems when its name starts with the query, ignoring case, and drops it otherwise", () => {
+    const answer: MenuAnswer = { query: "pro", items: [file("src/pro.ts")], capped: false, failed: false };
+    expect(menuView(answer, "pro")?.items).toEqual([problems, file("src/pro.ts")]);
+    expect(menuView({ ...answer, query: "PRO" }, "PRO")?.items).toEqual([problems, file("src/pro.ts")]);
+    expect(menuView({ ...answer, query: "e" }, "e")?.items).toEqual([file("src/pro.ts")]);
+  });
+
+  test("shows @problems before the files answer, and with a failed answer", () => {
+    expect(menuView(undefined, "")).toEqual({ items: [problems], capped: false, failed: false });
+    expect(menuView(undefined, "prob")).toEqual({ items: [problems], capped: false, failed: false });
+    expect(menuView(undefined, "x")).toBeUndefined();
+    const failed: MenuAnswer = { query: "p", items: [], capped: false, failed: true };
+    expect(menuView(failed, "p")).toEqual({ items: [problems], capped: false, failed: true });
+  });
+});
+
+describe("mentionPick", () => {
+  test("inserts a workspace entry named like a reserved mention as ./<name>, and records that path", () => {
+    expect(mentionPick(file("problems"))).toEqual({ text: "@./problems ", picked: "./problems" });
+    expect(mentionPick({ path: "problems/", kind: "folder" })).toEqual({ text: "@problems/ ", picked: "problems/" });
+    expect(mentionPick(file("src/a.ts"))).toEqual({ text: "@src/a.ts ", picked: "src/a.ts" });
+  });
+
+  test("inserts a reserved row as @<name>, recording no path", () => {
+    expect(mentionPick({ path: "problems", kind: "problems" })).toEqual({ text: "@problems " });
   });
 });
 

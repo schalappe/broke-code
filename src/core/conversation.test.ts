@@ -65,6 +65,26 @@ describe("conversation record", () => {
     expect(parseConversation(serializeConversation(turn))).toEqual({ ok: true, record: turn });
   });
 
+  test("reads back @problems mentions: attached with their count, and noProblems", () => {
+    const withProblems = record({
+      entries: [
+        {
+          role: "user",
+          content: "fix @problems",
+          mentions: [{ path: "problems", kind: "problems", status: "attached", lines: 2 }],
+          modelText: "fix @problems",
+        },
+        {
+          role: "user",
+          content: "again @problems",
+          mentions: [{ path: "problems", kind: "problems", status: "noProblems" }],
+          modelText: "again @problems",
+        },
+      ],
+    });
+    expect(parseConversation(serializeConversation(withProblems))).toEqual({ ok: true, record: withProblems });
+  });
+
   test("reads back how each write step was approved: accepted, rejected, or auto", () => {
     const step = { role: "tool", name: "write_file", args: { path: "a.ts", content: "x" }, text: "t" } as const;
     const turn = record({

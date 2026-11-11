@@ -4,7 +4,7 @@
  * history row saved beside the record, so a valid summary spares the list parsing the record. Files read from disk are
  * untrusted: `parseConversation` and `parseSummary` check every field and keep only known ones.
  */
-import type { MentionResult } from "./mentions";
+import type { MentionResult, MentionStatus } from "./mentions";
 import type {
   ChatEntry,
   HaltReason,
@@ -15,6 +15,7 @@ import type {
   UserSkill,
 } from "./protocol";
 import type { ProviderError } from "./providerError";
+import { type MentionKind, NOTHING_TO_ATTACH, RESERVED_MENTIONS } from "./reservedMentions";
 
 /**
  * A user entry as saved: `modelText` is the text the model received, typed text (or the text of the skill it loads)
@@ -27,7 +28,8 @@ export type StoredEntry = StoredUserEntry | Exclude<ChatEntry, { role: "user" }>
  * The record version this build writes and reads. Version 2 added tool steps, a reply's `call`, and halted replies.
  * Version 1 files are skipped like any other version: no release ever wrote them, so none is migrated. An optional
  * field added to an entry, such as a user entry's `skill`, keeps the version: an older build drops the unknown key and
- * reads the rest.
+ * reads the rest. A new value of an existing field, such as the `problems` mention kind, keeps it too, at a cost: an
+ * older build skips such a record as invalid and keeps it on disk.
  */
 export const CONVERSATION_VERSION = 2;
 
@@ -164,9 +166,9 @@ const REPLY_STATUSES: readonly ReplyStatus[] = ["waiting", "streaming", "done", 
 const HALT_REASONS: readonly HaltReason[] = ["malformedCalls", "stepLimit", "contextFull"];
 const TOOL_STEP_STATUSES: readonly ToolStepStatus[] = ["ok", "error", "malformed"];
 const STEP_APPROVALS: readonly StepApproval[] = ["accepted", "rejected", "auto"];
-const MENTION_KINDS: readonly string[] = ["file", "folder"];
+const MENTION_KINDS: readonly MentionKind[] = ["file", "folder", ...RESERVED_MENTIONS];
 const USER_SKILL_STATUSES: readonly string[] = ["loaded", "failed"];
-const MENTION_STATUSES: readonly string[] = [
+const MENTION_STATUSES: readonly MentionStatus[] = [
   "attached",
   "truncated",
   "missing",
@@ -174,6 +176,7 @@ const MENTION_STATUSES: readonly string[] = [
   "binary",
   "tooLarge",
   "unreadable",
+  ...NOTHING_TO_ATTACH,
 ];
 
 function parseEntry(raw: unknown): StoredEntry | undefined {
@@ -253,7 +256,8 @@ function parseUserSkill(raw: unknown): UserSkill | undefined {
 
 function parseMention(raw: unknown): MentionResult | undefined {
   if (!isObject(raw) || !isString(raw.path)) return undefined;
-  if (!MENTION_KINDS.includes(raw.kind as string) || !MENTION_STATUSES.includes(raw.status as string)) return undefined;
+  if (!MENTION_KINDS.includes(raw.kind as MentionKind) || !MENTION_STATUSES.includes(raw.status as MentionStatus))
+    return undefined;
   if (!isOptional(raw.lines, (lines) => Number.isSafeInteger(lines) && (lines as number) >= 0)) return undefined;
   const { path, kind, status, lines } = raw as MentionResult;
   return { path, kind, status, ...(lines !== undefined ? { lines } : {}) };

@@ -35,6 +35,7 @@ import {
   type StorageProblem,
 } from "./protocol";
 import type { ParsedProviders, Provider } from "./providers";
+import { reservedMention } from "./reservedMentions";
 import { SerialQueue } from "./serialQueue";
 import { findSlashSkill, loadSkillText, type SkillDiscovery } from "./skills";
 import {
@@ -920,7 +921,7 @@ export class ChatController {
       findMentions(text, picked).map((path) =>
         this.mentions.read(path).catch((error: unknown): ReadMention => {
           console.error("broke-code: could not read mention", path, error);
-          const kind = path.endsWith("/") ? "folder" : "file";
+          const kind = reservedMention(path) ?? (path.endsWith("/") ? "folder" : "file");
           return { path, kind, status: "unreadable", content: "", omitted: 0, cause: String(error) };
         }),
       ),
