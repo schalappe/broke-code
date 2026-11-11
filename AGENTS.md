@@ -72,7 +72,8 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   `initialized` with an injectable timeout, the structural typing of the members used, and `gitDiffReader`, the
   `@diff` port, with the repository-relative literal pathspec and git's `stderr` as the cause), `@selection` (`selection.ts`: the raw `EditorSelection` the
   host's `SelectionReader` returns, `editorSelection`, that record from a structural text editor, and `readSelection`, the workspace check, the line range, and the caps), the quick fix "Fix with broke-code" (`quickFix.ts`: `fixDraft`, the
-  diagnostics it is offered on and the draft it fills, and `parseDiagnostic`, the check of its command's argument), where a
+  diagnostics it is offered on and the draft it fills, and `parseDiagnostic`, the check of its command's argument), the editor drafts on their way to the webview
+  (`draftQueue.ts`: `DraftQueue`, queued once the chat shows, delivered in order and once, kept when a post fails), where a
   message holds Markdown code
   (`markdownCode.ts`; also `remarkFenceClosed`, the remark plugin marking a fenced block whose closing fence the parser read,
   `hasTextAfter`, whether rendered text follows a block, and `codeBlockText`,
@@ -121,8 +122,8 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   `brokeCode.autoApproveWrites` values it feeds the core decisions, and `writeAutoApproveWrites`, the user value the
   mode selector writes), the instruction reader and the skill reader from the home folder and the workspace folders, the latter logging the
   skills of each send, and the same discovery, unlogged, for the `/` menu's `querySkills`; `chatView.ts` opens the
-  Quick Pick of `chooseModel`, runs `insertCode` over the active text editor, shows a failed mode write, and holds an
-  editor draft until the webview is ready (`insertDraft`); `extension.ts` registers `broke-code.addSelectionToChat`,
+  Quick Pick of `chooseModel`, runs `insertCode` over the active text editor, shows a failed mode write, and wires the
+  `DraftQueue` to the view's focus command and `postMessage` (`insertDraft`); `extension.ts` registers `broke-code.addSelectionToChat`,
   `broke-code.fixDiagnostic`, and the code action provider of the quick fix; `commitMessage.ts` registers `broke-code.generateCommitMessage`, its git port over the
   built-in Git extension's API, the repository Quick Pick, the replace question, the progress notification, and the
   notifications).
@@ -585,11 +586,15 @@ on an error or warning puts a request to fix it there, with its file as a mentio
 - Two editor entry points fill the message box and never send (Send's rules stay in one place): the command
   `broke-code.addSelectionToChat` ("broke-code: Add selection to chat", Command Palette, and `editor/context` when
   `editorHasSelection`) and the quick fix "Fix with broke-code". Both go through `ChatView.insertDraft`, which runs the
-  view's `brokeCode.chat.focus` command (resolving the view on a first show) and posts `insertDraft { text, mode,
-  picked }` (`DraftInsert`), once, when the webview is ready and visible: a draft sent before the first open, or while
-  the view is hidden, waits for the webview's next `ready` and follows its `init`; hiding the view resets `ready`, since
-  a hidden webview drops what it is posted. Without a valid provider there is no message box: the panel shows, a
-  warning notification says to add a provider first, and the draft is dropped, never held. `chatStateOf` leaves
+  view's `brokeCode.chat.focus` command (resolving the view on a first show), then posts `insertDraft { text, mode,
+  picked }` (`DraftInsert`) through the `DraftQueue` (`draftQueue.ts`). A draft is queued only once the show succeeded:
+  a show that fails queues nothing and is shown as an error, so a retry delivers it once. Queued drafts are posted in
+  order while the webview is ready and visible: a draft sent before the first open, or while the view is hidden, waits
+  for the webview's next `ready` and follows its `init`; hiding the view resets `ready`, since a hidden webview drops
+  what it is posted. A post that resolves `false` or rejects is logged and keeps that draft first in the queue, those
+  behind it after it, for the next `ready`; one delivery runs at a time, so no draft is posted twice. Without a valid
+  provider there is no message box: the panel shows, a warning notification says to add a provider first, and the
+  draft is dropped, never held. `chatStateOf` leaves
   `insertDraft` out. The webview receives it in `Root`, not the composer, since it can arrive right behind `init`, before
   the composer exists; the composer applies each queued draft in order with `applyDraft` (also while a reply is in
   flight), History closes, and the message box takes the focus (the second focus move DESIGN.md allows); a draft that
