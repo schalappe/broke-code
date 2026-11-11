@@ -1992,6 +1992,35 @@ describe("drafts from the editor", () => {
     });
   });
 
+  // [>]: Live in VSCodium, the workbench can focus the webview right after the draft focused the box: the frame blurs,
+  // then its window regains focus with nothing focused inside it (#68).
+  const workbenchRefocus = () =>
+    act(async () => {
+      (document.activeElement as HTMLElement | null)?.blur();
+      window.dispatchEvent(new Event("focus"));
+    });
+
+  test("a draft's box takes the focus back when the panel regains it with nothing focused", async () => {
+    await withPanel(stateWith(true), async ({ textarea, receive }) => {
+      await receive(selection);
+      await workbenchRefocus();
+      expect(document.activeElement).toBe(textarea);
+    });
+  });
+
+  test("without a draft, or once the user acts in the panel, regaining the focus moves none", async () => {
+    await withPanel(stateWith(true), async ({ textarea, receive }) => {
+      await workbenchRefocus();
+      expect(document.activeElement).not.toBe(textarea);
+      await receive(selection);
+      await act(async () => {
+        window.dispatchEvent(new Event("pointerdown"));
+      });
+      await workbenchRefocus();
+      expect(document.activeElement).not.toBe(textarea);
+    });
+  });
+
   test("a draft posted right behind init is applied once", async () => {
     await withPanel(
       stateWith(true),

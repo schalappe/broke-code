@@ -597,7 +597,9 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   draft is dropped, never held. `chatStateOf` leaves
   `insertDraft` out. The webview receives it in `Root`, not the composer, since it can arrive right behind `init`, before
   the composer exists; the composer applies each queued draft in order with `applyDraft` (also while a reply is in
-  flight), History closes, and the message box takes the focus (the second focus move DESIGN.md allows); a draft that
+  flight), History closes, and the message box takes the focus (the second focus move DESIGN.md allows), and takes it back when the panel's
+  window regains the focus with nothing focused, until the user clicks or presses a key in the panel (the view's focus
+  command settles before the workbench has focused the webview, which can blur the box right after the draft); a draft that
   arrives while the panel has no message box is dropped. `mode: caret` inserts at the box's caret, with a space before
   it unless the text before is empty or ends with whitespace, and one after it unless whitespace follows, which the caret
   then passes, so it follows whitespace and no menu opens; `fillOrAppend` fills a box empty or holding only whitespace,

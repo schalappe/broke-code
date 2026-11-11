@@ -1035,6 +1035,8 @@ function Composer({
   /** Latest skill query; an answer counts only for it, while its menu stays open. */
   const latestSkills = useRef(0);
   const nextCaret = useRef<number>(undefined);
+  /** A draft focused the box and the user has not acted in the panel since. */
+  const draftFocus = useRef(false);
   const replying = isReplying(state);
   const ready = state.model !== undefined;
   const input = useRef<HTMLTextAreaElement>(null);
@@ -1114,7 +1116,30 @@ function Composer({
     nextCaret.current = next.caret;
     takeDrafts(drafts.length);
     input.current?.focus();
+    draftFocus.current = true;
   }, [drafts]);
+
+  // [!]: The view's focus command settles before the workbench has focused the webview, so a draft can land first:
+  // the workbench's focus then blurs the box and gives the panel back its focus with nothing focused inside (#68,
+  // seen live). Until the user acts in the panel, the box takes that focus back.
+  useEffect(() => {
+    const refocus = () => {
+      if (draftFocus.current && (document.activeElement === null || document.activeElement === document.body)) {
+        input.current?.focus();
+      }
+    };
+    const release = () => {
+      draftFocus.current = false;
+    };
+    window.addEventListener("focus", refocus);
+    window.addEventListener("pointerdown", release, true);
+    window.addEventListener("keydown", release, true);
+    return () => {
+      window.removeEventListener("focus", refocus);
+      window.removeEventListener("pointerdown", release, true);
+      window.removeEventListener("keydown", release, true);
+    };
+  }, []);
 
   useLayoutEffect(() => {
     if (nextCaret.current === undefined) return;

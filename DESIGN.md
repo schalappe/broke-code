@@ -300,7 +300,9 @@ opacity over `--bc-fast`. Under `prefers-reduced-motion: reduce`, and when VS Co
   History moves the focus into its filter field, since the user asked for History and no approval control sits
   there. Escape in an empty filter field closes History and gives the focus back to the History button. And a draft
   from the editor ("Add selection to chat", the quick fix "Fix with broke-code") closes History and moves the focus
-  into the message box, since the user asked for it from the editor and the message box sends nothing on its own.
+  into the message box, since the user asked for it from the editor and the message box sends nothing on its own. The
+  workbench may focus the panel just after the draft did, leaving nothing focused inside it; until the user clicks or
+  presses a key in the panel, the message box takes that focus back.
 - From the message box, Shift+Tab reaches Reject, then Accept or Run, then the reason field: the reason field comes
   first in the DOM, then Accept or Run, then Reject, and nothing focusable may be added between them and the message
   box. The mode selector therefore comes after the message box: Tab from the message box reaches it, then Send or
