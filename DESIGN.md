@@ -213,9 +213,9 @@ selector, and Send or Stop share one large rounded field (radius 10px): the text
 selector at the left and the button at the right. The field's border takes the focus color while the text area has
 focus.
 
-The mode selector is a native select one size down (`--bc-fs-sm`), "Ask" or "Auto-edit", its tooltip saying what the
-mode does. It shows the mode the setting holds: a pick shows only once the host has written it, and a failed write
-leaves it as it was, with the error in a notification. Disabled (half opacity) while a reply is in flight, like the
+The mode selector is a native select one size down (`--bc-fs-sm`), "Ask", "Auto-edit", or "Plan", its tooltip saying
+what the mode does. It shows the mode the host holds (Plan from the workspace, the others from the setting): a pick
+shows only once the host has applied it, and a failed write leaves it as it was, with the error in a notification. Disabled (half opacity) while a reply is in flight, like the
 pickers.
 
 ### The conversation

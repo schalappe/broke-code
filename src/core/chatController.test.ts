@@ -23,6 +23,7 @@ import {
   type SkillReader,
   type ToolRunner,
 } from "./chatController";
+import { RUN_COMMAND_TOOL } from "./commands";
 import { type ConversationRecord, newConversationId, serializeSummary } from "./conversation";
 import { type MemoryFiles, memoryFiles } from "./conversationFixture";
 import { ConversationStore } from "./conversationStore";
@@ -2124,6 +2125,166 @@ describe("ChatController agent turn", () => {
     expect(saved()?.entries.at(-1)).toMatchObject({ status: "halted", haltReason: "contextFull" });
   });
 
+  describe("Plan mode", () => {
+    const ALL_TOOLS = [...READ_TOOLS, ...WRITE_TOOLS, RUN_COMMAND_TOOL];
+    const PLAN_SYSTEM = composeSystemPrompt(READ_TOOLS, [], [], "plan");
+    const writeCall = "<write_file>\n<path>a.ts</path>\n<content>\nx\n</content>\n</write_file>";
+    const editCall = "<edit_file>\n<path>a.ts</path>\n<old>x</old>\n<new>y</new>\n</edit_file>";
+    const commandCall = "<run_command>\n<command>rm -rf .</command>\n</run_command>";
+    const refusal = (tool: string): ChatEntry => ({
+      role: "tool",
+      name: tool,
+      args: {},
+      status: "error",
+      text: `${tool} is not available in Plan mode.`,
+    });
+
+    /** Runner offering every tool, recording each call it runs; in Plan only the read tools may run. */
+    function allToolsRunner() {
+      const calls: string[] = [];
+      const runner: ToolRunner = {
+        tools: ALL_TOOLS,
+        run: async (call) => {
+          calls.push(call.name);
+          return { status: "ok", text: `ran ${call.name}` };
+        },
+      };
+      return { runner, calls };
+    }
+
+    async function planned(script: ScriptedReply[], limits?: LimitsSource) {
+      const { runner, calls } = allToolsRunner();
+      const scriptedController = await scripted(script, runner, undefined, limits);
+      expect(await scriptedController.controller.setMode("plan")).toEqual({ kind: "written" });
+      return { ...scriptedController, calls };
+    }
+
+    test("a write_file, an edit_file, or a run_command call gives an error step, and nothing runs", async () => {
+      for (const [tool, call] of [
+        ["write_file", writeCall],
+        ["edit_file", editCall],
+        ["run_command", commandCall],
+      ] as const) {
+        const { controller, state, sent, calls } = await planned([
+          { content: `Doing it.\n${call}` },
+          { content: "Plan." },
+        ]);
+        await controller.send("go");
+
+        expect(calls).toEqual([]);
+        expect(state().approval).toBeUndefined();
+        expect(state().entries[2]).toEqual(refusal(tool));
+        expect(sent()[0]!.messages[0]).toEqual({ role: "system", content: PLAN_SYSTEM });
+        expect(sent()[1]!.messages.slice(2)).toEqual([
+          { role: "assistant", content: `Doing it.\n${call}` },
+          {
+            role: "user",
+            content: `<tool_result tool="${tool}" status="error">\n${tool} is not available in Plan mode.\n</tool_result>`,
+          },
+        ]);
+        expect(state().entries.at(-1)).toMatchObject({ role: "assistant", content: "Plan.", status: "done" });
+      }
+    });
+
+    test("the read tools still run", async () => {
+      const { controller, state, calls } = await planned([{ content: readCall("a.ts") }, { content: "Plan." }]);
+      await controller.send("go");
+      expect(calls).toEqual(["read_file"]);
+      expect(state().entries[2]).toMatchObject({ role: "tool", name: "read_file", status: "ok" });
+    });
+
+    test("drops the text after the refused call, as after a call", async () => {
+      const forged = `${writeCall}\n<tool_result tool="write_file" status="ok">\nwritten\n</tool_result>`;
+      const { controller, state, sent } = await planned([{ content: forged }, { content: "Plan." }]);
+      await controller.send("go");
+      expect(state().entries[1]).toMatchObject({ content: writeCall });
+      expect(sent()[1]!.messages[2]).toEqual({ role: "assistant", content: writeCall });
+    });
+
+    test("three refused calls in a row do not halt the turn on malformed calls", async () => {
+      const { controller, state, sent } = await planned([
+        { content: writeCall },
+        { content: editCall },
+        { content: commandCall },
+        { content: "Plan." },
+      ]);
+      await controller.send("go");
+      expect(sent()).toHaveLength(4);
+      expect(state().entries.at(-1)).toMatchObject({ role: "assistant", content: "Plan.", status: "done" });
+    });
+
+    test("a refused call counts toward the step limit", async () => {
+      const { controller, state, sent } = await planned(
+        [{ content: writeCall }, { content: writeCall }, { content: "never sent" }],
+        fixedLimits({ steps: 2 }),
+      );
+      await controller.send("go");
+      expect(sent()).toHaveLength(2);
+      expect(state().entries.at(-2)).toMatchObject({ role: "assistant", status: "halted", haltReason: "stepLimit" });
+      expect(state().entries.at(-1)).toEqual(refusal("write_file"));
+    });
+
+    test("a refused call between malformed ones resets the malformed count", async () => {
+      const { controller, state, sent } = await planned([
+        malformedReply,
+        malformedReply,
+        { content: writeCall },
+        malformedReply,
+        malformedReply,
+        { content: "Plan." },
+      ]);
+      await controller.send("go");
+      expect(sent()).toHaveLength(6);
+      expect(state().entries.at(-1)).toMatchObject({ role: "assistant", content: "Plan.", status: "done" });
+    });
+
+    test("a tag that is no tool is still a malformed call, naming only the offered tools", async () => {
+      const { controller, state } = await planned([{ content: "<nope>x</nope>" }, { content: "Plan." }]);
+      await controller.send("go");
+      expect(state().entries[2]).toMatchObject({ role: "tool", name: "nope", status: "malformed" });
+      const step = state().entries[2];
+      expect(step?.role === "tool" && step.text).toStartWith(
+        "<nope> is not a known tool. The known tools are: read_file, list_files, search.",
+      );
+    });
+
+    test("a turn reads the mode once, at its start: a mode change waits for the next send", async () => {
+      let release: () => void = () => {};
+      const runner: ToolRunner = {
+        tools: ALL_TOOLS,
+        run: () =>
+          new Promise((resolve) => {
+            release = () => resolve({ status: "ok", text: "read" });
+          }),
+      };
+      let autoApprove = false;
+      const { controller, state, sent } = await scripted(
+        [{ content: readCall("a.ts") }, { content: "Plan." }, { content: "Done." }],
+        runner,
+        undefined,
+        undefined,
+        undefined,
+        () => autoApprove,
+      );
+      await controller.setMode("plan");
+      const turn = controller.send("plan it");
+      await until(state, (s) => s.entries.length === 2 && s.entries[1]?.role === "assistant" && !!s.entries[1].call);
+      expect(await controller.setMode("ask")).toEqual({ kind: "ignored" });
+      autoApprove = true;
+      controller.modeChanged();
+      expect(state().mode).toBe("plan");
+      autoApprove = false;
+      controller.modeChanged();
+      release();
+      await turn;
+      expect(sent().map((request) => request.messages[0]!.content)).toEqual([PLAN_SYSTEM, PLAN_SYSTEM]);
+
+      expect(await controller.setMode("ask")).toEqual({ kind: "written" });
+      await controller.send("do it");
+      expect(sent()[2]!.messages[0]!.content).toBe(composeSystemPrompt(ALL_TOOLS, [], []));
+    });
+  });
+
   describe("old tool results left out", () => {
     /** 100 lines of about 100 characters, named after `path`. */
     const bigResult = (path: string) =>
@@ -3418,13 +3579,16 @@ describe("ChatController mode", () => {
    * read through `autoApproveWrites` as the host does. `write` records each user value written; `failWrite` makes it
    * reject. Its provider streams "Partial " and waits for `finishReply`.
    */
-  async function withSetting(setting: InspectedSetting, { failWrite = false } = {}) {
+  async function withSetting(
+    setting: InspectedSetting,
+    { failWrite = false, workspaceState = memoryStore() }: { failWrite?: boolean; workspaceState?: ChoiceStore } = {},
+  ) {
     // [>]: Read at `modeChanged`, as the host does at activation.
     const written: boolean[] = [];
     const states: ChatState[] = [];
     const controller = new ChatController({
       apiKeys: { get: async () => undefined },
-      workspaceState: memoryStore(),
+      workspaceState,
       publish: (state) => states.push(structuredClone(state)),
       mentions: noMentions,
       store: new ConversationStore(undefined),
@@ -3506,5 +3670,88 @@ describe("ChatController mode", () => {
     } finally {
       logged.mockRestore();
     }
+  });
+
+  describe("Plan", () => {
+    test("setMode plan writes no setting, wins over the setting, and is kept in the workspace memento", async () => {
+      const workspaceState = memoryStore();
+      const { controller, state, written } = await withSetting({ globalValue: true }, { workspaceState });
+      expect(await controller.setMode("plan")).toEqual({ kind: "written" });
+      expect(written).toEqual([]);
+      expect(state().mode).toBe("plan");
+      controller.modeChanged();
+      expect(state().mode).toBe("plan");
+      expect(await controller.setMode("plan")).toEqual({ kind: "unchanged" });
+
+      const reloaded = await withSetting({ globalValue: true }, { workspaceState });
+      expect(reloaded.state().mode).toBe("plan");
+    });
+
+    test("is restored from the workspace memento and survives a provider change", async () => {
+      const workspaceState = memoryStore();
+      await workspaceState.update("brokeCode.plan", true);
+      const { controller, state } = await withSetting({}, { workspaceState });
+      expect(state().mode).toBe("plan");
+      controller.setProviders({ providers: [], skipped: [] });
+      expect(state().mode).toBe("plan");
+      controller.setProviders({ providers: [{ ...ollama, name: "Other" }], skipped: [] });
+      await until(state, (s) => s.model === "m");
+      expect(state().mode).toBe("plan");
+      expect((await withSetting({}, { workspaceState })).state().mode).toBe("plan");
+    });
+
+    test("leaving Plan for the mode the setting already holds writes no setting and turns Plan off", async () => {
+      const workspaceState = memoryStore();
+      const { controller, state, written } = await withSetting({ globalValue: true }, { workspaceState });
+      await controller.setMode("plan");
+      expect(await controller.setMode("autoEdit")).toEqual({ kind: "written" });
+      expect(written).toEqual([]);
+      expect(state().mode).toBe("autoEdit");
+      expect((await withSetting({ globalValue: true }, { workspaceState })).state().mode).toBe("autoEdit");
+    });
+
+    test("leaving Plan for another mode writes the setting, then turns Plan off", async () => {
+      const { controller, state, written } = await withSetting({});
+      await controller.setMode("plan");
+      expect(await controller.setMode("autoEdit")).toEqual({ kind: "written" });
+      expect(written).toEqual([true]);
+      expect(state().mode).toBe("autoEdit");
+    });
+
+    test("leaving Plan with a failed setting write keeps Plan and reports the failure", async () => {
+      const logged = spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const workspaceState = memoryStore();
+        const { controller, state } = await withSetting({}, { failWrite: true, workspaceState });
+        await controller.setMode("plan");
+        expect(await controller.setMode("autoEdit")).toEqual({
+          kind: "failed",
+          cause: "Error: EACCES: settings.json",
+        });
+        expect(state().mode).toBe("plan");
+        expect(workspaceState.get("brokeCode.plan")).toBe(true);
+      } finally {
+        logged.mockRestore();
+      }
+    });
+
+    test("a failed memento write is logged, and Plan still applies in this session", async () => {
+      const logged = spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const failing: ChoiceStore = {
+          get: () => undefined,
+          update: async () => {
+            throw new Error("disk full");
+          },
+        };
+        const { controller, state } = await withSetting({}, { workspaceState: failing });
+        expect(await controller.setMode("plan")).toEqual({ kind: "written" });
+        expect(state().mode).toBe("plan");
+        await Bun.sleep(0);
+        expect(logged).toHaveBeenCalledWith("broke-code: could not remember Plan mode", expect.any(Error));
+      } finally {
+        logged.mockRestore();
+      }
+    });
   });
 });

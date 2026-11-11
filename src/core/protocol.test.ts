@@ -136,13 +136,14 @@ describe("parseWebviewMessage", () => {
     expect(parseWebviewMessage({ type: "insertCode", text: ["a"] })).toBeUndefined();
     expect(parseWebviewMessage({ type: "insertCode", text: "a".repeat(REPLY_MAX_LENGTH + 1) })).toBeUndefined();
   });
-  test("accepts a mode pick of Ask or Auto-edit", () => {
+  test("accepts a mode pick of Ask, Auto-edit, or Plan", () => {
     expect(parseWebviewMessage({ type: "setMode", mode: "ask" })).toEqual({ type: "setMode", mode: "ask" });
     expect(parseWebviewMessage({ type: "setMode", mode: "autoEdit" })).toEqual({ type: "setMode", mode: "autoEdit" });
+    expect(parseWebviewMessage({ type: "setMode", mode: "plan" })).toEqual({ type: "setMode", mode: "plan" });
   });
 
   test("drops a mode pick of an unknown mode", () => {
-    for (const mode of [undefined, "plan", "Ask", "auto", "", true, 1, ["ask"]]) {
+    for (const mode of [undefined, "Plan", "Ask", "auto", "", true, 1, ["ask"]]) {
       expect(parseWebviewMessage({ type: "setMode", mode })).toBeUndefined();
     }
   });

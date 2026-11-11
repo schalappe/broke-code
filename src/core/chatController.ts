@@ -37,7 +37,13 @@ import {
 import type { ParsedProviders, Provider } from "./providers";
 import { SerialQueue } from "./serialQueue";
 import { findSlashSkill, loadSkillText, type SkillDiscovery } from "./skills";
-import { composeSystemPrompt, type InstructionFile, type Skill } from "./systemPrompt";
+import {
+  composeSystemPrompt,
+  type InstructionFile,
+  offeredTools,
+  PLAN_BLOCKED_TOOLS,
+  type Skill,
+} from "./systemPrompt";
 import { forgedResultCut, type ParsedReply, parseToolCall, type ToolSpec } from "./toolCalls";
 import type { ToolCall, ToolResult } from "./tools";
 
@@ -115,8 +121,9 @@ export type ChatPorts = {
 };
 
 /**
- * What a mode pick did: `written` the setting; `unchanged`, it already held that mode; `ignored`, a reply is in
- * flight; `failed`, the write rejected with `cause`, logged, and the mode shown is still the setting's.
+ * What a mode pick did: `written`, the mode changed (the setting written, Plan turned on or off, or both);
+ * `unchanged`, it was already the mode; `ignored`, a reply is in flight; `failed`, the setting's write rejected with
+ * `cause`, logged, and the mode shown is still the one before (Plan stays on).
  */
 export type ModeChange = { kind: "written" | "unchanged" | "ignored" } | { kind: "failed"; cause: string };
 
@@ -124,6 +131,11 @@ export type ModeChange = { kind: "written" | "unchanged" | "ignored" } | { kind:
 export const MAX_MALFORMED_IN_A_ROW = 3;
 
 const LAST_CHOICE_KEY = "brokeCode.lastChoice";
+/**
+ * `true` while Plan is on in this workspace. A key of its own: the provider and model choice is rewritten whole and
+ * cleared without a provider, and Plan must survive both.
+ */
+const PLAN_KEY = "brokeCode.plan";
 /** Id of the conversation shown, reopened at the next window load. */
 const CURRENT_CONVERSATION_KEY = "brokeCode.currentConversation";
 /** Shortest time between two saves of a streaming reply. */
@@ -192,6 +204,8 @@ export class ChatController {
   private readonly now: () => number;
   /** Limits the usage display reads, refreshed at each send and by `limitsChanged`. */
   private limits: TurnLimits;
+  /** Plan is on in this workspace: restored from the workspace memento, winning over the setting while on. */
+  private plan: boolean;
   /**
    * System prompt the usage display counts, for every conversation shown: the last one a send composed, since the
    * instruction files are the workspace's, not a conversation's; before the first send, the one without them.
@@ -218,6 +232,7 @@ export class ChatController {
         throw new Error("no settings writer");
       });
     this.now = ports.now ?? Date.now;
+    this.plan = this.workspaceState.get<unknown>(PLAN_KEY) === true;
     // [>]: Instruction files and skills are read only at a send, never just to refresh the display.
     this.systemPrompt = composeSystemPrompt(offeredTools(this.tools.tools, []), [], []);
     this.conversation = this.freshConversation();
@@ -351,8 +366,8 @@ export class ChatController {
   }
 
   /**
-   * Read the auto-approve setting into `ChatState.mode`: at activation, and whenever the setting changes, here or
-   * elsewhere (the settings editor, another window).
+   * Read the mode into `ChatState.mode`: Plan while on, else the auto-approve setting. At activation, and whenever the
+   * setting changes, here or elsewhere (the settings editor, another window).
    */
   modeChanged(): void {
     this.state.mode = this.readMode();
@@ -360,29 +375,51 @@ export class ChatController {
   }
 
   /**
-   * The user picks `mode` in the message box: write the setting's user value, unless it already holds that mode or a
-   * reply is in flight. The mode shown is read back from the setting after the write, whether it succeeded or not,
-   * since the settings change event may come before the write settles. Never rejects.
+   * The user picks `mode` in the message box; ignored while a reply is in flight. Plan writes no setting: it turns
+   * Plan on in the workspace memento. Ask or Auto-edit writes the setting's user value first, only when it must
+   * change, then turns Plan off, only once that write succeeded: a failed write keeps the mode as it was. The mode
+   * shown is read back from the setting after the write, whether it succeeded or not, since the settings change event
+   * may come before the write settles. Never rejects.
    */
   async setMode(mode: Mode): Promise<ModeChange> {
     if (isReplying(this.state)) return { kind: "ignored" };
+    if (mode === "plan") {
+      const change: ModeChange = { kind: this.plan ? "unchanged" : "written" };
+      this.rememberPlan(true);
+      this.modeChanged();
+      return change;
+    }
     const on = mode === "autoEdit";
-    if (this.readAutoApprove() === on) {
-      this.modeChanged();
-      return { kind: "unchanged" };
+    const writes = this.readAutoApprove() !== on;
+    if (writes) {
+      try {
+        await this.writeAutoApproveWrites(on);
+      } catch (error) {
+        console.error("broke-code: could not write the auto-approve setting", error);
+        this.modeChanged();
+        return { kind: "failed", cause: String(error) };
+      }
     }
-    try {
-      await this.writeAutoApproveWrites(on);
-      return { kind: "written" };
-    } catch (error) {
-      console.error("broke-code: could not write the auto-approve setting", error);
-      return { kind: "failed", cause: String(error) };
-    } finally {
-      this.modeChanged();
-    }
+    const leavesPlan = this.plan;
+    this.rememberPlan(false);
+    this.modeChanged();
+    return { kind: writes || leavesPlan ? "written" : "unchanged" };
+  }
+
+  /**
+   * Turn Plan `on` or off, kept in the workspace memento. A failed memento write is logged only, as for the provider
+   * and model choice: Plan applies in this session and is lost at the next load.
+   */
+  private rememberPlan(on: boolean): void {
+    if (this.plan === on) return;
+    this.plan = on;
+    this.workspaceState.update(PLAN_KEY, on ? true : undefined).then(undefined, (error: unknown) => {
+      console.error("broke-code: could not remember Plan mode", error);
+    });
   }
 
   private readMode(): Mode {
+    if (this.plan) return "plan";
     return this.readAutoApprove() ? "autoEdit" : "ask";
   }
 
@@ -425,7 +462,8 @@ export class ChatController {
    * the reply fails, or Stop. Limits: the step limit, three malformed calls in a row, and the context budget, checked
    * before each request, the first included: the oldest tool results are left out of a request that would fill the
    * model's context (see `toHistory`), and one that fills it even so is never sent. The
-   * turn reads the settings once, when it starts. Ignored while replying or without provider and model. `picked`:
+   * turn reads the settings and Plan once, when it starts: in Plan it offers the read tools only, and a call to a tool
+   * Plan leaves out gets an `error` step saying so, counted toward the step limit like any step. Ignored while replying or without provider and model. `picked`:
    * paths chosen in the menu, mentions while their `@<path>` is still in the text. A mention that cannot be read is
    * reported to the model and in the entry; the message still goes. A message starting with `/<name>` of a discovered
    * skill sends that skill's text with the arguments instead of the text as typed (see `loadSkillText`), and the entry
@@ -439,6 +477,9 @@ export class ChatController {
     if (!provider || !model || !content || isReplying(this.state)) return;
     this.limits = this.limitsSource.read();
     const { maxToolSteps } = this.limits;
+    // [!]: Plan is read once: the turn's tools and prompt hold until it ends. The auto-approve setting is not read
+    // here: each write's request reads it (see `askApproval`).
+    const mode: Mode | undefined = this.plan ? "plan" : undefined;
     const contextSize = contextOf(this.limits, model).size;
 
     const conversation = this.conversation;
@@ -500,8 +541,8 @@ export class ChatController {
         if (!saved) return settle("stopped");
       }
 
-      const tools = offeredTools(this.tools.tools, discovery.skills);
-      const system = composeSystemPrompt(tools, instructions, discovery.skills);
+      const tools = offeredTools(this.tools.tools, discovery.skills, mode);
+      const system = composeSystemPrompt(tools, instructions, discovery.skills, mode);
       this.systemPrompt = system;
       // [>]: The display counts the instruction files and skills now, not at the first reply delta.
       this.emit();
@@ -553,6 +594,13 @@ export class ChatController {
             text: result.text,
             ...(approval ? { approval } : {}),
           };
+          malformedInARow = 0;
+        } else if (mode === "plan" && planBlocked(reply.content, parsed)) {
+          const name = malformedToolName(reply.content, parsed);
+          // [>]: An ordinary tool step, like a rejection: it counts toward the step limit and resets the malformed
+          // count. Nothing is planned and no approval opens. What follows the block is dropped, as after a call.
+          reply.content = reply.content.slice(0, parsed.end);
+          step = { role: "tool", name, args: {}, status: "error", text: `${name} is not available in Plan mode.` };
           malformedInARow = 0;
         } else {
           step = {
@@ -1062,15 +1110,6 @@ function waitingReply(): ChatEntry & { role: "assistant" } {
 }
 
 /**
- * The tools of a send: `load_skill` only while a skill is listed to the model, like the Skills section of the system
- * prompt, so a workspace without skills spends no prompt on a tool that cannot load anything.
- */
-function offeredTools(tools: readonly ToolSpec[], skills: readonly Skill[]): readonly ToolSpec[] {
-  if (skills.some((skill) => skill.listedToModel)) return tools;
-  return tools.filter((tool) => tool.name !== "load_skill");
-}
-
-/**
  * The real folders of the skills loaded in `entries`: each `ok` `load_skill` step's name and each user entry's skill
  * loaded with `/<name>`, found in `discovered` (the send's skills). A step that failed, or was stopped, and a skill
  * whose `SKILL.md` could not be read at send loaded nothing; a skill no longer discovered is no longer readable.
@@ -1093,6 +1132,14 @@ function loadedSkillRoots(entries: readonly ChatEntry[], discovered: readonly Sk
  */
 function malformedToolName(answer: string, parsed: ParsedReply & { kind: "malformed" }): string {
   return /^<([a-z][a-z0-9_]*)>/.exec(answer.slice(parsed.start))?.[1] ?? "unknown";
+}
+
+/**
+ * Whether a malformed block of a Plan turn's `answer` is a call to a tool Plan leaves out. The parser reads against the
+ * offered tools, so such a closed block is "not a known tool"; a block of a tool Plan offers never names one of these.
+ */
+function planBlocked(answer: string, parsed: ParsedReply & { kind: "malformed" }): boolean {
+  return PLAN_BLOCKED_TOOLS.includes(malformedToolName(answer, parsed));
 }
 
 /** What the chat shows and keeps of a read mention: no content. */

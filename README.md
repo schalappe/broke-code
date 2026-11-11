@@ -132,6 +132,14 @@ it, so a change made in the settings editor shows there too. It is a **user** se
 applies to every window and project. A workspace `settings.json` cannot turn it on. The selector is disabled while the
 agent works. Commands always ask, in both modes.
 
+The third mode, **Plan**, asks the agent for a plan instead of changes: it gets only the tools that read (**read_file**,
+**list_files**, **search**, and **load_skill** when a skill is listed), and answers with a plan of the changes, file by
+file, in order. Nothing is written and no command runs: if the model still tries to write or run a command, the chat
+shows a failed step saying the tool is not available in Plan mode, and the model goes on. Plan is kept for the
+workspace, also after a reload, and writes no setting. Leaving it for Ask or Auto-edit writes the setting only when it
+must change; if that write fails, the error shows and Plan stays. A message sent in Plan stays a Plan turn until it
+ends, so switching to Ask afterwards and sending "do it" lets the agent write the plan, with your approval.
+
 The agent can also run a shell command with **run_command**, which always asks you first; no setting changes that. The
 chat shows the whole command under the call, line breaks kept, and the folder it runs in when the model names one,
 with **Run** and **Reject** and an optional reason.

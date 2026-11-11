@@ -1078,16 +1078,17 @@ describe("mode selector", () => {
     return select;
   };
 
-  test("shows the mode the state holds, Ask or Auto-edit", async () => {
+  test("shows the mode the state holds, Ask, Auto-edit, or Plan", async () => {
     for (const [mode, label] of [
       ["ask", "Ask"],
       ["autoEdit", "Auto-edit"],
+      ["plan", "Plan"],
     ] as const) {
       await withPanel(stateWith(true, { mode }), async ({ host }) => {
         const select = modeSelect(host);
         expect(select.value).toBe(mode);
         expect(select.selectedOptions[0]?.textContent).toBe(label);
-        expect([...select.options].map((option) => option.textContent)).toEqual(["Ask", "Auto-edit"]);
+        expect([...select.options].map((option) => option.textContent)).toEqual(["Ask", "Auto-edit", "Plan"]);
       });
     }
   });
@@ -1104,6 +1105,17 @@ describe("mode selector", () => {
 
       await show(stateWith(true, { mode: "autoEdit" }));
       expect(modeSelect(host).value).toBe("autoEdit");
+    });
+  });
+
+  test("posts Plan when picked", async () => {
+    await withPanel(stateWith(true), async ({ host }) => {
+      const select = modeSelect(host);
+      await act(async () => {
+        select.value = "plan";
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      expect(posted).toEqual([{ type: "setMode", mode: "plan" }]);
     });
   });
 

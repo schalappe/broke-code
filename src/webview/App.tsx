@@ -1164,14 +1164,15 @@ function Composer({
 }
 
 /**
- * Ask or Auto-edit, from the setting the host reads. Controlled by the state, so a pick shows only once the host has
- * written the setting; a failed write leaves the mode as it was.
+ * Ask, Auto-edit, or Plan, as the host reads them: Plan from the workspace, the others from the setting. Controlled by
+ * the state, so a pick shows only once the host has applied it; a failed write leaves the mode as it was.
  */
 function ModeSelect({ mode, disabled }: { mode: Mode; disabled: boolean }) {
-  const labels: Record<Mode, string> = { ask: l10n.t("Ask"), autoEdit: l10n.t("Auto-edit") };
+  const labels: Record<Mode, string> = { ask: l10n.t("Ask"), autoEdit: l10n.t("Auto-edit"), plan: l10n.t("Plan") };
   const hints: Record<Mode, string> = {
     ask: l10n.t("Each change waits for Accept or Reject."),
     autoEdit: l10n.t("Changes are written without asking. Commands still wait for Run."),
+    plan: l10n.t("The agent reads files and answers with a plan. It changes no file and runs no command."),
   };
   return (
     <select

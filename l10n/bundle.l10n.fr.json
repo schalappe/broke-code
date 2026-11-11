@@ -182,5 +182,7 @@
   "Auto-edit": "Édition auto",
   "Each change waits for Accept or Reject.": "Chaque modification attend Accepter ou Refuser.",
   "Changes are written without asking. Commands still wait for Run.": "Les modifications sont écrites sans demander. Les commandes attendent toujours Exécuter.",
-  "Could not change the mode: {0}": "Impossible de changer le mode : {0}"
+  "Could not change the mode: {0}": "Impossible de changer le mode : {0}",
+  "Plan": "Plan",
+  "The agent reads files and answers with a plan. It changes no file and runs no command.": "L'agent lit les fichiers et répond par un plan. Il ne modifie aucun fichier et n'exécute aucune commande."
 }

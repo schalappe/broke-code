@@ -39,9 +39,11 @@ result. A setting can approve writes without asking, never commands.
 _Avoid_: confirmation, permission, consent
 
 **Mode**:
-How the agent's writes are approved, shown and picked in the message box: **Ask** waits for the user's approval of
-each write; **Auto-edit** approves writes without asking. It is the user setting `brokeCode.autoApproveWrites`, so it
-applies to every window. Commands wait for Run in every mode.
+What an agent turn may do, shown and picked in the message box: **Ask** waits for the user's approval of each write;
+**Auto-edit** approves writes without asking; **Plan** offers the read tools only, so the model answers with a plan and
+nothing is written or run. Ask and Auto-edit are the user setting `brokeCode.autoApproveWrites`, so they apply to every
+window; Plan is kept per workspace and wins over the setting while on. A turn reads Plan when it starts. Commands wait
+for Run in every mode that offers them.
 _Avoid_: agent mode, approval mode, permission mode
 
 **Conversation**:
