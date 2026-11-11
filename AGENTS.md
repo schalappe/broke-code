@@ -586,8 +586,10 @@ chat and writes the reply to the commit input box (ADR 0004). Read `GLOSSARY.md`
   notification, with no request.
 - One streaming request through `streamChat`, never `tools`; reasoning (`reasoning`, `reasoning_content`, a leading
   `<think>`) is dropped. When the reply has ended, `cleanCommitMessage` drops any `<think>` … `</think>` text (one never
-  closed, to the end), unwraps a code fence (` ``` ` or `~~~`, any info string) or a pair of quotes (`"`, `'`, `“”`,
-  `‘’`, a backtick) wrapping the whole reply, and trims. The input box gets that text once; nothing is written before
+  closed, to the end), then unwraps, again and again until nothing changes, a code fence (` ``` ` or `~~~`, any
+  info string) wrapping the whole reply, or a quote pair (`"`, `'`, `“”`, `‘’`, a backtick) whenever the trimmed text
+  starts with the opening quote and ends with the closing one, whatever the interior holds (a Conventional Commits
+  message starts with its type, never a quote), trimming each time. A fence around only part of the reply stays. The input box gets that text once; nothing is written before
   the reply ends. The run remembers the box's text once it decided to go on (the text the user agreed to replace, or
   the empty box); right before the write it reads the box again, and when the text differs (the user typed
   meanwhile) it asks the replace question again: a refusal writes nothing and ends quietly, keeping the user's text;

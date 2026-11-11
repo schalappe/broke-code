@@ -90,22 +90,26 @@ const QUOTES: readonly [string, string][] = [
 
 /**
  * The commit message in `reply` (the answer, reasoning already dropped by the client): any `<think>` text dropped
- * (one never closed, to the end), a code fence or a pair of quotes wrapping the whole of it removed, trimmed.
- * `undefined` when nothing is left.
+ * (one never closed, to the end), then the wrappers of the whole of it removed, again and again until none is left: a
+ * code fence, or a quote pair. A quote pair wraps the whole reply whenever the trimmed text starts with an opening
+ * quote and ends with its closing one, whatever lies between: a Conventional Commits message starts with its type,
+ * never a quote, so a leading quote is always a wrapper. `undefined` when nothing is left.
  */
 export function cleanCommitMessage(reply: string): string | undefined {
   let text = reply
     .replace(/<think>[\s\S]*?<\/think>/g, "")
     .replace(/<think>[\s\S]*$/, "")
     .trim();
-  const fenced = /^(`{3,}|~{3,})[^\n]*\n([\s\S]*?)\n?\1$/.exec(text);
-  if (fenced && !fenced[2]!.includes(fenced[1]!)) text = fenced[2]!.trim();
-  const quotes = QUOTES.find(([open, close]) => text.length >= 2 && text.startsWith(open) && text.endsWith(close));
-  if (quotes) {
-    const inner = text.slice(1, -1);
-    if (!inner.includes(quotes[0]) && !inner.includes(quotes[1])) text = inner.trim();
-  }
+  for (let unwrapped = unwrap(text); unwrapped !== undefined; unwrapped = unwrap(text)) text = unwrapped;
   return text === "" ? undefined : text;
+}
+
+/** `text` without the code fence or quote pair wrapping the whole of it, trimmed; `undefined` when none wraps it. */
+function unwrap(text: string): string | undefined {
+  const fenced = /^(`{3,}|~{3,})[^\n]*\n([\s\S]*?)\n?\1$/.exec(text);
+  if (fenced && !fenced[2]!.includes(fenced[1]!)) return fenced[2]!.trim();
+  const quoted = QUOTES.some(([open, close]) => text.length >= 2 && text.startsWith(open) && text.endsWith(close));
+  return quoted ? text.slice(1, -1).trim() : undefined;
 }
 
 /**

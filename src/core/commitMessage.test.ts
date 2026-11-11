@@ -112,7 +112,17 @@ describe("cleanCommitMessage", () => {
 
   test("keeps quotes that do not wrap the whole reply", () => {
     expect(cleanCommitMessage('fix: quote "x"')).toBe('fix: quote "x"');
-    expect(cleanCommitMessage('"a" and "b"')).toBe('"a" and "b"');
+    expect(cleanCommitMessage('fix: "a" and "b"')).toBe('fix: "a" and "b"');
+  });
+
+  test("unwraps quotes around the whole reply whatever the interior holds", () => {
+    expect(cleanCommitMessage('"fix: handle the "cancel" action"')).toBe('fix: handle the "cancel" action');
+    expect(cleanCommitMessage("'fix: don't discard staged changes'")).toBe("fix: don't discard staged changes");
+  });
+
+  test("unwraps nested wrappers until none is left", () => {
+    expect(cleanCommitMessage('"```text\nfix: handle cancel\n```"')).toBe("fix: handle cancel");
+    expect(cleanCommitMessage("\"```\n'fix: a'\n```\"")).toBe("fix: a");
   });
 
   test("drops <think> text anywhere, an unclosed one to the end", () => {
