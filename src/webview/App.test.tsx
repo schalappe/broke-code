@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, jest, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { act, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ChatEntry, ChatState } from "../core/protocol";
@@ -353,6 +354,14 @@ describe("folded turn", () => {
       expect(scrolled).not.toHaveBeenCalled();
       expect(box.contains(document.activeElement)).toBe(false);
     });
+  });
+
+  // The tests above see no layout: the question row holds still only because the stylesheet turns native scroll
+  // anchoring off, which the live check confirms in the real panel.
+  test("the conversation turns native scroll anchoring off", () => {
+    const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+    const rule = css.match(/\n\.conversation \{([^}]*)\}/)?.[1] ?? "";
+    expect(rule).toContain("overflow-anchor: none;");
   });
 
   test("a turn that folds while the conversation is pinned to the bottom keeps following it", async () => {
