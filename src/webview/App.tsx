@@ -877,7 +877,7 @@ export function MentionMenu({
     <SuggestionMenu
       id={MENTION_MENU_ID}
       trigger="@"
-      label={l10n.t("Files and folders")}
+      label={l10n.t("Mentions")}
       items={items.map((item) => {
         const reserved = reservedMention(item.kind);
         // [>]: Keyed by kind and path: a reserved row and a file of the same name never share a key.

@@ -787,7 +787,7 @@ describe("mention menu", () => {
       false,
       1,
     );
-    expect(html).toContain('<div id="mention-menu" role="listbox" aria-label="Files and folders" class="menu-list">');
+    expect(html).toContain('<div id="mention-menu" role="listbox" aria-label="Mentions" class="menu-list">');
     expect(html).toContain(
       '<div id="mention-menu-option-0" role="option" tabindex="-1" aria-selected="false"><span class="kind folder" aria-hidden="true"></span><span class="menu-label">@src/core/</span></div>',
     );

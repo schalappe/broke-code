@@ -76,8 +76,9 @@ only to its own provider, as a bearer token.
 
 ## Mention files and folders
 
-Type `@` in the message box to attach a workspace file or folder. A menu lists up to 20 files and folders whose
-path contains what you type after `@`, ignoring case, shortest paths first; folders end with `/`. Move with the
+Type `@` in the message box to attach a workspace file or folder. A menu lists up to 20 rows in all: first the
+reserved names, such as `@problems` (below), whose name starts with what you type after `@`, then the files and
+folders whose path contains it, ignoring case, shortest paths first; folders end with `/`. Move with the
 arrow keys, pick with Enter, Tab, or a click, and close the menu with Escape. A picked path goes into the message
 as `@<path>`, spaces included. You can also type `@path` yourself; a typed path ends at the first space. An `@`
 inside code, between backticks or in a fenced block, opens no menu and attaches nothing.
