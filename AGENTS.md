@@ -327,7 +327,10 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
     it sets the key. Leaving Plan for Ask or Auto-edit writes the setting first, only when its value must change, and
     clears the key only once that write succeeded: a failed write keeps Plan and is shown as for the other modes
     (`failed`). A failed memento write is logged only, as for `brokeCode.lastChoice`: Plan applies for the session
-    and is lost at the next load. Plan is not part of a conversation: reopening one changes no mode.
+    and is lost at the next load. Plan is not part of a conversation: reopening one changes no mode. Picks run one
+    at a time, in call order (a promise chain in the controller), each checking for a reply in flight when its turn
+    comes, so an older pick's pending settings write never undoes a newer pick; `send` waits for the picks still
+    settling before it reads Plan, so a turn never starts on a mode about to change.
 - `run_command(command, cwd?)` runs `<shell> -c <command>` in a hidden child process, no login shell, the shell being
   `vscode.env.shell`, else `$SHELL`, else `/bin/sh`. `cwd` resolves like a read tool's path and must be an existing
   folder inside the workspace; left out, the command runs in the first workspace folder. Without a workspace folder,

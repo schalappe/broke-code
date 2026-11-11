@@ -3581,10 +3581,17 @@ describe("ChatController mode", () => {
    */
   async function withSetting(
     setting: InspectedSetting,
-    { failWrite = false, workspaceState = memoryStore() }: { failWrite?: boolean; workspaceState?: ChoiceStore } = {},
+    {
+      failWrite = false,
+      workspaceState = memoryStore(),
+      deferWrites = false,
+    }: { failWrite?: boolean; workspaceState?: ChoiceStore; deferWrites?: boolean } = {},
   ) {
     // [>]: Read at `modeChanged`, as the host does at activation.
     const written: boolean[] = [];
+    /** With `deferWrites`, each write waits until the test releases it, oldest first. */
+    const pendingWrites: (() => void)[] = [];
+    const releaseWrite = () => pendingWrites.shift()?.();
     const states: ChatState[] = [];
     const controller = new ChatController({
       apiKeys: { get: async () => undefined },
@@ -3595,6 +3602,7 @@ describe("ChatController mode", () => {
       ...noTools,
       autoApproveWrites: () => autoApproveWrites(setting),
       writeAutoApproveWrites: async (on) => {
+        if (deferWrites) await new Promise<void>((resolve) => pendingWrites.push(resolve));
         if (failWrite) throw new Error("EACCES: settings.json");
         written.push(on);
         setting.globalValue = on;
@@ -3604,7 +3612,7 @@ describe("ChatController mode", () => {
     controller.modeChanged();
     controller.setProviders({ providers: [ollama], skipped: [] });
     await until(state, (s) => s.model === "m");
-    return { controller, state, written, states };
+    return { controller, state, written, states, pendingWrites, releaseWrite };
   }
 
   test("follows the user value of the setting: absent or false is Ask, true is Auto-edit", async () => {
@@ -3752,6 +3760,44 @@ describe("ChatController mode", () => {
       } finally {
         logged.mockRestore();
       }
+    });
+
+    test("a pick made while an older pick's write is pending applies after it: the newer Plan pick wins", async () => {
+      const workspaceState = memoryStore();
+      const { controller, state, pendingWrites, releaseWrite } = await withSetting(
+        {},
+        { workspaceState, deferWrites: true },
+      );
+      const older = controller.setMode("autoEdit");
+      await until(state, () => pendingWrites.length === 1);
+      const newer = controller.setMode("plan");
+      releaseWrite();
+      expect(await older).toEqual({ kind: "written" });
+      expect(await newer).toEqual({ kind: "written" });
+      expect(state().mode).toBe("plan");
+      expect(workspaceState.get("brokeCode.plan")).toBe(true);
+    });
+
+    test("a send made while a mode write is pending starts its turn in the mode that write produces", async () => {
+      const workspaceState = memoryStore();
+      await workspaceState.update("brokeCode.plan", true);
+      const { controller, state, states, pendingWrites, releaseWrite } = await withSetting(
+        {},
+        { workspaceState, deferWrites: true },
+      );
+      const picked = controller.setMode("autoEdit");
+      await until(state, () => pendingWrites.length === 1);
+      const sent = controller.send("Hi");
+      releaseWrite();
+      expect(await picked).toEqual({ kind: "written" });
+      await until(state, (s) => contentOf(s.entries.at(-1)) === "Partial ");
+      const last = (requests.get("a") ?? []).at(-1) as { messages: { content: string }[] };
+      expect(last.messages[0]!.content).not.toContain("Plan mode");
+      const turn = states.slice(states.findIndex((published) => published.entries.length > 0));
+      expect(turn.every((published) => published.mode === "autoEdit")).toBe(true);
+      finishReply();
+      await sent;
+      expect(state().mode).toBe("autoEdit");
     });
   });
 });
