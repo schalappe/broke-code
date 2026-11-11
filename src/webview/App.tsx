@@ -18,6 +18,7 @@ import { emptyModelsLabel } from "../core/modelList";
 import {
   type ChatEntry,
   type ChatState,
+  type DraftInsert,
   type HostMessage,
   isMode,
   isReplying,
@@ -30,6 +31,7 @@ import type { ProviderError } from "../core/providerError";
 import { isNothingToAttach, type ReservedMention, reservedMention } from "../core/reservedMentions";
 import { BUILT_IN_COMMANDS, type BuiltInCommand, type SlashCommand } from "../core/suggestions";
 import {
+  applyDraft,
   builtInCommand,
   composerKeyAction,
   type MentionRow,
@@ -65,11 +67,32 @@ import {
 import { foldTurns } from "./turns";
 import { post } from "./vscodeApi";
 
-/** `language`: BCP 47 tag of the VS Code display language, for dates. */
-export function App({ state, language }: { state: ChatState; language: string }) {
+/**
+ * `language`: BCP 47 tag of the VS Code display language, for dates. `drafts`: editor drafts not yet applied, which the
+ * message box applies and `takeDrafts` removes; one closes History. Without a message box they are taken unapplied:
+ * a draft is never held for a box that may never come.
+ */
+export function App({
+  state,
+  language,
+  drafts = [],
+  takeDrafts = () => {},
+}: {
+  state: ChatState;
+  language: string;
+  drafts?: readonly DraftInsert[];
+  takeDrafts?: (count: number) => void;
+}) {
   const configured = state.providers.length > 0;
+  const composerShown = configured || isReplying(state);
   const [historyOpen, setHistoryOpen] = useState(false);
   const historyButton = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (drafts.length === 0) return;
+    setHistoryOpen(false);
+    if (!composerShown) takeDrafts(drafts.length);
+  }, [drafts, composerShown, takeDrafts]);
   return (
     <main className="panel">
       {/* Saved conversations are local: History works without a provider; only the composer needs one. */}
@@ -113,10 +136,12 @@ export function App({ state, language }: { state: ChatState; language: string })
           hidden={historyOpen}
         />
       )}
-      {(configured || isReplying(state)) && (
+      {composerShown && (
         <Composer
           state={state}
           historyOpen={historyOpen}
+          drafts={drafts}
+          takeDrafts={takeDrafts}
           startNewChat={() => {
             setHistoryOpen(false);
             post({ type: "newChat" });
@@ -980,16 +1005,21 @@ function Reasoning({ entry }: { entry: ChatEntry & { role: "assistant" } }) {
  * Picking a built-in row, or sending exactly `/new` or `/model`, runs it when Send would act (`startNewChat`, or the
  * editor's model list through `chooseModel`) and empties the box; otherwise, or with text after the token, the pick
  * inserts `/<name> `. When a reply ends, the message box takes the focus, unless History is open (`historyOpen`): the
- * focus then stays where the user has it, so typing keeps going to the History filter.
+ * focus then stays where the user has it, so typing keeps going to the History filter. `drafts` from the editor are
+ * applied in order (`applyDraft`), whatever the reply's state, then taken, and the message box takes the focus.
  */
 function Composer({
   state,
   historyOpen,
   startNewChat,
+  drafts,
+  takeDrafts,
 }: {
   state: ChatState;
   historyOpen: boolean;
   startNewChat: () => void;
+  drafts: readonly DraftInsert[];
+  takeDrafts: (count: number) => void;
 }) {
   const [text, setText] = useState("");
   const [caret, setCaret] = useState(0);
@@ -1073,6 +1103,18 @@ function Composer({
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
   }, []);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a draft applies to the box as it stands when it arrives.
+  useEffect(() => {
+    if (drafts.length === 0) return;
+    const next = drafts.reduce(applyDraft, { text, caret, picked });
+    setText(next.text);
+    setCaret(next.caret);
+    setPicked([...next.picked]);
+    nextCaret.current = next.caret;
+    takeDrafts(drafts.length);
+    input.current?.focus();
+  }, [drafts]);
 
   useLayoutEffect(() => {
     if (nextCaret.current === undefined) return;

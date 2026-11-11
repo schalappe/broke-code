@@ -25,6 +25,7 @@ const {
   Warnings,
 } = await import("./App");
 const { moveHighlight } = await import("./SuggestionMenu");
+const { Root } = await import("./Root");
 
 type Reply = ChatEntry & { role: "assistant" };
 
@@ -1021,8 +1022,13 @@ type Panel = {
   clickOption: (label: string) => Promise<void>;
 };
 
-/** Mount `App` over a DOM registered for the test's duration; `run` drives it, then the panel unmounts. */
-async function withPanel(state: ChatState, run: (panel: Panel) => Promise<void>): Promise<void> {
+/** Mount the panel's `Root`, then `state` as its `init`, over a DOM registered for the test's duration; `run` drives it, then the panel unmounts. */
+async function withPanel(
+  state: ChatState,
+  run: (panel: Panel) => Promise<void>,
+  /** Host messages dispatched in the same task as `init`, before the panel has rendered it. */
+  behindInit: unknown[] = [],
+): Promise<void> {
   const { GlobalRegistrator } = await import("@happy-dom/global-registrator");
   const { act, createElement } = await import("react");
   GlobalRegistrator.register();
@@ -1032,7 +1038,21 @@ async function withPanel(state: ChatState, run: (panel: Panel) => Promise<void>)
     const host = document.createElement("div");
     document.body.append(host);
     const root = createRoot(host);
-    await act(async () => root.render(createElement(App, { state, language: "en" })));
+    const receive = (message: unknown) =>
+      act(async () => {
+        window.dispatchEvent(new MessageEvent("message", { data: message }));
+      });
+    // [>]: Through `Root`, as the webview runs: it posts `ready`, then renders the `init` snapshot.
+    await act(async () => root.render(createElement(Root, { language: "en" })));
+    await act(async () => {
+      for (const data of [{ type: "init", l10n: undefined, state }, ...behindInit]) {
+        window.dispatchEvent(new MessageEvent("message", { data }));
+      }
+    });
+    posted.splice(
+      posted.findIndex((message) => (message as { type: string }).type === "ready"),
+      1,
+    );
     const textarea = host.querySelector("textarea");
     if (!textarea) throw new Error("no message box");
     // [&]: React tracks the value property; set it through the prototype setter so the input event registers.
@@ -1051,11 +1071,8 @@ async function withPanel(state: ChatState, run: (panel: Panel) => Promise<void>)
         act(async () => {
           field.dispatchEvent(new KeyboardEvent("keydown", { ...init, key, bubbles: true, cancelable: true }));
         }),
-      receive: (message) =>
-        act(async () => {
-          window.dispatchEvent(new MessageEvent("message", { data: message }));
-        }),
-      show: (next) => act(async () => root.render(createElement(App, { state: next, language: "en" }))),
+      receive,
+      show: (next) => receive({ type: "state", state: next }),
       fill: (field, value) =>
         act(async () => {
           setValue(field, value);
@@ -1950,6 +1967,69 @@ describe("history filter", () => {
     await withHistory(failed, async (panel, field) => {
       await panel.fill(field, "deploy");
       expect(panel.host.textContent).toContain("Could not list the past conversations.");
+    });
+  });
+});
+
+describe("drafts from the editor", () => {
+  const selection = { type: "insertDraft", text: "@selection", mode: "caret", picked: [] };
+  const fix = {
+    type: "insertDraft",
+    text: "Fix this problem in @my app.ts, at line 12: Broken.",
+    mode: "fillOrAppend",
+    picked: ["my app.ts,"],
+  };
+
+  test("a draft fills the message box at its caret and focuses it, without sending", async () => {
+    await withPanel(stateWith(true), async ({ host, textarea, type, receive }) => {
+      await type("see this", 3);
+      (host.querySelector("button.secondary") as HTMLButtonElement).focus();
+      await receive(selection);
+      expect(textarea.value).toBe("see @selection this");
+      expect(textarea.selectionStart).toBe(15);
+      expect(document.activeElement).toBe(textarea);
+      expect(posted.filter((message) => (message as { type: string }).type === "send")).toEqual([]);
+    });
+  });
+
+  test("a draft posted right behind init is applied once", async () => {
+    await withPanel(
+      stateWith(true),
+      async ({ textarea, show }) => {
+        expect(textarea.value).toBe("@selection ");
+        await show(stateWith(true, { entries: hi }));
+        expect(textarea.value).toBe("@selection ");
+      },
+      [selection],
+    );
+  });
+
+  test("a draft closes History and focuses the message box", async () => {
+    await withPanel(stateWith(true, { entries: hi }), async ({ host, click, receive }) => {
+      await click("History");
+      expect(host.querySelector("#history")).not.toBeNull();
+      await receive(fix);
+      expect(host.querySelector("#history")).toBeNull();
+      const textarea = host.querySelector("textarea");
+      expect(textarea?.value).toBe(fix.text);
+      expect(document.activeElement).toBe(textarea);
+    });
+  });
+
+  test("sending a filled draft posts its picked path", async () => {
+    await withPanel(stateWith(true), async ({ receive, press }) => {
+      await receive(fix);
+      await press("Enter");
+      expect(posted).toEqual([{ type: "send", text: fix.text, mentions: ["my app.ts,"] }]);
+    });
+  });
+
+  test("a draft that arrives while the panel has no message box is dropped", async () => {
+    await withPanel(stateWith(true), async ({ host, show, receive }) => {
+      await show(stateWith(false));
+      await receive(selection);
+      await show(stateWith(true));
+      expect(host.querySelector("textarea")?.value).toBe("");
     });
   });
 });

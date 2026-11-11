@@ -183,6 +183,14 @@ export type ChatState = {
   modePending: boolean;
 };
 
+/**
+ * Text an editor entry point puts in the message box, never sent: `caret` inserts it at the box's caret, spaced from
+ * the text around it; `fillOrAppend` fills a box empty or holding only whitespace, else appends it after one line
+ * break. `picked`: the paths its mentions name, added to the box's picked paths, so a path with spaces or trailing
+ * punctuation is one mention.
+ */
+export type DraftInsert = { text: string; mode: "caret" | "fillOrAppend"; picked: string[] };
+
 /** L10n bundle as `vscode.l10n.bundle`: absent in English. */
 export type L10nBundle = Record<string, string>;
 
@@ -198,7 +206,12 @@ export type HostMessage =
    * Answer to the `querySkills` of the same `id`: every skill a send would discover, those kept from the model
    * included, by name. `failed`: the skills could not be listed, so `items` is empty for that reason.
    */
-  | { type: "skillSuggestions"; id: number; items: SlashCommand[]; failed: boolean };
+  | { type: "skillSuggestions"; id: number; items: SlashCommand[]; failed: boolean }
+  /**
+   * "Add selection to chat" or "Fix with broke-code": edit the draft, close History, and focus the message box. Posted
+   * once, after `init`.
+   */
+  | ({ type: "insertDraft" } & DraftInsert);
 
 export type WebviewMessage =
   | { type: "ready" }
@@ -237,7 +250,7 @@ export type WebviewMessage =
 
 /** Chat state carried by `message`; `undefined` for a message that must leave the panel's state alone. */
 export function chatStateOf(message: HostMessage): ChatState | undefined {
-  return message.type === "fileSuggestions" || message.type === "skillSuggestions" ? undefined : message.state;
+  return message.type === "init" || message.type === "state" ? message.state : undefined;
 }
 
 /**

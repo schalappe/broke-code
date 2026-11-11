@@ -2,9 +2,9 @@
  * @module composer
  * Decisions of the message box, kept out of React so tests need no DOM: which token opens a menu (`@` mentions, `/`
  * commands), which menu rows to show, what a key does, which picked paths to send, which built-in command a message
- * runs.
+ * runs, and how an editor entry point edits the draft.
  */
-import { MAX_QUERY_LENGTH } from "../core/protocol";
+import { type DraftInsert, MAX_QUERY_LENGTH } from "../core/protocol";
 import { type MentionKind, pickedPath, RESERVED_MENTIONS, reservedMention } from "../core/reservedMentions";
 import {
   BUILT_IN_COMMANDS,
@@ -174,4 +174,26 @@ export function composerKeyAction(pressed: ComposerKey, rows: number | undefined
  */
 export function pickedInText(picked: readonly string[], text: string): string[] {
   return picked.filter((path) => text.includes(`@${path}`));
+}
+
+/** The message box's content: its text, its caret, and the paths picked in it. */
+export type Draft = { text: string; caret: number; picked: readonly string[] };
+
+/**
+ * `draft` with `insert` applied (see `DraftInsert`). At the caret, a space goes before the text unless the text before
+ * the caret is empty or ends with whitespace, and one after it unless whitespace already follows, which the caret then
+ * passes: the caret always follows whitespace, so no menu opens on the inserted token. Filled or appended, the caret
+ * goes to the end. `insert.picked` joins the draft's picked paths, each once.
+ */
+export function applyDraft(draft: Draft, insert: DraftInsert): Draft {
+  const unique = [...new Set([...draft.picked, ...insert.picked])];
+  if (insert.mode === "fillOrAppend") {
+    const text = draft.text.trim() === "" ? insert.text : `${draft.text}\n${insert.text}`;
+    return { text, caret: text.length, picked: unique };
+  }
+  const before = draft.text.slice(0, draft.caret);
+  const after = draft.text.slice(draft.caret);
+  const lead = before === "" || /\s$/.test(before) ? "" : " ";
+  const head = `${before}${lead}${insert.text}${/^\s/.test(after) ? after[0] : " "}`;
+  return { text: head + (/^\s/.test(after) ? after.slice(1) : after), caret: head.length, picked: unique };
 }

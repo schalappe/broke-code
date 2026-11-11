@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { MAX_QUERY_LENGTH } from "../core/protocol";
+import { type DraftInsert, MAX_QUERY_LENGTH } from "../core/protocol";
 import type { SlashCommand, Suggestion } from "../core/suggestions";
 import {
+  applyDraft,
   builtInCommand,
   composerKeyAction,
   type MenuAnswer,
@@ -272,5 +273,57 @@ describe("replaceToken", () => {
   test("replaces the token up to the caret and puts the caret after the inserted text", () => {
     expect(replaceToken("/gr", { start: 0 }, 3, "/grilling ")).toEqual({ text: "/grilling ", caret: 10 });
     expect(replaceToken("see @sr now", { start: 4 }, 7, "@src/ ")).toEqual({ text: "see @src/  now", caret: 10 });
+  });
+});
+
+describe("applyDraft", () => {
+  /** The draft `marked`, its caret at `|`, after inserting `@selection` at the caret. */
+  const atCaret = (marked: string): string => {
+    const caret = marked.indexOf("|");
+    const draft = { text: marked.replace("|", ""), caret, picked: [] };
+    const next = applyDraft(draft, { text: "@selection", mode: "caret", picked: [] });
+    return `${next.text.slice(0, next.caret)}|${next.text.slice(next.caret)}`;
+  };
+
+  test("inserts at the caret, with a space before it when the text before does not end with whitespace", () => {
+    expect(atCaret("|")).toBe("@selection |");
+    expect(atCaret("foo|")).toBe("foo @selection |");
+    expect(atCaret("foo |")).toBe("foo @selection |");
+    expect(atCaret("foo\n|")).toBe("foo\n@selection |");
+  });
+
+  test("adds a space after it only when the character after the caret is not whitespace", () => {
+    expect(atCaret("foo|bar")).toBe("foo @selection |bar");
+    // [>]: The caret goes past the space already there, so it follows a space and no menu opens.
+    expect(atCaret("foo| bar")).toBe("foo @selection |bar");
+    expect(atCaret("|bar")).toBe("@selection |bar");
+  });
+
+  test("fills a box that is empty or holds only whitespace, caret at the end", () => {
+    const insert: DraftInsert = { text: "Fix this problem", mode: "fillOrAppend", picked: [] };
+    expect(applyDraft({ text: "", caret: 0, picked: [] }, insert)).toEqual({
+      text: "Fix this problem",
+      caret: 16,
+      picked: [],
+    });
+    expect(applyDraft({ text: " \n\t", caret: 1, picked: [] }, insert).text).toBe("Fix this problem");
+  });
+
+  test("appends after one line break to a box holding a draft, caret at the end", () => {
+    const next = applyDraft(
+      { text: "First draft", caret: 2, picked: [] },
+      { text: "Fix it", mode: "fillOrAppend", picked: [] },
+    );
+    expect(next).toEqual({ text: "First draft\nFix it", caret: 18, picked: [] });
+  });
+
+  test("adds the inserted picked paths to the box's, once", () => {
+    const next = applyDraft(
+      { text: "see @a b.ts", caret: 11, picked: ["a b.ts"] },
+      { text: "Fix this problem in @src/app.ts at line 12: Broken.", mode: "fillOrAppend", picked: ["src/app.ts"] },
+    );
+    expect(next.picked).toEqual(["a b.ts", "src/app.ts"]);
+    const again = applyDraft(next, { text: "@src/app.ts", mode: "caret", picked: ["src/app.ts"] });
+    expect(again.picked).toEqual(["a b.ts", "src/app.ts"]);
   });
 });

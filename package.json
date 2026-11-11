@@ -18,7 +18,9 @@
   ],
   "main": "./dist/extension.js",
   "l10n": "./l10n",
-  "activationEvents": [],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "contributes": {
     "viewsContainers": {
       "activitybar": [
@@ -54,9 +56,32 @@
         "title": "%command.generateCommitMessage.title%",
         "category": "broke-code",
         "icon": "$(sparkle)"
+      },
+      {
+        "command": "broke-code.addSelectionToChat",
+        "title": "%command.addSelectionToChat.title%",
+        "category": "broke-code"
+      },
+      {
+        "command": "broke-code.fixDiagnostic",
+        "title": "%command.fixDiagnostic.title%",
+        "category": "broke-code"
       }
     ],
     "menus": {
+      "commandPalette": [
+        {
+          "command": "broke-code.fixDiagnostic",
+          "when": "false"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "broke-code.addSelectionToChat",
+          "when": "editorHasSelection",
+          "group": "broke-code"
+        }
+      ],
       "scm/title": [
         {
           "command": "broke-code.generateCommitMessage",
