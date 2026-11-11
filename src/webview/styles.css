@@ -1,4 +1,86 @@
-/* Minimal chat layout on VS Code theme variables. Visual pass: #15. */
+/*
+ * The chat panel's stylesheet, in twinny's minimal manner. DESIGN.md at the repository root states the rules.
+ *
+ * One token layer comes first; every rule below consumes it. Each color derives from the VS Code theme variables
+ * (`--vscode-*`), directly or through `color-mix()`; the only literal color is `transparent`.
+ *
+ * Surfaces are set apart by a fill a shade off the panel. A high-contrast theme flattens such fills, and it alone
+ * defines `--vscode-contrastBorder` and `--vscode-contrastActiveBorder`, so the edge tokens are transparent
+ * everywhere else and draw a border there: a block, a button, or a selected row never disappears.
+ */
+
+:root {
+  /* Two faces: the UI font for what people read, the editor font for what is code. */
+  --bc-font: var(--vscode-font-family);
+  --bc-mono: var(--vscode-editor-font-family, monospace);
+
+  --bc-fs: var(--vscode-font-size, 13px);
+  --bc-fs-sm: calc(var(--bc-fs) - 1px);
+  --bc-fs-xs: calc(var(--bc-fs) - 2px);
+  /* The editor font runs large beside the UI font; code is set a step down. */
+  --bc-fs-mono: var(--bc-fs-sm);
+  --bc-lh: 1.5;
+
+  --bc-space-1: 2px;
+  --bc-space-2: 4px;
+  --bc-space-3: 8px;
+  --bc-space-4: 12px;
+  --bc-space-5: 16px;
+  --bc-space-6: 24px;
+
+  /* Corners: controls, blocks, and the two large blocks (the message box, a user's message). */
+  --bc-radius-sm: 4px;
+  --bc-radius: 6px;
+  --bc-radius-lg: 10px;
+
+  --bc-bg: var(--vscode-sideBar-background);
+  --bc-fg: var(--vscode-foreground);
+  /* Secondary text, and the marks drawn in it. 72% keeps 4.5:1 on the light and dark default themes. */
+  --bc-fg-dim: color-mix(in srgb, var(--vscode-foreground) 72%, transparent);
+  --bc-rule: color-mix(in srgb, var(--vscode-foreground) 16%, transparent);
+  --bc-fill: color-mix(in srgb, var(--vscode-foreground) 6%, transparent);
+  --bc-fill-strong: color-mix(in srgb, var(--vscode-foreground) 11%, transparent);
+
+  /* The high-contrast rule: the boundary of a filled surface, and of the selected or hovered one. */
+  --bc-edge: var(--vscode-contrastBorder, transparent);
+  --bc-edge-active: var(--vscode-contrastActiveBorder, transparent);
+  /* A drawn line keeps its hairline, and becomes the contrast border in high contrast. */
+  --bc-line: var(--vscode-contrastBorder, var(--bc-rule));
+
+  --bc-focus: var(--vscode-focusBorder);
+  --bc-link: var(--vscode-textLink-foreground);
+  --bc-error: var(--vscode-errorForeground);
+  --bc-warning: var(--vscode-editorWarning-foreground);
+  /* The text of an error or a warning block: the block's fill carries the kind, except in high contrast. */
+  --bc-error-text: var(--bc-fg);
+  --bc-warning-text: var(--bc-fg);
+
+  /* Motion: the breathing of a loading text, and the time a small change takes. Both are switched off below. */
+  --bc-breathe: pulse;
+  --bc-fast: 0.12s;
+  --bc-ease: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Motion is small, and off when the system or the editor asks for less. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --bc-breathe: none;
+    --bc-fast: 0s;
+  }
+}
+
+body.vscode-reduce-motion {
+  --bc-breathe: none;
+  --bc-fast: 0s;
+}
+
+/* High contrast keeps secondary text close to the foreground, and moves an alert's kind from its fill to its text. */
+body.vscode-high-contrast,
+body.vscode-high-contrast-light {
+  --bc-fg-dim: color-mix(in srgb, var(--vscode-foreground) 88%, transparent);
+  --bc-error-text: var(--bc-error);
+  --bc-warning-text: var(--bc-warning);
+}
 
 html,
 body,
@@ -9,10 +91,11 @@ body,
 body {
   margin: 0;
   padding: 0;
-  color: var(--vscode-foreground);
-  background: var(--vscode-sideBar-background);
-  font-family: var(--vscode-font-family);
-  font-size: var(--vscode-font-size);
+  color: var(--bc-fg);
+  background: var(--bc-bg);
+  font-family: var(--bc-font);
+  font-size: var(--bc-fs);
+  line-height: var(--bc-lh);
 }
 
 .panel {
@@ -20,69 +103,56 @@ body {
   flex-direction: column;
   height: 100%;
   box-sizing: border-box;
-  padding: 8px;
-  gap: 8px;
+  padding: var(--bc-space-3) var(--bc-space-4) var(--bc-space-4);
+  gap: var(--bc-space-3);
 }
 
-/* The buttons wrap below the pickers once the pickers would fall under 16em, so model names stay readable. */
-.header {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  align-items: center;
-}
-
-.pickers {
-  display: flex;
-  flex: 1 1 16em;
-  gap: 6px;
-  min-width: 0;
-}
-
-.actions {
-  display: flex;
-  flex: none;
-  gap: 6px;
-}
+/* ---------- Controls ---------- */
 
 select,
 textarea,
 input {
+  box-sizing: border-box;
   color: var(--vscode-input-foreground);
   background: var(--vscode-input-background);
-  border: 1px solid var(--vscode-input-border, transparent);
-  border-radius: 2px;
+  border: 1px solid var(--vscode-input-border, var(--bc-line));
+  border-radius: var(--bc-radius-sm);
   font: inherit;
+  caret-color: var(--vscode-editorCursor-foreground, var(--bc-fg));
+}
+
+input {
+  padding: 3px var(--bc-space-3);
 }
 
 select {
-  padding: 2px 4px;
+  height: 26px;
+  padding: 0 var(--bc-space-2);
   color: var(--vscode-dropdown-foreground);
   background: var(--vscode-dropdown-background);
-  border-color: var(--vscode-dropdown-border, transparent);
+  border-color: var(--vscode-dropdown-border, var(--bc-line));
 }
 
-.pickers select {
-  flex: 1 1 0;
-  min-width: 0;
+select:disabled {
+  opacity: 0.6;
 }
 
-select:focus,
-textarea:focus,
-input:focus,
-button:focus-visible {
-  outline: 1px solid var(--vscode-focusBorder);
-  outline-offset: -1px;
+::placeholder {
+  color: var(--vscode-input-placeholderForeground, var(--bc-fg-dim));
 }
 
 button {
-  padding: 4px 10px;
+  padding: 3px 10px;
   color: var(--vscode-button-foreground);
   background: var(--vscode-button-background);
-  border: none;
-  border-radius: 2px;
+  border: 1px solid var(--vscode-button-border, var(--bc-edge));
+  border-radius: var(--bc-radius-sm);
   font: inherit;
+  line-height: 18px;
   cursor: pointer;
+  transition:
+    background-color var(--bc-fast) var(--bc-ease),
+    border-color var(--bc-fast) var(--bc-ease);
 }
 
 button:hover:not(:disabled) {
@@ -94,43 +164,198 @@ button:disabled {
   cursor: default;
 }
 
+/* A secondary action is a hairline box on the panel itself. */
 button.secondary {
-  color: var(--vscode-button-secondaryForeground);
-  background: var(--vscode-button-secondaryBackground);
+  color: var(--bc-fg);
+  background: transparent;
+  border-color: var(--bc-line);
 }
 
 button.secondary:hover:not(:disabled) {
-  background: var(--vscode-button-secondaryHoverBackground);
+  background: var(--bc-fill-strong);
+}
+
+button.secondary[aria-expanded="true"] {
+  background: var(--bc-fill-strong);
+  border-color: var(--vscode-contrastActiveBorder, var(--bc-rule));
+}
+
+button:hover:not(:disabled, .link, .history-open) {
+  border-color: var(--vscode-contrastActiveBorder, var(--vscode-button-border, var(--bc-edge)));
+}
+
+button.secondary:hover:not(:disabled) {
+  border-color: var(--vscode-contrastActiveBorder, var(--bc-rule));
 }
 
 button.link {
   padding: 0;
-  color: var(--vscode-textLink-foreground);
+  color: var(--bc-link);
   background: none;
+  border: none;
+  border-radius: var(--bc-radius-sm);
+  line-height: inherit;
   text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 button.link:hover:not(:disabled) {
-  color: var(--vscode-textLink-activeForeground);
+  color: var(--vscode-textLink-activeForeground, var(--bc-link));
   background: none;
 }
 
-.empty,
-.conversation.start {
-  color: var(--vscode-descriptionForeground);
+/*
+ * One focus ring, the theme's own. It sits inside a field and a row, which fill their line, and outside a button,
+ * where a ring drawn on the button's fill would not show.
+ */
+select:focus-visible,
+input:focus-visible,
+summary:focus-visible,
+button.history-open:focus-visible {
+  outline: 1px solid var(--bc-focus);
+  outline-offset: -1px;
 }
 
-/* History list: fills the conversation's place while open. */
+button:focus-visible {
+  outline: 1px solid var(--bc-focus);
+  outline-offset: 2px;
+}
+
+/* ---------- Header ---------- */
+
+/* The usage and the buttons wrap below the pickers once the pickers would fall under 16em, so model names stay readable. */
+.header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--bc-space-2) var(--bc-space-3);
+  align-items: center;
+}
+
+.pickers {
+  display: flex;
+  flex: 1 1 16em;
+  gap: var(--bc-space-2);
+  min-width: 0;
+}
+
+.pickers select {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.usage {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--bc-fg-dim);
+  font-size: var(--bc-fs-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.actions {
+  display: flex;
+  flex: none;
+  gap: var(--bc-space-2);
+}
+
+.header .actions {
+  margin-left: auto;
+}
+
+.header button,
+.history button.secondary {
+  padding: 1px var(--bc-space-3);
+  font-size: var(--bc-fs-sm);
+}
+
+/* ---------- Notices, warnings, errors ---------- */
+
+/* A notice is one quiet line: it informs, and nothing went wrong. */
+.notice {
+  margin: 0;
+  color: var(--bc-fg-dim);
+  font-size: var(--bc-fs-sm);
+}
+
+.warnings,
+.error {
+  padding: var(--bc-space-3) 10px;
+  border: 1px solid var(--bc-edge);
+  border-radius: var(--bc-radius);
+  overflow-wrap: anywhere;
+}
+
+.warnings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bc-space-2);
+  margin: 0;
+  padding-left: var(--bc-space-6);
+  color: var(--bc-warning-text);
+  background: var(--vscode-inputValidation-warningBackground);
+  border-color: var(--vscode-contrastBorder, var(--vscode-inputValidation-warningBorder, transparent));
+  font-size: var(--bc-fs-sm);
+}
+
+.error {
+  background: var(--vscode-inputValidation-errorBackground);
+  border-color: var(--vscode-contrastBorder, var(--vscode-inputValidation-errorBorder, transparent));
+}
+
+.error p {
+  margin: 0;
+  color: var(--bc-error-text);
+}
+
+.error .detail {
+  margin: var(--bc-space-2) 0 0;
+  color: var(--bc-fg-dim);
+  font-family: var(--bc-mono);
+  font-size: var(--bc-fs-mono);
+  white-space: pre-wrap;
+}
+
+.error .actions:not(:empty) {
+  margin-top: var(--bc-space-3);
+}
+
+/* ---------- Empty states ---------- */
+
+/* Nothing here yet: one dim line, centered in the room it has. */
+.empty,
+.conversation.start {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--bc-space-2);
+  color: var(--bc-fg-dim);
+  text-align: center;
+}
+
+.empty {
+  padding: var(--bc-space-6) 0;
+}
+
+.empty p,
+.start p {
+  margin: 0;
+}
+
+/* ---------- History ---------- */
+
+/* Fills the conversation's place while open. */
 .history {
   flex: 1 1 auto;
   overflow-y: auto;
 }
 
-.history.empty {
-  color: var(--vscode-descriptionForeground);
-}
-
 .history ul {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bc-space-1);
   margin: 0;
   padding: 0;
   list-style: none;
@@ -138,19 +363,22 @@ button.link:hover:not(:disabled) {
 
 .history li {
   display: flex;
-  gap: 6px;
+  gap: var(--bc-space-3);
   align-items: center;
-  padding: 2px 0 2px 6px;
-  border-left: 2px solid transparent;
+  padding: var(--bc-space-1) var(--bc-space-3);
+  border-radius: var(--bc-radius);
+  outline: 1px solid transparent;
+  outline-offset: -1px;
 }
 
 .history li:hover {
-  background: var(--vscode-list-hoverBackground);
+  background: var(--vscode-list-hoverBackground, var(--bc-fill));
+  outline: 1px dashed var(--bc-edge-active);
 }
 
 .history li.current {
-  border-left-color: var(--vscode-focusBorder);
-  background: var(--vscode-list-inactiveSelectionBackground);
+  background: var(--vscode-list-inactiveSelectionBackground, var(--bc-fill-strong));
+  outline: 1px solid var(--bc-edge-active);
 }
 
 button.history-open {
@@ -159,10 +387,10 @@ button.history-open {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 2px;
-  padding: 2px 0;
+  padding: var(--bc-space-1) 0;
   color: inherit;
   background: none;
+  border: none;
   text-align: left;
 }
 
@@ -182,38 +410,22 @@ button.history-open:hover:not(:disabled) {
 }
 
 .history-date {
-  color: var(--vscode-descriptionForeground);
-  font-size: 0.9em;
-}
-
-.usage {
-  flex: none;
-  color: var(--vscode-descriptionForeground);
-  font-size: 0.9em;
+  color: var(--bc-fg-dim);
+  font-size: var(--bc-fs-xs);
   font-variant-numeric: tabular-nums;
-  white-space: nowrap;
 }
 
-.notice {
-  margin: 0;
-  padding: 6px 8px;
-  border-left: 2px solid var(--vscode-editorWarning-foreground);
-  background: var(--vscode-inputValidation-warningBackground);
-}
+/* ---------- Conversation ---------- */
 
-.warnings {
-  margin: 0;
-  padding: 6px 8px 6px 24px;
-  border-left: 2px solid var(--vscode-editorWarning-foreground);
-  background: var(--vscode-inputValidation-warningBackground);
-}
-
+/* Whitespace separates the turns. The side padding keeps a row's focus ring inside the scroll box. */
 .conversation {
   flex: 1 1 auto;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--bc-space-4);
+  margin: 0 calc(-1 * var(--bc-space-2));
+  padding: var(--bc-space-1) var(--bc-space-2);
 }
 
 /* `display: flex` above would otherwise win over the `hidden` attribute. */
@@ -222,72 +434,33 @@ button.history-open:hover:not(:disabled) {
 }
 
 .message {
-  line-height: 1.5;
   overflow-wrap: anywhere;
 }
 
+/* The user's message is a soft filled block; the reply runs flush on the panel itself. */
 .message.user {
-  align-self: flex-end;
-  max-width: 90%;
-  padding: 6px 10px;
+  padding: var(--bc-space-3) var(--bc-space-4);
   white-space: pre-wrap;
-  border-radius: 6px;
-  background: var(--vscode-input-background);
+  background: var(--bc-fill);
+  border: 1px solid var(--bc-edge);
+  border-radius: var(--bc-radius-lg);
 }
 
-.mentions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin: 6px 0 0;
-  padding: 0;
-  list-style: none;
-  white-space: normal;
-  font-size: 0.9em;
+.message.user:not(:first-child) {
+  margin-top: var(--bc-space-3);
 }
 
-.chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 100%;
-  padding: 1px 6px;
-  border: 1px solid var(--vscode-widget-border, transparent);
-  border-radius: 3px;
-  color: var(--vscode-badge-foreground);
-  background: var(--vscode-badge-background);
+.answer > :first-child {
+  margin-top: 0;
 }
 
-.chip-path {
-  min-width: 0;
-  overflow-wrap: anywhere;
+.answer > :last-child {
+  margin-bottom: 0;
 }
 
-.chip-status {
-  opacity: 0.8;
-}
-
-.chip.failed {
-  color: var(--vscode-errorForeground);
-  background: var(--vscode-inputValidation-errorBackground);
-  border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground));
-}
-
-/* Kind marker: a page for a file, a tabbed box for a folder. */
-.kind {
-  flex: none;
-  box-sizing: border-box;
-  width: 0.7em;
-  height: 0.85em;
-  border: 1px solid currentColor;
-  border-radius: 1px;
-  opacity: 0.8;
-}
-
-.kind.folder {
-  width: 0.9em;
-  height: 0.7em;
-  border-top-width: 3px;
+/* The replies and tool steps of one turn sit close; the turn's whitespace comes from the user's message. */
+.message.assistant + .message.assistant {
+  margin-top: calc(-1 * var(--bc-space-3));
 }
 
 .message.assistant > :first-child {
@@ -298,94 +471,356 @@ button.history-open:hover:not(:disabled) {
   margin-bottom: 0;
 }
 
-.message pre {
-  padding: 8px;
+.answer + * {
+  margin-top: var(--bc-space-3);
+}
+
+/* Markdown of a reply's answer. */
+.answer p,
+.answer ul,
+.answer ol,
+.answer blockquote,
+.answer table {
+  margin: 0 0 0.75em;
+}
+
+.answer h1,
+.answer h2,
+.answer h3,
+.answer h4,
+.answer h5,
+.answer h6 {
+  margin: 1.3em 0 0.4em;
+  font-size: var(--bc-fs);
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.answer h1 {
+  font-size: calc(var(--bc-fs) + 3px);
+}
+
+.answer h2 {
+  font-size: calc(var(--bc-fs) + 2px);
+}
+
+.answer h3 {
+  font-size: calc(var(--bc-fs) + 1px);
+}
+
+.answer ul,
+.answer ol {
+  padding-left: 1.5em;
+}
+
+.answer li {
+  margin: 0.2em 0;
+}
+
+.answer li::marker {
+  color: var(--bc-fg-dim);
+}
+
+.answer blockquote {
+  padding: 0 0 0 10px;
+  color: var(--bc-fg-dim);
+  background: none;
+  border: none;
+  border-left: 1px solid var(--bc-line);
+}
+
+.answer hr {
+  height: 0;
+  margin: 1em 0;
+  border: none;
+  border-top: 1px solid var(--bc-line);
+}
+
+/* A wide table scrolls inside itself, never the panel. */
+.answer table {
+  display: block;
+  max-width: 100%;
   overflow-x: auto;
-  background: var(--vscode-textCodeBlock-background);
-  border-radius: 4px;
+  border-collapse: collapse;
+  font-size: var(--bc-fs-sm);
 }
 
-.message code {
-  font-family: var(--vscode-editor-font-family);
-  font-size: var(--vscode-editor-font-size);
+.answer th,
+.answer td {
+  padding: var(--bc-space-2) var(--bc-space-3);
+  border: 1px solid var(--bc-line);
+  text-align: left;
 }
 
-.message a {
-  color: var(--vscode-textLink-foreground);
+.answer img {
+  max-width: 100%;
 }
 
-.loading,
-.mark {
-  color: var(--vscode-descriptionForeground);
-  font-style: italic;
+.answer a {
+  color: var(--bc-link);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
+.answer a:hover {
+  color: var(--vscode-textLink-activeForeground, var(--bc-link));
+}
+
+.answer a:focus-visible {
+  outline: 1px solid var(--bc-focus);
+  outline-offset: 1px;
+  border-radius: var(--bc-radius-sm);
+}
+
+/* What is code is set in the editor font: inline code on a faint ground, a block on a filled one. */
+.answer code {
+  padding: 1px var(--bc-space-2);
+  color: var(--vscode-textPreformat-foreground, var(--bc-fg));
+  background: var(--bc-fill-strong);
+  border-radius: var(--bc-radius-sm);
+  font-family: var(--bc-mono);
+  font-size: var(--bc-fs-mono);
+}
+
+.answer pre,
+.step-result {
+  margin: 0 0 0.75em;
+  padding: var(--bc-space-3) 10px;
+  overflow-x: auto;
+  background: var(--bc-fill);
+  border: 1px solid var(--bc-edge);
+  border-radius: var(--bc-radius);
+  line-height: 1.45;
+}
+
+.step-result code,
+.answer pre code {
+  padding: 0;
+  font-family: var(--bc-mono);
+  font-size: var(--bc-fs-mono);
+  color: var(--bc-fg);
+  background: none;
+  border-radius: 0;
+}
+
+/* ---------- Mentions ---------- */
+
+.mentions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--bc-space-2);
+  margin: var(--bc-space-3) 0 0;
+  padding: 0;
+  list-style: none;
+  white-space: normal;
+  font-size: var(--bc-fs-xs);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 1px 6px;
+  background: var(--bc-fill-strong);
+  border: 1px solid var(--bc-edge);
+  border-radius: var(--bc-radius-sm);
+}
+
+.chip-path {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--bc-mono);
+}
+
+.chip-status {
+  flex: none;
+  color: var(--bc-fg-dim);
+}
+
+/* A failed chip keeps its ground and says so in the error color, on its edge too. */
+.chip.failed,
+.chip.failed .chip-status {
+  color: var(--bc-error);
+}
+
+.chip.failed {
+  border-color: var(--vscode-contrastBorder, color-mix(in srgb, var(--bc-error) 55%, transparent));
+}
+
+/* Kind marker: a page for a file, a tabbed box for a folder. */
+.kind {
+  flex: none;
+  box-sizing: border-box;
+  width: 0.7em;
+  height: 0.85em;
+  border: 1px solid var(--bc-fg-dim);
+  border-radius: 1px;
+}
+
+.kind.folder {
+  width: 0.9em;
+  height: 0.7em;
+  border-top-width: 3px;
+}
+
+.chip.failed .kind {
+  border-color: var(--bc-error);
+}
+
+/* ---------- Loading and turn endings ---------- */
+
+/* Loading: dim text that breathes; a line of its own leads with a dot. */
 .loading {
-  animation: pulse 1.4s ease-in-out infinite;
+  color: var(--bc-fg-dim);
+  animation: var(--bc-breathe) 1.6s ease-in-out infinite;
+}
+
+p.loading {
+  display: flex;
+  align-items: center;
+  gap: var(--bc-space-3);
+  margin: 0;
+}
+
+p.loading::before {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 6px;
+  background: var(--bc-fg-dim);
+  border-radius: 50%;
 }
 
 @keyframes pulse {
   50% {
-    opacity: 0.4;
+    opacity: 0.45;
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .loading {
-    animation: none;
-  }
+/* How a turn ended: a short rule, then small dim text. */
+.mark {
+  display: flex;
+  align-items: baseline;
+  gap: var(--bc-space-3);
+  margin: var(--bc-space-3) 0 0;
+  color: var(--bc-fg-dim);
+  font-size: var(--bc-fs-sm);
 }
+
+.mark::before {
+  content: "";
+  flex: none;
+  align-self: flex-start;
+  margin-top: 0.75em;
+  width: var(--bc-space-4);
+  height: 1px;
+  background: var(--bc-fg-dim);
+}
+
+/* ---------- Reasoning ---------- */
 
 .reasoning {
-  margin: 0 0 8px;
-  color: var(--vscode-descriptionForeground);
+  margin: 0 0 var(--bc-space-3);
+  color: var(--bc-fg-dim);
+  font-size: var(--bc-fs-sm);
+}
+
+.reasoning summary,
+summary.step-row {
+  border-radius: var(--bc-radius-sm);
+  cursor: pointer;
+  list-style: none;
+}
+
+.reasoning summary::-webkit-details-marker,
+summary.step-row::-webkit-details-marker {
+  display: none;
 }
 
 .reasoning summary {
-  cursor: pointer;
-  font-style: italic;
+  display: flex;
+  align-items: center;
+  gap: var(--bc-space-3);
+  min-height: 22px;
 }
 
-.reasoning summary:focus-visible {
-  outline: 1px solid var(--vscode-focusBorder);
-  outline-offset: -1px;
+/* The mark of a row that opens: a chevron drawn from two borders, turned down once open. */
+.reasoning summary::before,
+summary.step-row::before {
+  content: "";
+  flex: none;
+  align-self: center;
+  box-sizing: border-box;
+  width: 6px;
+  height: 6px;
+  margin: 0 1px 0 2px;
+  border-right: 1px solid var(--bc-fg-dim);
+  border-bottom: 1px solid var(--bc-fg-dim);
+  transform: rotate(-45deg);
+  transition: transform var(--bc-fast) var(--bc-ease);
+}
+
+.reasoning[open] > summary::before,
+.step[open] > summary.step-row::before {
+  transform: translateY(-2px) rotate(45deg);
+}
+
+.reasoning summary:hover,
+summary.step-row:hover {
+  color: var(--bc-fg);
 }
 
 .reasoning-text {
-  margin-top: 4px;
-  padding-left: 8px;
-  border-left: 2px solid var(--vscode-widget-border, var(--vscode-descriptionForeground));
+  margin: var(--bc-space-2) 0 0 5px;
+  padding-left: 10px;
+  border-left: 1px solid var(--bc-line);
   white-space: pre-wrap;
 }
 
-/* Tool step: one compact row per body tool call, its result shown once expanded. */
+/* ---------- Tool steps ---------- */
+
+/* One quiet, small line per body tool call; it opens to its result. */
 .step {
-  margin: 4px 0;
-  border: 1px solid var(--vscode-widget-border, var(--vscode-input-background));
-  border-radius: 4px;
-  font-size: 0.9em;
+  margin: var(--bc-space-2) 0;
+  color: var(--bc-fg-dim);
+  font-size: var(--bc-fs-sm);
 }
 
 .step-row {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: var(--bc-space-3);
   min-width: 0;
-  padding: 3px 8px;
+  min-height: 22px;
 }
 
-summary.step-row {
-  cursor: pointer;
+/* A call without a result has no chevron: a dot holds its place, filled while the call runs or waits. */
+div.step-row::before {
+  content: "";
+  flex: none;
+  align-self: center;
+  box-sizing: border-box;
+  width: 6px;
+  height: 6px;
+  margin: 0 1px 0 2px;
+  border: 1px solid var(--bc-fg-dim);
+  border-radius: 50%;
 }
 
-summary.step-row:focus-visible {
-  outline: 1px solid var(--vscode-focusBorder);
-  outline-offset: -1px;
+div.step-row:has(.step-status[role="status"])::before {
+  background: var(--bc-fg-dim);
+}
+
+div.step-row:has(.step-status.loading)::before {
+  animation: var(--bc-breathe) 1.6s ease-in-out infinite;
 }
 
 .step-tool {
   flex: none;
-  font-family: var(--vscode-editor-font-family);
+  font-family: var(--bc-mono);
+  font-size: var(--bc-fs-mono);
   font-weight: 600;
 }
 
@@ -394,28 +829,36 @@ summary.step-row:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: var(--vscode-editor-font-family);
+  font-family: var(--bc-mono);
+  font-size: var(--bc-fs-mono);
 }
 
 /* A command's row wraps: the command takes a line of its own under the tool name and status, whole, line breaks kept. */
 .step-row.command {
   flex-wrap: wrap;
+  row-gap: var(--bc-space-1);
 }
 
 .step-command {
   order: 1;
   flex: 1 0 100%;
+  box-sizing: border-box;
   max-height: 12em;
+  margin-bottom: var(--bc-space-1);
+  padding: var(--bc-space-2) var(--bc-space-3);
   overflow: auto;
+  color: var(--bc-fg);
+  background: var(--bc-fill);
+  border: 1px solid var(--bc-edge);
+  border-radius: var(--bc-radius-sm);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font-family: var(--vscode-editor-font-family);
 }
 
 .step-status {
   flex: none;
   margin-left: auto;
-  color: var(--vscode-descriptionForeground);
+  font-size: var(--bc-fs-xs);
 }
 
 .step-status.failed {
@@ -424,82 +867,126 @@ summary.step-row:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--vscode-errorForeground);
+  color: var(--bc-error);
 }
 
-/* Approval: the reason field and Accept / Reject under the step row of a call waiting for the user. */
+.step .step-result {
+  max-height: 20em;
+  margin: var(--bc-space-1) 0 var(--bc-space-3);
+  overflow: auto;
+  white-space: pre;
+}
+
+/* ---------- Approval ---------- */
+
+/*
+ * The call that waits for the user and its controls share one filled block, the one element of the conversation
+ * that asks for attention: it holds the conversation's only primary button.
+ */
+.decision {
+  margin: var(--bc-space-3) 0;
+  padding: var(--bc-space-2) 10px 10px;
+  background: var(--bc-fill);
+  border: 1px solid var(--bc-line);
+  border-radius: var(--bc-radius);
+}
+
+.decision .step {
+  margin: 0;
+}
+
+/* What the user decides on shows whole: the row wraps and its path is never cut. */
+.decision .step-row {
+  flex-wrap: wrap;
+  row-gap: 0;
+  color: var(--bc-fg);
+}
+
+.decision .step-arg {
+  overflow: visible;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.decision .step-status {
+  font-weight: 600;
+}
+
+.decision div.step-row::before {
+  background: var(--bc-fg);
+  border-color: var(--bc-fg);
+}
+
+/* The reason field, then Accept or Run and Reject: Shift+Tab from the message box meets them in reverse. */
 .approval {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin: 4px 0;
+  flex-direction: column;
+  gap: var(--bc-space-3);
+  min-width: 0;
+  margin: var(--bc-space-3) 0 0;
   padding: 0;
   border: none;
 }
 
 .approval-reason {
-  flex: 1 1 12em;
+  width: 100%;
   min-width: 0;
-  padding: 2px 4px;
 }
 
-.message .step-result {
-  max-height: 20em;
-  margin: 0;
-  overflow: auto;
-  border-radius: 0 0 4px 4px;
-  white-space: pre;
-}
+/* ---------- Composer ---------- */
 
-.error {
-  padding: 6px 8px;
-  border-left: 2px solid var(--vscode-errorForeground);
-  background: var(--vscode-inputValidation-errorBackground);
-}
-
-.error p {
-  margin: 0;
-}
-
-.error .detail {
-  margin: 4px 0 0;
-  white-space: pre-wrap;
-  font-family: var(--vscode-editor-font-family);
-  font-size: 0.9em;
-  color: var(--vscode-descriptionForeground);
-}
-
-.error .actions:not(:empty) {
-  display: flex;
-  gap: 6px;
-  margin-top: 6px;
-}
-
+/* The message box and its button share one large rounded field. */
 .composer {
   position: relative;
   display: flex;
-  gap: 6px;
+  gap: var(--bc-space-2);
   align-items: flex-end;
+  padding: 6px;
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, var(--bc-line));
+  border-radius: var(--bc-radius-lg);
 }
 
-/* Mention and slash menus: overlay the conversation right above the composer, so the composer never moves. */
+.composer:has(textarea:focus) {
+  border-color: var(--bc-focus);
+}
+
+.composer textarea {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 2.5em;
+  padding: var(--bc-space-1) var(--bc-space-2);
+  background: transparent;
+  border: none;
+  outline: none;
+  resize: vertical;
+}
+
+.composer button {
+  flex: none;
+}
+
+/* ---------- Mention and slash menus ---------- */
+
+/* Overlay the conversation right above the composer, so the composer never moves. */
 .menu {
   position: absolute;
-  left: 0;
-  right: 0;
+  left: -1px;
+  right: -1px;
   bottom: 100%;
-  margin-bottom: 4px;
+  margin-bottom: var(--bc-space-2);
   max-height: 50vh;
   overflow-y: auto;
-  color: var(--vscode-quickInput-foreground, var(--vscode-foreground));
+  color: var(--vscode-quickInput-foreground, var(--bc-fg));
   background: var(--vscode-quickInput-background, var(--vscode-editorWidget-background));
-  border: 1px solid var(--vscode-widget-border, var(--vscode-focusBorder));
-  border-radius: 3px;
-  box-shadow: 0 2px 8px var(--vscode-widget-shadow, transparent);
+  border: 1px solid var(--vscode-contrastBorder, var(--vscode-widget-border, var(--bc-rule)));
+  border-radius: var(--bc-radius);
+  box-shadow: 0 4px 12px var(--vscode-widget-shadow, transparent);
+  font-size: var(--bc-fs-sm);
 }
 
 .menu-list {
-  padding: 2px 0;
+  padding: var(--bc-space-2);
 }
 
 .menu-list:empty {
@@ -509,18 +996,24 @@ summary.step-row:focus-visible {
 .menu [role="option"] {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 2px 8px;
+  gap: var(--bc-space-3);
+  padding: var(--bc-space-1) var(--bc-space-3);
+  border-radius: var(--bc-radius-sm);
+  outline: 1px solid transparent;
+  outline-offset: -1px;
   cursor: pointer;
 }
 
 .menu [role="option"]:hover {
-  background: var(--vscode-list-hoverBackground);
+  background: var(--vscode-list-hoverBackground, var(--bc-fill));
+  outline: 1px dashed var(--bc-edge-active);
 }
 
+/* The highlighted row: the theme's selection, or the panel's stronger fill, and an edge in high contrast. */
 .menu [role="option"].highlighted {
-  color: var(--vscode-list-activeSelectionForeground);
-  background: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground, inherit);
+  background: var(--vscode-list-activeSelectionBackground, var(--bc-fill-strong));
+  outline: 1px solid var(--bc-edge-active);
 }
 
 .menu-label {
@@ -528,6 +1021,8 @@ summary.step-row:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-family: var(--bc-mono);
+  font-size: var(--bc-fs-mono);
 }
 
 /* A slash command's name keeps its width; its description takes the rest of the row, cut at its end. */
@@ -540,22 +1035,17 @@ summary.step-row:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--vscode-descriptionForeground);
+  color: var(--bc-fg-dim);
 }
 
-.menu [role="option"].highlighted .menu-description {
+.menu [role="option"].highlighted .menu-description,
+.menu [role="option"].highlighted .kind {
   color: inherit;
+  border-color: currentColor;
 }
 
 .menu-notice {
   margin: 0;
-  padding: 2px 8px;
-  color: var(--vscode-descriptionForeground);
-  font-style: italic;
-}
-
-.composer textarea {
-  flex: 1 1 auto;
-  resize: vertical;
-  padding: 4px 6px;
+  padding: var(--bc-space-2) var(--bc-space-4);
+  color: var(--bc-fg-dim);
 }

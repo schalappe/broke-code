@@ -252,6 +252,7 @@ describe("approval", () => {
   test("an open request shows its row waiting for a decision, Accept, Reject, and a reason field, beside Stop", () => {
     const html = turn([writing]);
     expect(html).toContain("waiting for your decision");
+    expect(html).toContain('<div class="answer"><p>Renaming.</p></div><div class="decision"><div class="step">');
     expect(html).not.toContain("running…");
     expect(html).toContain(">Accept<");
     expect(html).toContain(">Reject<");
@@ -259,10 +260,38 @@ describe("approval", () => {
     expect(html).toContain(">Stop<");
   });
 
+  test("a request opening leaves focus where it was, in the message box or on a button", async () => {
+    const entries: ChatEntry[] = [{ role: "user", content: "Hi", mentions: [] }, writing];
+    const running = stateWith(true, { entries });
+    const deciding = stateWith(true, { entries, approval });
+    const focusedAfterOpening = async (pick: (panel: Panel) => HTMLElement) => {
+      let kept = false;
+      await withPanel(running, async (panel) => {
+        const target = pick(panel);
+        target.focus();
+        expect(document.activeElement).toBe(target);
+        await panel.show(deciding);
+        expect(panel.host.querySelector(".approval-reason")).not.toBeNull();
+        kept = document.activeElement === target;
+      });
+      return kept;
+    };
+
+    expect(await focusedAfterOpening(({ textarea }) => textarea)).toBe(true);
+    expect(
+      await focusedAfterOpening(({ host }) => {
+        const history = [...host.querySelectorAll("button")].find((element) => element.textContent === "History");
+        if (!history) throw new Error("no History button");
+        return history;
+      }),
+    ).toBe(true);
+  });
+
   test("without an open request, a running call shows no decision buttons", () => {
     const html = turn([writing], false);
     expect(html).toContain("running…");
     expect(html).not.toContain(">Accept<");
+    expect(html).not.toContain('class="decision"');
   });
 
   test("the buttons belong to the reply in flight only, never to an earlier one", () => {
@@ -708,6 +737,8 @@ type Panel = {
   press: (key: string) => Promise<void>;
   /** A message from the host. */
   receive: (message: unknown) => Promise<void>;
+  /** Render another state, as a snapshot from the host does. */
+  show: (state: ChatState) => Promise<void>;
   /** Replace `field`'s value as typing does. */
   fill: (field: HTMLInputElement | HTMLTextAreaElement, value: string) => Promise<void>;
   /** Click the button labelled `label`. */
@@ -750,6 +781,7 @@ async function withPanel(state: ChatState, run: (panel: Panel) => Promise<void>)
         act(async () => {
           window.dispatchEvent(new MessageEvent("message", { data: message }));
         }),
+      show: (next) => act(async () => root.render(createElement(App, { state: next, language: "en" }))),
       fill: (field, value) =>
         act(async () => {
           setValue(field, value);

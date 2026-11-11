@@ -26,6 +26,9 @@ goes to the model as typed. Read `GLOSSARY.md` for the domain vocabulary and `do
 - `GLOSSARY.md`: the domain terms (body tool call, harness, agent turn, tool step, provider, skill, slash command,
   mention). Code and docs use these names.
 - `docs/adr/`: architecture decision records.
+- `DESIGN.md`: the design rules of the chat panel, written from `src/webview/styles.css`: the token layer, the two
+  fonts, spacing and radii, the high-contrast rule, the look of each state, motion, and the keyboard and focus rules.
+  Read it before changing the panel's markup or styles.
 - `src/core/`: modules that import nothing from `vscode`: settings parsing, the API key shape check, the provider
   HTTP client, the CA trust and certificate error classification (`tls.ts`), the SSE reader, the typed provider
   errors, the chat controller (conversation state, the agent turn loop with its tool runner, instruction reader, and
@@ -77,7 +80,8 @@ goes to the model as typed. Read `GLOSSARY.md` for the domain vocabulary and `do
   `brokeCode.autoApproveWrites` values it feeds the core decisions), the instruction reader and the skill reader from the home folder and the workspace folders, the latter logging the
   skills of each send, and the same discovery, unlogged, for the `/` menu's `querySkills`; `chatView.ts` opens the
   Quick Pick of `chooseModel`).
-- `src/webview/`: the React chat panel and its CSS, tool step rows and the approval controls included. `SuggestionMenu.tsx` is the autocomplete list the `@` and
+- `src/webview/`: the React chat panel and its CSS (`styles.css`: a token layer, then rules that consume it, every color
+  from a `--vscode-*` variable; see `DESIGN.md`), tool step rows and the approval controls included. `SuggestionMenu.tsx` is the autocomplete list the `@` and
   `/` menus share, a row with an optional description; `composer.ts` holds the message box's decisions without React
   (the token at the caret, each menu's rows, what a key does, what picking a `/` row does (`slashPick`), the built-in
   command a message runs).
@@ -235,7 +239,9 @@ goes to the model as typed. Read `GLOSSARY.md` for the domain vocabulary and `do
   - A tool asks through its run context: `ToolContext.requestApproval(request)` settles with Accept, Reject (with the
     reason typed, trimmed, left out when blank), or Cancel. While the request is open, the reply stays `streaming` and
     `ChatState.approval` holds `{ id, kind, tool, summary }`; the chat renders the step row "waiting for your decision",
-    Accept (Run for a command), Reject, and a reason field from that state alone. The webview's `approve { id }` and
+    Accept (Run for a command), Reject, and a reason field from that state alone, in one block, and never moves the
+    focus when the request opens: from the message box, Shift+Tab reaches Reject, then Accept or Run, then the reason
+    field. The webview's `approve { id }` and
     `reject { id, reason? }` are validated like the other messages, and a decision for a request no longer open is
     ignored. One request at a time, since one call runs per reply.
   - A write opens the native VS Code diff editor beside the chat, titled with the path: the planned `before` text on
