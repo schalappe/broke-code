@@ -20,7 +20,8 @@ command at once. Typing `/` at the start of a message lists `/new`, `/model`, an
 `/model` itself, and a message `/<name> args` loads that skill in the controller, with its arguments; any other `/word`
 goes to the model as typed. Outside the chat, the command "broke-code: Generate commit message", a button in the
 Source Control title of a git repository, sends that repository's staged diff to the provider and model selected in the
-chat and writes the reply to the commit input box (ADR 0004). Read `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the decisions behind the design, starting with
+chat and writes the reply to the commit input box (ADR 0004). Each final code block of an answer has Copy and Insert at
+cursor. Read `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the decisions behind the design, starting with
 `docs/adr/0001-body-tool-calls.md`.
 
 ## Structure
@@ -49,7 +50,9 @@ chat and writes the reply to the commit input box (ADR 0004). Read `GLOSSARY.md`
   pick port the host fills with `showQuickPick`), workspace file access (`workspaceFiles.ts`: the inside-workspace check and its read-only
   roots (the loaded skills' folders outside the workspace, for reads only), capped reads, one-level listings, line truncation, the write boundary and atomic writes, with `node:fs`), mentions (`mentions.ts`: token detection, picked and typed
   mentions merged, reading, and the text the model receives), where a message holds Markdown code
-  (`markdownCode.ts`), the menu logic (`suggestions.ts`: the `@` token at the caret, index entries,
+  (`markdownCode.ts`; also `isCodeBlockClosed`, whether a rendered code block's text is final, and `codeBlockText`,
+  the text Copy and Insert at cursor take), Insert at cursor (`insertCode.ts`: `insertCode` over an editor port the
+  host fills with `window.activeTextEditor`: no editor, edit refused, failed, or done), the menu logic (`suggestions.ts`: the `@` token at the caret, index entries,
   filtering, the index exclusions; the `/` token at the start of the message, `BUILT_IN_COMMANDS`, the slash command
   filter), the menu's file index (`fileIndex.ts`: one scan shared until a file
   changes, behind a scan port), the body tool call parser (`toolCalls.ts`: `ToolSpec`, the first call-shaped block,
@@ -85,11 +88,12 @@ chat and writes the reply to the commit input box (ADR 0004). Read `GLOSSARY.md`
   `approval.ts` (the diff preview over `vscode.diff` and a content provider, the tabs, documents, and
   `brokeCode.autoApproveWrites` values it feeds the core decisions), the instruction reader and the skill reader from the home folder and the workspace folders, the latter logging the
   skills of each send, and the same discovery, unlogged, for the `/` menu's `querySkills`; `chatView.ts` opens the
-  Quick Pick of `chooseModel`; `commitMessage.ts` registers `broke-code.generateCommitMessage`, its git port over the
+  Quick Pick of `chooseModel` and runs `insertCode` over the active text editor; `commitMessage.ts` registers `broke-code.generateCommitMessage`, its git port over the
   built-in Git extension's API, the repository Quick Pick, the replace question, the progress notification, and the
   notifications).
 - `src/webview/`: the React chat panel and its CSS (`styles.css`: a token layer, then rules that consume it, every color
-  from a `--vscode-*` variable; see `DESIGN.md`), tool step rows and the approval controls included. `SuggestionMenu.tsx` is the autocomplete list the `@` and
+  from a `--vscode-*` variable; see `DESIGN.md`), tool step rows, the approval controls, and the answer's code blocks with Copy and Insert at cursor (`CodeBlock`,
+  the `pre` override of the answer's renderer) included. `SuggestionMenu.tsx` is the autocomplete list the `@` and
   `/` menus share, a row with an optional description; `composer.ts` holds the message box's decisions without React
   (the token at the caret, each menu's rows, what a key does, what picking a `/` row does (`slashPick`), the built-in
   command a message runs).
@@ -313,6 +317,20 @@ chat and writes the reply to the commit input box (ADR 0004). Read `GLOSSARY.md`
     outlive it.
 - Reasoning output (`<think>` tags, `reasoning`, or `reasoning_content`) shows collapsed in the chat. The parser
   never looks for tool calls in it, and the conversation history sent back to the model drops it.
+- A code block of an assistant answer (fenced or indented, rendered by the answer's Markdown) has Copy and Insert at
+  cursor in a header above its code once its text is final: its closing fence was written, rendered text follows it
+  (the parser closed it), or its reply has ended (done, stopped, failed, halted, or cut off). While its reply is
+  waiting or streaming, a block still open has none. React-markdown renders an open fence like a closed one, so
+  `isCodeBlockClosed` reads closure from the answer's source at the block's `node.position`. The call block, tool step
+  rows, reasoning, and user messages are not Markdown and get no controls. The block's text is its code as rendered,
+  without the fence lines and its final line break; an empty block's buttons are disabled. Copy writes it with the
+  webview's `navigator.clipboard` and shows "Copied", or "Copy failed" when the write is refused, in the button's
+  place for 2 seconds. Insert at cursor posts `insertCode { text }` (dropped unless `text` is a string of at most
+  `REPLY_MAX_LENGTH` characters, since a block cannot be longer than its reply); the host replaces every selection of
+  `window.activeTextEditor` with it, inserting at each caret, in one `editor.edit`, so one Undo restores it. No active
+  text editor, an edit the editor refuses (a read-only document, such as the write approval's diff), and an edit that
+  throws each show a native error notification and change nothing. A success shows nothing, and neither button moves
+  the focus.
 - Each request of an agent turn sends a `system` message first, then the history: each user entry's composed text,
   each assistant answer verbatim with its call block (reasoning never), and each tool step as a `user` message
   `<tool_result tool="<name>" status="ok|error">`, the text, then `</tool_result>`, never the OpenAI `tool` role

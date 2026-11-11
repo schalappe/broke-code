@@ -247,6 +247,20 @@ follows the command in the message box, picking one only puts its name there. No
 they cannot be read, the menu says so and still shows `/new` and `/model`. A skipped skill is not listed; its warning
 shows after your next message.
 
+## Code blocks
+
+Each code block of an answer shows **Copy** and **Insert at cursor** above its code when the pointer is over it or the
+keyboard focus is inside it; Tab reaches them in reading order. A block gets them once its text is final: its fence is
+closed, or the reply has ended.
+
+- **Copy** puts the code on the clipboard, without the fence lines and its final line break, and says **Copied** for
+  about two seconds (**Copy failed** when the clipboard refuses it).
+- **Insert at cursor** replaces the selection of the active editor with the code, or inserts it at the cursor, and at
+  every cursor when there are several. One **Undo** restores the editor. With no editor open, or one that cannot be
+  edited (a read-only file, or the diff of a change waiting for your decision), a notification says so and nothing
+  changes. The focus stays in the chat.
+- An empty block's buttons are disabled.
+
 ## Commit messages
 
 In the Source Control view, the **Generate commit message** button (a sparkle) in the title of a git repository asks

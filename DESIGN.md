@@ -121,7 +121,8 @@ high-contrast theme defines `--vscode-contrastBorder` and `--vscode-contrastActi
 
 - `--bc-edge` is `var(--vscode-contrastBorder, transparent)`. Every filled surface carries
   `border: 1px solid var(--bc-edge)`: invisible in light and dark themes, a visible boundary in high contrast. This
-  covers the user's message, code blocks, command blocks, chips, buttons, and the warning and error blocks.
+  covers the user's message, code blocks (the frame of a block with its header included), command blocks, chips,
+  buttons, and the warning and error blocks.
 - `--bc-edge-active` is `var(--vscode-contrastActiveBorder, transparent)`. The highlighted menu row and the current
   History row carry it as a solid outline; a hovered row, as a dashed one.
 - `--bc-line` is `var(--vscode-contrastBorder, var(--bc-rule))`: a line that is drawn in every theme (a secondary
@@ -193,6 +194,9 @@ user's message). Borders and rules are 1px. No colored side stripe.
 - Secondary (New chat, History, Delete, Reject, Retry): a hairline box on the panel (`--bc-line`), the foreground as
   text; `--bc-fill-strong` when hovered or pressed (`aria-expanded="true"`).
 - Link (Open provider settings, Set context size): the link color, underlined.
+- Code block action (Copy, Insert at cursor): a secondary button two pixels down (`--bc-fs-xs`), at least a row high
+  (`--bc-row`). Never primary, so the decision block keeps the conversation's one primary button. Copy shows its
+  outcome, "Copied" or "Copy failed", in place of its label for about two seconds.
 - Disabled: half opacity. Header and History buttons are one size down.
 
 ### Fields
@@ -205,6 +209,9 @@ button share one large rounded field (radius 10px); its border takes the focus c
 - User message: `--bc-fill`, radius 10px, full width. Its chips sit under the text: a path in the editor font on
   `--bc-fill-strong`, then its status in dim text; a failed chip is drawn in the error color.
 - Reply: Markdown flush on the panel, inside `.answer`, the only place the Markdown rules apply.
+- Code block of a reply: once its text is final, its frame (`.code-block`: `--bc-fill`, `--bc-edge`, radius 6px)
+  holds a header (`.code-actions`) with Copy and Insert at cursor at the right, then the code, which scrolls inside
+  itself under the header. A block still growing renders as a bare code block, without the header.
 - Reasoning: a small dim row with a chevron; opened, its text sits behind a 1px rule.
 - Tool step: one small dim line: chevron, tool name, main argument, status at the right. It opens to its result in a
   code block. A command shows whole in a block under its line. A failed status is in the error color.
@@ -246,12 +253,17 @@ Each kind of state has one look, distinct from the others at a glance:
 
 Small, and never needed to understand a state: the breathing of a loading text (opacity, 1.6s), the turn of a
 chevron and the color change of a button (0.12s, ease-out). Two tokens carry it: `--bc-breathe`, the animation's name, and `--bc-fast`,
-the duration of a transition. Under `prefers-reduced-motion: reduce`, and when VS Code sets `vscode-reduce-motion` on
+the duration of a transition. The reveal of controls shown on hover or focus (a code block's header) fades their
+opacity over `--bc-fast`. Under `prefers-reduced-motion: reduce`, and when VS Code sets `vscode-reduce-motion` on
 `body`, they become `none` and `0s`, so new motion that reads them stops there too.
 
 ### Keyboard and focus
 
 - Every control is a native element in the tab order; the DOM order is the visual order.
+- A control revealed on hover is also revealed while the focus is inside its block (`:focus-within`), and hides with
+  `opacity` only, never `visibility` or `display`, so it stays in the tab order, and its room stays reserved, so the
+  reveal moves nothing. On a device without hover it always shows. A code block's Copy and Insert at cursor follow
+  this rule, and neither moves the focus when clicked.
 - One focus ring: `1px solid var(--vscode-focusBorder)`. It sits inside a field or a row (offset -1px), which fill
   their line, and outside a button (offset 2px), where a ring on the button's own fill would not show. The message
   box shows it on the border of its rounded field.
