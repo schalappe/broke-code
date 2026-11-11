@@ -468,6 +468,27 @@ describe("ChatController mentions", () => {
     expect(JSON.stringify(controller.snapshot)).not.toContain("export const a");
   });
 
+  test("keeps a @selection's path and line range in the state, which the record saves", async () => {
+    const range = { path: "src/app.ts", start: 10, end: 12 };
+    const reader: MentionReader = {
+      read: async (path): Promise<ReadMention> => ({
+        path,
+        kind: "selection",
+        status: "attached",
+        lines: 3,
+        range,
+        content: "a\nb\nc\n",
+        omitted: 0,
+      }),
+    };
+    const { controller } = await ready(mentionsProvider, reader);
+    await controller.send("explain @selection");
+
+    expect(controller.snapshot.entries[0]).toMatchObject({
+      mentions: [{ path: "selection", kind: "selection", status: "attached", lines: 3, range }],
+    });
+  });
+
   test("keeps a partial @diff's failed folder count in the state, never the failures' text", async () => {
     const reader: MentionReader = {
       read: async (path): Promise<ReadMention> => ({
