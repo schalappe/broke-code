@@ -264,7 +264,8 @@ the duration of a transition. Under `prefers-reduced-motion: reduce`, and when V
   box.
 - The `@` and `/` menus keep the focus in the message box (`aria-activedescendant`); the highlighted row is the
   visible focus there, so it must differ from its neighbours in every theme.
-- The message box takes the focus back when a reply ends.
+- The message box takes the focus back when a reply ends, unless History is open: the focus then stays where the user
+  has it, so a key meant for the History filter never edits or sends the message.
 
 ## Do's and Don'ts
 

@@ -93,6 +93,7 @@ export function App({ state, language }: { state: ChatState; language: string })
       {(configured || isReplying(state)) && (
         <Composer
           state={state}
+          historyOpen={historyOpen}
           startNewChat={() => {
             setHistoryOpen(false);
             post({ type: "newChat" });
@@ -808,9 +809,18 @@ function Reasoning({ entry }: { entry: ChatEntry & { role: "assistant" } }) {
  * skills and lists them after the built-in commands, filtered as the user types; picking a skill inserts `/<name> `.
  * Picking a built-in row, or sending exactly `/new` or `/model`, runs it when Send would act (`startNewChat`, or the
  * editor's model list through `chooseModel`) and empties the box; otherwise, or with text after the token, the pick
- * inserts `/<name> `.
+ * inserts `/<name> `. When a reply ends, the message box takes the focus, unless History is open (`historyOpen`): the
+ * focus then stays where the user has it, so typing keeps going to the History filter.
  */
-function Composer({ state, startNewChat }: { state: ChatState; startNewChat: () => void }) {
+function Composer({
+  state,
+  historyOpen,
+  startNewChat,
+}: {
+  state: ChatState;
+  historyOpen: boolean;
+  startNewChat: () => void;
+}) {
   const [text, setText] = useState("");
   const [caret, setCaret] = useState(0);
   const [focused, setFocused] = useState(true);
@@ -839,8 +849,9 @@ function Composer({ state, startNewChat }: { state: ChatState; startNewChat: () 
   const rows = mentionMenu?.items.length ?? slashMenu?.items.length;
   const menuId = mentionMenu ? MENTION_MENU_ID : slashMenu ? SLASH_MENU_ID : undefined;
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: only a reply's end moves the focus; History closing must not.
   useEffect(() => {
-    if (!replying) input.current?.focus();
+    if (!replying && !historyOpen) input.current?.focus();
   }, [replying]);
 
   // [>]: Each query gets a new id and an answer counts only for the latest one; leaving the token also bumps it, so

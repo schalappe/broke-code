@@ -1486,6 +1486,36 @@ describe("history filter", () => {
     });
   });
 
+  /** `saved` in the middle of a reply, then with that reply done. */
+  const question: ChatEntry = { role: "user", content: "Hi", mentions: [] };
+  const streaming = stateWith(true, {
+    conversations,
+    entries: [question, { role: "assistant", reasoning: "", content: "Hel", status: "streaming" }],
+  });
+  const replied = stateWith(true, {
+    conversations,
+    entries: [question, { role: "assistant", reasoning: "", content: "Hello", status: "done" }],
+  });
+
+  test("a reply that ends while History is open leaves the focus in the filter field", async () => {
+    await withPanel(streaming, async (panel) => {
+      await panel.click("History");
+      const field = filterField(panel.host);
+      if (!field) throw new Error("no filter field");
+      await panel.fill(field, "notes");
+      await panel.show(replied);
+      expect(document.activeElement).toBe(field);
+    });
+  });
+
+  test("a reply that ends with History closed gives the focus to the message box", async () => {
+    await withPanel(streaming, async (panel) => {
+      historyButton(panel.host)?.focus();
+      await panel.show(replied);
+      expect(document.activeElement).toBe(panel.textarea);
+    });
+  });
+
   test("the listing failure shows whatever the filter", async () => {
     const failed = stateWith(true, { conversations, listFailed: { cause: "Error: EACCES" } });
     await withHistory(failed, async (panel, field) => {
