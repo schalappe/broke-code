@@ -253,7 +253,10 @@ describe("CommitMessageGenerator", () => {
     const cases: [RepositoryLookup["kind"], string][] = [
       ["noRepository", "No git repository is open in this window."],
       ["gitUnavailable", "The Git extension is not available. Check that the built-in Git extension is enabled."],
-      ["gitDisabled", "Git is turned off in the settings (git.enabled)."],
+      [
+        "gitDisabled",
+        "The Git extension is disabled: git is turned off in the settings (git.enabled), or git was not found.",
+      ],
     ];
     for (const [kind, message] of cases) {
       const { ports, calls } = fakePorts({});

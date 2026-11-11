@@ -123,7 +123,7 @@ export type CommitRepository = {
 
 /**
  * The repository a run works on, or why there is none: the Git extension is missing or did not start
- * (`gitUnavailable`), git is turned off (`gitDisabled`), no repository is open (`noRepository`), or the user dismissed
+ * (`gitUnavailable`), the Git extension runs without git, turned off by `git.enabled` or not found (`gitDisabled`), no repository is open (`noRepository`), or the user dismissed
  * the repository pick (`dismissed`, which says nothing).
  */
 export type RepositoryLookup =
@@ -320,7 +320,11 @@ export class CommitMessageGenerator {
         });
         return;
       case "gitDisabled":
-        ports.showError({ message: l10n.t("Git is turned off in the settings (git.enabled).") });
+        ports.showError({
+          message: l10n.t(
+            "The Git extension is disabled: git is turned off in the settings (git.enabled), or git was not found.",
+          ),
+        });
         return;
     }
   }

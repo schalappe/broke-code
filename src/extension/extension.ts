@@ -1,8 +1,8 @@
 /**
  * @module extension
  * Activation entry point: wires settings, API keys, mentions, read tools, write tools and commands behind their approval,
- * instruction files, skills, turn limits, file index, saved conversations, chat controller, chat view, and
- * `broke-code.setApiKey`.
+ * instruction files, skills, turn limits, file index, saved conversations, chat controller, chat view,
+ * `broke-code.setApiKey`, and `broke-code.generateCommitMessage`.
  */
 import { homedir } from "node:os";
 import * as vscode from "vscode";
@@ -11,6 +11,7 @@ import { type CommandEnv, commandShell, killRunningCommands } from "../core/comm
 import { directoryFiles } from "../core/conversationFiles";
 import { ConversationStore } from "../core/conversationStore";
 import { readInstructionFiles } from "../core/instructions";
+import { contextOf } from "../core/limits";
 import { type MentionReader, readMention } from "../core/mentions";
 import { parseProviders } from "../core/providers";
 import { describeSkillDiscovery, readSkills, type SkillDiscovery } from "../core/skills";
@@ -21,6 +22,7 @@ import { approvalApplier, fileApplier, type WriteApprovalHost } from "../core/wr
 import { ApiKeys } from "./apiKeys";
 import { DiffPreviews, hasUnsavedChanges, readAutoApproveWrites } from "./approval";
 import { CHAT_VIEW_ID, ChatView } from "./chatView";
+import { registerCommitMessageCommand } from "./commitMessage";
 import { askContextSize, LIMIT_SETTINGS, readCommandTimeoutSeconds, readLimits } from "./contextSizes";
 import { WorkspaceFileIndex } from "./fileIndex";
 
@@ -77,6 +79,15 @@ export function activate(context: vscode.ExtensionContext): void {
     querySkills: discoverSkills,
   });
 
+  // [>]: The chat's selection, its key, and its context size, read when a commit message run starts.
+  const commitSelection = async () => {
+    const { provider: name, model } = controller.snapshot;
+    const provider = readProviders().providers.find((entry) => entry.name === name);
+    if (!provider || model === undefined) return undefined;
+    const access = { provider, apiKey: await apiKeys.get(provider.name) };
+    return { access, model, contextSize: contextOf(readLimits(), model).size };
+  };
+
   const applySettings = () => {
     controller.setProviders(readProviders());
     apiKeys.promptMissing();
@@ -93,6 +104,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     apiKeys.onDidChange((provider) => controller.keyChanged(provider)),
     fileIndex,
+    registerCommitMessageCommand(commitSelection),
     // [>]: Stop first, so an open approval request is cancelled before its diff closes with the others.
     {
       dispose: () => {
