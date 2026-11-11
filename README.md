@@ -258,7 +258,8 @@ only repository open, or the one you pick when there are several.
 - The message follows [Conventional Commits](https://www.conventionalcommits.org/), in English: a subject of at most
   72 characters (asked of the model, not checked), and a body saying why when the change needs one.
 - When the commit message box already holds text, broke-code asks before replacing it; **Cancel** keeps your text
-  and sends nothing.
+  and sends nothing. If you change the box while the model writes, it asks again before writing; **Cancel** then
+  keeps what you typed.
 - A notification shows while the model writes; its **Cancel** stops the request and leaves the box as it was. The
   message appears once the reply has ended, without the model's reasoning or a code block or quotes around it.
 - The request uses the provider, model, and context size of the chat. A diff too large for the model's context is

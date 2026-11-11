@@ -24,7 +24,9 @@ that alone exceeds the room is cut to it. A cut request says so to the model and
 The reply is written once, when it has ended, cleaned of `<think>` text and of a code fence or quotes wrapping the
 whole of it. Nothing streams into the input box (maintainer decision, 2026-11-11): text already shown there could not
 be cleaned, and a cancel would have to restore the box. A box that already holds text is replaced only after the user
-confirms, asked before the request so no request is wasted.
+confirms, asked before the request so no request is wasted. A box the user changed during the run is asked about
+again right before the write (maintainer decision, 2026-11-11), so the message never replaces text nobody agreed to
+lose.
 
 The command runs beside the chat, also while a chat reply is in flight, and touches no conversation: nothing is
 saved and no entry is added. It shares nothing with the controller but the selection it reads (`snapshot.provider`,

@@ -161,7 +161,7 @@ type RequestResult =
 /**
  * The `broke-code.generateCommitMessage` command. A run finds its repository, asks before replacing text in its input
  * box, reads the staged diff, sends one streaming request to the chat's provider and model, and writes the cleaned
- * reply to the box once, when the reply has ended. Each failure is a notification and writes nothing. One run per
+ * reply to the box once, when the reply has ended, asking again when the user changed the box meanwhile. Each failure is a notification and writes nothing. One run per
  * repository at a time; `dispose` (deactivation) aborts every run, which then writes nothing. Never stages, commits,
  * or pushes, and touches no conversation.
  */
@@ -220,6 +220,8 @@ export class CommitMessageGenerator {
     const { l10n, ports } = this;
     if (repository.readInputBox().trim() !== "" && !(await ports.confirmReplace(repository))) return;
     if (stopped.aborted) return;
+    // [>]: The text the user agreed to replace, or the empty box; any other text found before the write is asked about.
+    const agreed = repository.readInputBox();
     const selection = await ports.selection();
     if (stopped.aborted) return;
     if (!selection) {
@@ -227,7 +229,7 @@ export class CommitMessageGenerator {
       return;
     }
     const result = await ports.withProgress((cancelled) =>
-      this.request(repository, selection, AbortSignal.any([stopped, cancelled])),
+      this.request(repository, selection, agreed, AbortSignal.any([stopped, cancelled])),
     );
     switch (result.kind) {
       case "written":
@@ -252,10 +254,14 @@ export class CommitMessageGenerator {
     }
   }
 
-  /** Read the diff, send the request, and write the message, unless `signal` aborts first. */
+  /**
+   * Read the diff, send the request, and write the message, unless `signal` aborts first. When the box no longer holds
+   * `agreed`, the text the run was allowed to replace, the replace question is asked again; a refusal writes nothing.
+   */
   private async request(
     repository: CommitRepository,
     selection: CommitSelection,
+    agreed: string,
     signal: AbortSignal,
   ): Promise<RequestResult> {
     const { l10n } = this;
@@ -301,6 +307,10 @@ export class CommitMessageGenerator {
     const message = cleanCommitMessage(reply);
     if (message === undefined) {
       return { kind: "error", text: { message: l10n.t("The model's reply held no commit message.") } };
+    }
+    if (repository.readInputBox() !== agreed) {
+      const replace = await this.ports.confirmReplace(repository);
+      if (!replace || signal.aborted) return { kind: "stopped" };
     }
     repository.writeInputBox(message);
     return { kind: "written", partial: request.partial };

@@ -588,7 +588,11 @@ chat and writes the reply to the commit input box (ADR 0004). Read `GLOSSARY.md`
   `<think>`) is dropped. When the reply has ended, `cleanCommitMessage` drops any `<think>` … `</think>` text (one never
   closed, to the end), unwraps a code fence (` ``` ` or `~~~`, any info string) or a pair of quotes (`"`, `'`, `“”`,
   `‘’`, a backtick) wrapping the whole reply, and trims. The input box gets that text once; nothing is written before
-  the reply ends. Empty after cleaning: "The model's reply held no commit message.", nothing written.
+  the reply ends. The run remembers the box's text once it decided to go on (the text the user agreed to replace, or
+  the empty box); right before the write it reads the box again, and when the text differs (the user typed
+  meanwhile) it asks the replace question again: a refusal writes nothing and ends quietly, keeping the user's text;
+  "Replace" writes once (maintainer decision, 2026-11-11). Cancel or deactivation while that question is open writes
+  nothing. Empty after cleaning: "The model's reply held no commit message.", nothing written.
 - A provider error shows the chat's wording (`describeProviderError` with `vscode.l10n`), its detail after the message.
   Cancel aborts the request and writes nothing, with no notification. Deactivation disposes the generator, which aborts
   every run; an aborted run writes nothing, also when its replace question is answered after the abort. An unexpected

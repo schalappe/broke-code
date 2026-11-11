@@ -162,7 +162,7 @@ describe("CommitMessageGenerator", () => {
    */
   function fakePorts(options: {
     reply?: (request: StreamChatOptions) => Promise<ChatOutcome>;
-    confirm?: boolean | Promise<boolean>;
+    confirm?: boolean | Promise<boolean> | (() => Promise<boolean>);
     selection?: CommitSelection | undefined;
   }) {
     const calls = {
@@ -182,7 +182,8 @@ describe("CommitMessageGenerator", () => {
       },
       confirmReplace: async () => {
         calls.questions++;
-        return options.confirm ?? true;
+        const { confirm } = options;
+        return typeof confirm === "function" ? confirm() : (confirm ?? true);
       },
       withProgress: (task) => {
         calls.progress++;
@@ -335,6 +336,74 @@ describe("CommitMessageGenerator", () => {
     expect(calls.requests).toEqual([]);
     expect(calls.progress).toBe(0);
     expect(repository.writes).toEqual([]);
+  });
+
+  /** A reply that waits for `release`, letting the test type in the box meanwhile, then answers `feat: add a`. */
+  function heldReply() {
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const reply = async (request: StreamChatOptions): Promise<ChatOutcome> => {
+      await held;
+      return answer("feat: add a")(request);
+    };
+    return { reply, release };
+  }
+
+  test("asks again when the box changed during the run; a refusal keeps the user's text", async () => {
+    const repository = fakeRepository();
+    const { reply, release } = heldReply();
+    const { ports, calls } = fakePorts({ reply, confirm: false });
+    const run = new CommitMessageGenerator(ports, english).run(found(repository));
+    await waitFor(() => calls.requests.length === 1);
+    repository.box = "typed meanwhile";
+    release();
+    await run;
+    expect(calls.questions).toBe(1);
+    expect(repository.box).toBe("typed meanwhile");
+    expect(repository.writes).toEqual([]);
+    expect(calls.errors).toEqual([]);
+  });
+
+  test("asks again when the box changed during the run; acceptance writes the message once", async () => {
+    const repository = fakeRepository("wip");
+    const { reply, release } = heldReply();
+    const { ports, calls } = fakePorts({ reply, confirm: true });
+    const run = new CommitMessageGenerator(ports, english).run(found(repository));
+    await waitFor(() => calls.requests.length === 1);
+    repository.box = "wip, edited";
+    release();
+    await run;
+    expect(calls.questions).toBe(2);
+    expect(repository.writes).toEqual(["feat: add a"]);
+  });
+
+  test("an unchanged box is not asked about a second time", async () => {
+    const repository = fakeRepository("wip");
+    const { ports, calls } = fakePorts({ confirm: true });
+    await new CommitMessageGenerator(ports, english).run(found(repository));
+    expect(calls.questions).toBe(1);
+    expect(repository.writes).toEqual(["feat: add a"]);
+  });
+
+  test("cancel or deactivation while the second question is open writes nothing", async () => {
+    for (const stop of ["cancel", "dispose"] as const) {
+      const repository = fakeRepository();
+      const { reply, release } = heldReply();
+      let accept: (value: boolean) => void = () => {};
+      const { ports, calls } = fakePorts({ reply, confirm: () => new Promise((resolve) => (accept = resolve)) });
+      const generator = new CommitMessageGenerator(ports, english);
+      const run = generator.run(found(repository));
+      await waitFor(() => calls.requests.length === 1);
+      repository.box = "typed meanwhile";
+      release();
+      await waitFor(() => calls.questions === 1);
+      if (stop === "cancel") calls.cancel();
+      else generator.dispose();
+      accept(true);
+      await run;
+      expect(repository.writes).toEqual([]);
+      expect(repository.box).toBe("typed meanwhile");
+    }
   });
 
   test("a box holding only whitespace is replaced without asking", async () => {
