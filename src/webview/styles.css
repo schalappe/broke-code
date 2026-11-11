@@ -489,8 +489,10 @@ button.history-open:hover:not(:disabled) {
 /* ---------- Conversation ---------- */
 
 /* Whitespace separates the turns. The side padding keeps a row's focus ring inside the scroll box. */
-/* No native scroll anchoring: the panel places the view itself (it follows the bottom while pinned there, and keeps a
-   question row in place when its turn folds), and a second, browser-chosen correction could add to it. */
+/* No native scroll anchoring: this is what keeps a question row in place when its turn folds while the user is scrolled
+   up. Nothing above that row changes (earlier turns are already folded, entries only append), so with anchoring off the
+   view stays put. On, the browser would re-anchor on whatever stays visible, such as the final reply, or a step that
+   vanished into the fold, and move the view. */
 .conversation {
   flex: 1 1 auto;
   overflow-y: auto;

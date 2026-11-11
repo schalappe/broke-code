@@ -176,9 +176,10 @@ between its regions: header, notices, the conversation (or History in its place)
   clipped.
 - The conversation follows its bottom while the user is there (within 24px of it) and stays where it is once they
   scroll up. When a turn ends and folds while they are scrolled up, the turn's question row (the user's message above
-  the fold) stays at the same place on screen: its offset in the scroll box is recorded at each scroll and at each
-  render while scrolled up, and restored before the fold paints. Several turns folding at once keep the last question
-  row in place. The browser's own scroll anchoring is off (`overflow-anchor: none`), so only the panel moves the view.
+  the fold) stays at the same place on screen. Nothing above that row changes, so the view need not move: the
+  browser's own scroll anchoring is off (`overflow-anchor: none`), since it would re-anchor on the final reply or on a
+  step that vanished into the fold and move the view. Known limit: when the fold leaves too little content under the
+  view, the browser lowers the scroll position to its new maximum and the row moves down; nothing can avoid it.
 
 ## Elevation & Depth
 

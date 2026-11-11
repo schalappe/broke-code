@@ -355,9 +355,10 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   an open approval always show; a row opened inside comes back closed once its turn folds, since its entries remount.
   Entries before the first user message, and a turn with no reply, never fold. Rendering only: the state, the record,
   and the history sent to the model are unchanged. The conversation follows its bottom while the user is within 24px of
-  it; scrolled up, a turn that folds keeps its question row (its user message) at the same offset in the scroll box,
-  set in a layout effect before paint, the browser's scroll anchoring being off (maintainer decision, 2026-11-11). It
-  moves no focus.
+  it; scrolled up, a turn that folds keeps its question row (its user message) in place on screen, because nothing
+  above it changes and the browser's scroll anchoring is off (`overflow-anchor: none`), which would otherwise re-anchor
+  on a visible entry under the row (maintainer decision, 2026-11-11). Known limit: a fold that leaves too little
+  content under the view makes the browser lower the scroll position, moving the row down. It moves no focus.
 - Reasoning output (`<think>` tags, `reasoning`, or `reasoning_content`) shows collapsed in the chat. The parser
   never looks for tool calls in it, and the conversation history sent back to the model drops it.
 - A code block of an assistant answer (fenced or indented, rendered by the answer's Markdown) has Copy and Insert at
