@@ -74,14 +74,45 @@ describe("readDiff", () => {
     expect(formatMention(mention)).toBe("@diff (diff, gitUnavailable)\nNot attached: git is not available in VS Code.");
   });
 
-  test("reports a folder whose diff fails unreadable with its cause, even beside a folder with a diff", async () => {
+  test("reports a folder whose diff fails unreadable with its cause when no folder has a diff", async () => {
     const mention = await readDiff([app], port({ kind: "failed", cause: "fatal: bad revision 'HEAD'" }));
     expect(mention).toMatchObject({ status: "unreadable", cause: "fatal: bad revision 'HEAD'" });
     expect(formatMention(mention)).toBe(
       "@diff (diff, unreadable)\nNot attached: the diff could not be read (fatal: bad revision 'HEAD').",
     );
-    const both = await readDiff([app, lib], port({ kind: "diff", text: "+a\n" }, { kind: "failed", cause: "boom" }));
-    expect(both).toMatchObject({ status: "unreadable", cause: "lib: boom" });
+    const none = await readDiff([app, lib], port({ kind: "diff", text: "" }, { kind: "failed", cause: "boom" }));
+    expect(none).toMatchObject({ status: "unreadable", cause: "lib: boom" });
+  });
+
+  test("attaches the readable diffs beside a failed folder, one line per failed folder below the block", async () => {
+    const docs: WorkspaceRoot = { name: "docs", path: "/w/docs" };
+    const mention = await readDiff(
+      [app, docs, lib],
+      port({ kind: "diff", text: "+a\n" }, { kind: "failed", cause: "boom" }, { kind: "failed", cause: "bad HEAD" }),
+    );
+    expect(mention).toMatchObject({ status: "attached", lines: 2, content: "# app\n+a\n", failedFolders: 2 });
+    expect(formatMention(mention)).toBe(
+      [
+        "@diff (diff, 2 lines)",
+        "```",
+        "# app",
+        "+a",
+        "```",
+        "Not attached for docs: the diff could not be read (boom).",
+        "Not attached for lib: the diff could not be read (bad HEAD).",
+      ].join("\n"),
+    );
+  });
+
+  test("puts the failed folders' lines after the truncation notice of a cut diff", async () => {
+    const text = Array.from({ length: 2001 }, (_, line) => `+line ${line + 1}\n`).join("");
+    const mention = await readDiff([app, lib], port({ kind: "diff", text }, { kind: "failed", cause: "boom" }));
+    expect(mention).toMatchObject({ status: "truncated", failedFolders: 1 });
+    expect(
+      formatMention(mention).endsWith(
+        "```\n[truncated: 2 more lines not shown]\nNot attached for lib: the diff could not be read (boom).",
+      ),
+    ).toBe(true);
   });
 
   test("reports a failing port unreadable with its cause", async () => {

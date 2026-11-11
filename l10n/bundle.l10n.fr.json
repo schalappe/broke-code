@@ -81,6 +81,8 @@
   "no changes": "aucune modification",
   "not a git repository": "pas un dépôt git",
   "git not available": "git indisponible",
+  "1 folder failed": "1 dossier en échec",
+  "{0} folders failed": "{0} dossiers en échec",
   "Uncommitted changes of the tracked files": "Modifications non validées des fichiers suivis",
   "Selected text of the active editor": "Texte sélectionné de l'éditeur actif",
   "no active text editor": "aucun éditeur de texte actif",

@@ -820,7 +820,7 @@ function StepHead({ name, args }: { name: string; args: Record<string, string> }
 
 /**
  * The chips of a user message: the skill it loaded with `/<name>`, then one per mention, with kind, path, and status;
- * failed ones stand out, and one that found nothing to attach without failing is neutral.
+ * failed ones stand out, a partial `@diff` among them, and one that found nothing to attach without failing is neutral.
  */
 function Mentions({ entry }: { entry: ChatEntry & { role: "user" } }) {
   const { skill } = entry;
@@ -836,7 +836,9 @@ function Mentions({ entry }: { entry: ChatEntry & { role: "user" } }) {
       )}
       {entry.mentions.map((mention) => {
         const attached = mention.status === "attached" || mention.status === "truncated";
-        const look = attached ? "chip" : isNothingToAttach(mention.status) ? "chip neutral" : "chip failed";
+        // [>]: A partial success (some folders of a `@diff` failed) takes the error color: part is missing.
+        const whole = attached && !mention.failedFolders;
+        const look = whole ? "chip" : attached || !isNothingToAttach(mention.status) ? "chip failed" : "chip neutral";
         return (
           <li key={mention.path} className={look}>
             <span className={`kind ${mention.kind}`} aria-hidden="true" />

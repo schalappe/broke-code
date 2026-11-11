@@ -261,13 +261,16 @@ function parseMention(raw: unknown): MentionResult | undefined {
     return undefined;
   if (!isOptional(raw.lines, (lines) => Number.isSafeInteger(lines) && (lines as number) >= 0)) return undefined;
   if (!isOptional(raw.range, isLineRange)) return undefined;
-  const { path, kind, status, lines, range } = raw as MentionResult;
+  if (!isOptional(raw.failedFolders, (count) => Number.isSafeInteger(count) && (count as number) >= 1))
+    return undefined;
+  const { path, kind, status, lines, range, failedFolders } = raw as MentionResult;
   return {
     path,
     kind,
     status,
     ...(lines !== undefined ? { lines } : {}),
     ...(range !== undefined ? { range: { path: range.path, start: range.start, end: range.end } } : {}),
+    ...(failedFolders !== undefined ? { failedFolders } : {}),
   };
 }
 

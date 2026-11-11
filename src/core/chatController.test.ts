@@ -468,6 +468,31 @@ describe("ChatController mentions", () => {
     expect(JSON.stringify(controller.snapshot)).not.toContain("export const a");
   });
 
+  test("keeps a partial @diff's failed folder count in the state, never the failures' text", async () => {
+    const reader: MentionReader = {
+      read: async (path): Promise<ReadMention> => ({
+        path,
+        kind: "diff",
+        status: "attached",
+        lines: 2,
+        content: "# app\n+a\n",
+        omitted: 0,
+        failedFolders: 1,
+        folderFailures: [{ folder: "lib", cause: "boom" }],
+      }),
+    };
+    const { controller } = await ready(mentionsProvider, reader);
+    await controller.send("review @diff");
+
+    expect(controller.snapshot.entries[0]).toMatchObject({
+      mentions: [{ path: "diff", kind: "diff", status: "attached", lines: 2, failedFolders: 1 }],
+    });
+    expect(String(lastRequest().messages.at(-1)?.content)).toContain(
+      "Not attached for lib: the diff could not be read (boom).",
+    );
+    expect(JSON.stringify(controller.snapshot)).not.toContain("boom");
+  });
+
   test("reads a path picked in the menu whole, spaces included, beside a typed mention", async () => {
     const { reader, reads } = fakeReader();
     const { controller } = await ready(mentionsProvider, reader);

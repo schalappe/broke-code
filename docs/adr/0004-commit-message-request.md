@@ -77,3 +77,9 @@ in the Git extension's source (`extensions/git/src/git.ts`, `release/1.101`): `d
 through unchanged, but an absolute path equal to the repository root becomes an empty pathspec, which git refuses, so
 the root goes as `.`. Concatenating the staged and the unstaged diffs was rejected: it shows a twice-changed file
 twice.
+
+A folder whose diff fails beside a folder with a diff no longer fails the whole mention (maintainer decision,
+2026-11-11): the diffs read are attached, and one line per failed folder below the block tells the model which folder
+failed and why; the chip counts the failed folders in the error color. Failing the whole mention threw away diffs that
+were read; leaving the folder out would pass its failure silently. With no diff read, a failure still fails the
+mention.

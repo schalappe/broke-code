@@ -40,6 +40,8 @@ export type LineRange = { path: string; start: number; end: number };
 /**
  * One mention as the chat shows and keeps it. `lines`: what was attached, counted in the unit of its kind (lines of a
  * file or a diff, entries of a folder, problems, lines of the selection). `range`: where the attached `@selection` lies.
+ * `failedFolders`: workspace folders whose part of an attached `@diff` could not be read, a partial success; absent
+ * when none failed.
  */
 export type MentionResult = {
   path: string;
@@ -47,13 +49,23 @@ export type MentionResult = {
   status: MentionStatus;
   lines?: number;
   range?: LineRange;
+  failedFolders?: number;
 };
+
+/** A workspace folder whose part of an attached mention could not be read, and why. */
+export type FolderFailure = { folder: string; cause: string };
 
 /**
  * A mention read at send time. `content`: attached text, empty when nothing is attached. `omitted`: lines cut
- * by truncation. `cause`: error code or message of an `unreadable` path.
+ * by truncation. `cause`: error code or message of an `unreadable` path. `folderFailures`: the folders `failedFolders`
+ * counts, each said to the model below the block.
  */
-export type ReadMention = MentionResult & { content: string; omitted: number; cause?: string };
+export type ReadMention = MentionResult & {
+  content: string;
+  omitted: number;
+  cause?: string;
+  folderFailures?: readonly FolderFailure[];
+};
 
 /** A mention of a workspace path, read: a file or folder, and no status of a reserved mention. */
 export type PathMention = ReadMention & { kind: EntryKind; status: "attached" | "truncated" | AccessFailure };
@@ -103,7 +115,7 @@ const COUNT_UNITS: Record<MentionKind, readonly [string, string]> = {
 
 /**
  * Model-facing block of one mention: header `@<path> (<kind>, <count or status>)`, the count led by the range when the
- * mention has one (`src/app.ts lines 10-12, 3 lines`), then content or notice.
+ * mention has one (`src/app.ts lines 10-12, 3 lines`), then content or notice, then one line per failed folder.
  */
 export function formatMention(mention: ReadMention): string {
   const { path, kind, status } = mention;
@@ -119,7 +131,10 @@ export function formatMention(mention: ReadMention): string {
   const fence = "`".repeat(Math.max(3, longestRun + 1));
   const body = mention.content.endsWith("\n") || mention.content === "" ? mention.content : `${mention.content}\n`;
   const block = `${header}\n${fence}\n${body}${fence}`;
-  return status === "truncated" ? `${block}\n${truncationNotice(mention.omitted)}` : block;
+  const failures = (mention.folderFailures ?? []).map(
+    ({ folder, cause }) => `Not attached for ${folder}: the ${kind} could not be read (${cause}).`,
+  );
+  return [block, ...(status === "truncated" ? [truncationNotice(mention.omitted)] : []), ...failures].join("\n");
 }
 
 /** The line closing a cut text, for mentions and tool results alike. */

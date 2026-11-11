@@ -23,7 +23,8 @@ export type DiffReader = { read(roots: readonly WorkspaceRoot[]): Promise<DiffRe
 
 /**
  * `@diff` read now: each folder's diff, led by a `# <folder name>` line in a multi-root workspace, folders with no
- * repository or no change left out, cut to the mention caps. Failing that: `unreadable` with the cause when a folder's
+ * repository or no change left out, cut to the mention caps; a folder whose diff failed beside them is counted in
+ * `failedFolders` and named in `folderFailures`. With no diff to attach: `unreadable` with the cause when a folder's
  * diff failed (led by its folder name in a multi-root workspace) or the reader rejects, `gitUnavailable`, `noChanges`
  * when some folder is in a repository, else `noRepository`. Never rejects.
  */
@@ -39,21 +40,24 @@ export async function readDiff(roots: readonly WorkspaceRoot[], reader: DiffRead
 
   const multiRoot = roots.length > 1;
   const folders = roots.map((root, index) => ({ name: root.name, result: read.folders[index] }));
-  // [!]: A failed folder fails the mention, even beside folders with a diff: leaving it out would pass it silently.
-  const failed = folders.find((folder) => folder.result?.kind === "failed");
-  if (failed?.result?.kind === "failed") {
-    const cause = multiRoot ? `${failed.name}: ${failed.result.cause}` : failed.result.cause;
-    return { ...base, status: "unreadable", cause };
-  }
+  const failures = folders.flatMap(({ name, result }) =>
+    result?.kind === "failed" ? [{ folder: name, cause: result.cause }] : [],
+  );
   const sections = folders.flatMap(({ name, result }) => {
     if (result?.kind !== "diff" || result.text === "") return [];
     const text = result.text.endsWith("\n") ? result.text : `${result.text}\n`;
     return [multiRoot ? `# ${name}\n${text}` : text];
   });
   if (sections.length === 0) {
+    // [!]: With nothing attached, a failed folder fails the mention: "no changes" would hide it.
+    const [first] = failures;
+    if (first)
+      return { ...base, status: "unreadable", cause: multiRoot ? `${first.folder}: ${first.cause}` : first.cause };
     const inRepository = folders.some(({ result }) => result?.kind === "diff");
     return { ...base, status: inRepository ? "noChanges" : "noRepository" };
   }
+  // [>]: Beside a readable diff, a failed folder is a partial success: the diffs read go, each failure said below them.
+  const partial = failures.length > 0 ? { failedFolders: failures.length, folderFailures: failures } : {};
   const cut = cutToMentionCaps(sections.join(""));
   return {
     ...base,
@@ -61,5 +65,6 @@ export async function readDiff(roots: readonly WorkspaceRoot[], reader: DiffRead
     lines: cut.lines,
     content: cut.text,
     omitted: cut.omitted,
+    ...partial,
   };
 }

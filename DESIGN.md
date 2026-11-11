@@ -224,7 +224,8 @@ pickers, and while a mode change is being written, when Send is disabled too (En
   `--bc-fill-strong`, then its status in dim text; a failed chip is drawn in the error color. A chip that found
   nothing to attach without failing (`@problems` with no error or warning, `@diff` with no change) is neutral: no fill
   and dim text, its edge kept for high contrast, its status in words. A `@diff` whose source is absent or off (no
-  repository, git not available) is failed, not neutral. The kind marker of `@problems` is a ring; of `@diff`, a box
+  repository, git not available) is failed, not neutral, and so is a partial `@diff`, some folders read and some
+  failed: its status gives the line count then the failed folders ("9 lines, 1 folder failed"). The kind marker of `@problems` is a ring; of `@diff`, a box
   with a thick left edge, a change bar. A `@selection` chip's status leads with the file and line range ("src/app.ts
   10-12, 3 lines"); its kind marker is a pair of brackets (side borders only), and with no active editor, an empty
   selection, or a file outside the workspace it is a failed chip.

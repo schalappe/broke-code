@@ -122,7 +122,9 @@ read. The menu lists `@diff` after `@problems`.
 
 With nothing changed, the chip says so in a neutral look. When no workspace folder is in a git repository, when git
 is not available in VS Code, or when the diff cannot be read (in a repository without a commit, for one), the chip
-says why in the error color. In every case the message is still sent. A diff over 2,000 lines or 1 MiB is cut, with
+says why in the error color. In a multi-root workspace, when one folder's diff cannot be read but another folder has
+changes, the changes read are attached, the model is told which folders failed and why, and the chip shows the line
+count then how many folders failed ("9 lines, 1 folder failed") in the error color. In every case the message is still sent. A diff over 2,000 lines or 1 MiB is cut, with
 a note saying how many lines were left out.
 
 `diff` is a reserved name like `problems`: a file named `diff` is `@./diff`, and in a multi-root workspace a workspace

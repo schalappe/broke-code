@@ -65,7 +65,7 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   path to `readMention`), `@problems` (`problems.ts`: the raw `Diagnostic` the host's `DiagnosticsReader` returns, and
   `readProblems`, the filter, order, line format, and caps; also `workspacePath`, an absolute path as the file index
   writes it), `@diff` (`diff.ts`: the raw `FolderDiff` per workspace folder the host's `DiffReader` returns, and
-  `readDiff`, the status, the multi-root layout, and caps), `@selection` (`selection.ts`: the raw `EditorSelection` the
+  `readDiff`, the status, the multi-root layout, the failed folders of a partial diff, and caps), `@selection` (`selection.ts`: the raw `EditorSelection` the
   host's `SelectionReader` returns, and `readSelection`, the workspace check, the line range, and the caps), where a
   message holds Markdown code
   (`markdownCode.ts`; also `remarkFenceClosed`, the remark plugin marking a fenced block whose closing fence the parser read,
@@ -545,10 +545,14 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   attached as soon as one folder has a diff. Nothing to attach: no tracked file differs from `HEAD` in any repository,
   `noChanges` (neutral), "Not attached: no tracked file differs from HEAD."; no folder in a repository (or no folder),
   `noRepository`, "Not attached: no workspace folder is a git repository."; the Git extension missing or disabled,
-  `gitUnavailable`, "Not attached: git is not available in VS Code."; a folder's diff that fails, a repository without
-  a commit included, or a reader that rejects, `unreadable` with the cause (git's own `stderr` when it has one, led by
-  the folder's name in a multi-root workspace), even beside folders with a diff, since leaving it out would pass it
-  silently. The message is still sent.
+  `gitUnavailable`, "Not attached: git is not available in VS Code."; a reader that rejects, or, with no folder
+  holding a diff, a folder's diff that fails (a repository without a commit included), `unreadable` with the cause
+  (git's own `stderr` when it has one, led by the folder's name in a multi-root workspace). A folder whose diff fails
+  beside a folder with a diff is a partial success (maintainer decision, 2026-11-11): the diffs read are attached as
+  above, and below the block (after its truncation notice, if any) one line per failed folder, in workspace order,
+  "Not attached for <folder>: the diff could not be read (<cause>)."; the mention result's optional `failedFolders`
+  counts them, and the chip shows the line count then ", N folders failed" (`1 folder failed`) in the error color.
+  Never silent, and never confused with the full failure. The message is still sent.
 - `@selection` attaches the text of `window.activeTextEditor`'s primary selection as it stands when the message is
   sent; the other selections of a multi-cursor are left out. `activeTextEditor` is the editor with the focus, else the one
   whose input changed last, so it stays defined while the chat has the focus. The host's `SelectionReader` returns the raw record (the document's URI scheme and file
@@ -662,8 +666,8 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   `halted`, its `haltReason`, and tool steps, with an optional `approval`. A reopened conversation therefore resends exactly what was sent and
   never reads its mentions again. Version 1 files are skipped like any unknown version: no release wrote them, so
   none is migrated. An optional field added to an entry keeps the version: an older build drops the unknown key and
-  reads the rest (ADR 0003), such as a mention's `range` (`@selection`), validated when present: any other shape
-  makes the record invalid. A new value of an existing field keeps it too, such as the mention kinds `problems`,
+  reads the rest (ADR 0003), such as a mention's `range` (`@selection`) and `failedFolders` (a partial `@diff`, a
+  positive whole number), validated when present: any other shape makes the record invalid. A new value of an existing field keeps it too, such as the mention kinds `problems`,
   `diff`, and `selection` and the statuses `noProblems`, `noChanges`, `noRepository`, `gitUnavailable`, `noEditor`,
   and `emptySelection`, each validated: an older build skips such a record as invalid and keeps it on disk (accepted,
   ADR 0003, 2026-11-11). An unknown kind or status makes the record invalid. It holds no API key and nothing else of `ProviderAccess`; a failed reply's error keeps the provider's base

@@ -91,9 +91,9 @@ export function describeMention(mention: MentionResult): string {
   const count = mention.lines ?? 0;
   switch (mention.status) {
     case "attached":
-      return withRange(mention, describeCount(mention.kind, count));
+      return withFailedFolders(mention, withRange(mention, describeCount(mention.kind, count)));
     case "truncated":
-      return withRange(mention, describeTruncated(mention.kind, count));
+      return withFailedFolders(mention, withRange(mention, describeTruncated(mention.kind, count)));
     case "missing":
       return l10n.t("not found");
     case "outsideWorkspace":
@@ -124,6 +124,13 @@ function withRange({ range }: MentionResult, count: string): string {
   if (!range) return count;
   const lines = range.start === range.end ? `${range.start}` : `${range.start}-${range.end}`;
   return l10n.t("{0} {1}, {2}", range.path, lines, count);
+}
+
+/** `text` followed by the folders whose part could not be read, when some failed: `9 lines, 1 folder failed`. */
+function withFailedFolders({ failedFolders }: MentionResult, text: string): string {
+  if (!failedFolders) return text;
+  const failed = failedFolders === 1 ? l10n.t("1 folder failed") : l10n.t("{0} folders failed", failedFolders);
+  return l10n.t("{0}, {1}", text, failed);
 }
 
 /** What a mention of `kind` attached, `count` in the unit of its kind. */

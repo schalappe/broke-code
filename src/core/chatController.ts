@@ -1152,6 +1152,12 @@ function planBlocked(answer: string, parsed: ParsedReply & { kind: "malformed" }
 }
 
 /** What the chat shows and keeps of a read mention: no content. */
-function toResult({ path, kind, status, lines }: ReadMention): MentionResult {
-  return { path, kind, status, ...(lines !== undefined ? { lines } : {}) };
+function toResult({ path, kind, status, lines, failedFolders }: ReadMention): MentionResult {
+  return {
+    path,
+    kind,
+    status,
+    ...(lines !== undefined ? { lines } : {}),
+    ...(failedFolders !== undefined ? { failedFolders } : {}),
+  };
 }

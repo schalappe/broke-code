@@ -785,6 +785,17 @@ describe("mentions", () => {
     }
   });
 
+  test("shows a partial @diff chip in the error color, its line count followed by the failed folders", () => {
+    const html = renderMentions([
+      { path: "diff", kind: "diff", status: "attached", lines: 9, failedFolders: 1 },
+      { path: "diff", kind: "diff", status: "truncated", lines: 2000, failedFolders: 2 },
+    ]);
+    const chip = (status: string) =>
+      `<li class="chip failed"><span class="kind diff" aria-hidden="true"></span><span class="chip-path">@diff</span><span class="chip-status">${status}</span></li>`;
+    expect(html).toContain(chip("9 lines, 1 folder failed"));
+    expect(html).toContain(chip("truncated to 2000 lines, 2 folders failed"));
+  });
+
   test("shows a @selection chip with its path, range, and count, failed when nothing was attached", () => {
     const html = renderMentions([
       {

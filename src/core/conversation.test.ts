@@ -154,6 +154,28 @@ describe("conversation record", () => {
     }
   });
 
+  test("reads back a partial @diff's failed folder count", () => {
+    const partial = record({
+      entries: [
+        {
+          role: "user",
+          content: "review @diff",
+          mentions: [{ path: "diff", kind: "diff", status: "attached", lines: 9, failedFolders: 1 }],
+          modelText: "review @diff",
+        },
+      ],
+    });
+    expect(parseConversation(serializeConversation(partial))).toEqual({ ok: true, record: partial });
+  });
+
+  test("refuses a failed folder count that is not a positive whole number", () => {
+    const mention = { path: "diff", kind: "diff", status: "attached", lines: 9 };
+    for (const failedFolders of [null, "1", 0, -1, 1.5]) {
+      const entries = [{ role: "user", content: "x", mentions: [{ ...mention, failedFolders }], modelText: "x" }];
+      expect(parse({ ...record(), entries })).toEqual({ ok: false, reason: "invalid entry 0" });
+    }
+  });
+
   test("reads back how each write step was approved: accepted, rejected, or auto", () => {
     const step = { role: "tool", name: "write_file", args: { path: "a.ts", content: "x" }, text: "t" } as const;
     const turn = record({
