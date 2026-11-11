@@ -58,7 +58,11 @@ export function contextOf(limits: TurnLimits, model: string | undefined): Contex
  * rounded up. A decision, not a tokenizer: no provider reports usage without `stream_options`.
  */
 export function estimateTokens(messages: readonly { content: string }[]): number {
-  const characters = messages.reduce((total, message) => total + message.content.length, 0);
+  return tokensOfCharacters(messages.reduce((total, message) => total + message.content.length, 0));
+}
+
+/** The estimate of `estimateTokens` for messages holding `characters` in all, for a caller that keeps a running sum. */
+export function tokensOfCharacters(characters: number): number {
   return Math.ceil(characters / 4);
 }
 

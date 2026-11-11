@@ -11,7 +11,7 @@ with files and folders attached, and the model reads files, lists folders, searc
 files, and runs shell commands until it is done. Each change opens as a diff and waits for your **Accept** or **Reject**
 in the chat, unless you turn on auto-approval in your user settings; each command waits for your **Run** or **Reject**,
 always. You can follow each step, stop the agent at any time, read the model's reasoning collapsed above its answer,
-and come back to past conversations. The model also sees the name and description of each of your skills, and loads a
+find a finished agent turn's steps folded under one row above its answer, and come back to past conversations. The model also sees the name and description of each of your skills, and loads a
 skill's instructions when your task matches it. Type `/` at the start of a message to start a new conversation, choose
 the model, or pick a skill; a message `/<name> args` loads that skill itself, with your arguments. In the Source
 Control view, a button writes a commit message for your staged changes.
@@ -152,13 +152,18 @@ approval is the guard, so read the whole command before you click **Run**.
 
 Each tool call shows as a compact row under the model's text: the tool, its main argument (a path, a search pattern,
 or the whole command), and whether it worked with the size of its result, or for a command, its exit code. Click the row to see the result the model received.
+Once an agent turn has ended, its steps fold under one row above the final answer, such as "3 steps, 1 failed, 1
+rejected", so the answer sits right under your message; click the row to see the steps again. If you scrolled up to
+read, your message stays where it is on screen when its turn folds, unless too little is left below to scroll. A turn
+with a single step stays unfolded, and the turn in progress never folds, so a running step and a change waiting for
+you always show.
 A file tool's path outside the workspace, and outside the folders of the loaded skills, is refused, and the model is
 told why.
 
 The agent turn ends when the model answers with text and no tool call. It also ends when you click **Stop**, at any step;
 after three malformed tool calls in a row, with a message saying so; after 50 tool steps (or the limit you set), with
-a message saying the step limit was reached; and before a request that would fill the model's context, with a
-message asking you to start a new chat. A malformed call is sent back to the model with what is wrong, so it can try
+a message saying the step limit was reached; and before a request that would fill the model's context even with its
+older tool results left out (below), with a message asking you to start a new chat. A malformed call is sent back to the model with what is wrong, so it can try
 again; so is an empty reply, which counts as a malformed call.
 
 ## Context size and step limit
@@ -167,8 +172,13 @@ The panel header shows, next to the model picker, how much of the model's contex
 tokens and as a percentage. It is an estimate: the characters of everything the request sends (the instructions,
 your messages with their attachments, the model's answers, and the tool results, but not its reasoning) divided by
 4. Before each request of an agent turn, broke-code checks that estimate: when it leaves less than one eighth of the
-context for the reply, the turn stops without sending the request, and the chat asks you to start a new chat with
-**New chat**. broke-code never shortens or summarizes the conversation by itself.
+context for the reply, broke-code leaves the oldest tool results out of that request, one at a time, until it fits.
+Each one left out goes to the model as a single line, `[result left out to save context: N lines]`. The last three
+tool steps of the conversation, every skill load, your messages, and the model's answers always go whole, and so does a
+result shorter than that line. The chat and the saved conversation keep every result whole; only the request changes.
+While the next request leaves results out, the panel says how many under the header, and the usage counts the request
+as it would be sent. When the request still does not fit, the turn stops without sending it, and the chat asks you to
+start a new chat with **New chat**. broke-code never summarizes the conversation by itself.
 
 LLM services do not report a model's context size, so broke-code reads it from the `brokeCode.contextSizes` table
 in your **user** settings, by model name as the provider lists it. A model absent from the table uses 32,768 tokens,
@@ -308,7 +318,8 @@ without a provider too; sending a message needs one. A workspace keeps its 50 mo
 are deleted.
 
 A reopened conversation resends your earlier messages as they were sent, with the files and folders attached then,
-and the tool results the model received; broke-code does not read them again. A reply that was still streaming when the window closed comes back stopped,
+and the tool results the model received; broke-code does not read them again. Its finished turns show folded, as
+they did when they ended. A reply that was still streaming when the window closed comes back stopped,
 with the text received so far. Conversations stay on your machine, in the editor's storage for that workspace, and
 never hold an API key. A window with no folder open keeps its conversation in memory only.
 

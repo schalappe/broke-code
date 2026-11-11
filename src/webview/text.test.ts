@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { SkillProblem } from "../core/protocol";
 import {
   describeContextUsage,
+  describeFold,
   describeProviderError,
   describeSkillWarning,
   describeStorageProblem,
@@ -169,5 +170,15 @@ describe("describeSkillWarning", () => {
     expect(describeSkillWarning({ path: ".agents/skills", problem: { kind: "tooManyEntries", entries: 5000 } })).toBe(
       "Some skills in .agents/skills are skipped: the folder holds 5000 entries, and only the first 200 by name are read.",
     );
+  });
+});
+
+describe("describeFold", () => {
+  test("says the steps, then the failed and rejected ones when there are any", () => {
+    expect(describeFold({ steps: 2, failed: 0, rejected: 0 })).toBe("2 steps");
+    expect(describeFold({ steps: 3, failed: 1, rejected: 0 })).toBe("3 steps, 1 failed");
+    expect(describeFold({ steps: 3, failed: 2, rejected: 1 })).toBe("3 steps, 2 failed, 1 rejected");
+    expect(describeFold({ steps: 4, failed: 0, rejected: 1 })).toBe("4 steps, 1 rejected");
+    expect(describeFold({ steps: 5, failed: 0, rejected: 2 })).toBe("5 steps, 2 rejected");
   });
 });

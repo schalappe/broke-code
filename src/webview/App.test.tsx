@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, jest, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { act, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ChatEntry, ChatState } from "../core/protocol";
@@ -235,6 +236,148 @@ describe("agent turn", () => {
     ]);
     expect(html).toContain("Stopped: the conversation fills the model&#x27;s context. Start a new chat with New chat.");
     expect(html).not.toContain("Waiting for the reply…");
+  });
+});
+
+describe("folded turn", () => {
+  const answer = "Look.\n<read_file>\n<path>a.ts</path>\n</read_file>";
+  const call: ChatEntry = {
+    role: "assistant",
+    reasoning: "",
+    content: answer,
+    status: "done",
+    call: { name: "read_file", args: { path: "a.ts" }, start: 6, end: answer.length },
+  };
+  const ok: ChatEntry = { role: "tool", name: "read_file", args: { path: "a.ts" }, status: "ok", text: "x" };
+  const failed: ChatEntry = { ...ok, status: "error", text: "read_file: gone." };
+  const rejected: ChatEntry = { ...ok, status: "error", approval: "rejected", text: "The user rejected this change." };
+  const final: ChatEntry = { role: "assistant", reasoning: "", content: "FINAL_ANSWER", status: "done" };
+  const user: ChatEntry = { role: "user", content: "Hi", mentions: [] };
+
+  /** The conversation section of the panel showing `entries`, as markup. */
+  function conversationOf(entries: ChatEntry[]): string {
+    const html = renderToStaticMarkup(<App state={stateWith(true, { entries })} language="en" />);
+    const start = html.indexOf('<section class="conversation"');
+    return html.slice(start, html.indexOf("</section>", start) + "</section>".length);
+  }
+
+  test("the row says the steps, the failed ones, and the rejected ones", () => {
+    const html = conversationOf([user, call, ok, call, failed, call, rejected, final]);
+    expect(html).toContain('<summary class="turn-fold-row">3 steps, 1 failed, 1 rejected</summary>');
+  });
+
+  test("the fold is a closed details and the final answer sits outside it, right after", () => {
+    const html = conversationOf([user, call, ok, call, ok, final]);
+    expect(html).toContain('<details class="turn-fold">');
+    expect(html).not.toContain('<details class="turn-fold" open');
+    expect(html).toContain(
+      '</div></div></details><div class="message assistant"><div class="answer"><p>FINAL_ANSWER</p></div></div>',
+    );
+    expect(html.indexOf('<div class="message user">Hi</div><details class="turn-fold">')).toBeGreaterThan(-1);
+  });
+
+  test("a click expands the fold, and a step row inside still toggles on its own", async () => {
+    await withPanel(stateWith(true, { entries: [user, call, ok, call, ok, final] }), async ({ host }) => {
+      const fold = host.querySelector<HTMLDetailsElement>("details.turn-fold");
+      if (!fold) throw new Error("no fold");
+      expect(fold.open).toBe(false);
+      await act(async () => fold.querySelector<HTMLElement>(":scope > summary")?.click());
+      expect(fold.open).toBe(true);
+      const step = fold.querySelector<HTMLDetailsElement>("details.step");
+      if (!step) throw new Error("no step");
+      await act(async () => step.querySelector<HTMLElement>(":scope > summary")?.click());
+      expect(step.open).toBe(true);
+      expect(fold.open).toBe(true);
+      await act(async () => step.querySelector<HTMLElement>(":scope > summary")?.click());
+      expect(step.open).toBe(false);
+      expect(fold.open).toBe(true);
+    });
+  });
+
+  test("a step waiting for a decision is never inside a fold", async () => {
+    const writeAnswer = "Writing.\n<write_file>\n<path>a.ts</path>\n<content>\nx\n</content>\n</write_file>";
+    const writing: ChatEntry = {
+      role: "assistant",
+      reasoning: "",
+      content: writeAnswer,
+      status: "streaming",
+      call: { name: "write_file", args: { path: "a.ts", content: "x" }, start: 9, end: writeAnswer.length },
+    };
+    const approval = { id: 3, kind: "write" as const, tool: "write_file", summary: "a.ts" };
+    const entries = [user, call, ok, call, ok, final, user, call, ok, call, ok, writing];
+    await withPanel(stateWith(true, { entries, approval }), async ({ host }) => {
+      expect(host.querySelectorAll("details.turn-fold").length).toBe(1);
+      const decision = host.querySelector(".decision");
+      expect(decision).not.toBeNull();
+      expect(decision?.closest(".turn-fold")).toBeNull();
+    });
+  });
+
+  /**
+   * Stubs the scroll box of the conversation `host` shows: 200px high over 1,000px of content, `scrollTop` a plain value
+   * that never fires `scroll`. Returns the box, the `scrollTop` writes made after the call, and the spy standing for the
+   * end marker's `scrollIntoView`.
+   */
+  function stubScroll(host: HTMLElement): { box: HTMLElement; writes: number[]; scrolled: ReturnType<typeof jest.fn> } {
+    const box = host.querySelector<HTMLElement>("section.conversation");
+    if (!box) throw new Error("no conversation");
+    const writes: number[] = [];
+    let scrollTop = 0;
+    Object.defineProperties(box, {
+      scrollTop: {
+        get: () => scrollTop,
+        set: (value: number) => {
+          scrollTop = value;
+          writes.push(value);
+        },
+      },
+      scrollHeight: { get: () => 1000 },
+      clientHeight: { get: () => 200 },
+    });
+    const scrolled = jest.fn();
+    Object.defineProperty(box.lastElementChild, "scrollIntoView", { value: scrolled });
+    return { box, writes, scrolled };
+  }
+
+  const streaming: ChatEntry = { ...final, status: "streaming" };
+
+  test("a turn that folds while the user is scrolled up moves nothing", async () => {
+    await withPanel(stateWith(true, { entries: [user, call, ok, call, ok, streaming] }), async ({ host, show }) => {
+      const { box, writes, scrolled } = stubScroll(host);
+      box.scrollTop = 300;
+      await act(async () => box.dispatchEvent(new Event("scroll")));
+      writes.length = 0;
+      scrolled.mockClear();
+      await show(stateWith(true, { entries: [user, call, ok, call, ok, final] }));
+      expect(host.querySelectorAll("details.turn-fold").length).toBe(1);
+      expect(writes).toEqual([]);
+      expect(scrolled).not.toHaveBeenCalled();
+      expect(box.contains(document.activeElement)).toBe(false);
+    });
+  });
+
+  // The tests above see no layout: the question row holds still only because the stylesheet turns native scroll
+  // anchoring off, which the live check confirms in the real panel.
+  test("the conversation turns native scroll anchoring off", () => {
+    const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+    const rule = css.match(/\n\.conversation \{([^}]*)\}/)?.[1] ?? "";
+    expect(rule).toContain("overflow-anchor: none;");
+  });
+
+  test("a turn that folds while the conversation is pinned to the bottom keeps following it", async () => {
+    await withPanel(stateWith(true, { entries: [user, call, ok, call, ok, streaming] }), async ({ host, show }) => {
+      const { writes, scrolled } = stubScroll(host);
+      await show(stateWith(true, { entries: [user, call, ok, call, ok, final] }));
+      expect(host.querySelectorAll("details.turn-fold").length).toBe(1);
+      expect(writes).toEqual([]);
+      expect(scrolled).toHaveBeenCalledWith({ block: "end" });
+    });
+  });
+
+  test("a turn with one step renders the same markup as before folding existed", () => {
+    expect(conversationOf([user, call, ok, final])).toBe(
+      '<section class="conversation"><div class="message user">Hi</div><div class="message assistant"><div class="answer"><p>Look.</p></div><details class="step"><summary class="step-row"><span class="step-tool">read_file</span><span class="step-arg">a.ts</span><span class="step-status">ok, 1 line</span></summary><pre class="step-result"><code>x</code></pre></details></div><div class="message assistant"><div class="answer"><p>FINAL_ANSWER</p></div></div><div></div></section>',
+    );
   });
 });
 
@@ -1574,6 +1717,26 @@ describe("context usage", () => {
     const html = renderToStaticMarkup(<App state={state} language="en" />);
     expect(html).not.toContain("tokens (");
     expect(html).not.toContain("Unknown context size");
+  });
+
+  test("results left out of the next request show one notice with their count", () => {
+    const plural = renderToStaticMarkup(
+      <App state={stateWith(true, { context: { ...usage, known: true, leftOut: 4 } })} language="en" />,
+    );
+    expect(plural).toContain(
+      '<p class="notice" role="status">4 older tool results are left out of the request to save context.</p>',
+    );
+    const singular = renderToStaticMarkup(
+      <App state={stateWith(true, { context: { ...usage, known: true, leftOut: 1 } })} language="en" />,
+    );
+    expect(singular).toContain("1 older tool result is left out of the request to save context.");
+  });
+
+  test("no notice when nothing is left out of the next request", () => {
+    const html = renderToStaticMarkup(
+      <App state={stateWith(true, { context: { ...usage, known: true } })} language="en" />,
+    );
+    expect(html).not.toContain("left out of the request");
   });
 
   test("the link asks the host for the selected model's context size", () => {

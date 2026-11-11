@@ -166,13 +166,20 @@ between its regions: header, notices, the conversation (or History in its place)
   dot or a chevron drawn in CSS), with the file and folder markers sized in `em`; and Markdown's vertical rhythm,
   set in `em` so it follows the text size.
 - Whitespace separates turns: 12px between entries, 8px more above a user's message; the replies and tool steps of
-  one turn sit 4px apart.
+  one turn sit 4px apart, and so do a folded turn's row and its final reply. Opened, the fold lays its entries out in
+  a column of its own with the same spacing, 4px under its row.
 - Long content never widens the panel: a path or a title on one line is cut with an ellipsis; a message, a command,
   and a chip wrap anywhere; a code block, a step result, and a table scroll inside themselves.
 - The header wraps: the two pickers share the first line; the usage and the buttons drop below once the pickers
   would fall under 16em.
 - The conversation keeps 4px of side padding inside its scroll box, so a focus ring on a row at its edge is not
   clipped.
+- The conversation follows its bottom while the user is there (within 24px of it) and stays where it is once they
+  scroll up. When a turn ends and folds while they are scrolled up, the turn's question row (the user's message above
+  the fold) stays at the same place on screen. Nothing above that row changes, so the view need not move: the
+  browser's own scroll anchoring is off (`overflow-anchor: none`), since it would re-anchor on the final reply or on a
+  step that vanished into the fold and move the view. Known limit: when the fold leaves too little content under the
+  view, the browser lowers the scroll position to its new maximum and the row moves down; nothing can avoid it.
 
 ## Elevation & Depth
 
@@ -217,6 +224,10 @@ button share one large rounded field (radius 10px); its border takes the focus c
   code block. A command shows whole in a block under its line. A failed status is in the error color.
 - A call without a result has a dot where the chevron would be: filled and breathing while it runs, hollow when it
   ended with no result.
+- Folded turn: an ended turn's steps and intermediate replies under one small dim row with the reasoning chevron,
+  between the user's message and the final reply: "3 steps, 1 failed, 1 rejected", the counts in words, never in color
+  alone. Closed when the turn ends; opened, the entries show exactly as they rendered before. Its rules use the child
+  combinator (`.turn-fold > summary`), so the reasoning and step rows inside keep their own chevrons.
 
 ### The decision block
 
@@ -242,12 +253,13 @@ Each kind of state has one look, distinct from the others at a glance:
 | --- | --- |
 | Loading (waiting for the reply, thinking, tool running, models loading) | Dim text that breathes; a line of its own leads with a dot. The pickers are disabled. |
 | Empty (no provider, new conversation, empty History, no History row left by the filter) | One dim line, centered in the room it has; a link under it when there is something to do. No provider: Add provider (primary) and the Open provider settings link side by side under it. |
-| Notice (unknown context size) | One small dim line with a link. Nothing went wrong, so no block. |
+| Notice (unknown context size, older tool results left out of the next request) | One small dim line, with a link when there is something to do (Set context size). Nothing went wrong, so no block. |
 | Warning (skipped providers and skills) | A block on the theme's warning fill; under skipped providers, Add provider (secondary) below the block, only while a valid provider exists: without one, the empty state's Add provider is the panel's only one. |
 | Error (models unavailable, failed reply, storage and listing problems) | A block on the theme's error fill: the message, its technical detail in the editor font, then its actions. |
 | Failed step or chip | The error color on the status text; no block. |
 | Waiting for a decision | The decision block. |
 | Turn ending (Stopped, halted) | A short rule, then small dim text. |
+| Folded turn (an ended turn of two steps or more) | One small dim row with a chevron, "N steps", then the failed and rejected counts in words. |
 
 ### Motion
 
@@ -267,6 +279,8 @@ opacity over `--bc-fast`. Under `prefers-reduced-motion: reduce`, and when VS Co
 - One focus ring: `1px solid var(--vscode-focusBorder)`. It sits inside a field or a row (offset -1px), which fill
   their line, and outside a button (offset 2px), where a ring on the button's own fill would not show. The message
   box shows it on the border of its rounded field.
+- A folded turn's row is a native `<summary>`: Tab reaches it, Enter and Space open and close it, with no key handler
+  of ours. Folding at turn end moves no focus.
 - Focus never moves on its own. When an approval request opens, the focused element stays focused, so a key pressed
   at that moment cannot accept a write or run a command. A webview test pins this. One written exception: opening
   History moves the focus into its filter field, since the user asked for History and no approval control sits

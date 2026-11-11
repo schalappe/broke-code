@@ -43,6 +43,7 @@ import {
 import { moveHighlight, optionId, SuggestionMenu } from "./SuggestionMenu";
 import {
   describeContextUsage,
+  describeFold,
   describeHalt,
   describeListFailure,
   describeMention,
@@ -55,6 +56,7 @@ import {
   formatConversationDate,
   mainArgument,
 } from "./text";
+import { foldTurns } from "./turns";
 import { post } from "./vscodeApi";
 
 /** `language`: BCP 47 tag of the VS Code display language, for dates. */
@@ -75,6 +77,9 @@ export function App({ state, language }: { state: ChatState; language: string })
       {!configured && <EmptyState />}
       <Warnings state={state} />
       {state.model !== undefined && !state.context.known && <ContextNotice model={state.model} />}
+      {state.model !== undefined && state.context.leftOut !== undefined && (
+        <LeftOutNotice count={state.context.leftOut} />
+      )}
       {state.listFailed && <TextBlock text={describeListFailure(state.listFailed)} />}
       {state.storageProblem && <TextBlock text={describeStorageProblem(state.storageProblem)} />}
       {state.models.status === "failed" && (
@@ -264,6 +269,17 @@ export function ContextNotice({ model }: { model: string }) {
   );
 }
 
+/** The next request leaves `count` older tool results out to fit the context; derived from the state, never saved. */
+function LeftOutNotice({ count }: { count: number }) {
+  return (
+    <p className="notice" role="status">
+      {count === 1
+        ? l10n.t("1 older tool result is left out of the request to save context.")
+        : l10n.t("{0} older tool results are left out of the request to save context.", count)}
+    </p>
+  );
+}
+
 /** Alert with a message and its optional technical detail. */
 function TextBlock({ text, children }: { text: ErrorText; children?: ReactNode }) {
   return (
@@ -431,10 +447,23 @@ function Conversation({
   const list = useRef<HTMLElement>(null);
   const [pinned, setPinned] = useState(true);
 
-  // Follow stream only while user stays at bottom.
+  // Follow stream only while user stays at bottom. Unpinned, nothing moves the view: see `overflow-anchor` in the CSS.
   useLayoutEffect(() => {
     if (pinned) end.current?.scrollIntoView({ block: "end" });
   });
+
+  // [>]: Keyed by index: a conversation's entries are only appended, and another one remounts the list. An entry moving
+  // into a fold remounts, so a row opened inside comes back closed. The open request goes to the last entry, never
+  // folded, since only an ended turn folds.
+  const entry = (index: number) => (
+    <Entry
+      key={index}
+      entry={entries[index]!}
+      previous={entries[index - 1]}
+      next={entries[index + 1]}
+      approval={index === entries.length - 1 ? approval : undefined}
+    />
+  );
 
   if (entries.length === 0) {
     return (
@@ -453,16 +482,19 @@ function Conversation({
         if (element) setPinned(element.scrollHeight - element.scrollTop - element.clientHeight < 24);
       }}
     >
-      {entries.map((entry, index) => (
-        <Entry
-          // biome-ignore lint/suspicious/noArrayIndexKey: a conversation's entries are only appended; another one remounts the list.
-          key={index}
-          entry={entry}
-          previous={entries[index - 1]}
-          next={entries[index + 1]}
-          approval={index === entries.length - 1 ? approval : undefined}
-        />
-      ))}
+      {foldTurns(entries).map((part) =>
+        part.kind === "entry" ? (
+          entry(part.index)
+        ) : (
+          // [>]: Uncontrolled, as the reasoning block: the user's choice holds while the conversation stays shown.
+          <details key={`fold-${part.start}`} className="turn-fold">
+            <summary className="turn-fold-row">{describeFold(part.counts)}</summary>
+            <div className="turn-fold-entries">
+              {Array.from({ length: part.end - part.start }, (_, offset) => entry(part.start + offset))}
+            </div>
+          </details>
+        ),
+      )}
       <div ref={end} />
     </section>
   );
