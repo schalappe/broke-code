@@ -4,7 +4,7 @@
  * API key, over ports the host fills with the Quick Pick, input boxes, the settings, and `SecretStorage`. Nothing is
  * contacted: the Ollama preset is offered without probing its port.
  */
-import { isHeaderSafeKey } from "./apiKey";
+import { apiKeyBox } from "./apiKey";
 import type { Translator } from "./modelList";
 import { appendProvider, type CandidateReading, parseProviders, readCandidate, type SkipReason } from "./providers";
 
@@ -90,34 +90,33 @@ export async function addProvider(ports: AddProviderPorts, l10n: Translator): Pr
     validate: (value) => refusal(readCandidate(ports.readSetting(), { name, baseUrl: value })),
   });
   if (baseUrl === undefined) return "cancelled";
-  const key = await ports.input({
-    title: l10n.t("API key for {0}", name.trim()),
-    prompt: l10n.t("broke-code sends this key to {0} as a bearer token.", name.trim()),
-    placeholder: l10n.t("Leave empty for a provider that needs no key, such as Ollama"),
-    password: true,
-    validate: (value) => (isHeaderSafeKey(value.trim()) ? undefined : keyShapeText(l10n)),
-  });
+  const key = await ports.input({ ...apiKeyBox(name.trim(), "new", l10n), password: true });
   if (key === undefined) return "cancelled";
   return save({ name, baseUrl, key: key.trim() }, ports, l10n);
 }
 
-/** Store the key, then append the entry; read against the setting as it is now, since it may have changed meanwhile. */
+/**
+ * Store the key, then append the entry. The entry is checked against the setting before the key is stored, so a refused
+ * one stores nothing, and again after, since another window or a `settings.json` edit may have changed it meanwhile:
+ * the write appends to that fresh value, and an entry refused by then deletes the key it stored.
+ */
 async function save(
   typed: { name: string; baseUrl: string; key: string },
   ports: AddProviderPorts,
   l10n: Translator,
 ): Promise<AddProviderOutcome> {
-  const current = ports.readSetting();
-  const reading = readCandidate(current, { name: typed.name, baseUrl: typed.baseUrl });
-  if ("reason" in reading) {
-    ports.showError(l10n.t("Could not add the provider {0}: {1}", typed.name.trim(), reasonText(reading.reason, l10n)));
+  const refused = (reason: SkipReason) => {
+    ports.showError(l10n.t("Could not add the provider {0}: {1}", typed.name.trim(), reasonText(reason, l10n)));
+    return "failed" as const;
+  };
+  const before = readCandidate(ports.readSetting(), { name: typed.name, baseUrl: typed.baseUrl });
+  if ("reason" in before) return refused(before.reason);
+  const keyRefusal = apiKeyBox(before.provider.name, "new", l10n).validate(typed.key);
+  if (keyRefusal !== undefined) {
+    ports.showError(l10n.t("Could not add the provider {0}: {1}", before.provider.name, keyRefusal));
     return "failed";
   }
-  if (!isHeaderSafeKey(typed.key)) {
-    ports.showError(l10n.t("Could not add the provider {0}: {1}", reading.provider.name, keyShapeText(l10n)));
-    return "failed";
-  }
-  const { name, baseUrl } = reading.provider;
+  const { name, baseUrl } = before.provider;
 
   // [!]: Key first: keys outlive their provider, so a setting written first would send a removed provider's leftover
   // key under this name to the new URL at the first model listing.
@@ -125,6 +124,14 @@ async function save(
     await ports.storeKey(name, typed.key);
   } catch (error) {
     ports.showError(l10n.t("Could not save the API key for {0}: {1}", name, String(error)));
+    return "failed";
+  }
+  // [>]: A change landing between this read and the write is still overwritten: settings have no compare-and-swap.
+  const current = ports.readSetting();
+  const after = readCandidate(current, { name, baseUrl });
+  if ("reason" in after) {
+    refused(after.reason);
+    await deleteKey(name, ports, l10n);
     return "failed";
   }
   try {
@@ -158,8 +165,4 @@ function reasonText(reason: SkipReason, l10n: Translator): string {
     case "invalidUrl":
       return l10n.t("Enter an http or https URL.");
   }
-}
-
-function keyShapeText(l10n: Translator): string {
-  return l10n.t("An API key can contain only visible ASCII characters, with no spaces or accents.");
 }

@@ -199,6 +199,33 @@ describe("addProvider, cancel and failures", () => {
     expect(host.errors).toEqual(["Could not add the provider Lab: Error: EACCES"]);
   });
 
+  test("a provider added while the key was stored is kept", async () => {
+    const { host, ports } = fakeHost({ kind: "other", setting: [INTERNAL], inputs: ["Lab", "http://lab/v1", "k"] });
+    const other = { name: "Other", baseUrl: "http://other/v1" };
+    const store = ports.storeKey;
+    ports.storeKey = async (name, key) => {
+      await store(name, key);
+      host.setting = [INTERNAL, other];
+    };
+    expect(await addProvider(ports, english)).toBe("added");
+    expect(host.setting).toEqual([INTERNAL, other, { name: "Lab", baseUrl: "http://lab/v1" }]);
+  });
+
+  test("a name taken while the key was stored is refused, the key deleted, and nothing written", async () => {
+    const { host, ports } = fakeHost({ kind: "other", setting: [INTERNAL], inputs: ["Lab", "http://lab/v1", "k"] });
+    const taken = [INTERNAL, { name: "Lab", baseUrl: "http://elsewhere/v1" }];
+    const store = ports.storeKey;
+    ports.storeKey = async (name, key) => {
+      await store(name, key);
+      host.setting = taken;
+    };
+    expect(await addProvider(ports, english)).toBe("failed");
+    expect(host.log).toEqual(["storeKey Lab", "deleteKey Lab"]);
+    expect(host.keys.has("Lab")).toBe(false);
+    expect(host.setting).toBe(taken);
+    expect(host.errors).toEqual(["Could not add the provider Lab: Another provider already uses this name."]);
+  });
+
   test("a failed key delete after a failed settings write is shown too", async () => {
     const { host, ports } = fakeHost({ kind: "ollama", writeFails: true, deleteFails: true });
     expect(await addProvider(ports, english)).toBe("failed");

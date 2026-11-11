@@ -1616,6 +1616,13 @@ describe("warnings", () => {
     expect(posted).toEqual([{ type: "addProvider" }]);
   });
 
+  test("with skipped entries and no valid provider, shows one Add provider, the empty state's", () => {
+    const state = stateWith(false, { skipped: [{ position: 1, name: "P", reason: "invalidUrl" }] });
+    const html = renderToStaticMarkup(<App state={state} language="en" />);
+    expect(html.match(/>Add provider<\/button>/g)).toHaveLength(1);
+    expect(html).toMatch(/class="empty".*>Add provider<\/button>.*<ul class="warnings"/);
+  });
+
   test("offers no Add provider under skill warnings alone", () => {
     const state = stateWith(true, {
       skillWarnings: [{ path: "~/.agents/skills", problem: { kind: "folderUnreadable", cause: "EACCES" } }],

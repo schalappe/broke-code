@@ -157,7 +157,8 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   `settings.json` must not override them, because keys are stored by provider name and a repository could
   otherwise point that name at its own URL. Each API key lives in `SecretStorage`, never in `settings.json`.
 - One writer of `brokeCode.providers`: "broke-code: Add provider" (`broke-code.addProvider`, in the Command Palette,
-  beside "Open provider settings" in the no-provider state, and under the skipped providers). A Quick Pick offers
+  beside "Open provider settings" in the no-provider state, and under the skipped providers while a valid provider
+  exists; without one, the empty state's button is the only one, maintainer decision). A Quick Pick offers
   "Ollama on this machine" (`ollama`, `http://localhost:11434/v1`, the empty key; never probed) and "Other
   OpenAI-compatible service", which asks the name, the base URL, then the key in a password box, no Back. A box
   accepts a value when `parseProviders`, given the user value plus the candidate entry, keeps it (`readCandidate`),
@@ -168,7 +169,11 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   `caFile` included, keep their order and fields, and a value that is not an array becomes the one-entry array. Key
   first because keys are never deleted with their provider: a setting written first would send a removed provider's
   leftover key to a new URL of the same name. A failed key write is shown and writes no setting; a failed settings
-  write is shown and deletes the key just stored. Then the host applies the settings and selects the new provider,
+  write is shown and deletes the key just stored. The entry is checked against the setting before the key is stored
+  and again after, and the write appends to that second read, so a providers change made meanwhile (another window,
+  a `settings.json` edit) is kept; an entry refused by then (its name taken) is shown and deletes the key, writing
+  nothing. Accepted race: a change landing between that read and the write is overwritten, since settings have no
+  compare-and-swap. Then the host applies the settings and selects the new provider,
   except while a reply is in flight. The flow runs in the API key dialog queue, so the missing-key prompt the settings
   write triggers runs after it and finds the key. Escape at any step writes nothing. Editing or removing a provider
   stays in `settings.json`.

@@ -5,7 +5,7 @@
  * Every key dialog (automatic prompt, `broke-code: Set API key`) runs through one queue -> boxes never overlap.
  */
 import * as vscode from "vscode";
-import { isHeaderSafeKey } from "../core/apiKey";
+import { apiKeyBox } from "../core/apiKey";
 import type { Provider } from "../core/providers";
 import { SerialQueue } from "../core/serialQueue";
 
@@ -56,7 +56,7 @@ export class ApiKeys {
         .run(async () => {
           const stillConfigured = this.readProviders().some((provider) => provider.name === name);
           if (!stillConfigured || (await this.get(name)) !== undefined) return;
-          await this.askAndStore(name, vscode.l10n.t("broke-code sends this key to {0} as a bearer token.", name));
+          await this.askAndStore(name, "new");
         })
         .catch((error: unknown) => {
           void vscode.window.showErrorMessage(
@@ -110,10 +110,7 @@ export class ApiKeys {
         )?.label;
       if (!name) return;
 
-      const outcome = await this.askAndStore(
-        name,
-        vscode.l10n.t("Enter a new key to set or replace it. Leave empty to clear it."),
-      );
+      const outcome = await this.askAndStore(name, "change");
       if (outcome === "stored")
         void vscode.window.showInformationMessage(vscode.l10n.t("API key for {0} saved.", name));
       if (outcome === "cleared")
@@ -122,17 +119,18 @@ export class ApiKeys {
   }
 
   /** Password box for `name`; empty submit stores `""` (no key), Escape stores nothing. Save failure shown. */
-  private async askAndStore(name: string, prompt: string): Promise<"stored" | "cleared" | "cancelled" | "failed"> {
+  private async askAndStore(
+    name: string,
+    purpose: "new" | "change",
+  ): Promise<"stored" | "cleared" | "cancelled" | "failed"> {
+    const box = apiKeyBox(name, purpose, vscode.l10n);
     const key = await vscode.window.showInputBox({
-      title: vscode.l10n.t("API key for {0}", name),
-      prompt,
-      placeHolder: vscode.l10n.t("Leave empty for a provider that needs no key, such as Ollama"),
+      title: box.title,
+      prompt: box.prompt,
+      placeHolder: box.placeholder,
       password: true,
       ignoreFocusOut: true,
-      validateInput: (value) =>
-        isHeaderSafeKey(value.trim())
-          ? undefined
-          : vscode.l10n.t("An API key can contain only visible ASCII characters, with no spaces or accents."),
+      validateInput: box.validate,
     });
     if (key === undefined) return "cancelled";
     try {
