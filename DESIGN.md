@@ -53,8 +53,8 @@ Constraints that shape everything here:
 
 - The webview's Content Security Policy allows the bundled stylesheet only. An inline `style` attribute does nothing;
   all styling goes through classes.
-- No icon font, no component kit, no Tailwind. Marks (chevron, dot, file, folder, and problems markers, the rule before a turn
-  ending) are drawn in CSS from borders and backgrounds.
+- No icon font, no component kit, no Tailwind. Marks (chevron, dot, file, folder, problems, and diff markers, the rule
+  before a turn ending) are drawn in CSS from borders and backgrounds.
 - The frontmatter above lists the type, radius, and spacing tokens. It lists no color, because no color has a fixed
   value: see "Colors".
 
@@ -222,8 +222,10 @@ pickers, and while a mode change is being written, when Send is disabled too (En
 
 - User message: `--bc-fill`, radius 10px, full width. Its chips sit under the text: a path in the editor font on
   `--bc-fill-strong`, then its status in dim text; a failed chip is drawn in the error color. A chip that found
-  nothing to attach without failing (`@problems` with no error or warning) is neutral: no fill and dim text, its
-  edge kept for high contrast, its status in words. Its kind marker is a ring.
+  nothing to attach without failing (`@problems` with no error or warning, `@diff` with no change) is neutral: no fill
+  and dim text, its edge kept for high contrast, its status in words. A `@diff` whose source is absent or off (no
+  repository, git not available) is failed, not neutral. The kind marker of `@problems` is a ring; of `@diff`, a box
+  with a thick left edge, a change bar.
 - Reply: Markdown flush on the panel, inside `.answer`, the only place the Markdown rules apply.
 - Code block of a reply: once its text is final, its frame (`.code-block`: `--bc-fill`, `--bc-edge`, radius 6px)
   holds a header (`.code-actions`) with Copy and Insert at cursor at the right, then the code, which scrolls inside

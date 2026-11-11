@@ -111,6 +111,23 @@ With no error or warning, the chip says so in a neutral look and the message is 
 multi-root workspace, a workspace folder named `problems` is reached by `@problems/` and `@problems/<path>`, no
 longer by `@problems`.
 
+### Mention the uncommitted changes
+
+`@diff` attaches the changes of your tracked files that are not committed yet, staged and unstaged together, as one
+diff against the last commit (`git diff HEAD`). Files git does not track yet are left out: add them with `git add`
+first to include them. Each workspace folder inside a git repository gets the changes under that folder only; in a
+multi-root workspace each folder's diff follows a line with its name. broke-code reads git through VS Code's built-in
+Git extension, so a repository that extension has not opened, such as one above the folder it asked you about, is not
+read. The menu lists `@diff` after `@problems`.
+
+With nothing changed, the chip says so in a neutral look. When no workspace folder is in a git repository, when git
+is not available in VS Code, or when the diff cannot be read (in a repository without a commit, for one), the chip
+says why in the error color. In every case the message is still sent. A diff over 2,000 lines or 1 MiB is cut, with
+a note saying how many lines were left out.
+
+`diff` is a reserved name like `problems`: a file named `diff` is `@./diff`, and in a multi-root workspace a workspace
+folder named `diff` is reached by `@diff/` and `@diff/<path>`, no longer by `@diff`.
+
 ## How the agent works
 
 Each message starts an agent turn. The model may answer at once, or write a tool call in its reply; broke-code runs
@@ -369,7 +386,8 @@ word, broke-code tells it so and asks again. Contributors run the bench with `bu
 ## Privacy
 
 broke-code collects no telemetry. It contacts only the providers you configure. When you generate a commit message,
-the staged diff of that repository is sent to the provider selected in the chat.
+the staged diff of that repository is sent to the provider selected in the chat. When a message mentions `@diff`, the
+uncommitted changes of the workspace folders are sent with it.
 
 ## Credits
 

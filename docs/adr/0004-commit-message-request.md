@@ -64,3 +64,16 @@ structurally and the exports are checked at run time. The Git extension ships in
 - The `@diff` mention (#66) can reuse the same git access.
 - `diff(true)` holds the whole staged diff in memory, uncapped, before the cut: a huge staged change costs memory in
   the extension host for the length of the run.
+
+## Note (2026-11-11): the diff against `HEAD` for `@diff`
+
+The `@diff` mention (#82) reuses the git access: the lookup (`lookUpGit`: the missing and disabled checks, the wait
+for `initialized`) moved to `src/extension/git.ts`, shared with this command, whose behavior is unchanged. It reads
+staged and unstaged changes together with `Repository.diffWith("HEAD", <path>)`, never `diffWithHEAD(path)`. Verified
+in the Git extension's source (`extensions/git/src/git.ts`, `release/1.101`): `diffWith(ref, path)` runs
+`git diff <ref> -- <path>` in the repository root and returns its whole output, while `diffWithHEAD(path)` runs
+`git diff -- <path>`, the unstaged changes only, and without a path both return a list of changed files, not a patch.
+`git diff HEAD -- .` shows a file changed both in the index and after once, with both changes. A relative path goes
+through unchanged, but an absolute path equal to the repository root becomes an empty pathspec, which git refuses, so
+the root goes as `.`. Concatenating the staged and the unstaged diffs was rejected: it shows a twice-changed file
+twice.

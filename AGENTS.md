@@ -23,7 +23,8 @@ command at once. Typing `/` at the start of a message lists `/new`, `/model`, an
 goes to the model as typed. Outside the chat, the command "broke-code: Generate commit message", a button in the
 Source Control title of a git repository, sends that repository's staged diff to the provider and model selected in the
 chat and writes the reply to the commit input box (ADR 0004). Each final code block of an answer has Copy and Insert at
-cursor. The reserved mention `@problems` attaches the errors and warnings VS Code holds for the workspace files. The command "broke-code: Add provider", also a button of the panel, adds a provider to the user settings and
+cursor. The reserved mention `@problems` attaches the errors and warnings VS Code holds for the workspace files, and
+`@diff` the uncommitted changes of their tracked files against `HEAD`. The command "broke-code: Add provider", also a button of the panel, adds a provider to the user settings and
 stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the decisions behind the design, starting with
 `docs/adr/0001-body-tool-calls.md`.
 
@@ -57,10 +58,13 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   roots (the loaded skills' folders outside the workspace, for reads only), capped reads, one-level listings, line truncation, the write boundary and atomic writes, with `node:fs`), mentions (`mentions.ts`: token detection, picked and typed
   mentions merged, reading, the text the model receives, and `cutToMentionCaps`, the cut of a reserved mention's text),
   the reserved mentions (`reservedMentions.ts`: `RESERVED_MENTIONS`, the table a new name is added to, `MentionKind`,
-  `NOTHING_TO_ATTACH`, the statuses of a neutral chip, and `pickedPath`, the `@./<name>` a menu pick inserts), the
+  `NOTHING_TO_ATTACH`, the statuses of a neutral chip, `SOURCE_FAILURES`, the statuses of a source absent or off, and
+  `pickedPath`, the `@./<name>` a menu pick inserts), the
   mention reader the host builds (`mentionReader.ts`: a reserved name to its reader over its host source, any other
   path to `readMention`), `@problems` (`problems.ts`: the raw `Diagnostic` the host's `DiagnosticsReader` returns, and
-  `readProblems`, the filter, order, line format, and caps), where a message holds Markdown code
+  `readProblems`, the filter, order, line format, and caps), `@diff` (`diff.ts`: the raw `FolderDiff` per workspace
+  folder the host's `DiffReader` returns, and `readDiff`, the status, the multi-root layout, and caps), where a message
+  holds Markdown code
   (`markdownCode.ts`; also `remarkFenceClosed`, the remark plugin marking a fenced block whose closing fence the parser read,
   `hasTextAfter`, whether rendered text follows a block, and `codeBlockText`,
   the text Copy and Insert at cursor take), Insert at cursor (`insertCode.ts`: `insertCode` over an editor port the
@@ -94,7 +98,9 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   generates test certificates with `/usr/bin/openssl` at test time; no private key is committed.
   `conversationFixture.ts` is the in-memory conversation file port for tests.
 - `src/extension/`: the extension host glue (activation, the mention reader with the diagnostics `@problems` reads,
-  `vscode.languages.getDiagnostics()` as raw records, webview view, API keys in `SecretStorage` and their dialog
+  `vscode.languages.getDiagnostics()` as raw records, and the git diffs `@diff` reads, the Git API lookup the commit
+  message command shares in `git.ts` (`lookUpGit`, the structural typing of the members used, and `gitDiffs`), webview
+  view, API keys in `SecretStorage` and their dialog
   queue, the "Add provider" flow's Quick Pick, input boxes, and settings write in `addProvider.ts`, the
   file index's `findFiles` scan and watcher in `fileIndex.ts`, the turn limits and the command timeout from the user
   settings and the "Set context size" input box in `contextSizes.ts`, the tool runner's wiring (the ripgrep candidates
@@ -493,16 +499,17 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
 - A mention is `@` at the start of the message or after whitespace, up to the next whitespace, less trailing
   `.,;:!?)`. Fenced code blocks and inline code spans hold no mentions. A code span opens and closes in one paragraph: a
   blank line or a fenced block between two backticks leaves both literal. A path mentioned twice is attached once.
-- A mention whose path is exactly a reserved name (`RESERVED_MENTIONS`: `problems`), lowercase, once its trailing
+- A mention whose path is exactly a reserved name (`RESERVED_MENTIONS`: `problems`, `diff`), lowercase, once its trailing
   punctuation is dropped, is a reserved mention: it is read from its host source and never resolves to a workspace
   path. `@problems` and `@problems.` are reserved; `@Problems`, `@problems/`, and `@./problems` are paths. The text
   alone decides: a workspace file or folder of that name is mentioned as `@./<name>`, and in a multi-root workspace a
   folder named like a reserved name is no longer reached by `@<name>`, while `@<name>/` and `@<name>/<path>` still
   are. A reserved mention follows the rules of the others: read at send, once per message however often written, in
   the arguments of a `/<name>` skill message too, and never inside code. Its kind is its name (`MentionKind`, apart
-  from the workspace `EntryKind`). A status of `NOTHING_TO_ATTACH` (`noProblems`) says it found nothing to attach
-  without failing: the chip is then neutral and dim, in words; every other status that attaches nothing keeps the
-  error color. A source that fails is `unreadable` with its cause, the notice `the <name> could not be read
+  from the workspace `EntryKind`). A status of `NOTHING_TO_ATTACH` (`noProblems`, `noChanges`) says it found nothing
+  to attach without failing: the chip is then neutral and dim, in words; every other status that attaches nothing
+  keeps the error color, `SOURCE_FAILURES` (`noRepository`, `gitUnavailable`) included, which say the source is absent
+  or off. A source that fails is `unreadable` with its cause, the notice `the <name> could not be read
   (<cause>)`. Its text is cut, never refused: over 2,000 lines with the truncation notice, over 1 MiB between
   characters (`cutToMentionCaps`), the cut line counted as not shown. Adding a name: append it to
   `RESERVED_MENTIONS` and follow the type errors (its reader in `mentionReader.ts`, its count unit in `mentions.ts`,
@@ -517,6 +524,25 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   space; sorted by path (code order), line, then column. The header counts problems (`@problems (problems, 2
   problems)`, `1 problem`). None: `noProblems`, "Not attached: VS Code holds no error or warning for the workspace
   files.", and the message is still sent. The diagnostic's code is not written.
+- `@diff` attaches the changes of tracked files against `HEAD`, staged and unstaged together in one diff, of each
+  workspace folder inside a git repository. The host's `DiffReader` (`gitDiffs`) runs the shared Git API lookup
+  (`lookUpGit`, the commit message's: the same missing and disabled checks and the same wait, at most 10 seconds, for
+  `initialized`; Stop during it ends the turn as during any mention read), then, per folder in workspace order,
+  `getRepository(<folder URI>)`, the deepest open repository holding the folder, and `diffWith("HEAD", <path>)`, which
+  runs `git diff HEAD -- <path>` in the repository root; `<path>` is the folder relative to the repository's real root,
+  `.` for the root itself (an absolute path equal to the root becomes an empty pathspec, which git refuses). Never
+  `diffWithHEAD(path)`: it runs `git diff -- <path>`, unstaged only. Untracked files are left out, and a repository
+  nested in a folder that is not itself in one is not looked for; nor is a repository the Git extension has not
+  opened, such as one above the folder that `git.openRepositoryInParentFolders` keeps closed. `readDiff` builds the
+  block: the header counts lines (`@diff (diff, 9 lines)`, `1 line`), and in a multi-root workspace each folder's diff
+  follows a line `# <folder name>`; folders without a repository or without changes are left out, and the mention is
+  attached as soon as one folder has a diff. Nothing to attach: no tracked file differs from `HEAD` in any repository,
+  `noChanges` (neutral), "Not attached: no tracked file differs from HEAD."; no folder in a repository (or no folder),
+  `noRepository`, "Not attached: no workspace folder is a git repository."; the Git extension missing or disabled,
+  `gitUnavailable`, "Not attached: git is not available in VS Code."; a folder's diff that fails, a repository without
+  a commit included, or a reader that rejects, `unreadable` with the cause (git's own `stderr` when it has one, led by
+  the folder's name in a multi-root workspace), even beside folders with a diff, since leaving it out would pass it
+  silently. The message is still sent.
 - Mentions are read when the message is sent, never again: later turns resend the message as composed then. The
   composed text lives in the chat controller, outside the state posted to the webview. The message and its waiting
   reply show, with Stop, while the mentions are read.
@@ -615,8 +641,8 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   `halted`, its `haltReason`, and tool steps, with an optional `approval`. A reopened conversation therefore resends exactly what was sent and
   never reads its mentions again. Version 1 files are skipped like any unknown version: no release wrote them, so
   none is migrated. An optional field added to an entry keeps the version: an older build drops the unknown key and
-  reads the rest (ADR 0003). A new value of an existing field keeps it too, such as the mention kind `problems` and
-  status `noProblems`, each validated: an older build skips such a record as invalid and keeps it on disk (accepted,
+  reads the rest (ADR 0003). A new value of an existing field keeps it too, such as the mention kinds `problems` and
+  `diff` and the statuses `noProblems`, `noChanges`, `noRepository`, and `gitUnavailable`, each validated: an older build skips such a record as invalid and keeps it on disk (accepted,
   ADR 0003, 2026-11-11). An unknown kind or status makes the record invalid. It holds no API key and nothing else of `ProviderAccess`; a failed reply's error keeps the provider's base
   URL for display, since it is user settings, not a secret. Times are whole milliseconds within the `Date` range. A
   file that fails validation or has an unknown version is logged and skipped; a file that cannot be read is shown as
@@ -722,10 +748,11 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
 - The command `broke-code.generateCommitMessage` ("broke-code: Generate commit message", `$(sparkle)` icon) is in the
   Command Palette and in the `scm/title` menu, group `navigation`, `when` `scmProvider == git` (ADR 0004). It never
   stages, commits, or pushes; it runs while a chat reply is in flight and touches no conversation: nothing is saved.
-- Git access goes through the built-in Git extension's API (`vscode.git`, version 1), looked up at each run, never an
-  `extensionDependencies` entry. The members used are typed structurally in `src/extension/commitMessage.ts`
-  (`enabled`, `getAPI(1)`, `state`, `onDidChangeState`, `repositories`, `Repository.rootUri`, `inputBox.value`,
-  `diff(true)`), and the exports are checked at run time. No extension or exports of another shape: "not available";
+- Git access goes through the built-in Git extension's API (`vscode.git`, version 1), looked up at each run by
+  `lookUpGit`, which the `@diff` mention shares, never an `extensionDependencies` entry. The members used are typed
+  structurally in `src/extension/git.ts` (`enabled`, `getAPI(1)`, `state`, `onDidChangeState`, `repositories`,
+  `Repository.rootUri`, `inputBox.value`, `diff(true)`, and, for `@diff`, `getRepository` and `diffWith`), and the
+  exports are checked at run time. No extension or exports of another shape: "not available";
   `enabled` false or `getAPI` throwing (`git.enabled` off, git not found): "disabled". While the API's `state` is
   `uninitialized` its repository list is empty, so a run waits for `initialized`, at most 10 seconds, then goes on with
   the repositories opened so far.
