@@ -68,7 +68,7 @@ structurally and the exports are checked at run time. The Git extension ships in
 ## Note (2026-11-11): the diff against `HEAD` for `@diff`
 
 The `@diff` mention (#82) reuses the git access: the lookup (`lookUpGit`: the missing and disabled checks, the wait
-for `initialized`) moved to `src/extension/git.ts`, shared with this command, whose behavior is unchanged. It reads
+for `initialized`) moved to `src/core/git.ts`, over the extension handle `src/extension/git.ts` passes, shared with this command, whose behavior is unchanged. It reads
 staged and unstaged changes together with `Repository.diffWith("HEAD", <path>)`, never `diffWithHEAD(path)`. Verified
 in the Git extension's source (`extensions/git/src/git.ts`, `release/1.101`): `diffWith(ref, path)` runs
 `git diff <ref> -- <path>` in the repository root and returns its whole output, while `diffWithHEAD(path)` runs

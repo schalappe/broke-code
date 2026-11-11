@@ -65,7 +65,10 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   path to `readMention`), `@problems` (`problems.ts`: the raw `Diagnostic` the host's `DiagnosticsReader` returns, and
   `readProblems`, the filter, order, line format, and caps; also `workspacePath`, an absolute path as the file index
   writes it), `@diff` (`diff.ts`: the raw `FolderDiff` per workspace folder the host's `DiffReader` returns, and
-  `readDiff`, the status, the multi-root layout, the failed folders of a partial diff, and caps), `@selection` (`selection.ts`: the raw `EditorSelection` the
+  `readDiff`, the status, the multi-root layout, the failed folders of a partial diff, and caps), the Git API lookup
+  (`git.ts`: `lookUpGit` over the extension handle the host passes, its availability checks and its wait for
+  `initialized` with an injectable timeout, the structural typing of the members used, and `gitDiffReader`, the
+  `@diff` port, with the repository-relative pathspec and git's `stderr` as the cause), `@selection` (`selection.ts`: the raw `EditorSelection` the
   host's `SelectionReader` returns, and `readSelection`, the workspace check, the line range, and the caps), where a
   message holds Markdown code
   (`markdownCode.ts`; also `remarkFenceClosed`, the remark plugin marking a fenced block whose closing fence the parser read,
@@ -102,7 +105,8 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   `conversationFixture.ts` is the in-memory conversation file port for tests.
 - `src/extension/`: the extension host glue (activation, the mention reader with the diagnostics `@problems` reads,
   `vscode.languages.getDiagnostics()` as raw records, the git diffs `@diff` reads, through the Git API lookup the
-  commit message command shares in `git.ts` (`lookUpGit`, the structural typing of the members used, and `gitDiffs`),
+  commit message command shares, `git.ts` passing the core's `lookUpGit` the `vscode.git` extension and building
+  `gitDiffs` with `Uri.file`),
   and the selection `@selection` reads, the primary selection of `window.activeTextEditor` as a raw record, webview
   view, API keys in `SecretStorage` and their dialog
   queue, the "Add provider" flow's Quick Pick, input boxes, and settings write in `addProvider.ts`, the
@@ -777,7 +781,7 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   stages, commits, or pushes; it runs while a chat reply is in flight and touches no conversation: nothing is saved.
 - Git access goes through the built-in Git extension's API (`vscode.git`, version 1), looked up at each run by
   `lookUpGit`, which the `@diff` mention shares, never an `extensionDependencies` entry. The members used are typed
-  structurally in `src/extension/git.ts` (`enabled`, `getAPI(1)`, `state`, `onDidChangeState`, `repositories`,
+  structurally in `src/core/git.ts` (`enabled`, `getAPI(1)`, `state`, `onDidChangeState`, `repositories`,
   `Repository.rootUri`, `inputBox.value`, `diff(true)`, and, for `@diff`, `getRepository` and `diffWith`), and the
   exports are checked at run time. No extension or exports of another shape: "not available";
   `enabled` false or `getAPI` throwing (`git.enabled` off, git not found): "disabled". While the API's `state` is
