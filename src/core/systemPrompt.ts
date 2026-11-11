@@ -1,9 +1,11 @@
 /**
  * @module systemPrompt
- * The system prompt: the agent's role, the body tool call format and its rules, the tools, the skills listed to the
- * model, then the instruction files. Composed from data only; the host reads the files. No `node:` or `vscode` import.
- * Model-facing text is English and never localized.
+ * The system prompt: the agent's role, in Plan mode the Plan paragraph, the body tool call format and its rules, the
+ * tools, the skills listed to the model, then the instruction files; and the tools a send offers (`offeredTools`).
+ * Composed from data only; the host reads the files. No `node:` or `vscode` import. Model-facing text is English and
+ * never localized.
  */
+import type { Mode } from "./protocol";
 import { describeTool, GENERIC_CALL_SHAPE, type ToolSpec } from "./toolCalls";
 
 /** An instruction file, such as an `AGENTS.md`: `label` names it in the prompt, `text` goes in verbatim. */
@@ -19,6 +21,17 @@ export type Skill = { name: string; description: string; root: string; listedToM
 // fence, which would teach the model to fence its calls, and a fenced call never runs.
 const ROLE =
   "You are a coding agent working in the user's workspace. You read and change files and run commands with the tools below.";
+
+const PLAN_ROLE = "You are a coding agent working in the user's workspace. You read files with the tools below.";
+
+const PLAN = [
+  "# Plan mode",
+  "",
+  "You are in Plan mode. Read what you need with the tools below. Then answer with a plan of the changes: file by file, in order. Change no file and run no command.",
+].join("\n");
+
+/** The tools a Plan turn never offers: they change files or run commands. */
+export const PLAN_BLOCKED_TOOLS: readonly string[] = ["write_file", "edit_file", "run_command"];
 
 const FORMAT = [
   "# Tool calls",
@@ -53,14 +66,30 @@ const SKILLS_INTRO =
   "A skill holds instructions for one kind of task. When a task matches a skill's description, call load_skill with the skill's name first, then follow the instructions it returns.";
 
 /**
+ * The tools of a send: `load_skill` only while a skill is listed to the model, like the Skills section of the system
+ * prompt, so a workspace without skills spends no prompt on a tool that cannot load anything; in Plan mode, none of
+ * `PLAN_BLOCKED_TOOLS` either. Without a mode, or in Ask or Auto-edit, every other tool.
+ */
+export function offeredTools(tools: readonly ToolSpec[], skills: readonly Skill[], mode?: Mode): readonly ToolSpec[] {
+  const skillListed = skills.some((skill) => skill.listedToModel);
+  return tools.filter(
+    (tool) =>
+      (skillListed || tool.name !== "load_skill") && !(mode === "plan" && PLAN_BLOCKED_TOOLS.includes(tool.name)),
+  );
+}
+
+/**
  * The system prompt for `tools`, the `skills` listed to the model, and the `instructions` files, in order. The rules
  * of `write_file`, `edit_file`, `run_command`, and `load_skill` follow the general rules when those tools are listed. Without a listed skill or a
- * file, it ends after the tools.
+ * file, it ends after the tools. In Plan mode (`mode` `plan`) the role says the agent reads files, and the Plan
+ * paragraph follows it; without a mode, or in Ask or Auto-edit, the prompt is the same, byte for byte. `tools` are
+ * listed as given: `offeredTools` leaves out those of the mode.
  */
 export function composeSystemPrompt(
   tools: readonly ToolSpec[],
   instructions: readonly InstructionFile[],
   skills: readonly Skill[],
+  mode?: Mode,
 ): string {
   const toolList = [
     "# Tools",
@@ -71,7 +100,8 @@ export function composeSystemPrompt(
     RULES,
     ...tools.flatMap((tool) => (Object.hasOwn(TOOL_RULES, tool.name) ? [TOOL_RULES[tool.name]] : [])),
   ];
-  return [ROLE, FORMAT, rules.join("\n"), ...toolList, ...skillSection(skills), ...files].join("\n\n");
+  const role = mode === "plan" ? [PLAN_ROLE, PLAN] : [ROLE];
+  return [...role, FORMAT, rules.join("\n"), ...toolList, ...skillSection(skills), ...files].join("\n\n");
 }
 
 /** The skills section: one line per skill listed to the model, its description on one line; none without such skill. */

@@ -136,6 +136,18 @@ export type SkillWarning = { path: string; problem: SkillProblem };
  */
 export type ContextUsage = { used: number; size: number; known: boolean; leftOut?: number };
 
+/**
+ * What an agent turn may do: `ask` waits for Accept or Reject on each write, `autoEdit` accepts writes at once, both
+ * derived from the user value of `brokeCode.autoApproveWrites`; `plan` offers the read tools only, kept per workspace
+ * and winning over the setting while on. Commands wait for Run in every mode that offers them.
+ */
+export const MODES = ["ask", "autoEdit", "plan"] as const;
+export type Mode = (typeof MODES)[number];
+
+export function isMode(value: unknown): value is Mode {
+  return MODES.some((mode) => mode === value);
+}
+
 export type ChatState = {
   providers: string[];
   skipped: SkippedProvider[];
@@ -159,6 +171,16 @@ export type ChatState = {
   context: ContextUsage;
   /** The approval request the reply in flight waits on; at most one, since one call runs per reply. */
   approval?: PendingApproval;
+  /**
+   * `plan` while Plan is on in this workspace, else the mode the setting holds; never the one last picked: a failed
+   * write leaves it as it was.
+   */
+  mode: Mode;
+  /**
+   * A mode pick's settings write is pending: the mode selector and Send are disabled, and the host ignores `setMode`
+   * and `send`, as while a reply is in flight.
+   */
+  modePending: boolean;
 };
 
 /** L10n bundle as `vscode.l10n.bundle`: absent in English. */
@@ -206,7 +228,12 @@ export type WebviewMessage =
   | { type: "approve"; id: number }
   | { type: "reject"; id: number; reason?: string }
   /** Insert at cursor: replace every selection of the active text editor with a code block's `text`. */
-  | { type: "insertCode"; text: string };
+  | { type: "insertCode"; text: string }
+  /**
+   * Pick a mode in the message box: Plan is kept in the workspace memento; Ask and Auto-edit write the user setting
+   * `brokeCode.autoApproveWrites` when its value must change.
+   */
+  | { type: "setMode"; mode: Mode };
 
 /** Chat state carried by `message`; `undefined` for a message that must leave the panel's state alone. */
 export function chatStateOf(message: HostMessage): ChatState | undefined {
@@ -290,6 +317,8 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | undefined {
       const value = text("text");
       return value === undefined || value.length > REPLY_MAX_LENGTH ? undefined : { type: "insertCode", text: value };
     }
+    case "setMode":
+      return isMode(message.mode) ? { type: "setMode", mode: message.mode } : undefined;
     default:
       return undefined;
   }

@@ -208,8 +208,15 @@ user's message). Borders and rules are 1px. No colored side stripe.
 
 ### Fields
 
-Inputs and selects use the theme's input and dropdown colors, a 1px border, radius 4px. The message box and its
-button share one large rounded field (radius 10px); its border takes the focus color while the text area has focus.
+Inputs and selects use the theme's input and dropdown colors, a 1px border, radius 4px. The message box, the mode
+selector, and Send or Stop share one large rounded field (radius 10px): the text area on its own line, then the
+selector at the left and the button at the right. The field's border takes the focus color while the text area has
+focus.
+
+The mode selector is a native select one size down (`--bc-fs-sm`), "Ask", "Auto-edit", or "Plan", its tooltip saying
+what the mode does. It shows the mode the host holds (Plan from the workspace, the others from the setting): a pick
+shows only once the host has applied it, and a failed write leaves it as it was, with the error in a notification. Disabled (half opacity) while a reply is in flight, like the
+pickers, and while a mode change is being written, when Send is disabled too (Enter sends nothing).
 
 ### The conversation
 
@@ -251,7 +258,7 @@ Each kind of state has one look, distinct from the others at a glance:
 
 | State | Look |
 | --- | --- |
-| Loading (waiting for the reply, thinking, tool running, models loading) | Dim text that breathes; a line of its own leads with a dot. The pickers are disabled. |
+| Loading (waiting for the reply, thinking, tool running, models loading) | Dim text that breathes; a line of its own leads with a dot. The pickers and the mode selector are disabled. While a mode change is being written, the mode selector and Send are disabled, with no other sign: the write takes a moment. |
 | Empty (no provider, new conversation, empty History, no History row left by the filter) | One dim line, centered in the room it has; a link under it when there is something to do. No provider: Add provider (primary) and the Open provider settings link side by side under it. |
 | Notice (unknown context size, older tool results left out of the next request) | One small dim line, with a link when there is something to do (Set context size). Nothing went wrong, so no block. |
 | Warning (skipped providers and skills) | A block on the theme's warning fill; under skipped providers, Add provider (secondary) below the block, only while a valid provider exists: without one, the empty state's Add provider is the panel's only one. |
@@ -287,7 +294,8 @@ opacity over `--bc-fast`. Under `prefers-reduced-motion: reduce`, and when VS Co
   there. Escape in an empty filter field closes History and gives the focus back to the History button.
 - From the message box, Shift+Tab reaches Reject, then Accept or Run, then the reason field: the reason field comes
   first in the DOM, then Accept or Run, then Reject, and nothing focusable may be added between them and the message
-  box.
+  box. The mode selector therefore comes after the message box: Tab from the message box reaches it, then Send or
+  Stop. A webview test pins this order.
 - The `@` and `/` menus keep the focus in the message box (`aria-activedescendant`); the highlighted row is the
   visible focus there, so it must differ from its neighbours in every theme.
 - The message box takes the focus back when a reply ends, unless History is open: the focus then stays where the user

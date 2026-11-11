@@ -19,7 +19,10 @@ import {
   type ChatEntry,
   type ChatState,
   type HostMessage,
+  isMode,
   isReplying,
+  MODES,
+  type Mode,
   type PendingApproval,
   type ReplyCall,
 } from "../core/protocol";
@@ -1054,7 +1057,8 @@ function Composer({
     nextCaret.current = undefined;
   });
 
-  const canSend = ready && !replying;
+  // [!]: The one check of whether Send would act: Send, Enter, and the built-in commands all go through it.
+  const canSend = ready && !replying && !state.modePending;
 
   const clear = () => {
     setText("");
@@ -1145,15 +1149,48 @@ function Composer({
         onBlur={() => setFocused(false)}
         onKeyDown={onKeyDown}
       />
+      {/* [!]: After the message box, so Shift+Tab from it still reaches an open request's controls first. */}
+      <ModeSelect mode={state.mode} disabled={replying || state.modePending} />
       {replying ? (
         <button type="button" onClick={() => post({ type: "stop" })}>
           {l10n.t("Stop")}
         </button>
       ) : (
-        <button type="button" disabled={!ready || text.trim() === ""} onClick={send}>
+        <button type="button" disabled={!canSend || text.trim() === ""} onClick={send}>
           {l10n.t("Send")}
         </button>
       )}
     </footer>
+  );
+}
+
+/**
+ * Ask, Auto-edit, or Plan, as the host reads them: Plan from the workspace, the others from the setting. Controlled by
+ * the state, so a pick shows only once the host has applied it; a failed write leaves the mode as it was.
+ */
+function ModeSelect({ mode, disabled }: { mode: Mode; disabled: boolean }) {
+  const labels: Record<Mode, string> = { ask: l10n.t("Ask"), autoEdit: l10n.t("Auto-edit"), plan: l10n.t("Plan") };
+  const hints: Record<Mode, string> = {
+    ask: l10n.t("Each change waits for Accept or Reject."),
+    autoEdit: l10n.t("Changes are written without asking. Commands still wait for Run."),
+    plan: l10n.t("The agent reads files and answers with a plan. It changes no file and runs no command."),
+  };
+  return (
+    <select
+      className="mode"
+      aria-label={l10n.t("Mode")}
+      title={hints[mode]}
+      value={mode}
+      disabled={disabled}
+      onChange={(event) => {
+        if (isMode(event.target.value)) post({ type: "setMode", mode: event.target.value });
+      }}
+    >
+      {MODES.map((option) => (
+        <option key={option} value={option}>
+          {labels[option]}
+        </option>
+      ))}
+    </select>
   );
 }

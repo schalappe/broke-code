@@ -13,9 +13,11 @@ twinny.
 The code so far covers the extension skeleton, a streaming chat with a provider, and the harness with the read and
 write tools and commands: a message starts an agent turn that runs `read_file`, `list_files`, `search`, `write_file`,
 `edit_file`, and `run_command` until the model answers without a call. Each write waits behind the approval (a diff and
-Accept or Reject in the chat, ADR 0002) unless the user setting auto-approves it; each command waits for Run or Reject,
-always. Each send discovers the skills and lists them to the model, which loads one with `load_skill` and may then read
-its folder (ADR 0003). `bun run eval` measures that loop on local Ollama models, applying each change and running each
+Accept or Reject in the chat, ADR 0002) unless the user setting auto-approves it, which the mode selector of the
+message box shows and writes (Ask or Auto-edit); each command waits for Run or Reject, always. The selector's third
+mode, Plan, kept per workspace, offers the read tools only, so the model answers with a plan and nothing is written
+or run (ADR 0005). Each send discovers the
+skills and lists them to the model, which loads one with `load_skill` and may then read its folder (ADR 0003). `bun run eval` measures that loop on local Ollama models, applying each change and running each
 command at once. Typing `/` at the start of a message lists `/new`, `/model`, and the skills; the panel runs `/new` and
 `/model` itself, and a message `/<name> args` loads that skill in the controller, with its arguments; any other `/word`
 goes to the model as typed. Outside the chat, the command "broke-code: Generate commit message", a button in the
@@ -62,8 +64,8 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   filter), the menu's file index (`fileIndex.ts`: one scan shared until a file
   changes, behind a scan port), the request history (`history.ts`: `toHistory`, the history a request sends, the
   oldest tool results left out when it would fill the context, and `resultLineCount`, the step row's line count), the body tool call parser (`toolCalls.ts`: `ToolSpec`, the first call-shaped block,
-  malformed-call messages), the system prompt composer (`systemPrompt.ts`: role, call format, rules, tools,
-  skills, instruction files), the turn limits (`limits.ts`: `brokeCode.maxToolSteps` and `brokeCode.contextSizes` parsing,
+  malformed-call messages), the system prompt composer (`systemPrompt.ts`: role, the Plan paragraph, call format, rules, tools,
+  skills, instruction files; `offeredTools`, the tools a send offers, and `PLAN_BLOCKED_TOOLS`), the turn limits (`limits.ts`: `brokeCode.maxToolSteps` and `brokeCode.contextSizes` parsing,
   the token estimate, the context-full threshold, the typed size check, and `brokeCode.commandTimeoutSeconds` parsing),
   the command tool (`commands.ts`: `RUN_COMMAND_TOOL`, `runCommandTool` checks the call and the folder and asks the
   approval, `runCommand` runs an approved command in its own process group with an injected shell and timeout, and
@@ -93,13 +95,14 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   from `vscode.env.appRoot` and `PATH`, the write tools behind `approvalApplier`, the command shell from
   `vscode.env.shell`, `$SHELL`, or `/bin/sh`), the write approval's editor side in
   `approval.ts` (the diff preview over `vscode.diff` and a content provider, the tabs, documents, and
-  `brokeCode.autoApproveWrites` values it feeds the core decisions), the instruction reader and the skill reader from the home folder and the workspace folders, the latter logging the
+  `brokeCode.autoApproveWrites` values it feeds the core decisions, and `writeAutoApproveWrites`, the user value the
+  mode selector writes), the instruction reader and the skill reader from the home folder and the workspace folders, the latter logging the
   skills of each send, and the same discovery, unlogged, for the `/` menu's `querySkills`; `chatView.ts` opens the
-  Quick Pick of `chooseModel` and runs `insertCode` over the active text editor; `commitMessage.ts` registers `broke-code.generateCommitMessage`, its git port over the
+  Quick Pick of `chooseModel`, runs `insertCode` over the active text editor, and shows a failed mode write; `commitMessage.ts` registers `broke-code.generateCommitMessage`, its git port over the
   built-in Git extension's API, the repository Quick Pick, the replace question, the progress notification, and the
   notifications).
 - `src/webview/`: the React chat panel and its CSS (`styles.css`: a token layer, then rules that consume it, every color
-  from a `--vscode-*` variable; see `DESIGN.md`), tool step rows, the approval controls, and the answer's code blocks with Copy and Insert at cursor (`CodeBlock`,
+  from a `--vscode-*` variable; see `DESIGN.md`), tool step rows, the approval controls, the mode selector after the message box (`ModeSelect`), and the answer's code blocks with Copy and Insert at cursor (`CodeBlock`,
   the `pre` override of the answer's renderer) included. `SuggestionMenu.tsx` is the autocomplete list the `@` and
   `/` menus share, a row with an optional description; `composer.ts` holds the message box's decisions without React
   (the token at the caret, each menu's rows, what a key does, what picking a `/` row does (`slashPick`), the built-in
@@ -306,6 +309,30 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   - `brokeCode.autoApproveWrites` (boolean, default false, `application` scope, read from `globalValue` like the
     providers) accepts writes at once, without a diff, and is read at each write's request. The controller applies it
     to requests of kind `write` only: nothing auto-approves commands.
+  - The mode selector shows and writes that setting (#79), and offers Plan (#80, ADR 0005, below). `ChatState.mode` is `ask` (user value false or absent) or
+    `autoEdit` (true), read from the user value by `ChatController.modeChanged`, which the host calls at activation
+    (the state says `ask` before) and on each change of the setting (the configuration listener), and after each pick. A pick posts `setMode
+    { mode }`, validated like the other messages (an unknown mode is dropped); `ChatController.setMode` ignores it while
+    a reply is in flight or an earlier pick's settings write is pending, writes nothing when the setting already holds that mode, and otherwise writes the user value
+    (`ConfigurationTarget.Global`) through the `writeAutoApproveWrites` port. The selector is controlled by the state,
+    so it follows the setting, not the click: a failed write is logged and shown as an error notification, and the
+    mode stays the one the setting holds. A user setting: Auto-edit in one window applies to every window. One pick
+    at a time: while its settings write is pending, `ChatState.modePending` is true, and the selector and Send are
+    disabled (Enter and the built-in `/new` and `/model` too, through the composer's one "Send would act" check), as
+    while a reply is in flight; the controller ignores `setMode` and `send` meanwhile, so no turn starts on a mode
+    about to change. A Plan pick writes no setting and never pends. Navigation (New chat, open, delete) is unaffected.
+    The selector is disabled while a reply is in flight or a mode change is being written, like the pickers, and sits after the message box in the DOM, so
+    Shift+Tab from the message box still reaches an open request's controls first. The conversation record and the
+    eval bench know nothing of the mode; the system prompt knows only Plan.
+  - Plan (#80, ADR 0005): `ChatState.mode` is `plan` while the workspace memento key `brokeCode.plan` is `true`, a key
+    of its own, since `brokeCode.lastChoice` is rewritten whole and cleared without a provider. The controller reads it
+    at construction (restored at each window load, kept across provider changes) and Plan wins over the setting while
+    on: a change of the setting elsewhere leaves the selector on Plan. `setMode { mode: "plan" }` writes no setting;
+    it sets the key. Leaving Plan for Ask or Auto-edit writes the setting first, only when its value must change, and
+    clears the key only once that write succeeded: a failed write keeps Plan and is shown as for the other modes
+    (`failed`). A failed memento write is logged only, as for `brokeCode.lastChoice`: Plan applies for the session
+    and is lost at the next load. Plan is not part of a conversation: reopening one changes no mode. While leaving Plan
+    writes the setting, the mode change is pending as above, and no send or other pick is taken.
 - `run_command(command, cwd?)` runs `<shell> -c <command>` in a hidden child process, no login shell, the shell being
   `vscode.env.shell`, else `$SHELL`, else `/bin/sh`. `cwd` resolves like a read tool's path and must be an existing
   folder inside the workspace; left out, the command runs in the first workspace folder. Without a workspace folder,
@@ -398,11 +425,17 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   at the end of the call block, so the chat and the history never hold the text after it, then the tool runs with the
   turn's context (`ToolRunner.run(call, { signal, requestApproval })`, the abort signal and the approval request), a tool step entry records its name, arguments, status, text, and approval, and the loop requests again.
   A malformed call or an empty reply: a step entry with the message (for an empty reply, "Your reply was empty. Call a
-  tool, or write your answer to the user."), and the loop requests again. The reply stays `streaming` while its
+  tool, or write your answer to the user."), and the loop requests again. In a Plan turn, a closed block of
+  `write_file`, `edit_file`, or `run_command` (`PLAN_BLOCKED_TOOLS`), which the parser reads as "not a known tool"
+  since those tools are not offered, is no malformed call: the answer is cut at the block's end as after a call, and an
+  `error` step named after the tool, with no arguments, says "<tool> is not available in Plan mode." Nothing is
+  planned, written, or run, and no approval opens (ADR 0005). Any other unknown tag stays malformed, and so does a
+  tool not offered outside Plan (`load_skill` without a listed skill). The reply stays `streaming` while its
   call runs, and the step and the next reply are appended together, so `isReplying` holds across the whole turn.
 - An agent turn has a Stop button and stops after `brokeCode.maxToolSteps` tool steps (a user setting, `application`
-  scope, default 50, at least 1; calls and malformed calls alike) as `halted` with reason `stepLimit`; three malformed calls in a row (`MAX_MALFORMED_IN_A_ROW`) halt it with reason
-  `malformedCalls`, and a call that parses resets that count. Stop ends the turn at once, during a reply or a tool
+  scope, default 50, at least 1; calls, Plan's refused calls, and malformed calls alike) as `halted` with reason `stepLimit`; three malformed calls in a row (`MAX_MALFORMED_IN_A_ROW`) halt it with reason
+  `malformedCalls`, and a call that parses, or a call Plan refuses, resets that count. Known cost, accepted: a model
+  that insists on writing in Plan uses requests up to the step limit. Stop ends the turn at once, during a reply or a tool
   run: the step in flight is dropped, nothing later runs, and the record is saved as it stands. A failed reply ends
   the turn `failed`; so does an unexpected exception inside the turn (a bug), with an `internal` error giving its
   message, logged with its stack, so the composer never stays locked. Truncate tool results longer than about 2,000 lines and say so in the result.
@@ -426,8 +459,10 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   results left out; while it is set, the panel shows "N older tool results are left out of the request to save
   context." in the place and look of the unknown-size notice, derived from the state, never saved or sent. Known cost,
   accepted: once at the threshold, most requests replace one more old step, which changes the prompt's prefix and
-  defeats a provider's prompt cache. A turn reads the step limit and context sizes once, when it starts; a settings
-  change reaches the usage display at once (`limitsChanged`) and the turns from the next send. The display counts the
+  defeats a provider's prompt cache. A turn reads the step limit, the context sizes, and Plan once, when it starts; a
+  settings change reaches the usage display at once (`limitsChanged`) and the turns from the next send. A mode change
+  cannot land during a turn (the selector is disabled and `setMode` ignored while a reply is in flight), and the
+  usage display follows it at the next send, which composes the prompt of the new mode. The display counts the
   system prompt the last send composed, in any conversation shown, since instruction files and skills are the
   workspace's; before the first send of the session, the one without instruction files or skills. It updates once a send has composed it, before the
   request goes.
@@ -437,6 +472,12 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   `load_skill` tool and its rule (reading a loaded skill's files by the absolute path the result gives, read-only
   outside the workspace): the
   controller offers the runner's tools less `load_skill` (`offeredTools`), so its call is then malformed.
+- In a Plan turn, `offeredTools` also leaves out `write_file`, `edit_file`, and `run_command`, so their rules drop with
+  them, and `composeSystemPrompt(tools, instructions, skills, mode)` replaces the role sentence with one saying the
+  agent reads files, followed by a "Plan mode" paragraph: read what it needs, answer with a plan of the changes, file
+  by file, in order, change no file and run no command. Without a mode, or in Ask or Auto-edit, the prompt is
+  byte-identical to the one before Plan; the eval bench passes no mode. A `/<name>` message loads its skill in Plan
+  as in any mode; a skill that asks to write meets the refused-call step.
 - The system prompt includes `~/.agents/AGENTS.md`, then each workspace folder's `AGENTS.md` (labelled with its
   folder name in a multi-root workspace), read at each send under the mention caps (1 MiB, 2,000 lines). A missing
   file is left out; an unreadable one is logged and left out. The home file follows symlinks; a workspace file is
@@ -519,7 +560,7 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   save left them; a failed summary write is logged only, and that failure or a crash after the delete leaves no
   summary, so the list parses the record until the next save. A delete removes the record, then the summary: a failed record delete keeps both
   and fails; a failed summary delete is logged and the conversation is gone. The workspace memento holds only the last
-  provider and model choice and the id of the conversation shown. The list is derived from the directory, newest
+  provider and model choice, the id of the conversation shown, and whether Plan is on. The list is derived from the directory, newest
   first, conversations without entries left out. It reads a conversation's summary, or its record when the summary is
   missing, unreadable, invalid, of another id, or of another version than 2, and parses the record only then; only a
   record that cannot be read is a listing failure. Accepted gap: a valid version-2 summary beside a corrupt or newer
@@ -792,7 +833,8 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
 ## Boundaries
 
 - broke-code collects no telemetry. It contacts only the configured providers.
-- Out of scope for v1, by maintainer decision: Windows and Linux, inline completion, multi-agent modes, MCP,
+- Out of scope for v1, by maintainer decision: Windows and Linux, inline completion, multi-agent modes (the Ask, Auto-edit, and Plan
+  modes are settings of one agent: how its writes are approved, or which tools it gets; not such modes), MCP,
   code indexing and embeddings, a browser tool, git checkpoints, native or hybrid tool calling, skill
   directories other than `.agents`, `CLAUDE.md`, mentions of the editor selection or diagnostics, automatic
   context summarization, `/clear`, `/help`, and publishing from `develop`.

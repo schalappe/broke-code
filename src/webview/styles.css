@@ -1100,12 +1100,14 @@ div.step-row:has(.step-status.loading)::before {
 
 /* ---------- Composer ---------- */
 
-/* The message box and its button share one large rounded field. */
+/* The message box, the mode selector, and Send or Stop share one large rounded field: the box on its own line, then
+   the selector at the left and the button at the right, in DOM order. */
 .composer {
   position: relative;
   display: flex;
+  flex-wrap: wrap;
   gap: var(--bc-space-2);
-  align-items: flex-end;
+  align-items: center;
   padding: var(--bc-space-3);
   background: var(--bc-field-bg);
   border: 1px solid var(--bc-field-border);
@@ -1117,7 +1119,7 @@ div.step-row:has(.step-status.loading)::before {
 }
 
 .composer textarea {
-  flex: 1 1 auto;
+  flex: 1 1 100%;
   min-width: 0;
   min-height: 2.5em;
   padding: var(--bc-space-1) var(--bc-space-2);
@@ -1127,8 +1129,16 @@ div.step-row:has(.step-status.loading)::before {
   resize: vertical;
 }
 
-.composer button {
+.composer > button {
   flex: none;
+  margin-left: auto;
+}
+
+.composer > select.mode {
+  flex: none;
+  max-width: 100%;
+  padding: var(--bc-space-1) var(--bc-space-2);
+  font-size: var(--bc-fs-sm);
 }
 
 /* ---------- Mention and slash menus ---------- */

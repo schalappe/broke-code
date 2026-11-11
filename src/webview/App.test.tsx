@@ -29,8 +29,10 @@ const { moveHighlight } = await import("./SuggestionMenu");
 type Reply = ChatEntry & { role: "assistant" };
 
 const CONVERSATION_ID = "0b0d4c1e-8f9a-4c3b-9d2e-1a2b3c4d5e6f";
-/** Conversation fields of a state with nothing saved. */
+/** Conversation fields of a state with nothing saved, and the Ask mode. */
 const unsaved = {
+  mode: "ask" as const,
+  modePending: false,
   conversationId: CONVERSATION_ID,
   conversations: [],
   listFailed: undefined,
@@ -1067,6 +1069,101 @@ describe("composer", () => {
     expect(renderToStaticMarkup(<App state={stateWith(false, { entries: replying })} language="en" />)).toContain(
       "<textarea",
     );
+  });
+});
+
+describe("mode selector", () => {
+  const modeSelect = (host: HTMLElement) => {
+    const select = host.querySelector<HTMLSelectElement>('select[aria-label="Mode"]');
+    if (!select) throw new Error("no mode selector");
+    return select;
+  };
+
+  test("shows the mode the state holds, Ask, Auto-edit, or Plan", async () => {
+    for (const [mode, label] of [
+      ["ask", "Ask"],
+      ["autoEdit", "Auto-edit"],
+      ["plan", "Plan"],
+    ] as const) {
+      await withPanel(stateWith(true, { mode }), async ({ host }) => {
+        const select = modeSelect(host);
+        expect(select.value).toBe(mode);
+        expect(select.selectedOptions[0]?.textContent).toBe(label);
+        expect([...select.options].map((option) => option.textContent)).toEqual(["Ask", "Auto-edit", "Plan"]);
+      });
+    }
+  });
+
+  test("posts the picked mode and keeps showing the state's mode until the host answers", async () => {
+    await withPanel(stateWith(true), async ({ host, show }) => {
+      const select = modeSelect(host);
+      await act(async () => {
+        select.value = "autoEdit";
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      expect(posted).toEqual([{ type: "setMode", mode: "autoEdit" }]);
+      expect(modeSelect(host).value).toBe("ask");
+
+      await show(stateWith(true, { mode: "autoEdit" }));
+      expect(modeSelect(host).value).toBe("autoEdit");
+    });
+  });
+
+  test("posts Plan when picked", async () => {
+    await withPanel(stateWith(true), async ({ host }) => {
+      const select = modeSelect(host);
+      await act(async () => {
+        select.value = "plan";
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      expect(posted).toEqual([{ type: "setMode", mode: "plan" }]);
+    });
+  });
+
+  test("while a mode change is written, the selector and Send are disabled, and Enter sends nothing", async () => {
+    await withPanel(stateWith(true, { modePending: true }), async ({ host, type, press }) => {
+      expect(modeSelect(host).disabled).toBe(true);
+      await type("Hi");
+      const send = [...host.querySelectorAll("button")].find((element) => element.textContent === "Send");
+      expect(send?.disabled).toBe(true);
+      await press("Enter");
+      await type("/new");
+      await press("Enter");
+      expect(posted.filter((message) => (message as { type: string }).type !== "querySkills")).toEqual([]);
+    });
+  });
+
+  test("is disabled while a reply is in flight, like the pickers", () => {
+    const waiting: ChatEntry[] = [hi[0]!, { role: "assistant", reasoning: "", content: "", status: "waiting" }];
+    const disabled = (state: ChatState) => {
+      const html = renderToStaticMarkup(<App state={state} language="en" />);
+      const tag = html.match(/<select[^>]*aria-label="Mode"[^>]*>/)?.[0];
+      if (!tag) throw new Error("no mode selector");
+      return tag.includes('disabled=""');
+    };
+    expect(disabled(stateWith(true, { entries: waiting }))).toBe(true);
+    expect(disabled(stateWith(true, { entries: hi }))).toBe(false);
+  });
+
+  test("sits after the message box, so Shift+Tab from it still reaches an open request's Reject first", async () => {
+    const answer = "Renaming.\n<write_file>\n<path>a.ts</path>\n<content>\nx\n</content>\n</write_file>";
+    const writing: ChatEntry = {
+      role: "assistant",
+      reasoning: "",
+      content: answer,
+      status: "streaming",
+      call: { name: "write_file", args: { path: "a.ts", content: "x" }, start: 10, end: answer.length },
+    };
+    const state = stateWith(true, {
+      entries: [hi[0]!, writing],
+      approval: { id: 1, kind: "write", tool: "write_file", summary: "a.ts" },
+    });
+    await withPanel(state, async ({ host, textarea }) => {
+      const focusable = [...host.querySelectorAll<HTMLElement>("button, select, textarea, input, a[href], summary")];
+      const box = focusable.indexOf(textarea);
+      expect(focusable[box - 1]?.textContent).toBe("Reject");
+      expect(focusable.indexOf(modeSelect(host))).toBeGreaterThan(box);
+    });
   });
 });
 
