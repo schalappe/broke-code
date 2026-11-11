@@ -33,10 +33,12 @@ does a tool that is not offered outside Plan (`load_skill` without a listed skil
 
 A turn reads Plan once, when it starts: its tools and its prompt hold until it ends. The selector is disabled and
 `setMode` ignored while a reply is in flight, so the mode shown is the one the turn applies. The auto-approve setting
-is still read at each write's request (ADR 0002); Plan offers no write. Mode picks run one at a time, in call order,
-each checking for a reply in flight when its turn comes, and a send waits for the picks still settling before it
-reads Plan: otherwise an older pick's settings write, settling late, would undo a newer pick, or change the mode
-shown under a turn that started on the old one. The usage display counts the prompt of the
+is still read at each write's request (ADR 0002); Plan offers no write. The controller holds one mode pick at a time:
+while a pick's settings write is pending (`ChatState.modePending`), the selector and Send are disabled, and the
+controller ignores `setMode` and `send`, as while a reply is in flight. Otherwise an older pick's write, settling
+late, would undo a newer pick, or change the mode shown under a turn that started on the old one. A Plan pick writes
+no setting and never pends. A queue of picks, with `send` waiting for it, was tried first and rejected: a send
+waiting on it landed in whichever conversation was shown when the write settled, a New chat included. The usage display counts the prompt of the
 last send, so it follows a mode change at the next send.
 
 Plan is kept per workspace, in the workspace memento under its own key `brokeCode.plan`, read when the controller is

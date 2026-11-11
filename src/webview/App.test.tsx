@@ -32,6 +32,7 @@ const CONVERSATION_ID = "0b0d4c1e-8f9a-4c3b-9d2e-1a2b3c4d5e6f";
 /** Conversation fields of a state with nothing saved, and the Ask mode. */
 const unsaved = {
   mode: "ask" as const,
+  modePending: false,
   conversationId: CONVERSATION_ID,
   conversations: [],
   listFailed: undefined,
@@ -1116,6 +1117,19 @@ describe("mode selector", () => {
         select.dispatchEvent(new Event("change", { bubbles: true }));
       });
       expect(posted).toEqual([{ type: "setMode", mode: "plan" }]);
+    });
+  });
+
+  test("while a mode change is written, the selector and Send are disabled, and Enter sends nothing", async () => {
+    await withPanel(stateWith(true, { modePending: true }), async ({ host, type, press }) => {
+      expect(modeSelect(host).disabled).toBe(true);
+      await type("Hi");
+      const send = [...host.querySelectorAll("button")].find((element) => element.textContent === "Send");
+      expect(send?.disabled).toBe(true);
+      await press("Enter");
+      await type("/new");
+      await press("Enter");
+      expect(posted.filter((message) => (message as { type: string }).type !== "querySkills")).toEqual([]);
     });
   });
 

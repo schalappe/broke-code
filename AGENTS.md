@@ -313,11 +313,15 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
     `autoEdit` (true), read from the user value by `ChatController.modeChanged`, which the host calls at activation
     (the state says `ask` before) and on each change of the setting (the configuration listener), and after each pick. A pick posts `setMode
     { mode }`, validated like the other messages (an unknown mode is dropped); `ChatController.setMode` ignores it while
-    a reply is in flight, writes nothing when the setting already holds that mode, and otherwise writes the user value
+    a reply is in flight or an earlier pick's settings write is pending, writes nothing when the setting already holds that mode, and otherwise writes the user value
     (`ConfigurationTarget.Global`) through the `writeAutoApproveWrites` port. The selector is controlled by the state,
     so it follows the setting, not the click: a failed write is logged and shown as an error notification, and the
-    mode stays the one the setting holds. A user setting: Auto-edit in one window applies to every window. The
-    selector is disabled while a reply is in flight, like the pickers, and sits after the message box in the DOM, so
+    mode stays the one the setting holds. A user setting: Auto-edit in one window applies to every window. One pick
+    at a time: while its settings write is pending, `ChatState.modePending` is true, and the selector and Send are
+    disabled (Enter and the built-in `/new` and `/model` too, through the composer's one "Send would act" check), as
+    while a reply is in flight; the controller ignores `setMode` and `send` meanwhile, so no turn starts on a mode
+    about to change. A Plan pick writes no setting and never pends. Navigation (New chat, open, delete) is unaffected.
+    The selector is disabled while a reply is in flight or a mode change is being written, like the pickers, and sits after the message box in the DOM, so
     Shift+Tab from the message box still reaches an open request's controls first. The conversation record and the
     eval bench know nothing of the mode; the system prompt knows only Plan.
   - Plan (#80, ADR 0005): `ChatState.mode` is `plan` while the workspace memento key `brokeCode.plan` is `true`, a key
@@ -327,10 +331,8 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
     it sets the key. Leaving Plan for Ask or Auto-edit writes the setting first, only when its value must change, and
     clears the key only once that write succeeded: a failed write keeps Plan and is shown as for the other modes
     (`failed`). A failed memento write is logged only, as for `brokeCode.lastChoice`: Plan applies for the session
-    and is lost at the next load. Plan is not part of a conversation: reopening one changes no mode. Picks run one
-    at a time, in call order (a promise chain in the controller), each checking for a reply in flight when its turn
-    comes, so an older pick's pending settings write never undoes a newer pick; `send` waits for the picks still
-    settling before it reads Plan, so a turn never starts on a mode about to change.
+    and is lost at the next load. Plan is not part of a conversation: reopening one changes no mode. While leaving Plan
+    writes the setting, the mode change is pending as above, and no send or other pick is taken.
 - `run_command(command, cwd?)` runs `<shell> -c <command>` in a hidden child process, no login shell, the shell being
   `vscode.env.shell`, else `$SHELL`, else `/bin/sh`. `cwd` resolves like a read tool's path and must be an existing
   folder inside the workspace; left out, the command runs in the first workspace folder. Without a workspace folder,

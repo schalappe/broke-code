@@ -176,6 +176,11 @@ export type ChatState = {
    * write leaves it as it was.
    */
   mode: Mode;
+  /**
+   * A mode pick's settings write is pending: the mode selector and Send are disabled, and the host ignores `setMode`
+   * and `send`, as while a reply is in flight.
+   */
+  modePending: boolean;
 };
 
 /** L10n bundle as `vscode.l10n.bundle`: absent in English. */

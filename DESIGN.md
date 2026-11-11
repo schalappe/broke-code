@@ -216,7 +216,7 @@ focus.
 The mode selector is a native select one size down (`--bc-fs-sm`), "Ask", "Auto-edit", or "Plan", its tooltip saying
 what the mode does. It shows the mode the host holds (Plan from the workspace, the others from the setting): a pick
 shows only once the host has applied it, and a failed write leaves it as it was, with the error in a notification. Disabled (half opacity) while a reply is in flight, like the
-pickers.
+pickers, and while a mode change is being written, when Send is disabled too (Enter sends nothing).
 
 ### The conversation
 
@@ -258,7 +258,7 @@ Each kind of state has one look, distinct from the others at a glance:
 
 | State | Look |
 | --- | --- |
-| Loading (waiting for the reply, thinking, tool running, models loading) | Dim text that breathes; a line of its own leads with a dot. The pickers and the mode selector are disabled. |
+| Loading (waiting for the reply, thinking, tool running, models loading) | Dim text that breathes; a line of its own leads with a dot. The pickers and the mode selector are disabled. While a mode change is being written, the mode selector and Send are disabled, with no other sign: the write takes a moment. |
 | Empty (no provider, new conversation, empty History, no History row left by the filter) | One dim line, centered in the room it has; a link under it when there is something to do. No provider: Add provider (primary) and the Open provider settings link side by side under it. |
 | Notice (unknown context size, older tool results left out of the next request) | One small dim line, with a link when there is something to do (Set context size). Nothing went wrong, so no block. |
 | Warning (skipped providers and skills) | A block on the theme's warning fill; under skipped providers, Add provider (secondary) below the block, only while a valid provider exists: without one, the empty state's Add provider is the panel's only one. |

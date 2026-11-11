@@ -3762,42 +3762,74 @@ describe("ChatController mode", () => {
       }
     });
 
-    test("a pick made while an older pick's write is pending applies after it: the newer Plan pick wins", async () => {
+    test("while a pick's settings write is pending, the state says so and a newer pick is ignored", async () => {
       const workspaceState = memoryStore();
       const { controller, state, pendingWrites, releaseWrite } = await withSetting(
         {},
         { workspaceState, deferWrites: true },
       );
+      expect(state().modePending).toBe(false);
       const older = controller.setMode("autoEdit");
       await until(state, () => pendingWrites.length === 1);
-      const newer = controller.setMode("plan");
+      expect(state().modePending).toBe(true);
+      expect(await controller.setMode("plan")).toEqual({ kind: "ignored" });
       releaseWrite();
       expect(await older).toEqual({ kind: "written" });
-      expect(await newer).toEqual({ kind: "written" });
-      expect(state().mode).toBe("plan");
-      expect(workspaceState.get("brokeCode.plan")).toBe(true);
+      expect(state().modePending).toBe(false);
+      expect(state().mode).toBe("autoEdit");
+      expect(workspaceState.get("brokeCode.plan")).toBeUndefined();
     });
 
-    test("a send made while a mode write is pending starts its turn in the mode that write produces", async () => {
+    test("a Plan pick writes no setting, so it never sets the pending state", async () => {
+      const { controller, states } = await withSetting({}, { deferWrites: true });
+      const before = states.length;
+      expect(await controller.setMode("plan")).toEqual({ kind: "written" });
+      expect(states.slice(before).every((published) => !published.modePending)).toBe(true);
+    });
+
+    test("a failed write clears the pending state", async () => {
+      const logged = spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const { controller, state } = await withSetting({}, { failWrite: true });
+        expect((await controller.setMode("autoEdit")).kind).toBe("failed");
+        expect(state().modePending).toBe(false);
+      } finally {
+        logged.mockRestore();
+      }
+    });
+
+    test("a send while a mode write is pending is ignored, like a send while replying", async () => {
       const workspaceState = memoryStore();
       await workspaceState.update("brokeCode.plan", true);
-      const { controller, state, states, pendingWrites, releaseWrite } = await withSetting(
+      const { controller, state, pendingWrites, releaseWrite } = await withSetting(
         {},
         { workspaceState, deferWrites: true },
       );
+      const requestsBefore = (requests.get("a") ?? []).length;
       const picked = controller.setMode("autoEdit");
       await until(state, () => pendingWrites.length === 1);
-      const sent = controller.send("Hi");
+      await controller.send("Hi");
+      expect(state().entries).toEqual([]);
       releaseWrite();
       expect(await picked).toEqual({ kind: "written" });
-      await until(state, (s) => contentOf(s.entries.at(-1)) === "Partial ");
-      const last = (requests.get("a") ?? []).at(-1) as { messages: { content: string }[] };
-      expect(last.messages[0]!.content).not.toContain("Plan mode");
-      const turn = states.slice(states.findIndex((published) => published.entries.length > 0));
-      expect(turn.every((published) => published.mode === "autoEdit")).toBe(true);
-      finishReply();
-      await sent;
       expect(state().mode).toBe("autoEdit");
+      expect(state().entries).toEqual([]);
+      expect((requests.get("a") ?? []).length).toBe(requestsBefore);
+    });
+
+    test("a send while a mode write is pending, then New chat: nothing lands in the new conversation", async () => {
+      const { controller, state, pendingWrites, releaseWrite } = await withSetting({}, { deferWrites: true });
+      const requestsBefore = (requests.get("a") ?? []).length;
+      const picked = controller.setMode("autoEdit");
+      await until(state, () => pendingWrites.length === 1);
+      const sent = controller.send("msg");
+      await controller.newChat();
+      releaseWrite();
+      await picked;
+      await sent;
+      await Bun.sleep(20);
+      expect(state().entries).toEqual([]);
+      expect((requests.get("a") ?? []).length).toBe(requestsBefore);
     });
   });
 });

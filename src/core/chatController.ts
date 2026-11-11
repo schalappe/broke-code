@@ -207,12 +207,6 @@ export class ChatController {
   /** Plan is on in this workspace: restored from the workspace memento, winning over the setting while on. */
   private plan: boolean;
   /**
-   * Mode picks run one at a time, in call order, so an older pick's pending write never undoes a newer pick; `send`
-   * waits for them, so a turn never starts on a mode about to change. `modeChanges` counts those not settled.
-   */
-  private modeQueue: Promise<unknown> = Promise.resolve();
-  private modeChanges = 0;
-  /**
    * System prompt the usage display counts, for every conversation shown: the last one a send composed, since the
    * instruction files are the workspace's, not a conversation's; before the first send, the one without them.
    */
@@ -258,6 +252,7 @@ export class ChatController {
       // [>]: The setting is read at `modeChanged`, which the host calls at activation as it applies the providers; the
       // constructor reads no setting.
       mode: "ask",
+      modePending: false,
     };
   }
 
@@ -381,27 +376,16 @@ export class ChatController {
   }
 
   /**
-   * The user picks `mode` in the message box. Picks run one at a time, in call order, each after the ones before it
-   * have settled; a pick is ignored when a reply is in flight as its turn comes. Plan writes no setting: it turns
+   * The user picks `mode` in the message box. One pick at a time: ignored while a reply is in flight or an earlier
+   * pick's settings write is pending (`ChatState.modePending`, which also locks the composer, so `send` is ignored
+   * meanwhile and no turn starts on a mode about to change). Plan writes no setting, so it never pends: it turns
    * Plan on in the workspace memento. Ask or Auto-edit writes the setting's user value first, only when it must
    * change, then turns Plan off, only once that write succeeded: a failed write keeps the mode as it was. The mode
    * shown is read back from the setting after the write, whether it succeeded or not, since the settings change event
    * may come before the write settles. Never rejects.
    */
-  setMode(mode: Mode): Promise<ModeChange> {
-    this.modeChanges += 1;
-    const change = this.modeQueue
-      .then(() => this.applyMode(mode))
-      .finally(() => {
-        this.modeChanges -= 1;
-      });
-    // [>]: `applyMode` never rejects; the queue swallows a rejection anyway, so one bug never blocks later picks.
-    this.modeQueue = change.catch(() => {});
-    return change;
-  }
-
-  private async applyMode(mode: Mode): Promise<ModeChange> {
-    if (isReplying(this.state)) return { kind: "ignored" };
+  async setMode(mode: Mode): Promise<ModeChange> {
+    if (isReplying(this.state) || this.state.modePending) return { kind: "ignored" };
     if (mode === "plan") {
       const change: ModeChange = { kind: this.plan ? "unchanged" : "written" };
       this.rememberPlan(true);
@@ -411,13 +395,17 @@ export class ChatController {
     const on = mode === "autoEdit";
     const writes = this.readAutoApprove() !== on;
     if (writes) {
+      this.state.modePending = true;
+      this.emit();
       try {
         await this.writeAutoApproveWrites(on);
       } catch (error) {
         console.error("broke-code: could not write the auto-approve setting", error);
+        this.state.modePending = false;
         this.modeChanged();
         return { kind: "failed", cause: String(error) };
       }
+      this.state.modePending = false;
     }
     const leavesPlan = this.plan;
     this.rememberPlan(false);
@@ -481,8 +469,8 @@ export class ChatController {
    * the reply fails, or Stop. Limits: the step limit, three malformed calls in a row, and the context budget, checked
    * before each request, the first included: the oldest tool results are left out of a request that would fill the
    * model's context (see `toHistory`), and one that fills it even so is never sent. The
-   * turn waits for the mode picks still settling, then reads the settings and Plan once, when it starts: in Plan it offers the read tools only, and a call to a tool
-   * Plan leaves out gets an `error` step saying so, counted toward the step limit like any step. Ignored while replying or without provider and model. `picked`:
+   * turn reads the settings and Plan once, when it starts: in Plan it offers the read tools only, and a call to a tool
+   * Plan leaves out gets an `error` step saying so, counted toward the step limit like any step. Ignored while replying, while a mode pick is written, or without provider and model. `picked`:
    * paths chosen in the menu, mentions while their `@<path>` is still in the text. A mention that cannot be read is
    * reported to the model and in the entry; the message still goes. A message starting with `/<name>` of a discovered
    * skill sends that skill's text with the arguments instead of the text as typed (see `loadSkillText`), and the entry
@@ -490,13 +478,11 @@ export class ChatController {
    * way as a mention.
    */
   async send(text: string, picked: readonly string[] = []): Promise<void> {
-    // [!]: A pick still settling would change the mode under the turn. Waited only when one is pending, so a send
-    // otherwise shows its message at once. A pick made meanwhile runs after this send has started its turn: ignored.
-    if (this.modeChanges > 0) await this.modeQueue;
     const provider = this.currentProvider();
     const model = this.state.model;
     const content = text.trim();
-    if (!provider || !model || !content || isReplying(this.state)) return;
+    // [!]: Never while a mode pick is written: the turn would start on a mode about to change.
+    if (!provider || !model || !content || isReplying(this.state) || this.state.modePending) return;
     this.limits = this.limitsSource.read();
     const { maxToolSteps } = this.limits;
     // [!]: Plan is read once: the turn's tools and prompt hold until it ends. The auto-approve setting is not read

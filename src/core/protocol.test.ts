@@ -164,6 +164,7 @@ describe("chatStateOf", () => {
     storageProblem: undefined,
     context: { used: 0, size: 32768, known: false },
     mode: "ask",
+    modePending: false,
   };
 
   test("takes the chat state from init and state messages", () => {

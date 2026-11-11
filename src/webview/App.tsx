@@ -1057,7 +1057,8 @@ function Composer({
     nextCaret.current = undefined;
   });
 
-  const canSend = ready && !replying;
+  // [!]: The one check of whether Send would act: Send, Enter, and the built-in commands all go through it.
+  const canSend = ready && !replying && !state.modePending;
 
   const clear = () => {
     setText("");
@@ -1149,13 +1150,13 @@ function Composer({
         onKeyDown={onKeyDown}
       />
       {/* [!]: After the message box, so Shift+Tab from it still reaches an open request's controls first. */}
-      <ModeSelect mode={state.mode} disabled={replying} />
+      <ModeSelect mode={state.mode} disabled={replying || state.modePending} />
       {replying ? (
         <button type="button" onClick={() => post({ type: "stop" })}>
           {l10n.t("Stop")}
         </button>
       ) : (
-        <button type="button" disabled={!ready || text.trim() === ""} onClick={send}>
+        <button type="button" disabled={!canSend || text.trim() === ""} onClick={send}>
           {l10n.t("Send")}
         </button>
       )}
