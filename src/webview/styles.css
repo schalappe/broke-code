@@ -784,7 +784,15 @@ button.code-action:hover:not(:disabled) {
   border-color: var(--bc-error-edge-soft);
 }
 
-/* Kind marker: a page for a file, a tabbed box for a folder. */
+/* A chip that found nothing to attach, without failing: no fill and dim text, quiet rather than failed. Its edge
+   stays, so high contrast still draws it. */
+.chip.neutral {
+  background: none;
+  color: var(--bc-fg-dim);
+}
+
+/* Kind marker: a page for a file, a tabbed box for a folder, a ring for the problems, a box with a change bar on its
+   left for the diff, a pair of brackets for the selection. */
 .kind {
   flex: none;
   box-sizing: border-box;
@@ -798,6 +806,25 @@ button.code-action:hover:not(:disabled) {
   width: 0.9em;
   height: 0.7em;
   border-top-width: 3px;
+}
+
+.kind.problems {
+  width: 0.8em;
+  height: 0.8em;
+  border-radius: 50%;
+}
+
+.kind.diff {
+  width: 0.8em;
+  height: 0.8em;
+  border-left-width: 3px;
+}
+
+.kind.selection {
+  width: 0.8em;
+  height: 0.8em;
+  border-top: none;
+  border-bottom: none;
 }
 
 .chip.failed .kind {

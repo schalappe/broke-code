@@ -8,7 +8,13 @@
  */
 import { readdir, realpath } from "node:fs/promises";
 import { join } from "node:path";
-import { accessFailureReason, MAX_MENTION_LINES, truncationNotice } from "./mentions";
+import {
+  accessFailureReason,
+  cutOverByteCap,
+  MAX_MENTION_BYTES,
+  MAX_MENTION_LINES,
+  truncationNotice,
+} from "./mentions";
 import type { HostMessage, SkillProblem, SkillWarning } from "./protocol";
 import type { Skill } from "./systemPrompt";
 import type { ToolSpec } from "./toolCalls";
@@ -483,9 +489,6 @@ export async function loadSkillText(skill: Skill, args?: string): Promise<ToolRe
   return { status: "ok", text: withArgs(text.replace(/(?:\r\n|\r|\n)+$/, "")) };
 }
 
-/** The byte cap of a loaded skill's body once its `$ARGUMENTS` are replaced: the mention cap. */
-const MAX_LOADED_BYTES = 1024 * 1024;
-
 /**
  * `segments` joined by `args`, cut to its first 2,000 lines and 1 MiB (between characters) as `truncateLines` cuts a
  * read, `omitted` counting the lines not shown, a line the byte cap cut among them.
@@ -498,15 +501,12 @@ function cutExpansion(segments: readonly string[], args: string): { text: string
   const argsBytes = Buffer.byteLength(args);
   let bytes = (segments.length - 1) * argsBytes;
   for (const segment of segments) bytes += Buffer.byteLength(segment);
-  if (bytes <= MAX_LOADED_BYTES) {
+  if (bytes <= MAX_MENTION_BYTES) {
     const cut = truncateLines(segments.join(args), MAX_MENTION_LINES);
     return { text: cut.text, omitted: cut.omitted };
   }
-  const prefix = bytePrefix(joined(segments, args), MAX_LOADED_BYTES);
-  const cut = truncateLines(prefix, MAX_MENTION_LINES);
-  // [>]: Under the line cap, the byte cap cut the last line shown unless the prefix ends with its line break.
-  const partial = cut.omitted === 0 && !/[\r\n]$/.test(prefix) ? 1 : 0;
-  return { text: cut.text, omitted: joinedLineCount(segments, args) - (cut.lines - partial) };
+  const cut = cutOverByteCap(joined(segments, args), joinedLineCount(segments, args));
+  return { text: cut.text, omitted: cut.omitted };
 }
 
 /** The pieces of `segments` joined by `args`, in order, `args` never copied. */
@@ -515,22 +515,6 @@ function* joined(segments: readonly string[], args: string): Generator<string> {
     if (index > 0) yield args;
     yield segment;
   }
-}
-
-/** The first `max` UTF-8 bytes of `pieces` joined, cut between characters. */
-function bytePrefix(pieces: Iterable<string>, max: number): string {
-  const buffer = new Uint8Array(max);
-  const encoder = new TextEncoder();
-  const kept: string[] = [];
-  let used = 0;
-  for (const piece of pieces) {
-    // [>]: `encodeInto` writes whole characters only, so `read` ends between two of them.
-    const { read, written } = encoder.encodeInto(piece, buffer.subarray(used));
-    kept.push(piece.slice(0, read));
-    used += written;
-    if (read < piece.length) break;
-  }
-  return kept.join("");
 }
 
 /** The lines of `segments` joined by `args`, counted as `truncateLines` counts them, without building the text. */

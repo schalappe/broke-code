@@ -1,8 +1,9 @@
 /**
  * @module extension
- * Activation entry point: wires settings, API keys, mentions, read tools, write tools and commands behind their approval,
- * instruction files, skills, turn limits, file index, saved conversations, chat controller, chat view,
- * `broke-code.setApiKey`, `broke-code.addProvider`, and `broke-code.generateCommitMessage`.
+ * Activation entry point: wires settings, API keys, mentions (and the diagnostics `@problems`, the git diffs `@diff`,
+ * and the selection `@selection` read), read tools, write tools and commands behind their approval, instruction files,
+ * skills, turn limits, file index, saved conversations, chat controller, chat view, `broke-code.setApiKey`,
+ * `broke-code.addProvider`, and `broke-code.generateCommitMessage`.
  */
 import { homedir } from "node:os";
 import * as vscode from "vscode";
@@ -12,8 +13,10 @@ import { directoryFiles } from "../core/conversationFiles";
 import { ConversationStore } from "../core/conversationStore";
 import { readInstructionFiles } from "../core/instructions";
 import { contextOf } from "../core/limits";
-import { type MentionReader, readMention } from "../core/mentions";
+import { mentionReader } from "../core/mentionReader";
+import type { Diagnostic } from "../core/problems";
 import { parseProviders } from "../core/providers";
+import { editorSelection } from "../core/selection";
 import { describeSkillDiscovery, readSkills, type SkillDiscovery } from "../core/skills";
 import { workspaceToolRunner } from "../core/toolRunner";
 import { ripgrepCandidates } from "../core/tools";
@@ -26,6 +29,7 @@ import { CHAT_VIEW_ID, ChatView } from "./chatView";
 import { registerCommitMessageCommand } from "./commitMessage";
 import { askContextSize, LIMIT_SETTINGS, readCommandTimeoutSeconds, readLimits } from "./contextSizes";
 import { WorkspaceFileIndex } from "./fileIndex";
+import { gitDiffs } from "./git";
 
 export function activate(context: vscode.ExtensionContext): void {
   // [!]: User settings only. A workspace value could reuse a provider name with another base URL and receive its stored key.
@@ -37,7 +41,12 @@ export function activate(context: vscode.ExtensionContext): void {
   const setApiKey = (provider?: string) => apiKeys.runSetCommand(provider);
 
   // [>]: Roots read at each mention, since folders can be added or removed while the window is open.
-  const mentions: MentionReader = { read: (path) => readMention(workspaceRoots(), path) };
+  const mentions = mentionReader({
+    roots: workspaceRoots,
+    diagnostics: { read: async () => readDiagnostics() },
+    diff: gitDiffs,
+    selection: { read: async () => editorSelection(vscode.window.activeTextEditor) },
+  });
   const toolEnv = { ripgrepCandidates: ripgrepCandidates(vscode.env.appRoot, process.env.PATH) };
   const previews = new DiffPreviews();
   const writeHost: WriteApprovalHost = { preview: (change) => previews.preview(change), hasUnsavedChanges };
@@ -143,6 +152,34 @@ export function deactivate(): void {
 function logSkills(discovery: SkillDiscovery): SkillDiscovery {
   console.info(describeSkillDiscovery(discovery));
   return discovery;
+}
+
+/** Every diagnostic VS Code holds now, as the raw records `@problems` filters and formats. */
+function readDiagnostics(): Diagnostic[] {
+  return vscode.languages.getDiagnostics().flatMap(([uri, diagnostics]) =>
+    diagnostics.map(({ range, severity, message, source }) => ({
+      scheme: uri.scheme,
+      path: uri.fsPath,
+      line: range.start.line,
+      character: range.start.character,
+      severity: severityName(severity),
+      message,
+      ...(source ? { source } : {}),
+    })),
+  );
+}
+
+function severityName(severity: vscode.DiagnosticSeverity): Diagnostic["severity"] {
+  switch (severity) {
+    case vscode.DiagnosticSeverity.Error:
+      return "error";
+    case vscode.DiagnosticSeverity.Warning:
+      return "warning";
+    case vscode.DiagnosticSeverity.Information:
+      return "information";
+    case vscode.DiagnosticSeverity.Hint:
+      return "hint";
+  }
 }
 
 /** Workspace folders on disk. Folders of other schemes (remote, virtual) hold no path to read: v1 is local only. */

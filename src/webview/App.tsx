@@ -27,12 +27,15 @@ import {
   type ReplyCall,
 } from "../core/protocol";
 import type { ProviderError } from "../core/providerError";
-import { BUILT_IN_COMMANDS, type BuiltInCommand, type SlashCommand, type Suggestion } from "../core/suggestions";
+import { isNothingToAttach, type ReservedMention, reservedMention } from "../core/reservedMentions";
+import { BUILT_IN_COMMANDS, type BuiltInCommand, type SlashCommand } from "../core/suggestions";
 import {
   builtInCommand,
   composerKeyAction,
+  type MentionRow,
   type MenuAnswer,
   type MenuToken,
+  mentionPick,
   menuToken,
   menuView,
   openMenuToken,
@@ -817,7 +820,7 @@ function StepHead({ name, args }: { name: string; args: Record<string, string> }
 
 /**
  * The chips of a user message: the skill it loaded with `/<name>`, then one per mention, with kind, path, and status;
- * failed ones stand out.
+ * failed ones stand out, a partial `@diff` among them, and one that found nothing to attach without failing is neutral.
  */
 function Mentions({ entry }: { entry: ChatEntry & { role: "user" } }) {
   const { skill } = entry;
@@ -833,8 +836,11 @@ function Mentions({ entry }: { entry: ChatEntry & { role: "user" } }) {
       )}
       {entry.mentions.map((mention) => {
         const attached = mention.status === "attached" || mention.status === "truncated";
+        // [>]: A partial success (some folders of a `@diff` failed) takes the error color: part is missing.
+        const whole = attached && !mention.failedFolders;
+        const look = whole ? "chip" : attached || !isNothingToAttach(mention.status) ? "chip failed" : "chip neutral";
         return (
-          <li key={mention.path} className={attached ? "chip" : "chip failed"}>
+          <li key={mention.path} className={look}>
             <span className={`kind ${mention.kind}`} aria-hidden="true" />
             <span className="chip-path">@{mention.path}</span>
             <span className="chip-status">{describeMention(mention)}</span>
@@ -858,7 +864,7 @@ export function MentionMenu({
   highlighted,
   onPick,
 }: {
-  items: Suggestion[];
+  items: MentionRow[];
   capped: boolean;
   failed: boolean;
   highlighted: number;
@@ -873,13 +879,30 @@ export function MentionMenu({
     <SuggestionMenu
       id={MENTION_MENU_ID}
       trigger="@"
-      label={l10n.t("Files and folders")}
-      items={items.map((item) => ({ key: item.path, label: item.path, icon: item.kind }))}
+      label={l10n.t("Mentions")}
+      items={items.map((item) => {
+        const reserved = reservedMention(item.kind);
+        // [>]: Keyed by kind and path: a reserved row and a file of the same name never share a key.
+        const row = { key: `${item.kind}:${item.path}`, label: item.path, icon: item.kind };
+        return reserved ? { ...row, description: reservedDescription(reserved) } : row;
+      })}
       highlighted={highlighted}
       onPick={onPick}
       notices={notices}
     />
   );
+}
+
+/** The one-line description of a reserved mention's row in the `@` menu. */
+function reservedDescription(name: ReservedMention): string {
+  switch (name) {
+    case "problems":
+      return l10n.t("Errors and warnings of the workspace files");
+    case "diff":
+      return l10n.t("Uncommitted changes of the tracked files");
+    case "selection":
+      return l10n.t("Selected text of the active editor");
+  }
 }
 
 const SLASH_MENU_ID = "slash-menu";
@@ -1077,13 +1100,15 @@ function Composer({
     const item = mentionMenu?.items[index];
     const action = row ? slashPick(row, canSend, text.slice(caret)) : undefined;
     if (action?.type === "run") return run(action.command);
-    const inserted = action ? action.text : item ? `@${item.path} ` : undefined;
+    const mention = item ? mentionPick(item) : undefined;
+    const inserted = action ? action.text : mention?.text;
     if (!token || inserted === undefined) return;
     const next = replaceToken(text, token, caret, inserted);
     setText(next.text);
     setCaret(next.caret);
     nextCaret.current = next.caret;
-    if (item) setPicked((paths) => (paths.includes(item.path) ? paths : [...paths, item.path]));
+    const path = mention?.picked;
+    if (path !== undefined) setPicked((paths) => (paths.includes(path) ? paths : [...paths, path]));
   };
 
   const send = () => {

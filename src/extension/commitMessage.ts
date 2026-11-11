@@ -1,8 +1,8 @@
 /**
  * @module commitMessage
- * The `broke-code.generateCommitMessage` command's host side: the git port over the built-in Git extension's API
- * (`vscode.git`, version 1), looked up when the command runs, never declared as a dependency (ADR 0004), and the
- * notifications, the replace question, and the progress the core's `CommitMessageGenerator` runs under.
+ * The `broke-code.generateCommitMessage` command's host side: the git port over the built-in Git extension's API,
+ * looked up when the command runs (`lookUpGit`, ADR 0004), and the notifications, the replace question, and the
+ * progress the core's `CommitMessageGenerator` runs under.
  */
 import { basename } from "node:path";
 import * as vscode from "vscode";
@@ -14,26 +14,9 @@ import {
   type CommitSelection,
   type RepositoryLookup,
 } from "../core/commitMessage";
+import { type GitRepository, lookUpGit } from "./git";
 
 export const GENERATE_COMMIT_MESSAGE_COMMAND = "broke-code.generateCommitMessage";
-
-/** How long a run waits for the Git extension to finish opening the workspace's repositories. */
-const GIT_INIT_TIMEOUT_MS = 10_000;
-
-// [>]: The few members used, typed structurally from microsoft/vscode `extensions/git/src/api/git.d.ts` (API 1)
-// instead of copying that file. The exports are checked at run time, since nothing pins the Git extension's version.
-type GitState = "uninitialized" | "initialized";
-type GitRepository = {
-  readonly rootUri: vscode.Uri;
-  readonly inputBox: { value: string };
-  diff(cached?: boolean): Promise<string>;
-};
-type GitApi = {
-  readonly state: GitState;
-  readonly onDidChangeState: vscode.Event<GitState>;
-  readonly repositories: readonly GitRepository[];
-};
-type GitExtension = { readonly enabled: boolean; getAPI(version: 1): GitApi };
 
 /**
  * Register the command. `selection` gives the chat's provider and model; the disposable aborts every run, so
@@ -81,25 +64,9 @@ export function registerCommitMessageCommand(selection: () => Promise<CommitSele
  * one picked when there are several.
  */
 async function findRepository(target: unknown): Promise<RepositoryLookup> {
-  const extension = vscode.extensions.getExtension<unknown>("vscode.git");
-  if (!extension) return { kind: "gitUnavailable" };
-  let exports: unknown;
-  try {
-    exports = extension.isActive ? extension.exports : await extension.activate();
-  } catch (error) {
-    console.error("broke-code: the Git extension did not activate", error);
-    return { kind: "gitUnavailable" };
-  }
-  if (!isGitExtension(exports)) return { kind: "gitUnavailable" };
-  if (!exports.enabled) return { kind: "gitDisabled" };
-  let api: GitApi;
-  try {
-    api = exports.getAPI(1);
-  } catch {
-    // [>]: `getAPI` throws when git is disabled or not found; `enabled` may have changed since the check above.
-    return { kind: "gitDisabled" };
-  }
-  await initialized(api);
+  const git = await lookUpGit();
+  if (git.kind !== "found") return git;
+  const { api } = git;
 
   const root = rootUriOf(target);
   if (root) {
@@ -115,31 +82,6 @@ async function findRepository(target: unknown): Promise<RepositoryLookup> {
     { placeHolder: vscode.l10n.t("Choose a repository") },
   );
   return picked ? { kind: "found", repository: picked.repository } : { kind: "dismissed" };
-}
-
-function isGitExtension(value: unknown): value is GitExtension {
-  if (typeof value !== "object" || value === null) return false;
-  const candidate = value as Partial<GitExtension>;
-  return typeof candidate.enabled === "boolean" && typeof candidate.getAPI === "function";
-}
-
-/**
- * Wait until the Git extension has opened the workspace's repositories: until then its list is empty. Past
- * `GIT_INIT_TIMEOUT_MS` the run goes on with the repositories opened so far.
- */
-function initialized(api: GitApi): Promise<void> {
-  if (api.state === "initialized") return Promise.resolve();
-  return new Promise((resolve) => {
-    const done = () => {
-      clearTimeout(timer);
-      listener.dispose();
-      resolve();
-    };
-    const timer = setTimeout(done, GIT_INIT_TIMEOUT_MS);
-    const listener = api.onDidChangeState((state) => {
-      if (state === "initialized") done();
-    });
-  });
 }
 
 /** The `rootUri` of the `SourceControl` the Source Control title hands the command, if `target` is one. */

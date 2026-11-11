@@ -13,6 +13,7 @@ import {
   type ProviderError,
 } from "../core/providerError";
 import type { SkippedProvider } from "../core/providers";
+import type { MentionKind } from "../core/reservedMentions";
 import type { FoldCounts } from "./turns";
 
 export type { ErrorText };
@@ -88,13 +89,11 @@ export function describeSkillWarning({ path, problem }: SkillWarning): string {
 /** Short status of a mention: what was attached, or why nothing was. */
 export function describeMention(mention: MentionResult): string {
   const count = mention.lines ?? 0;
-  const file = mention.kind === "file";
   switch (mention.status) {
     case "attached":
-      if (file) return count === 1 ? l10n.t("1 line") : l10n.t("{0} lines", count);
-      return count === 1 ? l10n.t("1 entry") : l10n.t("{0} entries", count);
+      return withFailedFolders(mention, withRange(mention, describeCount(mention.kind, count)));
     case "truncated":
-      return file ? l10n.t("truncated to {0} lines", count) : l10n.t("truncated to {0} entries", count);
+      return withFailedFolders(mention, withRange(mention, describeTruncated(mention.kind, count)));
     case "missing":
       return l10n.t("not found");
     case "outsideWorkspace":
@@ -105,6 +104,65 @@ export function describeMention(mention: MentionResult): string {
       return l10n.t("over 1 MiB, not attached");
     case "unreadable":
       return l10n.t("could not be read");
+    case "noProblems":
+      return l10n.t("no errors or warnings");
+    case "noChanges":
+      return l10n.t("no changes");
+    case "noRepository":
+      return l10n.t("not a git repository");
+    case "gitUnavailable":
+      return l10n.t("git not available");
+    case "noEditor":
+      return l10n.t("no active text editor");
+    case "emptySelection":
+      return l10n.t("empty selection");
+  }
+}
+
+/** `count` led by the mention's range when it has one: `src/app.ts 10-12, 3 lines`, `src/app.ts 10, 1 line`. */
+function withRange({ range }: MentionResult, count: string): string {
+  if (!range) return count;
+  const lines = range.start === range.end ? `${range.start}` : `${range.start}-${range.end}`;
+  return l10n.t("{0} {1}, {2}", range.path, lines, count);
+}
+
+/** `text` followed by the folders whose part could not be read, when some failed: `9 lines, 1 folder failed`. */
+function withFailedFolders({ failedFolders }: MentionResult, text: string): string {
+  if (!failedFolders) return text;
+  const failed = failedFolders === 1 ? l10n.t("1 folder failed") : l10n.t("{0} folders failed", failedFolders);
+  return l10n.t("{0}, {1}", text, failed);
+}
+
+/** The unit a mention's count is in, per kind: one grouping for the count and the truncation wordings. */
+const COUNT_UNIT: Record<MentionKind, "line" | "entry" | "problem"> = {
+  file: "line",
+  diff: "line",
+  selection: "line",
+  folder: "entry",
+  problems: "problem",
+};
+
+/** What a mention of `kind` attached, `count` in the unit of its kind. */
+function describeCount(kind: MentionKind, count: number): string {
+  switch (COUNT_UNIT[kind]) {
+    case "line":
+      return count === 1 ? l10n.t("1 line") : l10n.t("{0} lines", count);
+    case "entry":
+      return count === 1 ? l10n.t("1 entry") : l10n.t("{0} entries", count);
+    case "problem":
+      return count === 1 ? l10n.t("1 problem") : l10n.t("{0} problems", count);
+  }
+}
+
+/** What a cut mention of `kind` kept, `count` in the unit of its kind. */
+function describeTruncated(kind: MentionKind, count: number): string {
+  switch (COUNT_UNIT[kind]) {
+    case "line":
+      return l10n.t("truncated to {0} lines", count);
+    case "entry":
+      return l10n.t("truncated to {0} entries", count);
+    case "problem":
+      return l10n.t("truncated to {0} problems", count);
   }
 }
 

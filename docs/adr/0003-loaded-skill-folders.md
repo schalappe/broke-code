@@ -86,3 +86,13 @@ workspace without skills spends no prompt on it, and the prompt of every eval sc
   without the field reads as before. Only a field whose absence changes what an older record means needs a version.
 - A skill folder with thousands of files is searched whole by `search` with that folder as its `path`; the usual
   2,000-line and 30-second caps bound it.
+
+## Note (2026-11-11): a new value of an existing field
+
+The rule above covers an optional key added to an entry, which an older build drops. It does not cover a new value of
+an existing field, such as the mention kind `problems` and its status `noProblems` (#81): an older build validates
+the field, finds the value unknown, and skips the whole record as invalid, keeping it on disk. The record still stays
+version 2, since a version bump would hide the conversation from an older build all the same. Accepted by the
+scout of #81 on 2026-11-11: such a record shows again once the newer build is back. The same holds for the mention kind
+`diff` and its statuses `noChanges`, `noRepository`, and `gitUnavailable` (#82), and for the mention
+kind `selection` and its statuses `noEditor` and `emptySelection` (#83); its optional `range` follows the rule above.

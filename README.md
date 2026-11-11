@@ -76,8 +76,9 @@ only to its own provider, as a bearer token.
 
 ## Mention files and folders
 
-Type `@` in the message box to attach a workspace file or folder. A menu lists up to 20 files and folders whose
-path contains what you type after `@`, ignoring case, shortest paths first; folders end with `/`. Move with the
+Type `@` in the message box to attach a workspace file or folder. A menu lists up to 20 rows in all: first the
+reserved names, such as `@problems` (below), whose name starts with what you type after `@`, then the files and
+folders whose path contains it, ignoring case, shortest paths first; folders end with `/`. Move with the
 arrow keys, pick with Enter, Tab, or a click, and close the menu with Escape. A picked path goes into the message
 as `@<path>`, spaces included. You can also type `@path` yourself; a typed path ends at the first space. An `@`
 inside code, between backticks or in a fenced block, opens no menu and attaches nothing.
@@ -96,6 +97,51 @@ The menu lists files from the workspace folders, except those hidden by your `fi
 inside `node_modules`, `.git`, `dist`, `out`, or `build` folders. It lists at most 5,000 files; past that, the
 menu says the index is limited, and you can still type the path of a file it does not show. New and deleted
 files show up in the menu without reloading the window.
+
+### Mention the problems
+
+`@problems` attaches the errors and warnings VS Code holds for the workspace files, what the Problems panel shows,
+one line each with its path, line, column, severity, message, and the tool that reported it. Information and hints
+are left out. A language service may report only the files open in an editor, so open a file to get its problems.
+With no error or warning, the chip says so in a neutral look and the message is still sent. The menu lists
+`@problems` first when what you type after `@` starts its name.
+
+`problems` is a reserved name: `@problems` never reads a workspace path. To mention a file named `problems`, write
+`@./problems`; picking it in the menu does so for you. A folder of that name is `@problems/` or `@./problems`. In a
+multi-root workspace, a workspace folder named `problems` is reached by `@problems/` and `@problems/<path>`, no
+longer by `@problems`.
+
+### Mention the uncommitted changes
+
+`@diff` attaches the changes of your tracked files that are not committed yet, staged and unstaged together, as one
+diff against the last commit (`git diff HEAD`). Files git does not track yet are left out: add them with `git add`
+first to include them. Each workspace folder inside a git repository gets the changes under that folder only; in a
+multi-root workspace each folder's diff follows a line with its name. broke-code reads git through VS Code's built-in
+Git extension, so a repository that extension has not opened, such as one above the folder it asked you about, is not
+read. The menu lists `@diff` after `@problems`.
+
+With nothing changed, the chip says so in a neutral look. When no workspace folder is in a git repository, when git
+is not available in VS Code, or when the diff cannot be read (in a repository without a commit, for one), the chip
+says why in the error color. In a multi-root workspace, when one folder's diff cannot be read but another folder has
+changes, the changes read are attached, the model is told which folders failed and why, and the chip shows the line
+count then how many folders failed ("9 lines, 1 folder failed") in the error color. In every case the message is still sent. A diff over 2,000 lines or 1 MiB is cut, with
+a note saying how many lines were left out.
+
+`diff` is a reserved name like `problems`: a file named `diff` is `@./diff`, and in a multi-root workspace a workspace
+folder named `diff` is reached by `@diff/` and `@diff/<path>`, no longer by `@diff`.
+
+### Mention the selection
+
+`@selection` attaches the text you selected in the active editor, as it stands when you send the message, with its
+file and line range: the model gets `src/app.ts lines 10-12`, and the chip shows "src/app.ts 10-12, 3 lines". Select
+the lines, click in the message box, and send; the editor keeps its selection while the chat has the focus. With
+several cursors, only the primary selection is attached. A selection that ends at the start of a line does not count
+that line. Over 2,000 lines or 1 MiB, the text is cut and the model is told so.
+
+Nothing is attached, the chip in the error color and the message still sent, when no text editor is active, when the
+selection is empty, or when the file is outside the workspace folders, an untitled document, or not a file (such as
+the diff of a change waiting for approval). `selection` is a reserved name like `problems`: a file named `selection`
+is `@./selection`.
 
 ## How the agent works
 
@@ -355,7 +401,8 @@ word, broke-code tells it so and asks again. Contributors run the bench with `bu
 ## Privacy
 
 broke-code collects no telemetry. It contacts only the providers you configure. When you generate a commit message,
-the staged diff of that repository is sent to the provider selected in the chat.
+the staged diff of that repository is sent to the provider selected in the chat. When a message mentions `@diff`, the
+uncommitted changes of the workspace folders are sent with it.
 
 ## Credits
 
