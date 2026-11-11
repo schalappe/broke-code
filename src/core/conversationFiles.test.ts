@@ -110,6 +110,12 @@ describe("isTemporaryName", () => {
     }
   });
 
+  test("refuses a name whose uuid or the dot before it is wrong, whatever the other is", () => {
+    const uuid = "1b0d4c1e-8f9a-4c3b-9d2e-1a2b3c4d5e6f";
+    expect(isTemporaryName(`${ID}.json.${"z".repeat(36)}.tmp`)).toBe(false);
+    expect(isTemporaryName(`${ID}.jsonx${uuid}.tmp`)).toBe(false);
+  });
+
   test("refuses a long run of hyphens after .json. at once", () => {
     const name = `a.json.${"-".repeat(255)}x`;
     for (const candidate of [name, `${name}.tmp`]) {

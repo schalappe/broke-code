@@ -44,7 +44,6 @@ export function isTemporaryName(name: string): boolean {
   return isConversationId(withoutSuffix(base, ".summary") ?? base);
 }
 
-/** `text` less `suffix`; `undefined` when it does not end with it. */
 function withoutSuffix(text: string, suffix: string): string | undefined {
   return text.endsWith(suffix) ? text.slice(0, -suffix.length) : undefined;
 }
