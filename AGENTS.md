@@ -589,7 +589,7 @@ chat and writes the reply to the commit input box (ADR 0004). Read `GLOSSARY.md`
   closed, to the end), then unwraps, again and again until nothing changes, a code fence (` ``` ` or `~~~`, any
   info string) wrapping the whole reply, or a quote pair (`"`, `'`, `“”`, `‘’`, a backtick) whenever the trimmed text
   starts with the opening quote and ends with the closing one, whatever the interior holds (a Conventional Commits
-  message starts with its type, never a quote), trimming each time. A fence around only part of the reply stays. The input box gets that text once; nothing is written before
+  message starts with its type, never a quote), trimming each time. A fence wraps the whole reply also when it holds fences of the same kind, if its text starts with one (nested wrappers); a fence around only part of the reply stays. The input box gets that text once; nothing is written before
   the reply ends. The run remembers the box's text once it decided to go on (the text the user agreed to replace, or
   the empty box); right before the write it reads the box again, and when the text differs (the user typed
   meanwhile) it asks the replace question again: a refusal writes nothing and ends quietly, keeping the user's text;

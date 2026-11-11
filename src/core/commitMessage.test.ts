@@ -97,6 +97,8 @@ describe("cleanCommitMessage", () => {
     expect(cleanCommitMessage("```\nfix: a\n```")).toBe("fix: a");
     expect(cleanCommitMessage("```text\nfix: a\n\nWhy.\n```\n")).toBe("fix: a\n\nWhy.");
     expect(cleanCommitMessage("~~~git\nfix: a\n~~~")).toBe("fix: a");
+    expect(cleanCommitMessage("```text\n```\nfix: a\n```\n```")).toBe("fix: a");
+    expect(cleanCommitMessage("~~~text\n~~~\nfix: a\n~~~\n~~~")).toBe("fix: a");
   });
 
   test("keeps a fence that wraps only part of the reply", () => {

@@ -91,7 +91,7 @@ const QUOTES: readonly [string, string][] = [
 /**
  * The commit message in `reply` (the answer, reasoning already dropped by the client): any `<think>` text dropped
  * (one never closed, to the end), then the wrappers of the whole of it removed, again and again until none is left: a
- * code fence, or a quote pair. A quote pair wraps the whole reply whenever the trimmed text starts with an opening
+ * code fence (one holding fences of its own only when it starts with one, as nested wrappers do), or a quote pair. A quote pair wraps the whole reply whenever the trimmed text starts with an opening
  * quote and ends with its closing one, whatever lies between: a Conventional Commits message starts with its type,
  * never a quote, so a leading quote is always a wrapper. `undefined` when nothing is left.
  */
@@ -107,7 +107,11 @@ export function cleanCommitMessage(reply: string): string | undefined {
 /** `text` without the code fence or quote pair wrapping the whole of it, trimmed; `undefined` when none wraps it. */
 function unwrap(text: string): string | undefined {
   const fenced = /^(`{3,}|~{3,})[^\n]*\n([\s\S]*?)\n?\1$/.exec(text);
-  if (fenced && !fenced[2]!.includes(fenced[1]!)) return fenced[2]!.trim();
+  if (fenced) {
+    const inner = fenced[2]!.trim();
+    const holdsOtherFence = inner.includes(fenced[1]!) && !inner.startsWith(fenced[1]!);
+    return holdsOtherFence ? undefined : inner;
+  }
   const quoted = QUOTES.some(([open, close]) => text.length >= 2 && text.startsWith(open) && text.endsWith(close));
   return quoted ? text.slice(1, -1).trim() : undefined;
 }
