@@ -733,8 +733,8 @@ type Panel = {
   textarea: HTMLTextAreaElement;
   /** Replace the message box text, caret at `caret` (default: its end). */
   type: (value: string, caret?: number) => Promise<void>;
-  /** Key down in the message box. */
-  press: (key: string) => Promise<void>;
+  /** Key down in `field` (default: the message box), `init` adding to the key, such as `isComposing`. */
+  press: (key: string, field?: HTMLElement, init?: KeyboardEventInit) => Promise<void>;
   /** A message from the host. */
   receive: (message: unknown) => Promise<void>;
   /** Render another state, as a snapshot from the host does. */
@@ -773,9 +773,9 @@ async function withPanel(state: ChatState, run: (panel: Panel) => Promise<void>)
           textarea.setSelectionRange(caret, caret);
           textarea.dispatchEvent(new Event("input", { bubbles: true }));
         }),
-      press: (key) =>
+      press: (key, field = textarea, init = {}) =>
         act(async () => {
-          textarea.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+          field.dispatchEvent(new KeyboardEvent("keydown", { ...init, key, bubbles: true, cancelable: true }));
         }),
       receive: (message) =>
         act(async () => {
@@ -820,6 +820,7 @@ describe("conversation history", () => {
         language="en"
         onOpen={() => {}}
         onDelete={() => {}}
+        onDismiss={() => {}}
       />,
     );
 
@@ -1320,6 +1321,7 @@ describe("history panel", () => {
       close: () => {
         closed += 1;
       },
+      dismiss: () => {},
     }) as ReactElement<{ onOpen(id: string): void; onDelete(id: string): void }>;
     return { list, closed: () => closed };
   }
@@ -1344,20 +1346,182 @@ describe("history panel", () => {
     expect(posted).toEqual([{ type: "deleteConversation", id: OTHER_ID }]);
   });
 
-  test("each row's buttons call back with that row's id", () => {
-    const opened: string[] = [];
-    const deleted: string[] = [];
-    const tree = ConversationList({
-      conversations,
-      currentId: CONVERSATION_ID,
-      language: "en",
-      onOpen: (id) => opened.push(id),
-      onDelete: (id) => deleted.push(id),
+  test("each row's buttons call back with that row's id", async () => {
+    const { act } = await import("react");
+    await withPanel(stateWith(true, { conversations }), async (panel) => {
+      const rowButtons = (className: string) => [...panel.host.querySelectorAll<HTMLButtonElement>(className)];
+      await panel.click("History");
+      for (const remove of rowButtons(".history button.secondary")) await act(async () => remove.click());
+      for (const index of [0, 1]) {
+        if (index > 0) await panel.click("History");
+        const open = rowButtons("button.history-open")[index];
+        if (!open) throw new Error(`no row ${index}`);
+        await act(async () => open.click());
+      }
     });
-    const buttons = elements(tree).filter((element) => element.type === "button");
-    for (const element of buttons) element.props.onClick!();
-    expect(opened).toEqual([CONVERSATION_ID, OTHER_ID]);
-    expect(deleted).toEqual([CONVERSATION_ID, OTHER_ID]);
+    expect(posted).toEqual([
+      { type: "deleteConversation", id: CONVERSATION_ID },
+      { type: "deleteConversation", id: OTHER_ID },
+      { type: "openConversation", id: CONVERSATION_ID },
+      { type: "openConversation", id: OTHER_ID },
+    ]);
+  });
+});
+
+describe("history filter", () => {
+  const OTHER_ID = "1b0d4c1e-8f9a-4c3b-9d2e-1a2b3c4d5e6f";
+  const THIRD_ID = "2b0d4c1e-8f9a-4c3b-9d2e-1a2b3c4d5e6f";
+  const conversations = [
+    { id: CONVERSATION_ID, title: "Fix the parser", updatedAt: 3 },
+    { id: OTHER_ID, title: "Release notes", updatedAt: 2 },
+    { id: THIRD_ID, title: "Parse the logs", updatedAt: 1 },
+  ];
+  const saved = stateWith(true, { conversations });
+  const filterField = (host: HTMLElement) =>
+    host.querySelector<HTMLInputElement>('input[aria-label="Filter by title"]');
+  const titles = (host: HTMLElement) => [...host.querySelectorAll(".history-title")].map((title) => title.textContent);
+  const historyButton = (host: HTMLElement) =>
+    [...host.querySelectorAll("button")].find((element) => element.textContent === "History");
+
+  /** Open History over `state` and hand `run` the filter field. */
+  function withHistory(state: ChatState, run: (panel: Panel, field: HTMLInputElement) => Promise<void>) {
+    return withPanel(state, async (panel) => {
+      await panel.click("History");
+      const field = filterField(panel.host);
+      if (!field) throw new Error("no filter field");
+      await run(panel, field);
+    });
+  }
+
+  test("shows a text field labelled Filter by title above the rows, and none without a conversation", () => {
+    const list = (rows: typeof conversations) =>
+      renderToStaticMarkup(
+        <ConversationList
+          conversations={rows}
+          currentId={CONVERSATION_ID}
+          language="en"
+          onOpen={() => {}}
+          onDelete={() => {}}
+          onDismiss={() => {}}
+        />,
+      );
+    const html = list(conversations);
+    expect(html).toMatch(/<input type="text"[^>]*placeholder="Filter by title"[^>]*aria-label="Filter by title"/);
+    expect(html.indexOf("Filter by title")).toBeLessThan(html.indexOf("<ul"));
+    const empty = list([]);
+    expect(empty).toContain("No past conversations.");
+    expect(empty).not.toContain("<input");
+  });
+
+  test("opening History moves the focus into the field", async () => {
+    await withHistory(saved, async (_panel, field) => {
+      expect(document.activeElement).toBe(field);
+    });
+  });
+
+  test("typing keeps the rows whose title holds the text, in order, and says No match when none does", async () => {
+    await withHistory(saved, async (panel, field) => {
+      await panel.fill(field, " PARSE ");
+      expect(titles(panel.host)).toEqual(["Fix the parser", "Parse the logs"]);
+      expect(panel.host.querySelector(".history li.current")?.textContent).toContain("Fix the parser");
+      await panel.fill(field, "deploy");
+      expect(titles(panel.host)).toEqual([]);
+      expect(panel.host.querySelector(".history")?.textContent).toContain("No match");
+      await panel.fill(field, "");
+      expect(titles(panel.host)).toEqual(["Fix the parser", "Release notes", "Parse the logs"]);
+      expect(panel.host.querySelector(".history")?.textContent).not.toContain("No match");
+    });
+  });
+
+  test("Enter opens the first row listed and closes History", async () => {
+    await withHistory(saved, async (panel, field) => {
+      await panel.fill(field, "the logs");
+      await panel.press("Enter", field);
+      expect(posted).toEqual([{ type: "openConversation", id: THIRD_ID }]);
+      expect(filterField(panel.host)).toBeNull();
+    });
+  });
+
+  test("Enter posts nothing with no row listed or while an input method composes", async () => {
+    await withHistory(saved, async (panel, field) => {
+      await panel.press("Enter", field, { isComposing: true });
+      await panel.fill(field, "deploy");
+      await panel.press("Enter", field);
+      expect(posted).toEqual([]);
+      expect(filterField(panel.host)).toBe(field);
+    });
+  });
+
+  test("Escape clears the field, then closes History and focuses the History button", async () => {
+    await withHistory(saved, async (panel, field) => {
+      await panel.fill(field, "notes");
+      await panel.press("Escape", field);
+      expect(field.value).toBe("");
+      expect(titles(panel.host)).toHaveLength(3);
+      await panel.press("Escape", field);
+      expect(filterField(panel.host)).toBeNull();
+      expect(document.activeElement).toBe(historyButton(panel.host) ?? null);
+      expect(posted).toEqual([]);
+    });
+  });
+
+  test("Delete on a filtered row deletes that row and the filter applies to the new list", async () => {
+    await withHistory(saved, async (panel, field) => {
+      await panel.fill(field, "parse");
+      await panel.click("Delete");
+      expect(posted).toEqual([{ type: "deleteConversation", id: CONVERSATION_ID }]);
+      await panel.show(stateWith(true, { conversations: conversations.slice(1) }));
+      expect(field.value).toBe("parse");
+      expect(titles(panel.host)).toEqual(["Parse the logs"]);
+    });
+  });
+
+  test("History reopens with an empty field", async () => {
+    await withHistory(saved, async (panel, field) => {
+      await panel.fill(field, "notes");
+      await panel.click("History");
+      await panel.click("History");
+      expect(filterField(panel.host)?.value).toBe("");
+      expect(titles(panel.host)).toHaveLength(3);
+    });
+  });
+
+  /** `saved` in the middle of a reply, then with that reply done. */
+  const question: ChatEntry = { role: "user", content: "Hi", mentions: [] };
+  const streaming = stateWith(true, {
+    conversations,
+    entries: [question, { role: "assistant", reasoning: "", content: "Hel", status: "streaming" }],
+  });
+  const replied = stateWith(true, {
+    conversations,
+    entries: [question, { role: "assistant", reasoning: "", content: "Hello", status: "done" }],
+  });
+
+  test("a reply that ends while History is open leaves the focus in the filter field", async () => {
+    await withPanel(streaming, async (panel) => {
+      await panel.click("History");
+      const field = filterField(panel.host);
+      if (!field) throw new Error("no filter field");
+      await panel.fill(field, "notes");
+      await panel.show(replied);
+      expect(document.activeElement).toBe(field);
+    });
+  });
+
+  test("a reply that ends with History closed gives the focus to the message box", async () => {
+    await withPanel(streaming, async (panel) => {
+      historyButton(panel.host)?.focus();
+      await panel.show(replied);
+      expect(document.activeElement).toBe(panel.textarea);
+    });
+  });
+
+  test("the listing failure shows whatever the filter", async () => {
+    const failed = stateWith(true, { conversations, listFailed: { cause: "Error: EACCES" } });
+    await withHistory(failed, async (panel, field) => {
+      await panel.fill(field, "deploy");
+      expect(panel.host.textContent).toContain("Could not list the past conversations.");
+    });
   });
 });
 

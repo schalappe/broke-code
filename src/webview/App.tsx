@@ -1,7 +1,7 @@
 import * as l10n from "@vscode/l10n";
-import { type KeyboardEvent, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type KeyboardEvent, type ReactNode, type Ref, useEffect, useLayoutEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
-import type { ConversationSummary } from "../core/conversation";
+import { type ConversationSummary, filterConversations } from "../core/conversation";
 import { emptyModelsLabel } from "../core/modelList";
 import {
   type ChatEntry,
@@ -49,6 +49,7 @@ import { post } from "./vscodeApi";
 export function App({ state, language }: { state: ChatState; language: string }) {
   const configured = state.providers.length > 0;
   const [historyOpen, setHistoryOpen] = useState(false);
+  const historyButton = useRef<HTMLButtonElement>(null);
   return (
     <main className="panel">
       {/* Saved conversations are local: History works without a provider; only the composer needs one. */}
@@ -57,6 +58,7 @@ export function App({ state, language }: { state: ChatState; language: string })
         language={language}
         historyOpen={historyOpen}
         toggleHistory={() => setHistoryOpen(!historyOpen)}
+        historyButton={historyButton}
       />
       {!configured && <EmptyState />}
       <Warnings state={state} />
@@ -66,7 +68,17 @@ export function App({ state, language }: { state: ChatState; language: string })
       {state.models.status === "failed" && (
         <ErrorBlock error={state.models.error} retry={() => post({ type: "retryModels" })} />
       )}
-      {historyOpen && <HistoryPanel state={state} language={language} close={() => setHistoryOpen(false)} />}
+      {historyOpen && (
+        <HistoryPanel
+          state={state}
+          language={language}
+          close={() => setHistoryOpen(false)}
+          dismiss={() => {
+            setHistoryOpen(false);
+            historyButton.current?.focus();
+          }}
+        />
+      )}
       {/* Without providers, an earlier conversation stays readable and a reply in flight keeps its Stop. */}
       {(configured || state.entries.length > 0) && (
         // [>]: Keyed by conversation: another one starts with fresh scroll and collapsed reasoning blocks. Hidden, not
@@ -81,6 +93,7 @@ export function App({ state, language }: { state: ChatState; language: string })
       {(configured || isReplying(state)) && (
         <Composer
           state={state}
+          historyOpen={historyOpen}
           startNewChat={() => {
             setHistoryOpen(false);
             post({ type: "newChat" });
@@ -106,18 +119,21 @@ const HISTORY_ID = "history";
 
 /**
  * Provider and model pickers (with a provider configured), the context usage of the selected model, New chat, and the
- * History toggle. `language`: BCP 47 tag for the usage numbers.
+ * History toggle. `language`: BCP 47 tag for the usage numbers. `historyButton`: the toggle, which takes the focus
+ * back when Escape closes History.
  */
 export function Header({
   state,
   language,
   historyOpen,
   toggleHistory,
+  historyButton,
 }: {
   state: ChatState;
   language: string;
   historyOpen: boolean;
   toggleHistory: () => void;
+  historyButton?: Ref<HTMLButtonElement>;
 }) {
   return (
     <header className="header">
@@ -140,6 +156,7 @@ export function Header({
           {l10n.t("New chat")}
         </button>
         <button
+          ref={historyButton}
           type="button"
           className="secondary"
           aria-expanded={historyOpen}
@@ -255,9 +272,19 @@ function ErrorBlock({ error, retry }: { error: ProviderError; retry?: () => void
 /**
  * History list wired to the host: a pick closes it and asks to open that conversation, even the one shown, since a
  * pending open may be about to replace it; the controller skips an open of the conversation shown when it runs.
- * Delete deletes.
+ * Delete deletes. `dismiss`: Escape in an empty filter field, which closes History and focuses its toggle.
  */
-export function HistoryPanel({ state, language, close }: { state: ChatState; language: string; close: () => void }) {
+export function HistoryPanel({
+  state,
+  language,
+  close,
+  dismiss,
+}: {
+  state: ChatState;
+  language: string;
+  close: () => void;
+  dismiss: () => void;
+}) {
   return (
     <ConversationList
       conversations={state.conversations}
@@ -268,13 +295,17 @@ export function HistoryPanel({ state, language, close }: { state: ChatState; lan
         post({ type: "openConversation", id });
       }}
       onDelete={(id) => post({ type: "deleteConversation", id })}
+      onDismiss={dismiss}
     />
   );
 }
 
 /**
- * Saved conversations of the workspace, in the order given (newest first). A row's title reopens it; the one shown
- * is marked `aria-current`.
+ * Saved conversations of the workspace, in the order given (newest first), under a filter field when there is one.
+ * A row's title reopens it; the one shown is marked `aria-current`. Mounted only while History is open, so the filter
+ * starts empty at each opening and takes the focus then (the one focus move DESIGN.md allows); it keeps its text while
+ * the list changes. In the field, Enter opens the first row listed; Escape clears the text, or calls `onDismiss` when
+ * there is none.
  */
 export function ConversationList({
   conversations,
@@ -282,13 +313,20 @@ export function ConversationList({
   language,
   onOpen,
   onDelete,
+  onDismiss,
 }: {
   conversations: ConversationSummary[];
   currentId: string;
   language: string;
   onOpen: (id: string) => void;
   onDelete: (id: string) => void;
+  onDismiss: () => void;
 }) {
+  const [query, setQuery] = useState("");
+  const field = useRef<HTMLInputElement>(null);
+  // [>]: On mount only: a field that shows later, when a first conversation is saved, never takes the focus.
+  useEffect(() => field.current?.focus(), []);
+
   if (conversations.length === 0) {
     return (
       <section id={HISTORY_ID} className="history empty">
@@ -296,29 +334,55 @@ export function ConversationList({
       </section>
     );
   }
+  const listed = filterConversations(conversations, query);
+  const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.nativeEvent.isComposing) return;
+    if (event.key === "Enter") {
+      event.preventDefault();
+      if (listed[0]) onOpen(listed[0].id);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      if (query === "") onDismiss();
+      else setQuery("");
+    }
+  };
   return (
     <section id={HISTORY_ID} className="history" aria-label={l10n.t("History")}>
-      <ul>
-        {conversations.map((conversation) => {
-          const current = conversation.id === currentId;
-          return (
-            <li key={conversation.id} className={current ? "current" : undefined}>
-              <button
-                type="button"
-                className="history-open"
-                aria-current={current ? "true" : undefined}
-                onClick={() => onOpen(conversation.id)}
-              >
-                <span className="history-title">{conversation.title}</span>
-                <span className="history-date">{formatConversationDate(conversation.updatedAt, language)}</span>
-              </button>
-              <button type="button" className="secondary" onClick={() => onDelete(conversation.id)}>
-                {l10n.t("Delete")}
-              </button>
-            </li>
-          );
-        })}
-      </ul>
+      <input
+        ref={field}
+        type="text"
+        className="history-filter"
+        value={query}
+        placeholder={l10n.t("Filter by title")}
+        aria-label={l10n.t("Filter by title")}
+        onChange={(event) => setQuery(event.target.value)}
+        onKeyDown={onKeyDown}
+      />
+      {listed.length === 0 ? (
+        <p className="history-none">{l10n.t("No match")}</p>
+      ) : (
+        <ul>
+          {listed.map((conversation) => {
+            const current = conversation.id === currentId;
+            return (
+              <li key={conversation.id} className={current ? "current" : undefined}>
+                <button
+                  type="button"
+                  className="history-open"
+                  aria-current={current ? "true" : undefined}
+                  onClick={() => onOpen(conversation.id)}
+                >
+                  <span className="history-title">{conversation.title}</span>
+                  <span className="history-date">{formatConversationDate(conversation.updatedAt, language)}</span>
+                </button>
+                <button type="button" className="secondary" onClick={() => onDelete(conversation.id)}>
+                  {l10n.t("Delete")}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </section>
   );
 }
@@ -745,9 +809,18 @@ function Reasoning({ entry }: { entry: ChatEntry & { role: "assistant" } }) {
  * skills and lists them after the built-in commands, filtered as the user types; picking a skill inserts `/<name> `.
  * Picking a built-in row, or sending exactly `/new` or `/model`, runs it when Send would act (`startNewChat`, or the
  * editor's model list through `chooseModel`) and empties the box; otherwise, or with text after the token, the pick
- * inserts `/<name> `.
+ * inserts `/<name> `. When a reply ends, the message box takes the focus, unless History is open (`historyOpen`): the
+ * focus then stays where the user has it, so typing keeps going to the History filter.
  */
-function Composer({ state, startNewChat }: { state: ChatState; startNewChat: () => void }) {
+function Composer({
+  state,
+  historyOpen,
+  startNewChat,
+}: {
+  state: ChatState;
+  historyOpen: boolean;
+  startNewChat: () => void;
+}) {
   const [text, setText] = useState("");
   const [caret, setCaret] = useState(0);
   const [focused, setFocused] = useState(true);
@@ -776,8 +849,9 @@ function Composer({ state, startNewChat }: { state: ChatState; startNewChat: () 
   const rows = mentionMenu?.items.length ?? slashMenu?.items.length;
   const menuId = mentionMenu ? MENTION_MENU_ID : slashMenu ? SLASH_MENU_ID : undefined;
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: only a reply's end moves the focus; History closing must not.
   useEffect(() => {
-    if (!replying) input.current?.focus();
+    if (!replying && !historyOpen) input.current?.focus();
   }, [replying]);
 
   // [>]: Each query gets a new id and an answer counts only for the latest one; leaving the token also bumps it, so
