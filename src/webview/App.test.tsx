@@ -2021,6 +2021,19 @@ describe("drafts from the editor", () => {
     });
   });
 
+  test("after a draft, regaining the focus leaves a control that holds it where it is", async () => {
+    await withPanel(stateWith(true), async ({ host, receive }) => {
+      await receive(selection);
+      const control = host.querySelector("select:not([disabled])") as HTMLSelectElement;
+      control.focus();
+      expect(document.activeElement).toBe(control);
+      await act(async () => {
+        window.dispatchEvent(new Event("focus"));
+      });
+      expect(document.activeElement).toBe(control);
+    });
+  });
+
   test("a draft posted right behind init is applied once", async () => {
     await withPanel(
       stateWith(true),
