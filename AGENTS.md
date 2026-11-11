@@ -23,7 +23,7 @@ command at once. Typing `/` at the start of a message lists `/new`, `/model`, an
 goes to the model as typed. Outside the chat, the command "broke-code: Generate commit message", a button in the
 Source Control title of a git repository, sends that repository's staged diff to the provider and model selected in the
 chat and writes the reply to the commit input box (ADR 0004). Each final code block of an answer has Copy and Insert at
-cursor. The command "broke-code: Add provider", also a button of the panel, adds a provider to the user settings and
+cursor. The reserved mention `@problems` attaches the errors and warnings VS Code holds for the workspace files. The command "broke-code: Add provider", also a button of the panel, adds a provider to the user settings and
 stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for the domain vocabulary and `docs/adr/` for the decisions behind the design, starting with
 `docs/adr/0001-body-tool-calls.md`.
 
@@ -55,7 +55,12 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   header's select and the Quick Pick; `modelChoices`, the rows `/model` opens; `chooseModel`, the `/model` pick over a
   pick port the host fills with `showQuickPick`), workspace file access (`workspaceFiles.ts`: the inside-workspace check and its read-only
   roots (the loaded skills' folders outside the workspace, for reads only), capped reads, one-level listings, line truncation, the write boundary and atomic writes, with `node:fs`), mentions (`mentions.ts`: token detection, picked and typed
-  mentions merged, reading, and the text the model receives), where a message holds Markdown code
+  mentions merged, reading, the text the model receives, and `cutToMentionCaps`, the cut of a reserved mention's text),
+  the reserved mentions (`reservedMentions.ts`: `RESERVED_MENTIONS`, the table a new name is added to, `MentionKind`,
+  `NOTHING_TO_ATTACH`, the statuses of a neutral chip, and `pickedPath`, the `@./<name>` a menu pick inserts), the
+  mention reader the host builds (`mentionReader.ts`: a reserved name to its reader over its host source, any other
+  path to `readMention`), `@problems` (`problems.ts`: the raw `Diagnostic` the host's `DiagnosticsReader` returns, and
+  `readProblems`, the filter, order, line format, and caps), where a message holds Markdown code
   (`markdownCode.ts`; also `remarkFenceClosed`, the remark plugin marking a fenced block whose closing fence the parser read,
   `hasTextAfter`, whether rendered text follows a block, and `codeBlockText`,
   the text Copy and Insert at cursor take), Insert at cursor (`insertCode.ts`: `insertCode` over an editor port the
@@ -84,11 +89,12 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   skills (`skills.ts`: discovery in `~/.agents/skills/` and each workspace folder's `.agents/skills/`, the frontmatter
   subset, validation, precedence, warnings, the line the extension logs at each send; `LOAD_SKILL_TOOL`, `loadSkill`
   for the model's call, `findSlashSkill`, the skill a `/<name> args` message loads, `loadSkillText`, the load result
-  whoever loads, the user's arguments substituted or appended, and `answerSkillQuery`, the `/` menu's answer). `markdownCode.ts`, `suggestions.ts`, `modelList.ts`, `conversation.ts`, and `history.ts` import nothing from
+  whoever loads, the user's arguments substituted or appended, and `answerSkillQuery`, the `/` menu's answer). `markdownCode.ts`, `suggestions.ts`, `reservedMentions.ts`, `modelList.ts`, `conversation.ts`, and `history.ts` import nothing from
   `node:`, since the webview loads them. Unit tests sit next to them as `*.test.ts`, because `bun test` cannot load `vscode`. `tlsFixture.ts`
   generates test certificates with `/usr/bin/openssl` at test time; no private key is committed.
   `conversationFixture.ts` is the in-memory conversation file port for tests.
-- `src/extension/`: the extension host glue (activation, webview view, API keys in `SecretStorage` and their dialog
+- `src/extension/`: the extension host glue (activation, the mention reader with the diagnostics `@problems` reads,
+  `vscode.languages.getDiagnostics()` as raw records, webview view, API keys in `SecretStorage` and their dialog
   queue, the "Add provider" flow's Quick Pick, input boxes, and settings write in `addProvider.ts`, the
   file index's `findFiles` scan and watcher in `fileIndex.ts`, the turn limits and the command timeout from the user
   settings and the "Set context size" input box in `contextSizes.ts`, the tool runner's wiring (the ripgrep candidates
@@ -487,6 +493,30 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
 - A mention is `@` at the start of the message or after whitespace, up to the next whitespace, less trailing
   `.,;:!?)`. Fenced code blocks and inline code spans hold no mentions. A code span opens and closes in one paragraph: a
   blank line or a fenced block between two backticks leaves both literal. A path mentioned twice is attached once.
+- A mention whose path is exactly a reserved name (`RESERVED_MENTIONS`: `problems`), lowercase, once its trailing
+  punctuation is dropped, is a reserved mention: it is read from its host source and never resolves to a workspace
+  path. `@problems` and `@problems.` are reserved; `@Problems`, `@problems/`, and `@./problems` are paths. The text
+  alone decides: a workspace file or folder of that name is mentioned as `@./<name>`, and in a multi-root workspace a
+  folder named like a reserved name is no longer reached by `@<name>`, while `@<name>/` and `@<name>/<path>` still
+  are. A reserved mention follows the rules of the others: read at send, once per message however often written, in
+  the arguments of a `/<name>` skill message too, and never inside code. Its kind is its name (`MentionKind`, apart
+  from the workspace `EntryKind`). A status of `NOTHING_TO_ATTACH` (`noProblems`) says it found nothing to attach
+  without failing: the chip is then neutral and dim, in words; every other status that attaches nothing keeps the
+  error color. A source that fails is `unreadable` with its cause, the notice `the <name> could not be read
+  (<cause>)`. Its text is cut, never refused: over 2,000 lines with the truncation notice, over 1 MiB between
+  characters (`cutToMentionCaps`), the cut line counted as not shown. Adding a name: append it to
+  `RESERVED_MENTIONS` and follow the type errors (its reader in `mentionReader.ts`, its count unit in `mentions.ts`,
+  its chip wording and menu description in the webview), then add its statuses to the record's.
+- `@problems` attaches the errors and warnings VS Code holds now (what the Problems panel shows; a language service
+  may report only open files) for `file` documents inside the workspace folders; information and hints are left out.
+  The host's `DiagnosticsReader` returns `vscode.languages.getDiagnostics()` as raw records (scheme, file system
+  path, 0-based start, severity, message, source); `readProblems` filters, sorts, formats, and cuts them. One line
+  each, `<path>:<line>:<column> <severity> <message>`, then ` (<source>)` when it has one: the path as the file index
+  writes it (relative to the deepest workspace folder holding it, as written, led by that folder's name in a
+  multi-root workspace), line and column 1-based, the severity `error` or `warning`, each line break of the message a
+  space; sorted by path (code order), line, then column. The header counts problems (`@problems (problems, 2
+  problems)`, `1 problem`). None: `noProblems`, "Not attached: VS Code holds no error or warning for the workspace
+  files.", and the message is still sent. The diagnostic's code is not written.
 - Mentions are read when the message is sent, never again: later turns resend the message as composed then. The
   composed text lives in the chat controller, outside the state posted to the webview. The message and its waiting
   reply show, with Stop, while the mentions are read.
@@ -500,21 +530,27 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   symlink out after the check, or a subfolder swapped during the walk, is out of scope for the same reason. Other
   statuses: `missing`, `binary` (NUL byte in the first 8 KiB), `tooLarge` (over 1 MiB),
   `unreadable` (any other failure, such as a permission error or a FIFO), `attached`, and `truncated` (cut to its
-  first 2,000 lines, then `[truncated: N more lines not shown]`).
+  first 2,000 lines, then `[truncated: N more lines not shown]`). A reserved mention adds its own statuses
+  (`noProblems`).
 - The model receives the user text, then one block per mention: a header `@<path> (<kind>, <count or status>)`,
   then the content in a backtick fence longer than any backtick run inside it, or a one-line notice when nothing
   is attached. The message is sent whatever the statuses. The chat shows each mention as a chip under the
-  message, with its kind and status.
+  message, with its kind and status: a count or `truncated` in the default look, a `NOTHING_TO_ATTACH` status
+  neutral, any other status in the error color.
 - An `@` at the start or after whitespace, outside code, opens the mention menu while the caret ends its token; the
-  query is the non-space text after `@`, possibly empty. The menu lists up to 20 index entries whose path contains the query,
-  ignoring case, shorter paths first, then in code order. Arrow keys move and wrap, Enter or Tab picks, a click
-  picks, Escape closes; while the menu shows rows, Enter never sends. A pick replaces the token with `@<path> ` and
-  records the path. At send, a picked path counts while its `@<path>` still stands as a whole token in the text, and
+  query is the non-space text after `@`, possibly empty. The menu lists the reserved names whose name starts with the
+  query, ignoring case (a prefix, as the `/` menu filters), each with its kind marker and a one-line description
+  ("Errors and warnings of the workspace files"), then the index entries whose path contains the query, ignoring
+  case, shorter paths first, then in code order: 20 rows in all (`menuView`). The webview adds the reserved rows
+  itself, so they show before the files answer and when the files cannot be listed. Arrow keys move and wrap, Enter
+  or Tab picks, a click picks, Escape closes; while the menu shows rows, Enter never sends. Picking a reserved row
+  replaces the token with `@<name> ` and records nothing; picking an index entry replaces it with `@<path> ` and
+  records the path, `@./<name> ` and `./<name>` for an entry named like a reserved name (`mentionPick`). At send, a picked path counts while its `@<path>` still stands as a whole token in the text, and
   its text is not parsed again, so a path with spaces or backticks is one mention. A backtick in a picked path can
   make the text read two ways; a picked path follows the reading with picked paths set aside, and a typed token
   counts, and opens the menu, only when it is outside code in both. Answers carry the query id; the
-  webview drops stale ones. While the answer to a new query is pending, the menu shows only the earlier rows that
-  match it, never a row for an older query. When the files cannot be listed, the menu says so instead of "No match".
+  webview drops stale ones. While the answer to a new query is pending, the menu shows the matching reserved rows
+  and only the earlier rows that match it, never a row for an older query. When the files cannot be listed, the menu says so instead of "No match".
 - A `/` at the very start of the message opens the `/` menu while the caret ends its first word; the query is the text
   after `/`, possibly empty. A `/` anywhere else opens nothing, since paths hold them. The menu lists `/new` ("Start a
   new conversation"), `/model` ("Choose the model"), then each skill the send's discovery finds, by name, with its
@@ -579,7 +615,9 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
   `halted`, its `haltReason`, and tool steps, with an optional `approval`. A reopened conversation therefore resends exactly what was sent and
   never reads its mentions again. Version 1 files are skipped like any unknown version: no release wrote them, so
   none is migrated. An optional field added to an entry keeps the version: an older build drops the unknown key and
-  reads the rest (ADR 0003). It holds no API key and nothing else of `ProviderAccess`; a failed reply's error keeps the provider's base
+  reads the rest (ADR 0003). A new value of an existing field keeps it too, such as the mention kind `problems` and
+  status `noProblems`, each validated: an older build skips such a record as invalid and keeps it on disk (accepted,
+  ADR 0003, 2026-11-11). An unknown kind or status makes the record invalid. It holds no API key and nothing else of `ProviderAccess`; a failed reply's error keeps the provider's base
   URL for display, since it is user settings, not a secret. Times are whole milliseconds within the `Date` range. A
   file that fails validation or has an unknown version is logged and skipped; a file that cannot be read is shown as
   a listing failure. On load, a reply still `waiting` or `streaming` becomes `stopped`.
@@ -836,7 +874,7 @@ stores its key, with a preset for Ollama on this machine. Read `GLOSSARY.md` for
 - Out of scope for v1, by maintainer decision: Windows and Linux, inline completion, multi-agent modes (the Ask, Auto-edit, and Plan
   modes are settings of one agent: how its writes are approved, or which tools it gets; not such modes), MCP,
   code indexing and embeddings, a browser tool, git checkpoints, native or hybrid tool calling, skill
-  directories other than `.agents`, `CLAUDE.md`, mentions of the editor selection or diagnostics, automatic
+  directories other than `.agents`, `CLAUDE.md`, mentions of the editor selection, automatic
   context summarization, `/clear`, `/help`, and publishing from `develop`.
 - Do not copy code from swarm-lab (`joe-el-khoury/swarm-lab`). Its license forbids copying and forks. twinny
   is MIT, so credit it in the README when reusing its code or styles.

@@ -97,6 +97,19 @@ inside `node_modules`, `.git`, `dist`, `out`, or `build` folders. It lists at mo
 menu says the index is limited, and you can still type the path of a file it does not show. New and deleted
 files show up in the menu without reloading the window.
 
+### Mention the problems
+
+`@problems` attaches the errors and warnings VS Code holds for the workspace files, what the Problems panel shows,
+one line each with its path, line, column, severity, message, and the tool that reported it. Information and hints
+are left out. A language service may report only the files open in an editor, so open a file to get its problems.
+With no error or warning, the chip says so in a neutral look and the message is still sent. The menu lists
+`@problems` first when what you type after `@` starts its name.
+
+`problems` is a reserved name: `@problems` never reads a workspace path. To mention a file named `problems`, write
+`@./problems`; picking it in the menu does so for you. A folder of that name is `@problems/` or `@./problems`. In a
+multi-root workspace, a workspace folder named `problems` is reached by `@problems/` and `@problems/<path>`, no
+longer by `@problems`.
+
 ## How the agent works
 
 Each message starts an agent turn. The model may answer at once, or write a tool call in its reply; broke-code runs
