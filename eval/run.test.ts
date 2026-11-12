@@ -1,12 +1,12 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { RUN_COMMAND_TOOL } from "../src/core/commands";
 import { composeSystemPrompt } from "../src/core/systemPrompt";
 import { READ_TOOLS } from "../src/core/tools";
 import { WRITE_TOOLS } from "../src/core/writeTools";
-import { playScenario } from "./run";
+import { BENCH_SANDBOX_PROFILE, benchCommandEnv, playScenario } from "./run";
 import {
   COMMAND_SCENARIO,
   CREATE_SCENARIO,
@@ -15,6 +15,7 @@ import {
   READ_SCENARIO,
   type Scenario,
   SKILL_SCENARIO,
+  type WorkspaceSnapshot,
 } from "./scenarios";
 
 const event = (content: string) => `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`;
@@ -43,6 +44,45 @@ const server = Bun.serve({
 });
 const baseUrl = `http://localhost:${server.port}/v1`;
 const parent = mkdtempSync(join(tmpdir(), "broke-code-eval-test-"));
+
+/**
+ * Runs `command` as the first call of a `command` scenario run, its answer "61", and returns the step's text; `inspect`
+ * reads the workspace after the run.
+ */
+async function commandStep(command: string, inspect?: (after: WorkspaceSnapshot) => void): Promise<string> {
+  replies = [`<run_command>\n<command>${command}</command>\n</run_command>`, "61"];
+  const { entries, after } = await playScenario(
+    COMMAND_SCENARIO,
+    { baseUrl, apiKey: undefined, model: "m", maxToolSteps: 6 },
+    parent,
+  );
+  inspect?.(after);
+  const step = entries[2];
+  expect(step).toMatchObject({ role: "tool", name: "run_command" });
+  return step?.role === "tool" ? step.text : "";
+}
+
+/** The stdout lines of a command step's text. */
+function stdoutLines(text: string): string[] {
+  const stdout = /\nstdout:\n([\s\S]*)\nstderr:/.exec(text)?.[1];
+  return stdout === undefined ? [] : stdout.split("\n");
+}
+
+/**
+ * Runs `body` with `values` set in the bench's environment and every other `LANG` and `LC_*` variable unset, then
+ * puts the environment back.
+ */
+async function withBenchEnv(values: Record<string, string>, body: () => Promise<void>): Promise<void> {
+  const saved = { ...process.env };
+  for (const name of Object.keys(process.env)) if (name === "LANG" || name.startsWith("LC_")) delete process.env[name];
+  Object.assign(process.env, values);
+  try {
+    await body();
+  } finally {
+    for (const name of Object.keys(process.env)) if (!(name in saved)) delete process.env[name];
+    Object.assign(process.env, saved);
+  }
+}
 afterAll(() => {
   server.stop(true);
   rmSync(parent, { recursive: true, force: true });
@@ -128,6 +168,98 @@ describe("playScenario", () => {
       detail: "changed: alias, logs-link, pipe",
     });
   });
+
+  test("runs a command with only PATH, the locale, its own HOME and TMPDIR, and what /bin/sh sets", () =>
+    withBenchEnv(
+      { LANG: "fr_FR.UTF-8", LC_ALL: "fr_FR.UTF-8", BENCH_API_KEY: "bench-secret", UNRELATED: "x" },
+      async () => {
+        const text = await commandStep("env | cut -d= -f1");
+        expect(stdoutLines(text).sort()).toEqual(["HOME", "LANG", "LC_ALL", "PATH", "PWD", "SHLVL", "TMPDIR", "_"]);
+      },
+    ));
+
+  test("gives a command the run's home copy as HOME and a folder of the run beside the workspace as TMPDIR, removed with it", async () => {
+    const command = [
+      'echo "$HOME"; echo "$TMPDIR"',
+      'echo scratch > "$TMPDIR/scratch.txt"',
+      "cat <<EOF\nhere-document\nEOF",
+      "find logs -type f | wc -l",
+    ].join("\n");
+    replies = [`<run_command>\n<command>${command}</command>\n</run_command>`, "61"];
+    const { entries, after } = await playScenario(
+      COMMAND_SCENARIO,
+      { baseUrl, apiKey: undefined, model: "m", maxToolSteps: 6 },
+      parent,
+    );
+
+    const ran = entries[2];
+    expect(ran).toMatchObject({ role: "tool", name: "run_command", status: "ok" });
+    const [home, temporary, here] = stdoutLines(ran?.role === "tool" ? ran.text : "");
+    const runFolder = `${realpathSync(parent)}/broke-code-eval-`;
+    expect(home).toStartWith(runFolder);
+    expect(home).toEndWith("/home");
+    expect(temporary).toBe(`${home?.slice(0, -"/home".length)}/tmp`);
+    expect(here).toBe("here-document");
+    expect(judge(COMMAND_SCENARIO, entries, after)).toEqual({ pass: true });
+    expect(readdirSync(parent)).toEqual([]);
+  });
+
+  test("keeps the bench's environment from a command reading its parent's with ps", () =>
+    withBenchEnv({ BENCH_API_KEY: "bench-secret-ps", UNRELATED: "unrelated-ps" }, async () => {
+      const text = await commandStep("ps eww -p $PPID; ps eww -p $$");
+      expect(text).not.toContain("bench-secret-ps");
+      expect(text).not.toContain("unrelated-ps");
+      expect(text).toContain("Operation not permitted");
+    }));
+
+  test("refuses a command reading the user's home folder or the per-user temporary folders", async () => {
+    const userHome = realpathSync(homedir());
+    const text = await commandStep(
+      `ls "${userHome}" 2>&1; echo "home $?"; ls /private/var/folders 2>&1; echo "folders $?"`,
+    );
+    const lines = stdoutLines(text);
+    expect(lines.filter((line) => line.includes("Operation not permitted"))).toHaveLength(2);
+    expect(lines.filter((line) => /^(home|folders) [1-9]/.test(line))).toHaveLength(2);
+  });
+
+  test("refuses a command writing outside the run's folder, and still lets it add any entry to the workspace", async () => {
+    const outside = join(realpathSync(parent), "outside.txt");
+    const command = `echo x > "${outside}"; echo "outside $?"; echo made > made.txt; ln -s made.txt alias; mkfifo pipe; mkdir folder`;
+    const text = await commandStep(command, (after) => {
+      expect(after["made.txt"]).toBe("made\n");
+      expect(after.alias).toEqual({ symlink: "made.txt" });
+      expect(after.pipe).toEqual({ special: "fifo" });
+    });
+    expect(stdoutLines(text)).toEqual(["outside 1"]);
+    expect(existsSync(outside)).toBe(false);
+  });
+
+  test("refuses a command any network access", async () => {
+    let hits = 0;
+    const local = Bun.serve({
+      port: 0,
+      fetch: () => {
+        hits += 1;
+        return new Response("reached");
+      },
+    });
+    try {
+      const text = await commandStep(`curl -s -m 5 http://localhost:${local.port}/; echo "curl $?"`);
+      expect(text).not.toContain("reached");
+      expect(stdoutLines(text).at(-1)).toMatch(/^curl [1-9]/);
+      expect(hits).toBe(0);
+    } finally {
+      local.stop(true);
+    }
+  });
+
+  test("stops a command past the bench's 10 seconds with its whole process group", async () => {
+    const text = await commandStep("echo $$; sleep 30 & sleep 30");
+    expect(text).toStartWith("stopped after 10 seconds\nstdout:\n");
+    const pgid = Number(stdoutLines(text)[0]);
+    expect(pgid).toBeGreaterThan(1);
+    expect(() => process.kill(-pgid, 0)).toThrow();
+  }, 20_000);
 
   test("discovers the skills of a copy of the scenario's home fixture, never the real home, and removes the copy", async () => {
     requests.length = 0;
@@ -280,5 +412,45 @@ describe("playScenario", () => {
     await expect(
       playScenario(READ_SCENARIO, { baseUrl, apiKey: undefined, model: "absent", maxToolSteps: 6 }, parent),
     ).rejects.toThrow("absent");
+  });
+});
+
+describe("benchCommandEnv", () => {
+  const paths = { runFolder: "/r/run", home: "/r/run/home", tmp: "/r/run/tmp", userHome: "/Users/someone" };
+
+  test("keeps PATH and the locale of the bench's environment, nothing else, and sets HOME and TMPDIR to the run's", () => {
+    const bench = {
+      PATH: "/usr/bin:/bin",
+      LANG: "C",
+      LC_CTYPE: "UTF-8",
+      BENCH_API_KEY: "k",
+      HOME: "/Users/x",
+      TERM: "t",
+    };
+    expect(benchCommandEnv(paths, bench).environment).toEqual({
+      PATH: "/usr/bin:/bin",
+      LANG: "C",
+      LC_CTYPE: "UTF-8",
+      HOME: "/r/run/home",
+      TMPDIR: "/r/run/tmp",
+    });
+    expect(benchCommandEnv(paths, {}).environment).toEqual({ HOME: "/r/run/home", TMPDIR: "/r/run/tmp" });
+  });
+
+  test("runs /bin/sh under sandbox-exec, the paths given as parameters, never in the profile's text", () => {
+    const env = benchCommandEnv(paths, {});
+    expect(env.shell).toBe("/bin/sh");
+    expect(env.timeoutMs).toBe(10_000);
+    expect(env.launcher).toEqual([
+      "/usr/bin/sandbox-exec",
+      "-p",
+      BENCH_SANDBOX_PROFILE,
+      "-D",
+      "HOME_DIR=/Users/someone",
+      "-D",
+      "RUN_DIR=/r/run",
+    ]);
+    expect(BENCH_SANDBOX_PROFILE).not.toContain("/r/run");
+    expect(BENCH_SANDBOX_PROFILE).not.toContain("/Users");
   });
 });

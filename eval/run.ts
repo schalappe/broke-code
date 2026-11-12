@@ -2,14 +2,17 @@
  * @module run
  * One run of a scenario: the chat controller the extension runs, hosted through its ports with the read and write
  * tools, `run_command`, and `load_skill` over a throwaway copy of the fixture under the system temporary directory, each
- * write applied at once and recorded, each command approved at once and run with `/bin/sh` in the copy, the skills
- * discovered as the extension does but in a throwaway copy of the scenario's home fixture (never the real home), no
- * instruction file, an in-memory conversation store, and the bench's step limit. The copies are removed when the run
- * ends, also when it throws.
+ * write applied at once and recorded, each command approved at once and run with `/bin/sh` in the copy, inside the
+ * macOS sandbox with an allow-listed environment (`benchCommandEnv`: a reply may come from a remote server, so a
+ * command gets none of the bench's variables, reads nothing under the user's home, and writes only in the run's
+ * folder; see `BENCH_SANDBOX_PROFILE` for what stays readable), the skills discovered as the extension does but
+ * in a throwaway copy of the scenario's home fixture (never the real home), no instruction file, an in-memory
+ * conversation store, and the bench's step limit. The run's folder, holding both copies and the commands' `TMPDIR`, is
+ * removed when the run ends, also when it throws.
  */
 import type { Dirent } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, readlink, realpath, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, relative, sep } from "node:path";
 import { ChatController, type ChoiceStore, type ToolRunner } from "../src/core/chatController";
 import type { CommandEnv } from "../src/core/commands";
@@ -23,11 +26,63 @@ import { type ChangeApplier, fileApplier, type PlannedChange } from "../src/core
 import type { Scenario, WorkspaceFiles, WorkspaceSnapshot } from "./scenarios";
 
 /**
- * How the bench runs a command: `/bin/sh`, the shell the extension falls back to, so a run reads no user profile, and
- * 10 seconds, far above the milliseconds a command over a fixture takes, so a command that waits fails the run in
- * seconds rather than after the extension's 120.
+ * The macOS sandbox a bench command runs in: no network, no write outside the run's folder (`/dev/null` excepted), no
+ * read under the user's real home folder, the per-user temporary and cache folders, or `/Volumes`, the run's folder
+ * excepted wherever it lies; everything else allowed, so the system's tools run as usual. Later rules win, so the run
+ * folder's allow follows the denies. Its paths come as `sandbox-exec -D` parameters, real paths (`/private/var/...`,
+ * not `/var/...`), since the profile matches resolved paths: never spliced into this text, where a path holding a quote
+ * or a parenthesis would change the rules.
  */
-export const BENCH_COMMAND_ENV: CommandEnv = { shell: "/bin/sh", timeoutMs: 10_000 };
+export const BENCH_SANDBOX_PROFILE = [
+  "(version 1)",
+  "(allow default)",
+  "(deny network*)",
+  "(deny file-write*)",
+  '(deny file-read* (subpath (param "HOME_DIR")) (subpath "/private/var/folders") (subpath "/Volumes"))',
+  '(allow file-read* file-write* (subpath (param "RUN_DIR")))',
+  '(allow file-write* (literal "/dev/null"))',
+].join("\n");
+
+export const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
+
+/**
+ * The real paths a bench command's sandbox and environment name: `runFolder`, the run's throwaway folder; `home`, the
+ * home copy in it; `tmp`, its `TMPDIR`, in it beside the workspace copy, never inside it, since the judge would count
+ * a file there as a workspace change; `userHome`, the user's real home folder, denied to the command.
+ */
+export type BenchCommandPaths = { runFolder: string; home: string; tmp: string; userHome: string };
+
+/**
+ * How the bench runs a command a model proposed, which may come from a remote server: `/bin/sh`, the shell the
+ * extension falls back to, so a run reads no user profile; 10 seconds, far above the milliseconds a command over a
+ * fixture takes, so a command that waits fails the run in seconds rather than after the extension's 120; under
+ * `sandbox-exec` with `BENCH_SANDBOX_PROFILE`, which replaces itself with the shell, so the spawned pid stays the
+ * shell's; and an environment built from an allow-list: `PATH`, `LANG`, and each `LC_*` of `benchEnv` when set there,
+ * `HOME` and `TMPDIR` the run's. Nothing else of `benchEnv` reaches the command, `BENCH_API_KEY` included.
+ */
+export function benchCommandEnv(paths: BenchCommandPaths, benchEnv: NodeJS.ProcessEnv): CommandEnv {
+  const environment: Record<string, string> = {};
+  for (const [name, value] of Object.entries(benchEnv)) {
+    const kept = name === "PATH" || name === "LANG" || name.startsWith("LC_");
+    if (kept && value !== undefined) environment[name] = value;
+  }
+  environment.HOME = paths.home;
+  environment.TMPDIR = paths.tmp;
+  return {
+    shell: "/bin/sh",
+    timeoutMs: 10_000,
+    environment,
+    launcher: [
+      SANDBOX_EXEC,
+      "-p",
+      BENCH_SANDBOX_PROFILE,
+      "-D",
+      `HOME_DIR=${paths.userHome}`,
+      "-D",
+      `RUN_DIR=${paths.runFolder}`,
+    ],
+  };
+}
 
 /**
  * Where and how a run plays. `baseUrl`: an OpenAI-compatible provider; `apiKey`: its key, `undefined` for none (local
@@ -62,6 +117,16 @@ export async function playScenario(scenario: Scenario, target: RunTarget, tmpRoo
   try {
     await writeWorkspace(copy, scenario.files);
     await writeWorkspace(home, scenario.home ?? {});
+    // [>]: The sandbox profile matches resolved paths; on macOS the temporary directory sits behind the /var symlink.
+    const realRunFolder = await realpath(runFolder);
+    const commandPaths = {
+      runFolder: realRunFolder,
+      home: join(realRunFolder, "home"),
+      tmp: join(realRunFolder, "tmp"),
+      userHome: await realpath(homedir()),
+    };
+    await mkdir(commandPaths.tmp);
+    const commandEnv = benchCommandEnv(commandPaths, process.env);
     // [>]: The tools compare resolved paths; on macOS the temporary directory sits behind the /var symlink.
     const root = { name: basename(copy), path: await realpath(copy) };
     const toolEnv = { ripgrepCandidates: ripgrepCandidates(undefined, process.env.PATH) };
@@ -86,7 +151,7 @@ export async function playScenario(scenario: Scenario, target: RunTarget, tmpRoo
           () => [root],
           toolEnv,
           (roots) => recording(fileApplier(roots), planned),
-          () => BENCH_COMMAND_ENV,
+          () => commandEnv,
         ),
       ),
       instructions: { read: async () => [] },

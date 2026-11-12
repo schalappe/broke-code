@@ -39,13 +39,19 @@ export const RUN_COMMAND_TOOL: ToolSpec = {
 
 /**
  * What an approved command runs with. `shell`: the program run as `<shell> -c <command>`. `timeoutMs`: how long the
- * command may run before its process group is stopped. The rest is for tests: `killGraceMs`, how long the group has
+ * command may run before its process group is stopped. `environment`: the child's whole environment, nothing else
+ * inherited; absent, the host's. `launcher`: a program and its arguments placed before `<shell> -c <command>`, which
+ * must replace itself with the shell (`exec`), so the spawned pid stays the shell's and leads the process group;
+ * absent, the shell is spawned itself. The extension passes neither; the eval bench passes both to run a command in a
+ * sandbox with a minimal environment. The rest is for tests: `killGraceMs`, how long the group has
  * between SIGTERM and SIGKILL (two seconds); `drainMs`, how long the output may keep coming once the shell exited
  * (200 ms); `kill`, what sends the signals (`process.kill`).
  */
 export type CommandEnv = {
   shell: string;
   timeoutMs: number;
+  environment?: Record<string, string>;
+  launcher?: readonly [string, ...string[]];
   killGraceMs?: number;
   drainMs?: number;
   kill?: KillFunction;
@@ -150,10 +156,10 @@ function errorCode(error: unknown): string {
 }
 
 /**
- * Run approved `request` as `<shell> -c <command>`: hidden, in its own process group, stdin closed, the host's
- * environment inherited. Never rejects. The result starts with `exit code N`, `killed by <signal>`, or `stopped after N
- * seconds` at the timeout, then a `stdout:` and a `stderr:` section, each cut to its first 2,000 lines and 1 MiB; it
- * is `ok` only on exit code 0.
+ * Run approved `request` as `<shell> -c <command>`, after `env.launcher` when given: hidden, in its own process group,
+ * stdin closed, with `env.environment`, else the host's environment inherited. Never rejects. The result starts with
+ * `exit code N`, `killed by <signal>`, or `stopped after N seconds` at the timeout, then a `stdout:` and a `stderr:`
+ * section, each cut to its first 2,000 lines and 1 MiB; it is `ok` only on exit code 0.
  *
  * The timeout and `context.signal` (Stop) end the whole group, a pipeline's other processes included: SIGTERM, then
  * SIGKILL after the grace. Processes the command leaves in its group once the shell exits are stopped the same way,
@@ -172,20 +178,23 @@ export function runCommand(
   const graceMs = env.killGraceMs ?? DEFAULT_KILL_GRACE_MS;
   const kill = env.kill ?? process.kill;
 
+  const [program = env.shell, ...args] = [...(env.launcher ?? []), env.shell, "-c", request.command];
+  const programName = env.launcher === undefined ? `the shell ${excerpt(env.shell)}` : excerpt(program);
+
   return new Promise((resolve) => {
     let child: ReturnType<typeof spawn>;
     try {
       // [!]: `detached` makes the shell lead a process group of its own, so a kill of `-pid` reaches every process
       // of the command, not only the shell. stdin is closed: a command waiting for input reads end of file at once.
-      child = spawn(env.shell, ["-c", request.command], {
+      child = spawn(program, args, {
         cwd: request.cwd,
         detached: true,
         stdio: ["ignore", "pipe", "pipe"],
-        env: process.env,
+        env: env.environment ?? process.env,
       });
     } catch (error) {
       // [>]: spawn throws, rather than emitting `error`, for an argument it refuses, such as one holding a NUL byte.
-      resolve(couldNotStart(env.shell, error));
+      resolve(couldNotStart(programName, error));
       return;
     }
     const pgid = child.pid;
@@ -294,7 +303,7 @@ export function runCommand(
     child.stderr?.on("data", (chunk: Buffer) => stderr.push(chunk));
     child.on("error", (error) => {
       // [>]: Without a pid the shell never started (ENOENT, EACCES), so no `close` is sure to follow.
-      if (child.pid === undefined) settle(couldNotStart(env.shell, error));
+      if (child.pid === undefined) settle(couldNotStart(programName, error));
     });
     child.on("exit", (code, exitSignal) => {
       exit = { code, signal: exitSignal };
@@ -391,10 +400,11 @@ function groupAlive(kill: KillFunction, pid: number | undefined): boolean {
   }
 }
 
-function couldNotStart(shell: string, error: unknown): ToolResult {
+/** `program`: what was spawned, as the result names it ("the shell /bin/zsh", or the launcher's path). */
+function couldNotStart(program: string, error: unknown): ToolResult {
   return {
     status: "error",
-    text: `${TOOL}: the command could not start with the shell ${excerpt(shell)} (${excerpt(errorCode(error))}).`,
+    text: `${TOOL}: the command could not start with ${program} (${excerpt(errorCode(error))}).`,
   };
 }
 

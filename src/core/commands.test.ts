@@ -117,6 +117,48 @@ describe("runCommand", () => {
     expect((await run("pwd")).text).toBe(`exit code 0\nstdout:\n${base}\nstderr: (empty)`);
   });
 
+  test("without an environment, the command sees the host's", async () => {
+    process.env.BROKE_CODE_HOST_PROBE = "host-value";
+    try {
+      expect((await run('echo "$BROKE_CODE_HOST_PROBE"')).text).toBe(
+        "exit code 0\nstdout:\nhost-value\nstderr: (empty)",
+      );
+    } finally {
+      delete process.env.BROKE_CODE_HOST_PROBE;
+    }
+  });
+
+  test("an environment given is the command's whole environment", async () => {
+    process.env.BROKE_CODE_HOST_PROBE = "host-value";
+    try {
+      const result = await run("env | sort", { environment: { PATH: "/usr/bin:/bin", ONLY: "this" } });
+      const names = (result.text.split("\nstdout:\n")[1] ?? "")
+        .split("\nstderr:")[0]
+        ?.split("\n")
+        .map((line) => line.split("=")[0]);
+      expect(names).toEqual(["ONLY", "PATH", "PWD", "SHLVL", "_"]);
+    } finally {
+      delete process.env.BROKE_CODE_HOST_PROBE;
+    }
+  });
+
+  test("a launcher runs before the shell, which keeps its name and the process group", async () => {
+    const result = await run('echo "$0"; [ "$$" = "$(ps -o pgid= -p $$ | tr -d " ")" ] && echo leads', {
+      launcher: ["/usr/bin/env", "LAUNCHED=yes"],
+    });
+    expect(result.text).toBe("exit code 0\nstdout:\n/bin/sh\nleads\nstderr: (empty)");
+    expect((await run('echo "$LAUNCHED"', { launcher: ["/usr/bin/env", "LAUNCHED=yes"] })).text).toBe(
+      "exit code 0\nstdout:\nyes\nstderr: (empty)",
+    );
+  });
+
+  test("a launcher that cannot start is an error naming it", async () => {
+    expect(await run("true", { launcher: [join(base, "no-launcher"), "-x"] })).toEqual({
+      status: "error",
+      text: `run_command: the command could not start with ${join(base, "no-launcher")} (ENOENT).`,
+    });
+  });
+
   test("a pipeline past the timeout stops with its whole group, its output so far kept", async () => {
     const started = Date.now();
     const result = await run("echo $$; sleep 5 | cat", { timeoutMs: 200 });

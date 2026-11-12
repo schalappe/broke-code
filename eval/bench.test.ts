@@ -2,7 +2,16 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BENCH_MODELS, dumpLine, modelsProblem, OLLAMA_URL, parseBenchArgs, trimIncompleteLine } from "./bench";
+import {
+  BENCH_MODELS,
+  describeSandboxFailure,
+  dumpLine,
+  modelsProblem,
+  OLLAMA_URL,
+  parseBenchArgs,
+  sandboxProblem,
+  trimIncompleteLine,
+} from "./bench";
 import { CREATE_SCENARIO, SCENARIOS } from "./scenarios";
 
 describe("parseBenchArgs", () => {
@@ -85,6 +94,57 @@ describe("modelsProblem", () => {
 
   test("finds no problem when Ollama lists every requested model", () => {
     expect(modelsProblem({ ok: true, models: ["b", "a"] }, ["a", "b"], url)).toBeUndefined();
+  });
+});
+
+describe("sandboxProblem", () => {
+  test("finds no problem where sandbox-exec applies the bench's profile", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "broke-code-sandbox-"));
+    try {
+      expect(await sandboxProblem(dir)).toBeUndefined();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("names sandbox-exec, says no run started, and keeps the probe's result as the cause", () => {
+    const result = "exit code 71\nstdout: (empty)\nstderr:\nsandbox-exec: sandbox_apply: Operation not permitted";
+    expect(describeSandboxFailure(result)).toBe(
+      `Bench commands run under /usr/bin/sandbox-exec, which could not run one here, so no run started:\n${result}`,
+    );
+  });
+
+  test("bun run eval exits 1 before asking the server anything when the sandbox cannot be applied", async () => {
+    let requests = 0;
+    const server = Bun.serve({
+      port: 0,
+      fetch: () => {
+        requests += 1;
+        return Response.json({ data: [] });
+      },
+    });
+    try {
+      // [>]: A sandbox cannot be applied inside another one (exit 71), so running the bench in one makes its probe fail.
+      const bench = Bun.spawn(
+        [
+          "/usr/bin/sandbox-exec",
+          "-p",
+          "(version 1)(allow default)",
+          process.execPath,
+          join(import.meta.dir, "bench.ts"),
+          "--base-url",
+          `http://127.0.0.1:${server.port}/v1`,
+        ],
+        { stdout: "pipe", stderr: "pipe" },
+      );
+      const [code, stderr] = await Promise.all([bench.exited, new Response(bench.stderr).text()]);
+      expect(code).toBe(1);
+      expect(stderr).toContain("Bench commands run under /usr/bin/sandbox-exec");
+      expect(stderr).toContain("sandbox_apply");
+      expect(requests).toBe(0);
+    } finally {
+      server.stop(true);
+    }
   });
 });
 

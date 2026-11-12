@@ -111,7 +111,9 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   `userLimits`, their user values only,
   the token estimate, the context-full threshold, the typed size check, and `brokeCode.commandTimeoutSeconds` parsing),
   the command tool (`commands.ts`: `RUN_COMMAND_TOOL`, `runCommandTool` checks the call and the folder and asks the
-  approval, `runCommand` runs an approved command in its own process group with an injected shell and timeout, and
+  approval, `runCommand` runs an approved command in its own process group with an injected shell and timeout, and,
+  when given (the eval bench only), `environment`, the child's whole environment in place of the host's, and
+  `launcher`, a program and its arguments placed before `<shell> -c <command>`, and
   `commandShell` picks the shell), and the read tools (`tools.ts`: `read_file` and `list_files` over the mention reader, `search`
   over ripgrep with its candidate paths, bounded `ok` or `error` results, each also reaching the loaded skills' folders
   by absolute path), the write tools (`writeTools.ts`:
@@ -191,9 +193,10 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   `done`) and `judge`, the verdict and failure category of a run, which compares the workspace after the run with the
   fixture plus those writes; `run.ts` plays one run through the `ChatController` ports, with the read and write tools,
   `run_command`, and `load_skill` over a copy of the fixture under the system temporary directory, each write applied at
-  once by `fileApplier` and recorded for the dump, each command approved at once and run with `BENCH_COMMAND_ENV`, and
-  the skills discovered in a copy of the fixture home, never the real one;
-  `report.ts` formats the scores; `bench.ts` is the CLI, guarded by `import.meta.main` so `bun test` never starts it.
+  once by `fileApplier` and recorded for the dump, each command approved at once and run with `benchCommandEnv` (the
+  allow-listed environment and `sandbox-exec` with `BENCH_SANDBOX_PROFILE` as the launcher, the run's real paths as
+  its parameters), and the skills discovered in a copy of the fixture home, never the real one;
+  `report.ts` formats the scores; `bench.ts` is the CLI (`sandboxProblem`, its check before any run), guarded by `import.meta.main` so `bun test` never starts it.
   Its unit tests sit next to them and need no Ollama.
 - `media/`: `logo.png` (256 px), the extension icon on Open VSX and the Visual Studio Marketplace (`icon` in
   `package.json`; the registries refuse SVG), rendered from its source `logo.svg` with
@@ -1206,8 +1209,21 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   chat controller with the read and write tools, `run_command`, and `load_skill` over a throwaway copy of the scenario's
   fixture, each write applied at once, each command approved at once through the run context (the bench plays the
   model, not the user; nothing in the product auto-approves a command) and run with `/bin/sh` in the copy with a
-  10-second timeout, no instruction file, and a step limit of 10. A command inherits the bench's environment, `HOME`
-  included, so the bench confines what the tools reach, not what a command itself does. Skills are discovered as the extension
+  10-second timeout, no instruction file, and a step limit of 10. Since `--base-url` lets replies come from a remote
+  server, a command runs with a minimal environment inside a macOS sandbox (`benchCommandEnv`): its environment holds
+  only `PATH`, `LANG`, and each `LC_*` of the bench's when set there, `HOME`, the run's home copy, and `TMPDIR`, a
+  folder of the run's throwaway folder beside the workspace copy, removed with it (`BENCH_API_KEY` and everything else
+  stay out); it runs under `/usr/bin/sandbox-exec`, which replaces itself with the shell, with a profile that denies all
+  network access, every write outside the run's folder but `/dev/null`, and every read under the user's real home
+  folder, `/private/var/folders`, and `/Volumes`, the run's folder excepted, and allows the rest, so the system's tools
+  run as before. The profile's paths are real paths passed as `-D` parameters, never spliced into its text. Fail
+  closed: when `sandbox-exec` is missing or cannot apply the profile (exit 71 when the bench itself runs inside a
+  sandbox), the bench exits 1 before any run, naming the cause; a sandbox failure during a run is that command's
+  `error` result. Accepted limits: files readable outside the denied folders (`/etc`, `/private/tmp`, `/Applications`,
+  ...) stay readable, and a command's output still goes back to the provider and into the dump; a tool installed under
+  the home folder (`~/.bun/bin`, `~/.cargo/bin`) cannot run in a bench command even when `PATH` names it; Apple marks
+  `sandbox-exec` deprecated, with no supported replacement for a command-line tool. The tests that run a bench command
+  need `sandbox-exec` to apply a profile, so they fail inside a harness that is itself sandboxed. Skills are discovered as the extension
   does, but with a throwaway copy of the scenario's home fixture as the home folder, so the bench never reads the real
   `~/.agents`; a scenario without one gets no skill, and its prompt has neither the Skills section nor `load_skill`.
   Seven scenarios, each judged on the turn ending `done` and on the workspace after it: every file the scenario writes
@@ -1244,7 +1260,7 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   `contextFull`, `providerError`, `wrongEdit` (a file the scenario writes is missing or holds other text, with the
   first differing line), or `workspaceChanged` (the written files are right, or none was asked for, but another file
   changed). The bar is 9 runs of 10 per model and scenario; the bench exits 1 when a model is under it, and before
-  any run when Ollama is unreachable or does not list a model. `--model <name>`, `--scenario <name>` (both
+  any run when the sandbox cannot be applied, or Ollama is unreachable or does not list a model. `--model <name>`, `--scenario <name>` (both
   repeatable; an unknown scenario exits 1 naming the others), and `--runs <n>` shorten a local iteration;
   `--base-url <url>` plays against another OpenAI-compatible server instead of the local Ollama, such as a rented vLLM
   started with `--max-model-len 32768` (#58), its key read from `BENCH_API_KEY`, never a flag; `--dump <file>` appends each run's entries (tool steps with their call's arguments), verdict,
