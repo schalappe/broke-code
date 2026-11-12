@@ -3031,6 +3031,19 @@ describe("retry and continue", () => {
     });
   });
 
+  test("the reply a Retry starts at a removed reply's index opens with its reasoning collapsed", async () => {
+    const old = reply("done", { reasoning: "Old thinking" });
+    await withPanel(stateWith(true, { entries: [question, old] }), async ({ host, show }) => {
+      const reasoning = () => host.querySelector<HTMLDetailsElement>("details.reasoning");
+      await act(async () => reasoning()?.querySelector<HTMLElement>(":scope > summary")?.click());
+      expect(reasoning()?.open).toBe(true);
+      await show(stateWith(true, { entries: [question, reply("waiting", { content: "" })] }));
+      await show(stateWith(true, { entries: [question, reply("streaming", { content: "", reasoning: "New" })] }));
+      expect(reasoning()?.textContent).toContain("New");
+      expect(reasoning()?.open).toBe(false);
+    });
+  });
+
   test("a change of the turn's entries that keeps their count drops the confirmation; an unrelated post keeps it", async () => {
     const both: ChatEntry[] = [
       ...wrote,

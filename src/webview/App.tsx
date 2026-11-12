@@ -572,9 +572,11 @@ function Conversation({
     if (pinned) end.current?.scrollIntoView({ block: "end" });
   });
 
-  // [>]: Keyed by index: a conversation's entries are only appended, and another one remounts the list. An entry moving
-  // into a fold remounts, so a row opened inside comes back closed. The open request goes to the last entry, never
-  // folded, since only an ended turn folds.
+  // [>]: Keyed by index, and another conversation remounts the list. Retry and Edit remove the last turn's entries, and
+  // the new turn reuses their indexes: the host posts its first reply `waiting`, with no reasoning, answer, or call,
+  // before any read or request, so a removed entry's opened blocks unmount before the new reply fills that index.
+  // An entry moving into a fold remounts, so a row opened inside comes back closed. The open request goes to the last
+  // entry, never folded, since only an ended turn folds.
   const entry = (index: number) => {
     const shown = entries[index]!;
     const rendered = (
