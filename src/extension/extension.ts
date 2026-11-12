@@ -1,8 +1,8 @@
 /**
  * @module extension
  * Activation entry point: wires settings, API keys, mentions (and the diagnostics `@problems`, the git diffs `@diff`,
- * and the selection `@selection` read), read tools, write tools and commands behind their approval, instruction files,
- * skills, turn limits, file index, saved conversations, chat controller, chat view, `broke-code.setApiKey`,
+ * and the selection `@selection` read), read tools, write tools and commands behind their approval, each turn's
+ * written files recorded for "Undo changes", instruction files, skills, turn limits, file index, saved conversations, chat controller, chat view, `broke-code.setApiKey`,
  * `broke-code.addProvider`, `broke-code.generateCommitMessage`, and the editor's entry points into the chat:
  * `broke-code.addSelectionToChat` and the quick fix "Fix with broke-code" (`broke-code.fixDiagnostic`).
  */

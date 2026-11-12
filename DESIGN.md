@@ -203,7 +203,7 @@ user's message). Borders and rules are 1px. No colored side stripe.
   conversation, only the decision block has one. While a reply is in flight, Stop is the message box's primary button
   and Send, which then queues, is secondary.
 - Secondary (New chat, History, Delete, Reject, Retry, Add provider under the skipped providers, a queued message's
-  Send now, Edit, and Remove): a hairline box on the panel (`--bc-line`), the foreground as
+  Send now, Edit, and Remove, Undo changes): a hairline box on the panel (`--bc-line`), the foreground as
   text; `--bc-fill-strong` when hovered or pressed (`aria-expanded="true"`).
 - Link (Open provider settings, Set context size): the link color, underlined.
 - Code block action (Copy, Insert at cursor): a secondary button two pixels down (`--bc-fs-xs`), at least a row high
@@ -260,6 +260,13 @@ would not act. Above the rows, a notice line says "The queue is paused." when no
   "Conversation summarized" ("Conversation summarized automatically" for one an agent turn ran itself), or
   "Conversation not summarized" when it failed, stopped, halted, or came back empty. A summary is never folded, and the
   turn before it folds by the usual rule.
+- Undo changes: under the last reply of the turn whose writes are held, after how the turn ended, a secondary button
+  "Undo changes" (`.undo`), followed on the same line, wrapping when narrow, by the small dim hint "Commands this turn
+  ran are not undone." when the turn ran one. Never shown while a reply is in flight, so it never sits between an
+  approval's controls and the message box. The last undo's outcome sits under the reply it undid (`.undo-outcome`), in
+  words, one line per file with its path, status, and reason: a notice ("Changes undone.") when every file is back, a
+  warning block when some or all were skipped ("Some changes were not undone. …", "No change was undone. …"), since
+  those files stay changed until the next click. The outcome comes before the button, so the button stays last.
 - No longer sent: the entries before the summary the history starts at sit in one group (`.unsent`), each at 60%
   opacity (`--bc-unsent-opacity`), under one small dim line that says so in words ("Earlier messages are no longer
   sent to the model: the summary below replaces them."), so the state never rests on the dimming alone. A
@@ -289,10 +296,10 @@ Each kind of state has one look, distinct from the others at a glance:
 
 | State | Look |
 | --- | --- |
-| Loading (waiting for the reply, thinking, tool running, models loading) | Dim text that breathes; a line of its own leads with a dot. The pickers and the mode selector are disabled. While a mode change is being written, the mode selector and Send are disabled, with no other sign: the write takes a moment. |
+| Loading (waiting for the reply, thinking, tool running, models loading) | Dim text that breathes; a line of its own leads with a dot. The pickers and the mode selector are disabled. While a mode change is being written, the mode selector and Send are disabled, with no other sign: the write takes a moment. While an undo runs, its button reads "Undoing changes…" and is disabled, and so is Send. |
 | Empty (no provider, new conversation, empty History, no History row left by the filter) | One dim line, centered in the room it has; a link under it when there is something to do. No provider: Add provider (primary) and the Open provider settings link side by side under it. |
-| Notice (unknown context size, older tool results left out of the next request, the queue paused or full) | One small dim line, with a link when there is something to do (Set context size). Nothing went wrong, so no block. |
-| Warning (skipped providers and skills) | A block on the theme's warning fill; under skipped providers, Add provider (secondary) below the block, only while a valid provider exists: without one, the empty state's Add provider is the panel's only one. |
+| Notice (unknown context size, older tool results left out of the next request, the queue paused or full, an undo that put every file back) | One small dim line, with a link when there is something to do (Set context size). Nothing went wrong, so no block. |
+| Warning (skipped providers and skills, an undo that skipped files) | A block on the theme's warning fill; under skipped providers, Add provider (secondary) below the block, only while a valid provider exists: without one, the empty state's Add provider is the panel's only one. |
 | Error (models unavailable, failed reply, storage and listing problems) | A block on the theme's error fill: the message, its technical detail in the editor font, then its actions. |
 | Failed step or chip | The error color on the status text; no block. |
 | Waiting for a decision | The decision block. |

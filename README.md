@@ -253,6 +253,20 @@ resumes when its turn ends with an answer. **New chat**, `/new`, opening another
 shown put every queued message back in the message box, one per paragraph, so nothing you typed is lost. `/new`,
 `/model`, and `/compact` are never queued; a message queued while `/compact` runs is sent once the summary is done. The queue survives hiding the panel but not a window reload.
 
+### Undo the changes of a turn
+
+A change the agent writes goes straight to disk, outside the editor: neither the editor's **Undo** nor Local History
+(the **Timeline** view) sees it. Instead, under the last reply of the latest turn that wrote a file, the chat shows
+**Undo changes**, whatever way the turn ended, also after **Stop**. Click it to put each file that turn wrote back to
+its text from before the turn; a file the turn created is deleted. The chat then lists each file: restored, removed, or
+skipped with the reason. A file is skipped, and left exactly as it is, when it changed since the turn wrote it (an edit
+of yours, for instance), when an editor holds unsaved changes to it, or when it can no longer be written; the button
+stays, so you can fix that and click again to retry only the files skipped. The button stays until a later turn
+writes a file (that turn's button replaces it), you start a new chat or open another conversation, or the window
+reloads: the text from before the turn is kept in memory only, never on disk. After that, git is the way back.
+Commands are not undone: when the turn ran one, the chat says so beside the button. While the undo runs, **Send** waits
+for it.
+
 ## Context size and step limit
 
 The panel header shows, next to the model picker, how much of the model's context the next request would use, in

@@ -75,3 +75,25 @@ call, which reloads as `stopped` by the existing rule, with nothing written.
 - An open request does not survive a window reload, and the proposed side cannot be edited before Accept.
 - Residual race, accepted: text typed into an editor between the last unsaved check and the rename is not lost, but
   that editor then holds unsaved text over a file that changed on disk, which VS Code reports when it saves.
+
+## Addendum (2026-11-12): the way back from an approved write
+
+An approved or auto-approved write goes to disk outside the editor, so neither the editor's Undo nor Local History
+sees it: VS Code's working copy history records a save made from an editor and has no file-watcher listener (verified
+at the scouting of #93, `workingCopyHistoryTracker.ts`). The chat therefore offers "Undo changes" (#69, #92, #93).
+
+- The approval seam carries the record. Each tool run gets the turn's `RecordedChanges` on its run context
+  (`ToolContext.changes`), set per call beside `requestApproval`; the extension wraps its `fileApplier` in
+  `recordingApplier` inside `approvalApplier`, so only a change that reached the disk is recorded, never a rejected,
+  cancelled, or refused one. The eval bench's applier ignores it and records nothing.
+- Memory only, one turn: the latest turn of the conversation shown that wrote a file, held from its first recorded
+  write, replaced when a later turn writes its first file, dropped when the conversation shown changes and at a window
+  reload (maintainer decision, 2026-11-11). Not on the steps or in the panel state: the record is rewritten whole at
+  each save and the state is posted at each delta, so megabytes of file text would ride on both.
+- Stop does not wait for a write already running. Such a write is still held while its turn is the latest of the
+  conversation shown, since that is when an undo is most needed (scouting decision, 2026-11-12); one landing after the
+  conversation changed is not.
+- The undo restores file by file with the write's own checks and the same unsaved-editor refusal: a file changed since
+  the turn wrote it, or unsaved in an editor, is skipped untouched and stays held, so the next click retries it. The
+  button shows whatever the turn's end status. It runs in the navigation queue, so New chat, open, and delete wait for
+  it, and while it runs no turn starts (the one Send check). Commands are not undone, and the chat says so.

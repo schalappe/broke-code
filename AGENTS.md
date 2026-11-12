@@ -14,7 +14,9 @@ The code so far covers the extension skeleton, a streaming chat with a provider,
 write tools and commands: a message starts an agent turn that runs `read_file`, `list_files`, `search`, `write_file`,
 `edit_file`, and `run_command` until the model answers without a call. Each write waits behind the approval (a diff and
 Accept or Reject in the chat, ADR 0002) unless the user setting auto-approves it, which the mode selector of the
-message box shows and writes (Ask or Auto-edit); each command waits for Run or Reject, always. The selector's third
+message box shows and writes (Ask or Auto-edit); each command waits for Run or Reject, always. "Undo changes", under
+the last reply of the latest turn that wrote a file, puts each file that turn wrote back to its text before the turn,
+from memory, until the window reloads. The selector's third
 mode, Plan, kept per workspace, offers the read tools only, so the model answers with a plan and nothing is written
 or run (ADR 0005). Each send discovers the
 skills and lists them to the model, which loads one with `load_skill` and may then read its folder (ADR 0003). `bun run eval` measures that loop on local Ollama models, applying each change and running each
@@ -52,8 +54,9 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   the context threshold, the reply's cleaning, and `CommitMessageGenerator`, the command over its git, provider
   request, and user interface ports), the chat controller (conversation state, the agent turn loop with its tool runner, instruction reader, and
   skill reader ports, its limits source and step limits, the context budget check, streaming, Stop, saving, reopen, delete,
-  and the queue of messages sent while a reply is in flight, with `mayStartTurn`, the one check a send and the queue
-  share), the conversation record
+  the queue of messages sent while a reply is in flight, with `mayStartTurn`, the one check a send, `/compact`, and the
+  queue share, and "Undo changes": each turn's `RecordedChanges` on `ToolContext.changes`, the held turn, and
+  `undoChanges` over the `UndoHost` port), the conversation record
   (`conversation.ts`: version 2, its validation on load, title, id, the summary file's shape, `filterConversations`, the
   History filter), its store
   (`conversationStore.ts`: a record and a summary file per conversation, the list from the summaries, reads, writes,
@@ -107,7 +110,8 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   it, `fileApplier` straight to disk for the tests and the eval, `approvalApplier` around it in the extension: the
   unsaved-editor check, the approval request, then the write; an applier's result carries `written`, the file's real
   path, only when that change was written), the recorded changes (`recordedChanges.ts`: `recordingApplier`, opt-in,
-  records into `RecordedChanges` each change its applier reports `written`, one `RecordedFile` per file;
+  records into `RecordedChanges` each change its applier reports `written`, one `RecordedFile` per file, calling its
+  `onRecord` after each;
   `RecordedChanges.restore`, the per-file restore over the workspace roots and an unsaved-changes port, each file
   `restored`, `removed`, or `skipped` with its `RestoreRefusal`), the approval seam (`approval.ts`: the request a tool
   makes, the decision it gets, the rejection text, and the decisions of the editor side: which change diffs to close,
@@ -132,7 +136,8 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   queue, the "Add provider" flow's Quick Pick, input boxes, and settings write in `addProvider.ts`, the
   file index's `findFiles` scan and watcher in `fileIndex.ts`, the turn limits and the command timeout from the user
   settings and the "Set context size" input box in `contextSizes.ts`, the tool runner's wiring (the ripgrep candidates
-  from `vscode.env.appRoot` and `PATH`, the write tools behind `approvalApplier`, the command shell from
+  from `vscode.env.appRoot` and `PATH`, the write tools behind `approvalApplier` around `recordingApplier`, the `undo` port over the workspace folders
+  and `hasUnsavedChanges`, the command shell from
   `vscode.env.shell`, `$SHELL`, or `/bin/sh`), the write approval's editor side in
   `approval.ts` (the diff preview over `vscode.diff` and a content provider, the tabs, documents, and
   `brokeCode.autoApproveWrites` values it feeds the core decisions, and `writeAutoApproveWrites`, the user value the
@@ -144,7 +149,8 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   built-in Git extension's API, the repository Quick Pick, the replace question, the progress notification, and the
   notifications).
 - `src/webview/`: the React chat panel and its CSS (`styles.css`: a token layer, then rules that consume it, every color
-  from a `--vscode-*` variable; see `DESIGN.md`), tool step rows, the approval controls, the mode selector after the message box (`ModeSelect`), and the answer's code blocks with Copy and Insert at cursor (`CodeBlock`,
+  from a `--vscode-*` variable; see `DESIGN.md`), tool step rows, the approval controls, the mode selector after the message box (`ModeSelect`), "Undo changes" and the last undo's outcome under the reply
+  `ChatState.undo` names (`UndoChanges`, `UndoOutcome`), and the answer's code blocks with Copy and Insert at cursor (`CodeBlock`,
   the `pre` override of the answer's renderer) included. `SuggestionMenu.tsx` is the autocomplete list the `@` and
   `/` menus share, a row with an optional description; `composer.ts` holds the message box's decisions without React
   (the token at the caret, each menu's rows, what a key does, what picking a `/` row does (`slashPick`), `applyDraft`,
@@ -152,7 +158,8 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   caret, and picked paths). The queued messages render under the message box (`QueuedMessages`).
   `Root.tsx` is the panel's root: it posts `ready`, renders each state, and queues the `insertDraft` drafts for the
   message box; `main.tsx` mounts it. `turns.ts` groups the entries for rendering without React (`foldTurns`: each entry once,
-  an ended turn's fold and its step counts, a summary a boundary of its own), and `text.ts` words the fold's row (`describeFold`).
+  an ended turn's fold and its step counts, a summary a boundary of its own), and `text.ts` words the fold's row (`describeFold`) and the undo's outcome
+  (`describeUndoOutcome`, `describeUndoneFile`).
 - `src/l10n.test.ts`: checks that every `l10n.t` message has a French translation and that the
   `package.nls*.json` files match.
 - `l10n/bundle.l10n.fr.json`, `package.nls.json`, `package.nls.fr.json`: French strings for the host and
@@ -301,8 +308,8 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   rights: a write landing between the last read and the rename is overwritten (Node has no compare-and-swap on a
   path), and a missing parent folder swapped for a symlink out after the check makes `mkdir` create an empty folder
   outside before the write is refused.
-- A recording applier (`recordingApplier`, opt-in: nothing wires it yet, and the eval bench's `fileApplier` runs record
-  nothing) wraps another and records each change written, told by the applier's `written` result, never by its
+- A recording applier (`recordingApplier`, opt-in: the extension wraps `fileApplier` in it, inside `approvalApplier`,
+  recording into the turn's `ToolContext.changes`; the eval bench's `fileApplier` runs record nothing) wraps another and records each change written, told by the applier's `written` result, never by its
   text: a change that found the file already holding the new text (`alreadyWritten`), and a rejected, refused, or
   failed one, record nothing, since an undo could otherwise revert a change the turn never made, such as the user's
   own identical edit. A file is keyed by the real path of its folder plus its name, as the write resolved it, so two
@@ -404,6 +411,30 @@ on an error or warning puts a request to fix it there, with its file as a mentio
     (`failed`). A failed memento write is logged only, as for `brokeCode.lastChoice`: Plan applies for the session
     and is lost at the next load. Plan is not part of a conversation: reopening one changes no mode. While leaving Plan
     writes the setting, the mode change is pending as above, and no send or other pick is taken.
+  - "Undo changes" (#93, ADR 0002, 2026-11-12): neither the editor's Undo nor Local History sees an accepted write,
+    which goes to disk outside the editor, so the chat offers the way back. Each agent turn gets a `RecordedChanges`
+    (`ToolContext.changes`, set per call like `requestApproval`); the host's applier records into it. The controller
+    holds one turn (`heldTurn`): the latest turn of the conversation shown that wrote a file, the turn becoming held at
+    its first recorded write, in place of the one held so far; a turn that writes nothing (Plan, a rejection, reads
+    only) leaves the held one as it is. A write lands even after Stop (Stop does not wait for a running write; its
+    step is dropped) and is still held while its turn is the latest of the conversation shown (`lastTurn`); New chat,
+    opening another conversation, and deleting the one shown (`show`) drop the held turn, its outcome, and `lastTurn`,
+    so a write landing after that is not held. Memory only: the original texts are never saved, never in `ChatState`
+    (the whole state is posted at each delta), and lost at a window reload. Without the `undo` port (`UndoHost`: the
+    workspace roots and the write approval's `hasUnsavedChanges`), as in the eval bench, nothing is held.
+    `ChatState.undo` holds, derived at each emit: `reply`, the index in `entries` of the held turn's last reply (the
+    entry its turn ended on, summary or not, whatever its status), while it has files left and no reply is in flight;
+    `ranCommand`, the user ran one of its commands (Run clicked), which the panel says no undo reverts; `running`; and
+    `outcome`, `{ reply, files }`, each `UndoneFile` named as the file index writes it (`workspacePath` over the real
+    roots, else the model's spelling). The webview's `undoChanges` is validated like `newChat`; `undoChanges()` ignores
+    it while a reply is in flight, while an undo runs, or when no button shows. It clears the outcome, sets `running`,
+    and runs in the navigation queue, so New chat, open, and delete asked meanwhile wait for it; `RecordedChanges.restore`
+    then runs over the roots as they are, restored and removed files leave the held turn, skipped ones stay for the next
+    click, and once none is left the turn is no longer held and the button goes. While it runs, `mayStartTurn` refuses a
+    turn (a `send` goes back to the box, `/compact` and the queue wait) and the composer's "Send would act" check is
+    false. The outcome is cleared by the next send, the next undo, and a change of the conversation shown. An undo that
+    throws despite its contract is logged and unlocks Send. Restore per file, the button for every end status, and
+    skipped files retryable are maintainer decisions (#69).
 - `run_command(command, cwd?)` runs `<shell> -c <command>` in a hidden child process, no login shell, the shell being
   `vscode.env.shell`, else `$SHELL`, else `/bin/sh`. `cwd` resolves like a read tool's path and must be an existing
   folder inside the workspace; left out, the command runs in the first workspace folder. Without a workspace folder,
@@ -530,7 +561,8 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   box. `send` runs the turn (`runTurn`, which returns its last status) and, only once it has fully settled
   (after `runReply`'s `finally`, which clears `this.reply` for a turn and a summary alike, never inside `settle`, since navigation awaits `reply.settled`) and
   only when it ended `done`, sends the first queued message (`sendNextQueued`): it peeks, checks `mayStartTurn`
-  (provider and model chosen, no reply in flight, no mode write pending; the one check `send` shares), then takes it
+  (provider and model chosen, no reply in flight, no mode write pending, no undo running; the one check `send` and
+  `/compact` share), then takes it
   off the queue and calls `send` in the same step, so it is never shown in both places, and the message goes as if
   typed then (mentions read, a `/<name>` skill loaded, provider, model, mode, and limits of that moment). The next
   waits for that turn. When the check fails (the model gone after a failed listing), nothing is sent and it stays
@@ -874,7 +906,7 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   in, also after New chat or opening another one, and a deleted conversation is never written again. A conversation
   without entries is never written.
 - Navigation runs one operation at a time, in request order: restore, New chat (and `/new`, through the same
-  `newChat` request), open, delete, and prune. The operations that change the conversation shown (New chat, open,
+  `newChat` request), open, delete, prune, and "Undo changes", which changes no conversation and stops no reply. The operations that change the conversation shown (New chat, open,
   deleting the one shown) stop the reply in flight at request time and wait until it settles, its last save handed to
   the store, so a later read sees that save. Restore stops nothing: no reply exists at activation. Deleting another row
   and pruning leave the reply running; a reply's own save triggers the prune. The conversation shown is therefore the
