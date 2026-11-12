@@ -4,7 +4,8 @@
  * tools, `run_command`, and `load_skill` over a throwaway copy of the fixture under the system temporary directory, each
  * write applied at once and recorded, each command approved at once and run with `/bin/sh` in the copy, inside the
  * macOS sandbox with an allow-listed environment (`benchCommandEnv`: a reply may come from a remote server, so a
- * command reaches no host secret and writes nothing outside the run), the skills discovered as the extension does but
+ * command gets none of the bench's variables, reads nothing under the user's home, and writes only in the run's
+ * folder; see `BENCH_SANDBOX_PROFILE` for what stays readable), the skills discovered as the extension does but
  * in a throwaway copy of the scenario's home fixture (never the real home), no instruction file, an in-memory
  * conversation store, and the bench's step limit. The run's folder, holding both copies and the commands' `TMPDIR`, is
  * removed when the run ends, also when it throws.

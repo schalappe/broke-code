@@ -113,6 +113,39 @@ describe("sandboxProblem", () => {
       `Bench commands run under /usr/bin/sandbox-exec, which could not run one here, so no run started:\n${result}`,
     );
   });
+
+  test("bun run eval exits 1 before asking the server anything when the sandbox cannot be applied", async () => {
+    let requests = 0;
+    const server = Bun.serve({
+      port: 0,
+      fetch: () => {
+        requests += 1;
+        return Response.json({ data: [] });
+      },
+    });
+    try {
+      // [>]: A sandbox cannot be applied inside another one (exit 71), so running the bench in one makes its probe fail.
+      const bench = Bun.spawn(
+        [
+          "/usr/bin/sandbox-exec",
+          "-p",
+          "(version 1)(allow default)",
+          process.execPath,
+          join(import.meta.dir, "bench.ts"),
+          "--base-url",
+          `http://127.0.0.1:${server.port}/v1`,
+        ],
+        { stdout: "pipe", stderr: "pipe" },
+      );
+      const [code, stderr] = await Promise.all([bench.exited, new Response(bench.stderr).text()]);
+      expect(code).toBe(1);
+      expect(stderr).toContain("Bench commands run under /usr/bin/sandbox-exec");
+      expect(stderr).toContain("sandbox_apply");
+      expect(requests).toBe(0);
+    } finally {
+      server.stop(true);
+    }
+  });
 });
 
 describe("dumpLine", () => {
