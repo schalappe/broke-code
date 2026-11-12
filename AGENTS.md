@@ -45,6 +45,8 @@ on an error or warning puts a request to fix it there, with its file as a mentio
 - `GLOSSARY.md`: the domain terms (body tool call, harness, agent turn, tool step, provider, skill, slash command,
   mention). Code and docs use these names.
 - `docs/adr/`: architecture decision records.
+- `PRODUCT.md`: the product record: who the extension is for, what it is for, its constraints, and the principles
+  that settle a conflict between two qualities. Read it before a product or interface decision.
 - `DESIGN.md`: the design rules of the chat panel, written from `src/webview/styles.css`: the token layer, the two
   fonts, spacing and radii, the high-contrast rule, the look of each state, motion, and the keyboard and focus rules.
   Read it before changing the panel's markup or styles.
@@ -160,7 +162,8 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   built-in Git extension's API, the repository Quick Pick, the replace question, the progress notification, and the
   notifications).
 - `src/webview/`: the React chat panel and its CSS (`styles.css`: a token layer, then rules that consume it, every color
-  from a `--vscode-*` variable; see `DESIGN.md`), tool step rows, the approval controls, the mode selector after the message box (`ModeSelect`), the turn's actions row (`TurnActions`: Retry, its
+  from a `--vscode-*` variable; see `DESIGN.md`), the thread that carries a turn's tool steps as nodes, the latest
+  user message in the theme's button colors and the earlier ones outlined (`Entry`'s `earlier`), tool step rows, the approval controls, the mode selector after the message box (`ModeSelect`), the turn's actions row (`TurnActions`: Retry, its
   confirmation and Cancel, and Continue under the last turn's reply, then "Undo changes" under the reply
   `ChatState.undo` names), Edit under the last turn's user message and the replacing state's mark with Cancel (held by
   `App`, the composer's Send carrying it) and the last undo's outcome (`UndoOutcome`), and the answer's code blocks with Copy and Insert at cursor (`CodeBlock`,
