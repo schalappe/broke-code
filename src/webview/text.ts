@@ -183,7 +183,8 @@ export function mainArgument(args: Record<string, string>): string | undefined {
 /**
  * Short status of a finished tool step: `ok` or `error` and the result's size in lines, or the first line of a
  * malformed call's message, which says what is wrong. A call the user rejected says so, its reason in the expanded
- * result; one auto-approved says so before its status. Model-facing messages are English, never localized.
+ * result; one auto-approved says so before its status; a write "Undo changes" undid says so first, its line count the
+ * result's as shown. Model-facing messages are English, never localized.
  */
 export function describeToolStep(step: ChatEntry & { role: "tool" }): string {
   if (step.status === "malformed") return step.text.split("\n")[0] ?? "";
@@ -193,7 +194,8 @@ export function describeToolStep(step: ChatEntry & { role: "tool" }): string {
   const ending = step.name === "run_command" ? describeCommandEnding(step.text) : undefined;
   if (ending !== undefined) return l10n.t("{0}, {1}", ending, size);
   const status = step.status === "ok" ? l10n.t("ok, {0}", size) : l10n.t("error, {0}", size);
-  return step.approval === "auto" ? l10n.t("auto-approved, {0}", status) : status;
+  const approved = step.approval === "auto" ? l10n.t("auto-approved, {0}", status) : status;
+  return step.undone ? l10n.t("undone, {0}", approved) : approved;
 }
 
 /**
@@ -258,6 +260,14 @@ export function describeUndoOutcome(files: readonly UndoneFile[]): string {
     return l10n.t("Some changes were not undone. Undo changes again to retry the files skipped.");
   }
   return l10n.t("No change was undone. Undo changes again to retry the files skipped.");
+}
+
+/** An undo that failed unexpectedly (a bug): how to retry, and the error as detail. */
+export function describeUndoFailure(error: string): ErrorText {
+  return {
+    message: l10n.t("Undo changes failed unexpectedly. Undo changes again to retry the files not yet undone."),
+    detail: error,
+  };
 }
 
 /** One file of an undo: its path, then what happened to it, and the temporary file it left behind, if any. */

@@ -2830,6 +2830,40 @@ describe("undo changes", () => {
     expect(none).toContain("b.ts: skipped, it could not be restored (EACCES)");
   });
 
+  test("an undone step's row says undone, its line count unchanged", () => {
+    const undone: ChatEntry[] = turns.map((entry) => (entry.role === "tool" ? { ...entry, undone: true } : entry));
+    expect(html(idle, undone)).toContain('<span class="step-status">undone, auto-approved, ok, 1 line</span>');
+    expect(html(idle)).not.toContain("undone, ");
+  });
+
+  test("inside a folded turn, the undone row shows once the fold is opened", async () => {
+    const step = { ...(turns[2] as ChatEntry & { role: "tool" }), undone: true as const };
+    const folded: ChatEntry[] = [turns[0]!, turns[1]!, step, turns[1]!, turns[2]!, turns[3]!];
+    await withPanel(stateWith(true, { entries: folded }), async ({ host }) => {
+      const fold = host.querySelector<HTMLDetailsElement>("details.turn-fold");
+      if (!fold) throw new Error("no fold");
+      expect(fold.querySelector(":scope > summary")?.textContent).toBe("2 steps");
+      await act(async () => fold.querySelector<HTMLElement>(":scope > summary")?.click());
+      expect(fold.open).toBe(true);
+      const rows = [...fold.querySelectorAll(".step-status")].map((row) => row.textContent);
+      expect(rows).toEqual(["undone, auto-approved, ok, 1 line", "auto-approved, ok, 1 line"]);
+    });
+  });
+
+  test("an undo that failed shows an error block with its cause, the files undone before it, and the button", () => {
+    const failed = html({
+      ...idle,
+      reply: 3,
+      outcome: { reply: 3, files: [{ path: "a.ts", status: "restored" }], error: "editor check broke" },
+    });
+    expect(failed).toContain('<div class="undo-outcome failed" role="alert">');
+    expect(failed).toContain("Undo changes failed unexpectedly. Undo changes again to retry the files not yet undone.");
+    expect(failed).toContain("editor check broke");
+    expect(failed).toContain("a.ts: restored");
+    expect(failed).not.toContain("Changes undone.");
+    expect(failed.indexOf("editor check broke")).toBeLessThan(failed.indexOf(">Undo changes</button>"));
+  });
+
   test("Undo changes posts its request", async () => {
     await withPanel(stateWith(true, { entries: turns, undo: { ...idle, reply: 3 } }), async ({ click }) => {
       await click("Undo changes");

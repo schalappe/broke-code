@@ -7,6 +7,8 @@ import {
   describeProviderError,
   describeSkillWarning,
   describeStorageProblem,
+  describeToolStep,
+  describeUndoFailure,
   describeUndoneFile,
   describeUndoOutcome,
   formatConversationDate,
@@ -221,6 +223,26 @@ describe("describeUndoOutcome", () => {
     expect(describeUndoOutcome([{ path: "b", status: "skipped", reason: "outsideWorkspace" }])).toBe(
       "No change was undone. Undo changes again to retry the files skipped.",
     );
+  });
+});
+
+describe("describeUndoFailure", () => {
+  test("says the undo failed and how to retry, with the error as detail", () => {
+    expect(describeUndoFailure("editor check broke")).toEqual({
+      message: "Undo changes failed unexpectedly. Undo changes again to retry the files not yet undone.",
+      detail: "editor check broke",
+    });
+  });
+});
+
+describe("describeToolStep", () => {
+  const step = { role: "tool", name: "edit_file", args: { path: "a.ts" }, status: "ok", text: "done\n" } as const;
+
+  test("an undone step says so first, its approval and line count unchanged", () => {
+    expect(describeToolStep({ ...step, undone: true })).toBe("undone, ok, 1 line");
+    expect(describeToolStep({ ...step, approval: "auto", undone: true })).toBe("undone, auto-approved, ok, 1 line");
+    expect(describeToolStep({ ...step, approval: "accepted", undone: true })).toBe("undone, ok, 1 line");
+    expect(describeToolStep({ ...step, approval: "auto" })).toBe("auto-approved, ok, 1 line");
   });
 });
 

@@ -979,6 +979,23 @@ p.loading::before {
   border-radius: var(--bc-radius);
 }
 
+/* An undo that failed unexpectedly: the error block's look, its cause in the editor font. */
+.undo-outcome.failed {
+  padding: var(--bc-space-3) var(--bc-space-4);
+  color: var(--bc-error-text);
+  background: var(--bc-error-fill);
+  border: 1px solid var(--bc-error-edge);
+  border-radius: var(--bc-radius);
+}
+
+.undo-outcome .detail {
+  margin: var(--bc-space-2) 0 0;
+  color: var(--bc-fg-dim);
+  font-family: var(--bc-mono);
+  font-size: var(--bc-fs-mono);
+  white-space: pre-wrap;
+}
+
 /* ---------- Reasoning ---------- */
 
 .reasoning {

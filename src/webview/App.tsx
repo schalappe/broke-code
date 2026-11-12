@@ -30,7 +30,6 @@ import {
   type PendingApproval,
   type QueuedMessage,
   type ReplyCall,
-  type UndoneFile,
   type UndoState,
 } from "../core/protocol";
 import type { ProviderError } from "../core/providerError";
@@ -66,6 +65,7 @@ import {
   describeSkippedProvider,
   describeStorageProblem,
   describeToolStep,
+  describeUndoFailure,
   describeUndoneFile,
   describeUndoOutcome,
   type ErrorText,
@@ -519,7 +519,7 @@ function Conversation({
       next={entries[index + 1]}
       approval={index === entries.length - 1 ? approval : undefined}
       undo={index === undo.reply && !replying ? undo : undefined}
-      undone={index === undo.outcome?.reply ? undo.outcome.files : undefined}
+      undone={index === undo.outcome?.reply ? undo.outcome : undefined}
     />
   );
 
@@ -602,7 +602,7 @@ function Entry({
   next?: ChatEntry;
   approval?: PendingApproval;
   undo?: UndoState;
-  undone?: UndoneFile[];
+  undone?: UndoOutcomeState;
 }) {
   switch (entry.role) {
     case "user":
@@ -654,7 +654,7 @@ function Reply({
   step?: ChatEntry & { role: "tool" };
   approval?: PendingApproval;
   undo?: UndoState;
-  undone?: UndoneFile[];
+  undone?: UndoOutcomeState;
 }) {
   const { call } = entry;
   const answer = call ? (entry.content.slice(0, call.start) + entry.content.slice(call.end)).trim() : entry.content;
@@ -699,7 +699,7 @@ function Reply({
         <p className="mark">{l10n.t("The model's reply held no summary.")}</p>
       )}
       {entry.error && <ErrorBlock error={entry.error} />}
-      {undone && <UndoOutcome files={undone} />}
+      {undone && <UndoOutcome outcome={undone} />}
       {undo && <UndoChanges undo={undo} />}
     </div>
   );
@@ -720,20 +720,28 @@ function UndoChanges({ undo }: { undo: UndoState }) {
   );
 }
 
+type UndoOutcomeState = NonNullable<UndoState["outcome"]>;
+
 /**
  * What the last undo did, file by file: a notice when every file is back, a warning block when some or all were
- * skipped, since those stay changed until the next undo.
+ * skipped, since those stay changed until the next undo, and an error block, with the files undone before it, when the
+ * undo failed unexpectedly.
  */
-function UndoOutcome({ files }: { files: UndoneFile[] }) {
+function UndoOutcome({ outcome: { files, error } }: { outcome: UndoOutcomeState }) {
+  const failure = error === undefined ? undefined : describeUndoFailure(error);
   const skipped = files.some((file) => file.status === "skipped");
+  const look = failure ? "undo-outcome failed" : skipped ? "undo-outcome skipped" : "undo-outcome";
   return (
-    <div className={skipped ? "undo-outcome skipped" : "undo-outcome"} role="status">
-      <p>{describeUndoOutcome(files)}</p>
-      <ul>
-        {files.map((file) => (
-          <li key={file.path}>{describeUndoneFile(file)}</li>
-        ))}
-      </ul>
+    <div className={look} role={failure ? "alert" : "status"}>
+      <p>{failure ? failure.message : describeUndoOutcome(files)}</p>
+      {failure && <pre className="detail">{failure.detail}</pre>}
+      {files.length > 0 && (
+        <ul>
+          {files.map((file) => (
+            <li key={file.path}>{describeUndoneFile(file)}</li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
