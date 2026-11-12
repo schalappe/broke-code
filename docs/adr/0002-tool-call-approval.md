@@ -28,7 +28,7 @@ keeps no new status, only how the step was approved (`accepted`, `rejected`, or 
 ## Accept writes with the core's atomic applier
 
 On Accept the change is written by the same applier as everywhere else: a temporary file, a last check that the file
-still holds the planned text, then a `rename(2)` over it (see AGENTS.md, "A write is atomic"). A file that changed on
+still holds the planned text, then a `rename(2)` over it (see `docs/spec/harness.md`, "A write is atomic"). A file that changed on
 disk since the plan is refused, and the model is told to read it again. Before the write, and before the request, a
 file open in an editor with unsaved changes is refused, also when auto-approve is on: the model gets an `error`
 result saying so. An editor without unsaved changes reloads the new text from disk by itself.

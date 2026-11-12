@@ -1,0 +1,414 @@
+# Harness
+
+This file specifies the agent loop: the body tool calls, the tools, the approvals, the history sent to the model, and the context budget. ADR 0001, 0002, 0003, and 0005 in `docs/adr/` record the decisions behind it.
+
+## Body tool calls
+
+- Tool calls are XML tags in the reply text, with argument values written raw. Starting parsing rules: one
+  call per reply, calls inside code fences are ignored, a malformed call goes back to the model as a precise
+  error, three malformed calls in a row stop the agent turn, and a reply with text but no call is the final answer. An
+  empty reply (no text once trimmed, reasoning excluded) is no final answer: it is handled as a malformed call
+  (maintainer decision, ADR 0001). Change these rules only on evidence from the eval (local Ollama, or a rented vLLM
+  for the employer's models, #58).
+- A call may sit inside a wrapper tag, `<tool_call>` or `<tool_code>` (`CALL_WRAPPERS`), as Gemma writes on vLLM: a
+  wrapper starting a line outside code, whose content starts (after whitespace) with a known tool's opening tag, is
+  that call, its block spanning the wrapper when the wrapper's closing tag follows the call after whitespace; the
+  closing tag is optional. A wrapper around anything else stays "not a known tool" (ADR 0001, 2026-11-12).
+- A tool result the model wrote itself (`<tool_result` then a space or `>`, starting a line, outside code; never itself
+  a call-shaped block, `<tool_result>` included) before the reply's first call-shaped block, or in a reply with no
+  call, makes the reply malformed (`forged`): the answer is cut where the result opens, so the chat and the history
+  never hold the invented result, and the model gets a message saying only the extension writes results. Accepted
+  cost: a final answer that quotes a raw result opening at a line start, outside code, is refused once.
+- A known tool's call ends at the `</tool_name>` after its last argument value, not at the first one. A value ends at
+  the first `</argument>` that closes no `<argument>` opened inside the value and is followed by nothing but
+  whitespace and then another argument tag of the tool or the call's closing tag: an inner `<argument>` …
+  `</argument>` pair is kept, so a value can hold a whole example call. When the tags never balance, the value ends
+  at the first `</argument>` so followed, pairs ignored; failing that, at the last `</argument>` before the next
+  `</tool_name>`. A value may therefore hold `</write_file>`, `</content>`, other tools' tags, and code fences. Known
+  cost, kept by maintainer decision: a value holding an unpaired `<argument>` pairs it with the real closing tag, so
+  it runs on into the text after the call when that text holds `</argument>` then `</tool_name>`. The parser drops
+  one leading and one trailing line break of a value that sits on its own lines (both or neither); an argument marked
+  `oneLine` in its `ToolSpec` (each `path`, `cwd`, the `search` pattern, the `load_skill` name) loses every leading
+  and trailing line break instead (ADR 0001, 2026-11-10). `write_file` then
+  drops every trailing line break of its content (`\n` or `\r\n`) and ends the file with exactly one, of the kind its
+  last line break is; content left empty writes an empty file. Accepted cost, by maintainer decision (ADR 0001):
+  `write_file` cannot create a file ending with an empty line; `edit_file` can.
+- The v1 tools are `read_file`, `list_files`, `search` (ripgrep), `write_file`, `edit_file`, `run_command`,
+  and `load_skill`.
+- `edit_file` replaces exact text only, compared byte for byte, line endings included. If the text matches zero
+  times or more than once (overlapping matches count), return an error to the model. Never guess the location.
+
+## Write tools, atomic writes, and recorded changes
+
+- The write tools plan a change and never write; the host's applier writes it. The path resolves like a mention, a
+  path that exists nowhere going to the first workspace folder that may hold it. The deepest existing folder above
+  the file must resolve inside a workspace folder; missing folders are created at apply. The file itself must not
+  be a symlink, and an existing one must be a UTF-8 text file within the read caps (binary or over 1 MiB refused, as
+  for reads); content over 1 MiB is refused. The applier checks the path again and writes only when the file still
+  holds the planned text (already holding the new text is a success, so applying twice is harmless).
+- A write is atomic: the file holds its old text or the new one, never a mix or nothing, even after a crash. The new
+  text goes to a temporary file `.<name>.broke-code-<random>.tmp` in the target's own folder (at most 226 bytes of
+  the file name, cut between characters, so the name fits in 255 bytes), flushed to disk. For an existing file it is
+  created readable by its owner only (`0600`); for a new file, with the default bits. A last check then reads the
+  target again: its folder must still resolve to the same place inside the workspace, the target must not be a
+  symlink, and it must still hold the planned text (or already the new text: a success). Only then does the
+  temporary file get the old file's permission bits (`rwx` for owner, group, and others) and take its place:
+  `rename(2)` over an existing file, `link(2)` for a new one, which fails rather than replace a file created meanwhile
+  (refused as changed since planned). On any failure the file stays byte-identical and the temporary file is
+  removed; when that removal fails, the result names the temporary file and its cause. The error result keeps the
+  cause ("the file was not written (ENOSPC)"), and folders created for the write stay. Accepted costs: a hard link to the file keeps the old text; its owner, extended attributes, and ACLs
+  are not kept; the folder must be writable; a crash before the swap, or a folder renamed during the write, leaves
+  the temporary file behind. Residual races, accepted as for reads, since such a writer already runs with the user's
+  rights: a write landing between the last read and the rename is overwritten (Node has no compare-and-swap on a
+  path), and a missing parent folder swapped for a symlink out after the check makes `mkdir` create an empty folder
+  outside before the write is refused.
+- A recording applier (`recordingApplier`, opt-in: the extension wraps `fileApplier` in it, inside `approvalApplier`,
+  recording into the turn's `ToolContext.changes`; the eval bench's `fileApplier` runs record nothing) wraps another and records each change written, told by the applier's `written` result, never by its
+  text: a change that found the file already holding the new text (`alreadyWritten`), and a rejected, refused, or
+  failed one, record nothing, since an undo could otherwise revert a change the turn never made, such as the user's
+  own identical edit. A file is keyed by the real path of its folder plus its name, as the write resolved it, so two
+  spellings of one file are one entry; the entry keeps the text before its first recorded write (or that it did not
+  exist) and the text its last recorded write left. The set lives in memory only.
+- `RecordedChanges.restore(roots, host)` handles each file on its own, in first-write order, with the workspace folders
+  as they are then (their real paths). A file `host.hasUnsavedChanges` reports dirty in an editor is skipped
+  (`unsaved`) before anything else. A file that still holds the text the writes left gets its original text back
+  through the atomic write above (planned text: the written one), byte for byte, a BOM included, or is removed when
+  the writes created it (`removeWorkspaceFile`); folders created for the writes stay. A file that already holds its
+  original text, or is already gone when the writes created it, counts as `restored` or `removed`. Anything else is
+  `skipped` and untouched: `changed` (other text, missing, a folder, no longer text), `symlink`, `outsideWorkspace`, or
+  `failed` with the disk's cause (a technical failure, apart from the refusals). A temporary file the restoring write
+  could not remove is named on the outcome (`leftover`). Restored and removed files leave the set; skipped ones stay,
+  so a second run retries only them. Each file holds its old text or the written one at every moment, so running
+  twice, or again after a crash halfway, damages nothing and reports the same files.
+- `removeWorkspaceFile(roots, path, expected)` mirrors the write's last check: the folder resolves inside a workspace
+  folder, the target is a regular file and not a symlink, the open handle is that file (device and inode), and it holds
+  `expected` byte for byte; then the folder is checked to still lead where it did, and only then is the file unlinked.
+  A missing file is `alreadyRemoved`, a success; other text is `changed`; a disk failure is `notRemoved` with its cause;
+  the boundary's refusals are as for the write. Each refusal leaves the file as it is. Residual race, accepted as for
+  the write: a write landing between the last read and the unlink is lost with the file.
+
+## Workspace boundary
+
+- The file tools (`read_file`, `list_files`, `search`, `write_file`, `edit_file`, and `load_skill`) act inside the open
+  workspace only. `run_command` is not confined: its `cwd` must be a workspace folder, but an approved command runs
+  with the user's rights and can read, change, or delete anything the user can, outside the workspace too; the
+  approval is the only guard. The one exception to the file tools' boundary is read-only access to the directories of
+  skills loaded in the current conversation that lie outside the workspace (ADR 0003):
+  - A skill is loaded when the conversation holds an `ok` `load_skill` step for its name, or a user entry whose
+    `skill` is `loaded` (a `/<name>` message); an `error` step, a step dropped by Stop, a malformed call, and a
+    `failed` user skill load nothing. Before each call the controller maps those names to folders through the current
+    send's discovery (`ToolContext.skillRoots`, beside `ToolContext.skills`, the send's skills), so a load earlier in
+    the turn counts at the next call, a reopened conversation keeps its loaded skills, and a skill gone since is no
+    longer readable. The read roots come from the whole record, so a skill loaded before a summary (`/compact`) stays
+    readable after it; `ToolContext.sentSkillRoots`, the same mapping over the entries the history sends
+    (`sentEntries`: from the last `done` summary on, and the turn's message an automatic summary quotes), decides `load_skill`'s "already loaded" (`docs/spec/skills.md`).
+  - `read_file`, `list_files`, and `search` also accept an absolute path inside a loaded skill's real folder, the path
+    its load result gives. The shared read boundary (`readWorkspaceEntry`, `locateWorkspacePath`) takes the folders
+    as read-only roots. An absolute path written inside one is read as written, never rerouted through a multi-root
+    folder name (a folder named `/private` included). For a folder outside the workspace, the path must resolve inside
+    the deepest loaded folder that holds it, symlinks resolved, and the open handle must match it by device and
+    inode, as for workspace reads. A symlink out of it, into another loaded folder (its outer one included) or the
+    workspace, is `outsideWorkspace`. The folder is matched by the real path discovery gave, never resolved again.
+    `search` with a `path` in such a folder prints absolute paths.
+  - Mentions never get the exception, and the write boundary never takes the read-only roots: a planned write into a
+    skill folder outside the workspace is refused `outsideWorkspace`. A workspace skill's folder is ordinary
+    workspace (maintainer decision): writable with approval, its symlinks may resolve anywhere in the workspace, and
+    `search` prints its paths relative to the workspace.
+
+## Approvals, modes, and "Undo changes"
+
+- Approvals (ADR 0002):
+  - Reads run without asking.
+  - A tool asks through its run context: `ToolContext.requestApproval(request)` settles with Accept, Reject (with the
+    reason typed, trimmed, left out when blank), or Cancel. While the request is open, the reply stays `streaming` and
+    `ChatState.approval` holds `{ id, kind, tool, summary }`; the chat renders the step row "waiting for your decision",
+    Accept (Run for a command), Reject, and a reason field from that state alone, in one block, and never moves the
+    focus when the request opens: from the message box, Shift+Tab reaches Reject, then Accept or Run, then the reason
+    field. The webview's `approve { id }` and
+    `reject { id, reason? }` are validated like the other messages, and a decision for a request no longer open is
+    ignored. One request at a time, since one call runs per reply.
+  - A write opens the native VS Code diff editor beside the chat, titled with the path: the planned `before` text on
+    the left (empty for a new file), the proposed text on the right, both from a content provider. Accept writes with
+    the atomic applier below, never through `WorkspaceEdit`; the diff tab closes on Accept, Reject, and Cancel. Closing
+    the tab by hand changes nothing: the request stays open, Accept and Reject still work, and the diff cannot be
+    reopened. A file
+    open in an editor with unsaved changes is refused before the request and again right before the write, with
+    auto-approve too, as an `error` result saying so; a file changed on disk since the plan is refused by the
+    applier's planned-text check.
+  - A rejection goes back to the model as an `error` tool result: "The user rejected this change." ("The user rejected
+    this command." for a command), then the reason on its own line when given. It is a tool step like any other and counts toward the step limit. The step records how it
+    was approved (`approval`: `accepted`, `rejected`, or `auto`), and the row says rejected or auto-approved.
+  - Stop, New chat, opening another conversation, deleting the one shown, and deactivation cancel the open request:
+    the diff tab closes, nothing is written, the reply ends `stopped`. An open request is never saved; a record saved
+    while one waits reloads `stopped` by the in-flight rule of `docs/spec/conversations.md`.
+  - `run_command` always waits for a click: it asks with a request of kind `command`, its summary the whole command,
+    which the step row shows whole, line breaks kept, with the `cwd` when given ("in <cwd>"), Run, and Reject. Nothing runs before Run, and one Run runs
+    the command once.
+  - `brokeCode.autoApproveWrites` (boolean, default false, `application` scope, read from `globalValue` like the
+    providers) accepts writes at once, without a diff, and is read at each write's request. The controller applies it
+    to requests of kind `write` only: nothing auto-approves commands.
+  - The mode selector shows and writes that setting (#79), and offers Plan (#80, ADR 0005, below). `ChatState.mode` is `ask` (user value false or absent) or
+    `autoEdit` (true), read from the user value by `ChatController.modeChanged`, which the host calls at activation
+    (the state says `ask` before) and on each change of the setting (the configuration listener), and after each pick. A pick posts `setMode
+    { mode }`, validated like the other messages (an unknown mode is dropped); `ChatController.setMode` ignores it while
+    a reply is in flight or an earlier pick's settings write is pending, writes nothing when the setting already holds that mode, and otherwise writes the user value
+    (`ConfigurationTarget.Global`) through the `writeAutoApproveWrites` port. The selector is controlled by the state,
+    so it follows the setting, not the click: a failed write is logged and shown as an error notification, and the
+    mode stays the one the setting holds. A user setting: Auto-edit in one window applies to every window. One pick
+    at a time: while its settings write is pending, `ChatState.modePending` is true, and the selector and Send are
+    disabled (Enter and the built-in `/new`, `/model`, and `/compact` too, through the composer's one "Send would act" check), as
+    while a reply is in flight; the controller ignores `setMode` meanwhile and returns a `send`'s text to the box (see
+    "Queued messages" in `docs/spec/chat-panel.md`), so no turn starts on a mode about to change. A Plan pick writes no setting and never pends. Navigation (New chat, open, delete) is unaffected.
+    The selector is disabled while a reply is in flight or a mode change is being written, like the pickers, and sits after the message box in the DOM, so
+    Shift+Tab from the message box still reaches an open request's controls first. The conversation record and the
+    eval bench know nothing of the mode; the system prompt knows only Plan.
+  - Plan (#80, ADR 0005): `ChatState.mode` is `plan` while the workspace memento key `brokeCode.plan` is `true`, a key
+    of its own, since `brokeCode.lastChoice` is rewritten whole and cleared without a provider. The controller reads it
+    at construction (restored at each window load, kept across provider changes) and Plan wins over the setting while
+    on: a change of the setting elsewhere leaves the selector on Plan. `setMode { mode: "plan" }` writes no setting;
+    it sets the key. Leaving Plan for Ask or Auto-edit writes the setting first, only when its value must change, and
+    clears the key only once that write succeeded: a failed write keeps Plan and is shown as for the other modes
+    (`failed`). A failed memento write is logged only, as for `brokeCode.lastChoice`: Plan applies for the session
+    and is lost at the next load. Plan is not part of a conversation: reopening one changes no mode. While leaving Plan
+    writes the setting, the mode change is pending as above, and no send or other pick is taken.
+  - "Undo changes" (#93, ADR 0002, 2026-11-12): neither the editor's Undo nor Local History sees an accepted write,
+    which goes to disk outside the editor, so the chat offers the way back. Each agent turn gets a `RecordedChanges`
+    (`ToolContext.changes`, set per call like `requestApproval`); the host's applier records into it. The controller
+    holds one turn (`heldTurn`): the latest turn of the conversation shown that wrote a file, the turn becoming held at
+    its first recorded write, in place of the one held so far; a turn that writes nothing (Plan, a rejection, reads
+    only) leaves the held one as it is. A write lands even after Stop (Stop does not wait for a running write; its
+    step is dropped) and is still held while its turn is the latest of the conversation shown (`lastTurn`); New chat,
+    opening another conversation, and deleting the one shown (`show`) drop the held turn, its outcome, and `lastTurn`,
+    so a write landing after that is not held. Memory only: the original texts are never saved, never in `ChatState`
+    (the whole state is posted at each delta), and lost at a window reload. Without the `undo` port (`UndoHost`: the
+    workspace roots and the write approval's `hasUnsavedChanges`), as in the eval bench, nothing is held.
+    `ChatState.undo` holds, derived at each emit: `reply`, the index in `entries` of the held turn's last reply (the
+    entry its turn ended on, summary or not, whatever its status), while it has files left and no reply is in flight;
+    `ranCommand`, the user ran one of its commands (Run clicked), which the panel says no undo reverts; `running`; and
+    `outcome`, `{ reply, files }`, each `UndoneFile` named as the file index writes it (`workspacePath` over the real
+    roots, else the model's spelling). The webview's `undoChanges` is validated like `newChat`; `undoChanges()` ignores
+    it while a reply is in flight, while an undo runs, or when no button shows. It clears the outcome, sets `running`,
+    and runs in the navigation queue, so New chat, open, and delete asked meanwhile wait for it; `RecordedChanges.restore`
+    then runs over the roots as they are, restored and removed files leave the held turn, skipped ones stay for the next
+    click, and once none is left the turn is no longer held and the button goes. While it runs, `mayStartTurn` refuses a
+    turn (a `send` goes back to the box, `/compact` and the queue wait) and the composer's "Send would act" check is
+    false. The outcome is cleared by the next send, the next undo, and a change of the conversation shown. An undo that
+    throws despite its contract (a bug) is logged with its stack and shown as an error block under the reply, its
+    message as detail (`outcome.error`), with the files restored or removed before it (those that left the set, as
+    restored, or removed when the writes created them); the files left stay held, so the button stays and retries
+    them, and Send is unlocked. Restore per file, the button for every end status, and skipped files retryable are
+    maintainer decisions (#69).
+  - Undone steps (#94): each write step is tied, when it is recorded, to the file its write recorded (`onRecord`
+    reports the `RecordedFile`; the turn keeps the steps by real path), never by resolving its `path` argument again;
+    a write recorded without a step (it landed after Stop) ties none. After the restore, every step of a file that left
+    the held turn (restored or removed) gets `undone: true`; a skipped file's steps stay unmarked until a later undo
+    puts it back. Only the held turn's steps are marked: an earlier turn's writes to the same file are not. An
+    `alreadyWritten` result records nothing and is never marked. The record is then saved, after the restore and
+    before the outcome shows, so the mark never claims a change is gone before the file is back; a crash between the
+    restore and the save leaves the steps unmarked (accepted: the held turn is memory only, so nothing retries it),
+    and marking again is harmless. The step row says "undone" before its status, its line count unchanged (the line
+    the model gets is not part of the step's text), also inside a folded turn, whose row counts are unchanged.
+
+## Commands
+
+- The system prompt's `run_command` rule, shown only when the tool is offered, also says that one command covers a
+  whole folder tree in one step where `list_files` takes one per folder: Qwen 3.8 on vLLM otherwise walked `logs/`
+  folder by folder until the step limit (#120).
+- `run_command(command, cwd?)` runs `<shell> -c <command>` in a hidden child process, no login shell, the shell being
+  `vscode.env.shell`, else `$SHELL`, else `/bin/sh`. `cwd` resolves like a read tool's path and must be an existing
+  folder inside the workspace; left out, the command runs in the first workspace folder. Without a workspace folder,
+  an empty command, or a refused `cwd`, the call is an `error` before any approval. The child is spawned `detached`, so
+  it leads a process group of its own, with stdin closed (`ignore`, so a read gets end of file at once) and the host's
+  environment.
+  - The result's first line is `exit code N`, `killed by <signal>`, or `stopped after N seconds`, then a `stdout:` and
+    a `stderr:` section (`stdout: (empty)` when nothing came), each cut to its first 2,000 lines and 1 MiB (cut
+    between UTF-8 characters) with the mention truncation notice. It is `ok` only on exit code 0; a non-zero code, a
+    signal, a timeout, a spawn failure, and a rejection are `error`. The step row shows the command, then the exit code
+    (or signal, or timeout) and the result's line count.
+  - `brokeCode.commandTimeoutSeconds` (integer, default 120, at least 1, `application` scope, read from `globalValue`
+    at each command; capped at the longest timer delay, about 24 days). At the timeout, or on Stop, New chat, the other
+    navigation, and deactivation during the run, the group gets SIGTERM (`process.kill(-pid)`), then SIGKILL two
+    seconds later unless the group is gone by then (checked every 20 ms). The result waits until the group is gone or
+    SIGKILL was sent, so it never claims a stop that has not happened, and then for the output pipes, at most half a
+    second more, since a process that left the group may hold them. A stop during the run ends the reply `stopped`.
+  - Once the shell exits, the output gets 200 ms to drain. A process still in the group then (a background job, its
+    output redirected or not) is stopped the same way, and the result ends with a line saying what is true when it
+    settles: "were stopped" (the group is gone), "did not stop on SIGTERM; they were sent SIGKILL after 2 seconds",
+    "were sent SIGKILL as the extension shut down" (deactivation, below), or "could not be stopped; they may still be
+    running" (the signals failed). A process that left the group (`setsid`, a
+    daemon) is not stopped, and the result stops waiting for the pipes it holds. A Stop after the shell exited keeps
+    its exit code. macOS answers EPERM for a group of zombies, so only a group a signal 0 reaches counts as alive.
+  - A signal that fails with ESRCH (the group is gone) or EPERM (zombies, or processes that changed user and could not
+    be stopped anyway) is ignored. Any other failure adds a line `Sending <signal> to the command's processes failed
+    (<code>).` to the result, whose status still follows the exit code. When SIGKILL itself fails, the result never
+    says the command stopped: a timeout's first line is `timed out after N seconds; its processes could not be stopped
+    and may still be running` (the step row then shows the generic error status), a Stop's is `run_command: Stop could
+    not end the command; its processes may still be running.`.
+  - Deactivation also calls `killRunningCommands` synchronously from `deactivate`: SIGKILL at once to every group still
+    running or in its grace, since the host may exit before a scheduled SIGKILL fires. Ownership is per run, not per
+    group id (`ownCommandGroup`): a run claims its group at spawn and releases its own claim, by identity, once the
+    group is gone, got SIGKILL, or the run settled, so a later run that gets the same id keeps its claim. Deactivation
+    releases every claim and tells each run, which cancels its pending SIGKILL and probes: once released, a run never
+    signals that id again, since the system may reuse it. A SIGKILL that fails there for another reason than ESRCH or
+    EPERM is logged and reaches that run's result as a failed-signal line, so the run never says it stopped; a run not
+    yet stopping ends as stopped, a timeout or a leftover cleanup keeps its reason. Accepted limit: a host that crashes never calls it, so a process that ignores SIGTERM can then
+    outlive it.
+
+## Replies, history, and the agent turn
+
+- Reasoning output (`<think>` tags, `reasoning`, or `reasoning_content`) shows collapsed in the chat. The parser
+  never looks for tool calls in it, and the conversation history sent back to the model drops it. A reply with no
+  reasoning yet whose content holds a bare `</think>` line (alone on its line, no `<think>` before it) reasoned as
+  content: a chat template opened `<think>` in the prompt, as Qwen 3.8 on vLLM without a reasoning parser does (#58).
+  Once that line streams in, the text before it moves to the reasoning and the answer starts after it (`lateReasoning`);
+  until then the reasoning shows as answer text. The commit message drops it the same way. Accepted cost: an answer
+  holding a bare `</think>` line loses the text before it.
+- Each request of an agent turn sends a `system` message first, then the history: each user entry's composed text,
+  each assistant answer verbatim with its call block (reasoning never), and each tool step as a `user` message
+  `<tool_result tool="<name>" status="ok|error">`, the text, then `</tool_result>`, never the OpenAI `tool` role
+  (ADR 0001). A malformed call's message goes back the same way with `status="error"`, with `tool` the tag name the block
+  opens with, a known tool or not, and `tool="unknown"` only when no tool name can be read, as for an empty reply. A
+  reply without text is left out of the history, unless a tool step follows it: an empty reply goes back as an
+  assistant message with `content: ""` before its step. The roles alternate, since Gemma's chat template requires it
+  (ADR 0001, 2026-11-12): in every history sent, a turn's request and the summary request alike, a `user` message that
+  would follow another `user` message (a tool result, a user message whose reply was left out, the summary's message,
+  `SUMMARY_REQUEST`) joins it after a blank line, its text unchanged and in order, so a message typed after a
+  `stepLimit` or `malformedCalls` halt, or after a reply that failed or stopped without text, goes in the same `user`
+  message as the one before it. A request with no such pair is byte-identical to one without the rule. An undone write step (#94) goes back with one more line after its text, inside the same wrapper: `The user undid
+  this change afterwards.`, so the model does not answer from a change that no longer stands. An undone step before the
+  summary the history starts at is no longer sent, so its own line never reaches the model: after the summary's text
+  comes, per such step in order, a blank line then one line each, `The user undid this change, which the summary above may still describe: <tool> <path>`, the path being
+  the step's `path` argument as the model wrote it (maintainer decision, 2026-11-12), before any text joined after the
+  summary; derived from the entries at each build, never stored, counted by the estimate, and in `/compact`'s request
+  too. A step still sent gets its own line only. `toHistory`
+  (`history.ts`) builds it, and leaves the oldest tool results out of a request that would fill the context (below). After a summary (`/compact`, below), the history starts at it.
+- While a reply streams, a `<tool_result` the model writes after a complete call, or the opening tag of another call (a
+  known tool or a wrapper, starting a line) after it (`replyCut`), cancels the request, and the reply ends `done` at the
+  end of that call (ADR 0001, 2026-11-10 and 2026-11-12): models forge results of calls that never ran, and Gemma on
+  vLLM once repeated one call for 24 minutes. An opening with no complete call before it stops nothing.
+- When a reply ends, its answer goes through the parser. Text and no call: the turn ends. A call: the answer is cut
+  at the end of the call block, so the chat and the history never hold the text after it, then the tool runs with the
+  turn's context (`ToolRunner.run(call, { signal, requestApproval })`, the abort signal and the approval request), a tool step entry records its name, arguments, status, text, and approval, and the loop requests again.
+  A malformed call or an empty reply: a step entry with the message (for an empty reply, "Your reply was empty. Call a
+  tool, or write your answer to the user."), and the loop requests again. In a Plan turn, a closed block of
+  `write_file`, `edit_file`, or `run_command` (`PLAN_BLOCKED_TOOLS`), which the parser reads as "not a known tool"
+  since those tools are not offered, is no malformed call: the answer is cut at the block's end as after a call, and an
+  `error` step named after the tool, with no arguments, says "<tool> is not available in Plan mode." Nothing is
+  planned, written, or run, and no approval opens (ADR 0005). Any other unknown tag stays malformed, and so does a
+  tool not offered outside Plan (`load_skill` without a listed skill). The reply stays `streaming` while its
+  call runs, and the step and the next reply are appended together, so `isReplying` holds across the whole turn.
+- An agent turn has a Stop button and stops after `brokeCode.maxToolSteps` tool steps (a user setting, `application`
+  scope, default 50, at least 1; calls, Plan's refused calls, and malformed calls alike) as `halted` with reason `stepLimit`; three malformed calls in a row (`MAX_MALFORMED_IN_A_ROW`) halt it with reason
+  `malformedCalls`, and a call that parses, or a call Plan refuses, resets that count. Known cost, accepted: a model
+  that insists on writing in Plan uses requests up to the step limit. Stop ends the turn at once, during a reply or a tool
+  run: the step in flight is dropped, nothing later runs, and the record is saved as it stands. A failed reply ends
+  the turn `failed`; so does an unexpected exception inside the turn (a bug), with an `internal` error giving its
+  message, logged with its stack, so the composer never stays locked. Truncate tool results longer than about 2,000 lines and say so in the result.
+
+## Context budget and summaries
+
+- Before each request of an agent turn, the first included, the controller estimates its size as the characters of the
+  system prompt and of each history message's content (as `toHistory` builds it, joins included, reasoning excluded) divided by 4,
+  rounded up. Above `floor(size * 7 / 8)` of the model's context size (`fillsContext`, never a copy of its arithmetic),
+  the history sent replaces the text of tool steps, oldest first over the whole conversation as sent (earlier turns
+  included), with one line inside the same `<tool_result>` wrapper, same `tool` and `status`, leaving any text joined
+  to that message whole:
+  `[result left out to save context: N lines]` (`1 line` for one), N being the step row's line count
+  (`resultLineCount`: a trailing line break dropped, then split; 0 for an empty text). It replaces the fewest steps
+  that make the estimate fit. Never replaced: the system prompt, user messages (a `/<name>` skill message included),
+  assistant answers, the last 3 tool steps sent (`KEPT_RECENT_STEPS`), whatever turn they belong to,
+  every `load_skill` step, whatever its status (a second load answers "already loaded" without the body), every undone
+  step (a left-out line would tell the model the change stands; the estimate and the usage display count its added
+  line), and a step whose replacement line is not shorter than its text; a malformed-call step follows the same rule as the others. The
+  choice is a pure function of the entries, the system prompt, and the context size, linear in the entries, since the
+  usage display runs it at each streamed delta. Only what is sent changes: the record and the chat keep every result
+  whole, and the loaded skills are still derived from the entries. When the estimate is still over with every eligible
+  result replaced, the history goes whole, no request is sent, and the reply that would have carried it ends `halted`
+  with reason `contextFull`, saved like the other halts; it is never a `ProviderError`, which means a request was sent.
+  The usage display (`ChatState.context`) counts the request as it would be sent, and its optional `leftOut` counts the
+  results left out; while it is set, the panel shows "N older tool results are left out of the request to save
+  context." in the place and look of the unknown-size notice, derived from the state, never saved or sent. Known cost,
+  accepted: once at the threshold, most requests replace one more old step, which changes the prompt's prefix and
+  defeats a provider's prompt cache. A turn reads the step limit, the context sizes, `brokeCode.autoCompact`, and Plan once, when it starts; a
+  settings change reaches the usage display at once (`limitsChanged`) and the turns from the next send. A mode change
+  cannot land during a turn (the selector is disabled and `setMode` ignored while a reply is in flight), and the
+  usage display follows it at the next send, which composes the prompt of the new mode. The display counts the
+  system prompt the last send composed, in any conversation shown, since instruction files and skills are the
+  workspace's; before the first send of the session, the one without instruction files or skills. It updates once a send has composed it, before the
+  request goes.
+  Leaving results out is a deterministic cut, with no model call; a summary is asked for with `/compact` (below), or,
+  with `brokeCode.autoCompact` on, by the turn itself (below).
+- `/compact` (#90) asks the model for a summary of the conversation shown. `ChatController.compact` sends one request,
+  registered as a reply like `send`'s, so Stop, saving, navigation, and "a reply is in flight" (Send queues, the
+  pickers and the mode selector are disabled) treat it as any reply. It returns `ignored` when Send would not act,
+  and `nothingToSummarize`, which the host shows as an information notification ("Nothing to summarize: the
+  conversation is empty or was just summarized."), when the conversation has no entries or its last entry is already
+  the summary the history starts at; nothing is sent then. The request: a system prompt of its own
+  (`composeSummaryPrompt`: a role sentence saying the model summarizes a conversation between a user and a coding
+  agent, then the instruction files read now; no call format, rules, tools, or skills), then `summaryHistory`: the
+  history as sent (from the last summary), with every tool result the leave-out rule may replace replaced, the last 3
+  included (maintainer decision, 2026-11-12; cost: the summary sees the calls and answers, not the files read), then
+  `SUMMARY_REQUEST`, a user message asking for the goal, the decisions, the files read or changed with their paths, and
+  what remains to do, joined after a blank line to the history's last message when that one is a user message (a
+  tool result, or a user message whose reply was left out), by the history's one join rule. When its estimate still fills the
+  context (`fillsContext`), no request is sent and the entry ends `halted` with `contextFull`, its wording "Not
+  summarized: …". Known cost: a prefix of its own defeats a provider's prompt cache for that request. The reply is an
+  assistant entry with `summary: true`, streamed under a separator ("Summarizing the conversation…", then
+  "Conversation summarized", or "Conversation not summarized" when it ended otherwise than `done` with text); it is
+  never parsed for a call (a call-shaped block runs nothing), and reasoning is handled as for any reply. As after a
+  send, a summary that ends `done` sends the first queued message.
+- From then on the history sent starts at the last summary entry that ended `done` with text (`historyStart`): the
+  system prompt, one user message `Summary of the conversation so far:`, a blank line, and the summary (then the lines of
+  the undone steps it replaces, see the history above), then the entries after it; when the next entry sent is a user message, its composed text joins the summary's message after a
+  blank line, by the history's one join rule. A summary that failed, was stopped, halted, or came
+  back empty (only whitespace) changes nothing and is never sent; its error shows as for any reply, and a `done` empty
+  one says "The model's reply held no summary.". The leave-out rule, its last 3 steps, and the usage display count
+  only what is sent, so after a summary the header's usage drops. Entries before it stay in the record and the chat,
+  dimmed as one group under the line "Earlier messages are no longer sent to the model: the summary below replaces
+  them.", derived from the entries, never stored; a high-contrast theme drops the dimming, since the line says it. The record keeps version 2: `summary` is an optional field of the
+  assistant entry (ADR 0003's rule); an older build shows the summary as an ordinary answer and resends the whole
+  history, which is harmless. The `contextFull` halt of an agent turn names `/compact` beside New chat.
+- Automatic compaction (#91): `brokeCode.autoCompact` (boolean, default false, `application` scope, read from
+  `globalValue` like the providers through `userLimits`, once when a turn starts; `TurnLimits.autoCompact`, false when
+  the source passes none, as the eval bench does, so the bench never compacts). Off, or set only in a workspace
+  `settings.json`, nothing changes. On: before a request of an agent turn, when the estimate still fills the context
+  after the leave-out rule, the controller builds `/compact`'s summary request (`summaryMessages`: the summary system
+  prompt with the send's instruction files, then `summaryHistory`); when that request fills the context too, nothing is
+  sent and the waiting reply ends `halted` (`contextFull`), with no summary entry. Otherwise the summary entry
+  (`summary: true`) takes the waiting reply's place and streams in the same turn: the turn stays in flight (Stop
+  shows, `isReplying` holds, Send queues as during any reply), it is no tool step and counts nothing toward the step limit. Ended `done` with text, it
+  is followed at once, in the same update, by a new waiting reply, and the loop builds the request again. At most one
+  automatic summary per request: still over the threshold, the reply ends `halted` (`contextFull`), as before. A
+  summary that fails ends the turn `failed` with the provider's error on the summary entry; stopped, the turn ends
+  `stopped` with the summary as its last entry, and the history is unchanged; `done` but empty, the reply after it
+  ends `halted` (`contextFull`). The history sent from an automatic summary: the system prompt, then one user message,
+  `Summary of the conversation so far:`, a blank line, the summary (and the undone steps' lines), a blank line, and the turn's user message as
+  composed when it was sent (mentions and a `/<name>` skill text included), word for word, so the model keeps the
+  request it is working on (scouting decision, 2026-11-12); then the entries after the summary. A later request of the
+  same turn may compact again, quoting the same message. No record field tells an automatic summary from a manual
+  one: it is derived (`isAutomaticSummary`): the turn's next reply follows an automatic summary, while after
+  `/compact` only a user message or another summary can, since a reply only ever follows a user message or a tool
+  step; the quoted message is the nearest user message before it, since `/compact` never runs inside a turn. A failed
+  or stopped automatic summary has nothing after it and reads as a manual one, which changes nothing, since neither is
+  sent. Its separator says "Conversation summarized automatically" once sent ("Summarizing the conversation…" and
+  "Conversation not summarized" as for `/compact`). The turn's message the request quotes sits in the group before
+  the summary but is not dimmed: it shows at full opacity with the dim line "Still sent with the summary" (maintainer
+  decision, 2026-11-12), derived from the entries (`sentEntries`), never stored.
+
+## System prompt
+
+- After the tools, the system prompt has a "Skills" section, one `- <name>: <description>` line per skill listed to
+  the model, telling it to call `load_skill` first; without such a skill the section is absent, and so are the
+  `load_skill` tool and its rule (reading a loaded skill's files by the absolute path the result gives, read-only
+  outside the workspace): the
+  controller offers the runner's tools less `load_skill` (`offeredTools`), so its call is then malformed.
+- In a Plan turn, `offeredTools` also leaves out `write_file`, `edit_file`, and `run_command`, so their rules drop with
+  them, and `composeSystemPrompt(tools, instructions, skills, mode)` replaces the role sentence with one saying the
+  agent reads files, followed by a "Plan mode" paragraph: read what it needs, answer with a plan of the changes, file
+  by file, in order, change no file and run no command. Without a mode, or in Ask or Auto-edit, the prompt is
+  byte-identical to the one before Plan; the eval bench passes no mode. A `/<name>` message loads its skill in Plan
+  as in any mode; a skill that asks to write meets the refused-call step.
+- The system prompt includes `~/.agents/AGENTS.md`, then each workspace folder's `AGENTS.md` (labelled with its
+  folder name in a multi-root workspace), read at each send under the mention caps (1 MiB, 2,000 lines). A missing
+  file is left out; an unreadable one is logged and left out. The home file follows symlinks; a workspace file is
+  held to the workspace boundary. `CLAUDE.md` is not read.

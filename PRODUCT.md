@@ -71,7 +71,7 @@ supports them (ADR 0001), so one contract covers the internal service and Ollama
 ## Evidence on Hand
 
 - The Ollama eval bench (`bun run eval`): seven scenarios, 10 runs each, on `qwen3.8:27b` and
-  `gemma4:26b-a4b-it-qat`; 140 of 140 runs passed on edc18b5. Results per commit are in `AGENTS.md`, "Verification".
+  `gemma4:26b-a4b-it-qat`; 140 of 140 runs passed on edc18b5. Results per commit are in `docs/eval.md`.
 - The extension is published on Open VSX and the Visual Studio Marketplace.
 - Nothing else exists: no testimonial, user count, benchmark against other extensions, or customer name. Future
   work must not invent one.
