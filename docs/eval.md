@@ -63,7 +63,11 @@ This file describes `bun run eval`: what it runs, its sandbox, its scenarios, it
     are unchanged (maintainer decision, 2026-11-12). On 2bda260, before that rule, the full run passed 158 of 160 in
     54 min 07 s: every other scenario 10/10 on both models, `range` 10/10 on `qwen3.8:27b` and 8/10 on `gemma4`, whose
     two misses ran `tail -n 1 dispatch.log` with `run_command` and answered without reading the file, so they measured
-    nothing of the note. The lines are plain words
+    nothing of the note. On ff1d075, with the rule, `range` alone took 16 min 12 s, 10/10 on both models: `qwen3.8:27b`
+    read the whole file, then read on with a `start_line` from 2001 to 2400 in every run; `gemma4` tried a command in
+    4 runs, got the rejection, and read on in all 10, once after a first read with `end_line` 1 whose header gave the
+    line count. The other seven scenarios were not rerun: the rule changes only `range`, and the system prompt is
+    the one of the 2bda260 run. The lines are plain words
     because a first fixture of numbered random codes (`0001 98UJ-YCK7`) cost about 25,900 tokens for the first read on
     `gemma4`, close to the 32,768-token context with the second, and its prefill took `qwen3.8:27b` over the
     300-second reply timeout on its first run (twice in 2 tries).
