@@ -308,11 +308,12 @@ your **user** settings (off by default, since it adds a request you did not ask 
 Then, when the next request of a turn would not fit even with older tool results left out, broke-code asks the model
 for the same summary, shown under a **Conversation summarized automatically** separator, and the turn goes on. Its
 next request sends the summary followed by your message of that turn, word for word, so the model still has your
-request in front of it. The summary is not a tool step and does not count toward the step limit; **Stop** ends it like
-any reply. A turn summarizes at most once per request: when the request still does not fit, when the summary request
-itself does not fit, or when the summary comes back empty, the turn stops as it would without the setting; a failed
-summary ends the turn with its error. A turn reads the setting when it starts, and a workspace `settings.json` cannot
-turn it on.
+request in front of it; that message stays undimmed above the summary, marked **Still sent with the summary**. The
+summary is not a tool step and does not count toward the step limit; **Stop** ends it like any reply, and the messages
+you send while it runs are queued, as during any reply. A turn summarizes at most once per request: when the request
+still does not fit, when the summary request itself does not fit, or when the summary comes back empty, the turn stops
+as it would without the setting; a failed summary ends the turn with its error. A turn reads the setting when it
+starts, and a workspace `settings.json` cannot turn it on.
 
 ## Skills
 

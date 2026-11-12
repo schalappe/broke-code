@@ -500,7 +500,7 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   have posted it on a stale snapshot, such as the `done` of a turn whose end has already started the next queued
   message. A `send` that cannot start a turn otherwise (a mode write pending, no provider or model) goes back to the
   box. `send` runs the turn (`runTurn`, which returns its last status) and, only once it has fully settled
-  (after the `finally` that clears `this.reply`, never inside `settle`, since navigation awaits `reply.settled`) and
+  (after `runReply`'s `finally`, which clears `this.reply` for a turn and a summary alike, never inside `settle`, since navigation awaits `reply.settled`) and
   only when it ended `done`, sends the first queued message (`sendNextQueued`): it peeks, checks `mayStartTurn`
   (provider and model chosen, no reply in flight, no mode write pending; the one check `send` shares), then takes it
   off the queue and calls `send` in the same step, so it is never shown in both places, and the message goes as if
@@ -581,7 +581,7 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   one says "The model's reply held no summary.". The leave-out rule, its last 3 steps, and the usage display count
   only what is sent, so after a summary the header's usage drops. Entries before it stay in the record and the chat,
   dimmed as one group under the line "Earlier messages are no longer sent to the model: the summary below replaces
-  them.", derived from the entries, never stored. The record keeps version 2: `summary` is an optional field of the
+  them.", derived from the entries, never stored; a high-contrast theme drops the dimming, since the line says it. The record keeps version 2: `summary` is an optional field of the
   assistant entry (ADR 0003's rule); an older build shows the summary as an ordinary answer and resends the whole
   history, which is harmless. The `contextFull` halt of an agent turn names `/compact` beside New chat.
 - Automatic compaction (#91): `brokeCode.autoCompact` (boolean, default false, `application` scope, read from
@@ -592,7 +592,7 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   prompt with the send's instruction files, then `summaryHistory`); when that request fills the context too, nothing is
   sent and the waiting reply ends `halted` (`contextFull`), with no summary entry. Otherwise the summary entry
   (`summary: true`) takes the waiting reply's place and streams in the same turn: the turn stays in flight (Stop
-  shows, `isReplying` holds), it is no tool step and counts nothing toward the step limit. Ended `done` with text, it
+  shows, `isReplying` holds, Send queues as during any reply), it is no tool step and counts nothing toward the step limit. Ended `done` with text, it
   is followed at once, in the same update, by a new waiting reply, and the loop builds the request again. At most one
   automatic summary per request: still over the threshold, the reply ends `halted` (`contextFull`), as before. A
   summary that fails ends the turn `failed` with the provider's error on the summary entry; stopped, the turn ends
@@ -607,8 +607,9 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   step; the quoted message is the nearest user message before it, since `/compact` never runs inside a turn. A failed
   or stopped automatic summary has nothing after it and reads as a manual one, which changes nothing, since neither is
   sent. Its separator says "Conversation summarized automatically" once sent ("Summarizing the conversation…" and
-  "Conversation not summarized" as for `/compact`). Known limit: the turn's message sits in the dimmed group before
-  the summary, although the request quotes it.
+  "Conversation not summarized" as for `/compact`). The turn's message the request quotes sits in the group before
+  the summary but is not dimmed: it shows at full opacity with the dim line "Still sent with the summary" (maintainer
+  decision, 2026-11-12), derived from the entries (`sentEntries`), never stored.
 - After the tools, the system prompt has a "Skills" section, one `- <name>: <description>` line per skill listed to
   the model, telling it to call `load_skill` first; without such a skill the section is absent, and so are the
   `load_skill` tool and its rule (reading a loaded skill's files by the absolute path the result gives, read-only

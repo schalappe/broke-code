@@ -79,6 +79,7 @@ It must print nothing.
 | `--bc-rule` | 16% of the foreground | Hairlines. |
 | `--bc-fill` | 6% of the foreground | A surface a shade off the panel: the user's message, a code block, the decision block. |
 | `--bc-fill-strong` | 11% of the foreground | One step stronger: inline code, chips, a hovered or pressed secondary button. |
+| `--bc-unsent-opacity` | 0.6 (1 in high contrast) | The entries no longer sent to the model after a summary. |
 
 ### Role tokens
 
@@ -129,6 +130,8 @@ high-contrast theme defines `--vscode-contrastBorder` and `--vscode-contrastActi
   button, the decision block, a rule) becomes the contrast border in high contrast.
 - In high contrast an error and a warning block share the same border and no fill, so their text takes the status
   color (`--bc-error-text`, `--bc-warning-text`); elsewhere the fill says it and the text stays the foreground.
+- In high contrast the entries no longer sent after a summary are not dimmed (`--bc-unsent-opacity` is 1): faded text
+  would fall under the theme's contrast, and the dim line above them says it in words.
 
 Two controls are buttons in the markup and not to the eye, so they get no box, in high contrast either (maintainer
 decision): a link button (`button.link`), which is underlined at rest in every theme, and a History row's title
@@ -258,8 +261,11 @@ would not act. Above the rows, a notice line says "The queue is paused." when no
   "Conversation not summarized" when it failed, stopped, halted, or came back empty. A summary is never folded, and the
   turn before it folds by the usual rule.
 - No longer sent: the entries before the summary the history starts at sit in one group (`.unsent`), each at 60%
-  opacity, under one small dim line that says so in words ("Earlier messages are no longer sent to the model: the
-  summary below replaces them."), so the state never rests on the dimming alone.
+  opacity (`--bc-unsent-opacity`), under one small dim line that says so in words ("Earlier messages are no longer
+  sent to the model: the summary below replaces them."), so the state never rests on the dimming alone. A
+  high-contrast theme sets the token to 1: faded text would fall under the theme's contrast, and the line already says
+  it. After an automatic summary, the turn's message its request quotes stays in the group at full opacity
+  (`.still-sent`), followed by its own small dim line, "Still sent with the summary".
 
 ### The decision block
 
@@ -292,7 +298,7 @@ Each kind of state has one look, distinct from the others at a glance:
 | Waiting for a decision | The decision block. |
 | Turn ending (Stopped, halted) | A short rule, then small dim text. |
 | Folded turn (an ended turn of two steps or more) | One small dim row with a chevron, "N steps", then the failed and rejected counts in words. |
-| Summarized (a summary, and the entries it replaces) | A separator of dim words between two rules above the summary; the entries before it dimmed as a group under one dim line saying they are no longer sent. |
+| Summarized (a summary, and the entries it replaces) | A separator of dim words between two rules above the summary; the entries before it dimmed as a group under one dim line saying they are no longer sent (not dimmed in high contrast); the turn's message an automatic summary quotes undimmed, with a dim line saying it is still sent. |
 
 ### Motion
 
