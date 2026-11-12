@@ -2,7 +2,16 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BENCH_MODELS, dumpLine, modelsProblem, OLLAMA_URL, parseBenchArgs, trimIncompleteLine } from "./bench";
+import {
+  BENCH_MODELS,
+  describeSandboxFailure,
+  dumpLine,
+  modelsProblem,
+  OLLAMA_URL,
+  parseBenchArgs,
+  sandboxProblem,
+  trimIncompleteLine,
+} from "./bench";
 import { CREATE_SCENARIO, SCENARIOS } from "./scenarios";
 
 describe("parseBenchArgs", () => {
@@ -85,6 +94,24 @@ describe("modelsProblem", () => {
 
   test("finds no problem when Ollama lists every requested model", () => {
     expect(modelsProblem({ ok: true, models: ["b", "a"] }, ["a", "b"], url)).toBeUndefined();
+  });
+});
+
+describe("sandboxProblem", () => {
+  test("finds no problem where sandbox-exec applies the bench's profile", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "broke-code-sandbox-"));
+    try {
+      expect(await sandboxProblem(dir)).toBeUndefined();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("names sandbox-exec, says no run started, and keeps the probe's result as the cause", () => {
+    const result = "exit code 71\nstdout: (empty)\nstderr:\nsandbox-exec: sandbox_apply: Operation not permitted";
+    expect(describeSandboxFailure(result)).toBe(
+      `Bench commands run under /usr/bin/sandbox-exec, which could not run one here, so no run started:\n${result}`,
+    );
   });
 });
 

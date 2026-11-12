@@ -3,18 +3,20 @@
  * `bun run eval`: plays every scenario, or those `--scenario` names, `--runs` times on each model against the local
  * Ollama, or the OpenAI-compatible server `--base-url` names (its key from `BENCH_API_KEY`, never a flag, so it stays
  * out of the shell history), all runs of one model before the next so each model loads once, then prints the report
- * and exits 1 when a model is under the bar. A model the server does not list, or a server unreachable, exits 1 before
- * any run. Runs locally on demand, never in CI.
+ * and exits 1 when a model is under the bar. A model the server does not list, a server unreachable, or a macOS sandbox
+ * that cannot be applied to the models' commands (`sandboxProblem`) exits 1 before any run. Runs locally on demand,
+ * never in CI.
  */
 
 import { rmSync } from "node:fs";
-import { appendFile, mkdtemp, readFile, rm, truncate } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { appendFile, mkdtemp, readFile, realpath, rm, truncate } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { listModels, type ModelListing } from "../src/core/client";
+import { runCommand } from "../src/core/commands";
 import { formatDuration, formatReport, type RunResult } from "./report";
-import { playScenario, type RunOutcome } from "./run";
+import { benchCommandEnv, playScenario, type RunOutcome, SANDBOX_EXEC } from "./run";
 import { describeError, judge, SCENARIOS, type Scenario, type Verdict, workspaceChanges } from "./scenarios";
 
 export const BENCH_MODELS = ["qwen3.8:27b", "gemma4:26b-a4b-it-qat"];
@@ -83,6 +85,28 @@ export function modelsProblem(listing: ModelListing, models: readonly string[], 
 }
 
 /**
+ * Why the bench cannot run its commands in the sandbox, or `undefined` when it can: runs `/usr/bin/true` in `folder`,
+ * any existing folder, the way a run runs a command. `sandbox-exec` missing, or unable to apply the profile (it exits
+ * 71, `sandbox_apply: Operation not permitted`, when the bench itself runs inside a sandbox), is a problem: the bench
+ * never runs a command outside the sandbox.
+ */
+export async function sandboxProblem(folder: string): Promise<string | undefined> {
+  const runFolder = await realpath(folder);
+  const paths = { runFolder, home: runFolder, tmp: runFolder, userHome: await realpath(homedir()) };
+  const probe = await runCommand(
+    { command: "/usr/bin/true", cwd: runFolder },
+    { signal: new AbortController().signal },
+    benchCommandEnv(paths, process.env),
+  );
+  return probe.status === "ok" ? undefined : describeSandboxFailure(probe.text);
+}
+
+/** The message the bench exits with when its sandbox probe gave `result`, the probe command's result text. */
+export function describeSandboxFailure(result: string): string {
+  return `Bench commands run under ${SANDBOX_EXEC}, which could not run one here, so no run started:\n${result}`;
+}
+
+/**
  * Cuts the dump file at `path` after its last newline, so the next append starts a line of its own: an interrupted
  * append (Ctrl-C exits at once) can leave a JSON fragment that the next run's first record would otherwise join.
  * Returns how many bytes it dropped, 0 when the file is missing, empty, or ends with a newline. Safe to run twice.
@@ -132,6 +156,13 @@ export function dumpLine(run: {
 async function main(): Promise<number> {
   const { models, scenarios, runs, dump, baseUrl } = parseBenchArgs(process.argv.slice(2));
   const apiKey = process.env.BENCH_API_KEY || undefined;
+
+  // [!]: Fail closed: a model's command never runs outside the sandbox, so no run starts without it.
+  const sandbox = await sandboxProblem(tmpdir());
+  if (sandbox) {
+    console.error(sandbox);
+    return 1;
+  }
 
   const listing = await listModels({ provider: { name: "bench", baseUrl }, apiKey });
   const problem = modelsProblem(listing, models, baseUrl);
