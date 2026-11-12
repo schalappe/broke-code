@@ -11,6 +11,12 @@ import type { ChatEntry } from "./protocol";
 /** Tool steps at the end of the conversation whose results always go whole, whatever turn they belong to. */
 export const KEPT_RECENT_STEPS = 3;
 
+/**
+ * The block the count of left-out tool results is rounded up to: the count changes about once every this many new
+ * steps, so the requests in between only add to the prompt of the one before and the provider's prompt cache holds.
+ */
+export const LEFT_OUT_BLOCK = 4;
+
 /** What a request is measured against: the system prompt it is sent with and the model's context size in tokens. */
 export type HistoryBudget = { system: string; contextSize: number };
 
@@ -93,9 +99,10 @@ function isSentSummary(entry: ChatEntry): boolean {
  * its text unchanged. `summaryHistory` joins `SUMMARY_REQUEST` the same way.
  *
  * When `budget.system` plus that history fills the context (`fillsContext`), the text of the oldest tool steps is
- * replaced, one step at a time, by `[result left out to save context: N lines]`, inside the step's `<tool_result>`
- * wrapper only, so a user message joined to it stays whole, until the request fits. The estimate counts the request as
- * sent, joins included. Never replaced: the last `KEPT_RECENT_STEPS` steps sent, every `load_skill` step (a second
+ * replaced by `[result left out to save context: N lines]`, inside the step's `<tool_result>` wrapper only, so a user
+ * message joined to it stays whole: the fewest steps that make the request fit, rounded up to a multiple of
+ * `LEFT_OUT_BLOCK` and capped at the steps that may be replaced. The estimate counts the request as sent, joins
+ * included. Never replaced: the last `KEPT_RECENT_STEPS` steps sent, every `load_skill` step (a second
  * load answers "already loaded" without the body, so the model could not get it back), every undone step, and a result
  * no longer than its replacement line. When the request cannot fit even then, the history goes whole and `leftOut` is
  * 0: nothing is sent, so nothing is left out. Pure and linear in the entries, since the usage display runs it at each
@@ -120,9 +127,10 @@ export function toHistory(
     characters -= parts[part]!.length - content.length;
     parts[part] = content;
     leftOut++;
-    if (fits()) return { messages: joined(messages), leftOut };
+    if (leftOut % LEFT_OUT_BLOCK === 0 && fits()) return { messages: joined(messages), leftOut };
   }
-  return { messages: whole, leftOut: 0 };
+  // [>]: The block is capped at the eligible results: a replacement is shorter than its result, so more out still fits.
+  return fits() ? { messages: joined(messages), leftOut } : { messages: whole, leftOut: 0 };
 }
 
 /**
