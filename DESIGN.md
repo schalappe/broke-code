@@ -252,6 +252,13 @@ would not act. Above the rows, a notice line says "The queue is paused." when no
   between the user's message and the final reply: "3 steps, 1 failed, 1 rejected", the counts in words, never in color
   alone. Closed when the turn ends; opened, the entries show exactly as they rendered before. Its rules use the child
   combinator (`.turn-fold > summary`), so the reasoning and step rows inside keep their own chevrons.
+- Summary (`/compact`): its reply sits under a separator (`.summary-separator`), small dim words between two 1px
+  rules in `--bc-line` that run across the conversation: "Summarizing the conversation…" while it streams, then
+  "Conversation summarized", or "Conversation not summarized" when it failed, stopped, halted, or came back empty. A
+  summary is never folded, and the turn before it folds by the usual rule.
+- No longer sent: the entries before the summary the history starts at sit in one group (`.unsent`), each at 60%
+  opacity, under one small dim line that says so in words ("Earlier messages are no longer sent to the model: the
+  summary below replaces them."), so the state never rests on the dimming alone.
 
 ### The decision block
 
@@ -284,6 +291,7 @@ Each kind of state has one look, distinct from the others at a glance:
 | Waiting for a decision | The decision block. |
 | Turn ending (Stopped, halted) | A short rule, then small dim text. |
 | Folded turn (an ended turn of two steps or more) | One small dim row with a chevron, "N steps", then the failed and rejected counts in words. |
+| Summarized (a summary, and the entries it replaces) | A separator of dim words between two rules above the summary; the entries before it dimmed as a group under one dim line saying they are no longer sent. |
 
 ### Motion
 

@@ -100,7 +100,9 @@ _Avoid_: plugin, prompt template, custom command
 
 **Loaded skill**:
 A skill the model or the user loaded in this conversation, the model with `load_skill`, the user with `/<name>`: the
-conversation holds its instructions, and the read tools may read its folder until the conversation ends. A folder outside the workspace stays read-only to the file tools (an
+conversation holds its instructions, and the read tools may read its folder until the conversation ends. After a
+summary, a skill loaded before it keeps its folder readable, but its instructions are no longer sent, so the model's
+next `load_skill` of it returns them again. A folder outside the workspace stays read-only to the file tools (an
 approved command is held to no folder); a workspace skill's folder follows the workspace rules.
 _Avoid_: active skill, enabled skill
 
@@ -116,6 +118,12 @@ _Avoid_: project skill, local skill
 **Slash command**:
 A word starting with `/` typed in the chat box: either a built-in action or the name of a skill to load.
 _Avoid_: command, shortcut
+
+**Summary**:
+A reply the user asks for with `/compact`, in which the model summarizes the conversation so far. Once it ends with
+text, every later request sends the summary in place of everything before it; the earlier entries stay in the chat and
+the saved conversation, marked as no longer sent. A summary that fails, is stopped, or comes back empty changes nothing.
+_Avoid_: compaction (for the reply itself), recap, condensed history
 
 ## Source control
 

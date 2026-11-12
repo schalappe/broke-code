@@ -19,8 +19,9 @@ mode, Plan, kept per workspace, offers the read tools only, so the model answers
 or run (ADR 0005). Each send discovers the
 skills and lists them to the model, which loads one with `load_skill` and may then read its folder (ADR 0003). `bun run eval` measures that loop on local Ollama models, applying each change and running each
 command at once. A message sent while a turn runs is queued under the message box and sent as if typed when a turn
-ends `done`, one turn each (at most 10). Typing `/` at the start of a message lists `/new`, `/model`, and the skills; the panel runs `/new` and
-`/model` itself, and a message `/<name> args` loads that skill in the controller, with its arguments; any other `/word`
+ends `done`, one turn each (at most 10). Typing `/` at the start of a message lists `/new`, `/model`, `/compact`, and the skills; the panel runs `/new`,
+`/model`, and `/compact` itself (`/compact` asks the model for a summary that later requests send in place of
+everything before it), and a message `/<name> args` loads that skill in the controller, with its arguments; any other `/word`
 goes to the model as typed. Outside the chat, the command "broke-code: Generate commit message", a button in the
 Source Control title of a git repository, sends that repository's staged diff to the provider and model selected in the
 chat and writes the reply to the commit input box (ADR 0004). Each final code block of an answer has Copy and Insert at
@@ -86,9 +87,12 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   filtering, the index exclusions; the `/` token at the start of the message, `BUILT_IN_COMMANDS`, `builtInCommand`, the built-in
   command a message runs, which the composer runs and the controller never queues, the slash command filter), the menu's file index (`fileIndex.ts`: one scan shared until a file
   changes, behind a scan port), the request history (`history.ts`: `toHistory`, the history a request sends, the
-  oldest tool results left out when it would fill the context, and `resultLineCount`, the step row's line count), the body tool call parser (`toolCalls.ts`: `ToolSpec`, the first call-shaped block,
+  oldest tool results left out when it would fill the context; `historyStart`, the last `done` summary it starts at,
+  which the webview reads for the "no longer sent" mark; `summaryHistory` and `SUMMARY_REQUEST`, the summary request's
+  history; and `resultLineCount`, the step row's line count), the body tool call parser (`toolCalls.ts`: `ToolSpec`, the first call-shaped block,
   malformed-call messages), the system prompt composer (`systemPrompt.ts`: role, the Plan paragraph, call format, rules, tools,
-  skills, instruction files; `offeredTools`, the tools a send offers, and `PLAN_BLOCKED_TOOLS`), the turn limits (`limits.ts`: `brokeCode.maxToolSteps` and `brokeCode.contextSizes` parsing,
+  skills, instruction files; `composeSummaryPrompt`, the summary request's own prompt; `offeredTools`, the tools a send
+  offers, and `PLAN_BLOCKED_TOOLS`), the turn limits (`limits.ts`: `brokeCode.maxToolSteps` and `brokeCode.contextSizes` parsing,
   the token estimate, the context-full threshold, the typed size check, and `brokeCode.commandTimeoutSeconds` parsing),
   the command tool (`commands.ts`: `RUN_COMMAND_TOOL`, `runCommandTool` checks the call and the folder and asks the
   approval, `runCommand` runs an approved command in its own process group with an injected shell and timeout, and
@@ -140,7 +144,7 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   caret, and picked paths). The queued messages render under the message box (`QueuedMessages`).
   `Root.tsx` is the panel's root: it posts `ready`, renders each state, and queues the `insertDraft` drafts for the
   message box; `main.tsx` mounts it. `turns.ts` groups the entries for rendering without React (`foldTurns`: each entry once,
-  an ended turn's fold and its step counts), and `text.ts` words the fold's row (`describeFold`).
+  an ended turn's fold and its step counts, a summary a boundary of its own), and `text.ts` words the fold's row (`describeFold`).
 - `src/l10n.test.ts`: checks that every `l10n.t` message has a French translation and that the
   `package.nls*.json` files match.
 - `l10n/bundle.l10n.fr.json`, `package.nls.json`, `package.nls.fr.json`: French strings for the host and
@@ -299,7 +303,9 @@ on an error or warning puts a request to fix it there, with its file as a mentio
     `failed` user skill load nothing. Before each call the controller maps those names to folders through the current
     send's discovery (`ToolContext.skillRoots`, beside `ToolContext.skills`, the send's skills), so a load earlier in
     the turn counts at the next call, a reopened conversation keeps its loaded skills, and a skill gone since is no
-    longer readable.
+    longer readable. The read roots come from the whole record, so a skill loaded before a summary (`/compact`) stays
+    readable after it; `ToolContext.sentSkillRoots`, the same mapping over the entries from the last `done` summary
+    on, decides `load_skill`'s "already loaded" (below).
   - `read_file`, `list_files`, and `search` also accept an absolute path inside a loaded skill's real folder, the path
     its load result gives. The shared read boundary (`readWorkspaceEntry`, `locateWorkspacePath`) takes the folders
     as read-only roots. An absolute path written inside one is read as written, never rerouted through a multi-root
@@ -351,7 +357,7 @@ on an error or warning puts a request to fix it there, with its file as a mentio
     so it follows the setting, not the click: a failed write is logged and shown as an error notification, and the
     mode stays the one the setting holds. A user setting: Auto-edit in one window applies to every window. One pick
     at a time: while its settings write is pending, `ChatState.modePending` is true, and the selector and Send are
-    disabled (Enter and the built-in `/new` and `/model` too, through the composer's one "Send would act" check), as
+    disabled (Enter and the built-in `/new`, `/model`, and `/compact` too, through the composer's one "Send would act" check), as
     while a reply is in flight; the controller ignores `setMode` meanwhile and returns a `send`'s text to the box (see
     "Queued messages"), so no turn starts on a mode about to change. A Plan pick writes no setting and never pends. Navigation (New chat, open, delete) is unaffected.
     The selector is disabled while a reply is in flight or a mode change is being written, like the pickers, and sits after the message box in the DOM, so
@@ -405,7 +411,7 @@ on an error or warning puts a request to fix it there, with its file as a mentio
     EPERM is logged and reaches that run's result as a failed-signal line, so the run never says it stopped; a run not
     yet stopping ends as stopped, a timeout or a leftover cleanup keeps its reason. Accepted limit: a host that crashes never calls it, so a process that ignores SIGTERM can then
     outlive it.
-- A turn runs from a user message to the entry before the next one; it has ended unless it is the last turn and a
+- A turn runs from a user message to the entry before the next one or the next summary (`/compact`); it has ended unless it is the last turn and a
   reply is in flight. An ended turn keeps its last reply, and any tool step after it (a `stepLimit` or `malformedCalls`
   halt), in view, and folds every entry between its user message and that reply under one row when the fold holds at
   least 2 tool steps (`foldTurns`); any other turn renders as before, with no wrapper. The row is an uncontrolled
@@ -413,7 +419,9 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   (malformed calls and empty replies included), then ", M failed" (status `error` or `malformed`, not rejected) and
   ", K rejected" (`approval` `rejected`) when not zero, in words. The turn in flight never folds, so a running step and
   an open approval always show; a row opened inside comes back closed once its turn folds, since its entries remount.
-  Entries before the first user message, and a turn with no reply, never fold. Rendering only: the state, the record,
+  Entries before the first user message, and a turn with no reply, never fold. A summary entry is a boundary of its
+  own: always rendered, never inside a fold, and never a turn's final reply, so the turn before it folds by the usual
+  rule and keeps its own final reply. Rendering only: the state, the record,
   and the history sent to the model are unchanged. The conversation follows its bottom while the user is within 24px of
   it; scrolled up, a turn that folds keeps its question row (its user message) in place on screen, because nothing
   above it changes and the browser's scroll anchoring is off (`overflow-anchor: none`), which would otherwise re-anchor
@@ -450,7 +458,7 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   reply without text is left out of the history, unless a tool step follows it: an empty reply goes back as an
   assistant message with `content: ""` before its step, so the roles keep alternating (Gemma's chat template requires
   it). `toHistory` (`history.ts`) builds it, and leaves the oldest tool results out of a request that would fill the
-  context (below).
+  context (below). After a summary (`/compact`, below), the history starts at it.
 - While a reply streams, a `<tool_result` the model writes after a complete call (`forgedResultCut`) cancels the request,
   and the reply ends `done` at the end of that call (ADR 0001, 2026-11-10): models forge results of calls that never
   ran. An opening with no complete call before it stops nothing.
@@ -519,7 +527,7 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   `[result left out to save context: N lines]` (`1 line` for one), N being the step row's line count
   (`resultLineCount`: a trailing line break dropped, then split; 0 for an empty text). It replaces the fewest steps
   that make the estimate fit. Never replaced: the system prompt, user messages (a `/<name>` skill message included),
-  assistant answers, the last 3 tool steps of the conversation (`KEPT_RECENT_STEPS`), whatever turn they belong to,
+  assistant answers, the last 3 tool steps sent (`KEPT_RECENT_STEPS`), whatever turn they belong to,
   every `load_skill` step, whatever its status (a second load answers "already loaded" without the body), and a step
   whose replacement line is not shorter than its text; a malformed-call step follows the same rule as the others. The
   choice is a pure function of the entries, the system prompt, and the context size, linear in the entries, since the
@@ -538,7 +546,38 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   system prompt the last send composed, in any conversation shown, since instruction files and skills are the
   workspace's; before the first send of the session, the one without instruction files or skills. It updates once a send has composed it, before the
   request goes.
-  v1 has no automatic summarization: leaving results out is a deterministic cut, with no model call.
+  Leaving results out is a deterministic cut, with no model call; v1 summarizes only on request (`/compact`, below),
+  never automatically.
+- `/compact` (#90) asks the model for a summary of the conversation shown. `ChatController.compact` sends one request,
+  registered as a reply like `send`'s, so Stop, saving, navigation, and "a reply is in flight" (Send queues, the
+  pickers and the mode selector are disabled) treat it as any reply. It returns `ignored` when Send would not act,
+  and `nothingToSummarize`, which the host shows as an information notification ("Nothing to summarize: the
+  conversation is empty or was just summarized."), when the conversation has no entries or its last entry is already
+  the summary the history starts at; nothing is sent then. The request: a system prompt of its own
+  (`composeSummaryPrompt`: a role sentence saying the model summarizes a conversation between a user and a coding
+  agent, then the instruction files read now; no call format, rules, tools, or skills), then `summaryHistory`: the
+  history as sent (from the last summary), with every tool result the leave-out rule may replace replaced, the last 3
+  included (maintainer decision, 2026-11-12; cost: the summary sees the calls and answers, not the files read), then
+  `SUMMARY_REQUEST`, a user message asking for the goal, the decisions, the files read or changed with their paths, and
+  what remains to do, joined after a blank line to the history's last message when that one is a user message (a
+  tool result, or a user message whose reply was left out), for role alternation. When its estimate still fills the
+  context (`fillsContext`), no request is sent and the entry ends `halted` with `contextFull`, its wording "Not
+  summarized: …". Known cost: a prefix of its own defeats a provider's prompt cache for that request. The reply is an
+  assistant entry with `summary: true`, streamed under a separator ("Summarizing the conversation…", then
+  "Conversation summarized", or "Conversation not summarized" when it ended otherwise than `done` with text); it is
+  never parsed for a call (a call-shaped block runs nothing), and reasoning is handled as for any reply. As after a
+  send, a summary that ends `done` sends the first queued message.
+- From then on the history sent starts at the last summary entry that ended `done` with text (`historyStart`): the
+  system prompt, one user message `Summary of the conversation so far:`, a blank line, and the summary, then the
+  entries after it; when the next entry sent is a user message, its composed text joins the summary's message after a
+  blank line, so two user messages never follow each other there. A summary that failed, was stopped, halted, or came
+  back empty (only whitespace) changes nothing and is never sent; its error shows as for any reply, and a `done` empty
+  one says "The model's reply held no summary.". The leave-out rule, its last 3 steps, and the usage display count
+  only what is sent, so after a summary the header's usage drops. Entries before it stay in the record and the chat,
+  dimmed as one group under the line "Earlier messages are no longer sent to the model: the summary below replaces
+  them.", derived from the entries, never stored. The record keeps version 2: `summary` is an optional field of the
+  assistant entry (ADR 0003's rule); an older build shows the summary as an ordinary answer and resends the whole
+  history, which is harmless. The `contextFull` halt of an agent turn names `/compact` beside New chat.
 - After the tools, the system prompt has a "Skills" section, one `- <name>: <description>` line per skill listed to
   the model, telling it to call `load_skill` first; without such a skill the section is absent, and so are the
   `load_skill` tool and its rule (reading a loaded skill's files by the absolute path the result gives, read-only
@@ -696,7 +735,8 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   and only the earlier rows that match it, never a row for an older query. When the files cannot be listed, the menu says so instead of "No match".
 - A `/` at the very start of the message opens the `/` menu while the caret ends its first word; the query is the text
   after `/`, possibly empty. A `/` anywhere else opens nothing, since paths hold them. The menu lists `/new` ("Start a
-  new conversation"), `/model` ("Choose the model"), then each skill the send's discovery finds, by name, with its
+  new conversation"), `/model` ("Choose the model"), `/compact` ("Summarize the conversation to free context"), then
+  each skill the send's discovery finds, by name, with its
   description (`disable-model-invocation: true` included, skipped ones left out), keeping those whose name starts with
   the query, ignoring case, up to 20; "No match" when none. When the menu opens, the webview posts `querySkills { id }`
   once, since a discovery reads every `SKILL.md`; the host runs the send's discovery without its log line (its warnings
@@ -716,9 +756,10 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   pick goes through `controller.selectModel`, as the header select's change, so the header follows; Escape changes
   nothing; a Quick Pick that fails is logged and shown as an error (`chooseModel`). (A webview cannot open the
   select's own list: Chromium refuses `showPicker()` in a cross-origin iframe.)
-  Both clear the box and act only when Send would (a model chosen, no reply in flight); nothing reaches the model.
-  `/new` returns the queued messages to the box, as the New chat button does.
-  `/new words` and `/model words` are ordinary messages.
+  Exactly `/compact` posts `compact`, validated like `newChat`, and the host runs `ChatController.compact` (Harness,
+  `/compact`). All three clear the box and act only when Send would (a model chosen, no reply in flight, no mode write
+  pending); `/new` and `/model` send nothing to the model. `/new` returns the queued messages to the box, as the New
+  chat button does. `/new words`, `/model words`, and `/compact words` are ordinary messages.
 - The file index is built on the first menu query with `findFiles("**/*", "**/{node_modules,.git,dist,out,build}/**",
   5000)`: an explicit exclude adds to `files.exclude` (only `null` drops it). `.gitignore` is not read. Folders are
   derived from file paths, none inside a multi-root folder name that holds `/`. Paths are `asRelativePath` with its default prefix, the folder name in a multi-root
@@ -759,8 +800,8 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   `halted`, its `haltReason`, and tool steps, with an optional `approval`. A reopened conversation therefore resends exactly what was sent and
   never reads its mentions again. Version 1 files are skipped like any unknown version: no release wrote them, so
   none is migrated. An optional field added to an entry keeps the version: an older build drops the unknown key and
-  reads the rest (ADR 0003), such as a mention's `range` (`@selection`) and `failedFolders` (a partial `@diff`, a
-  positive whole number), validated when present: any other shape makes the record invalid. A new value of an existing field keeps it too, such as the mention kinds `problems`,
+  reads the rest (ADR 0003), such as a mention's `range` (`@selection`), `failedFolders` (a partial `@diff`, a
+  positive whole number), and an assistant entry's `summary` (`true` only), validated when present: any other shape makes the record invalid. A new value of an existing field keeps it too, such as the mention kinds `problems`,
   `diff`, and `selection` and the statuses `noProblems`, `noChanges`, `noRepository`, `gitUnavailable`, `noEditor`,
   and `emptySelection`, each validated: an older build skips such a record as invalid and keeps it on disk (accepted,
   ADR 0003, 2026-11-11). An unknown kind or status makes the record invalid. It holds no API key and nothing else of `ProviderAccess`; a failed reply's error keeps the provider's base
@@ -835,7 +876,10 @@ on an error or warning puts a request to fix it there, with its file as a mentio
 - Do not read `.claude/`, `.codex/`, or any other tool's directory. The `.agents` convention is the only one.
 - The system prompt lists each skill's name and description only. `load_skill` or `/<name>` loads the body.
 - `load_skill(name)` loads a skill of the send's discovery that is listed to the model; a skill already loaded in the
-  conversation answers "already loaded" (below), listed to the model or not. Its `ok` result is
+  history sent (from the last `done` summary on, `ToolContext.sentSkillRoots`) answers "already loaded" (below),
+  listed to the model or not. A skill loaded only before that summary gets its body again, also one kept from the
+  model that the user loaded with `/<name>`, since the text of that load is no longer sent (maintainer decision,
+  2026-11-12); its folder stayed readable all along. Its `ok` result is
   `Skill <name> loaded; its files live in <real folder path>; read them by that absolute path.`, a blank line, then the
   `SKILL.md` body without its frontmatter and the blank lines after it, cut to 2,000 lines with the mention notice
   (`SKILL.md` is read under the 1 MiB cap, inside the skill's real folder like its other files: discovery already
@@ -846,8 +890,8 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   and not loaded give an `error` naming the skills the model may load.
 - A sent message is a skill command when its trimmed text is `/`, a name of the send's discovery (listed to the model
   or not; a skipped skill is not discovered), then whitespace or the end (`findSlashSkill`, in the controller's send,
-  after discovery). Any other `/word` is sent as typed, `/new` and `/model` included (#51 handles them in the webview
-  before any send). `args` is the text after the name, trimmed.
+  after discovery). Any other `/word` is sent as typed, `/new`, `/model`, and `/compact` included (#51 handles them in the
+  webview before any send). `args` is the text after the name, trimmed.
 - The model receives one user message (role alternation): `loadSkillText(skill, args)`, the `load_skill` text with
   every `$ARGUMENTS` of the body replaced by `args`, the empty string included, before the cut to 2,000 lines and
   1 MiB (between characters, a line the byte cap cuts counted as not shown; a longer text is never built whole, since a
@@ -864,9 +908,9 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   folder that exists but cannot be listed is one warning too. The warnings sit in `ChatState.skillWarnings`, are
   replaced at each send, and show in the panel list of skipped providers. The extension logs each send's skills
   (`broke-code: skills listed to the model: ...`) to the extension host console.
-- The built-in slash commands are `/new` and `/model`, run by the webview and never sent or queued (Harness, the `/`
-  menu): during a reply a message of exactly a built-in stays text in the box, and the controller refuses to queue one.
-  Typing `/` lists them with every skill. A skill named `new` or `model` is listed too, after the built-ins, but a
+- The built-in slash commands are `/new`, `/model`, and `/compact`, run by the webview and never sent as typed or queued
+  (Harness, the `/` menu): during a reply a message of exactly a built-in stays text in the box, and the controller
+  refuses to queue one. Typing `/` lists them with every skill. A skill named `new`, `model`, or `compact` is listed too, after the built-ins, but a
   message of exactly its `/<name>` runs the built-in; picking the skill's row inserts `/<name> ` like any skill.
 
 ### Commit message

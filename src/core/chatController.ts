@@ -847,7 +847,9 @@ export class ChatController {
     const entries = this.conversation.entries;
     const last = entries.at(-1);
     if (!this.mayStartTurn()) return "ignored";
-    if (last === undefined || historyStart(entries) === entries.length - 1) return "nothingToSummarize";
+    const summarized =
+      last?.role === "assistant" && last.summary === true && historyStart(entries) === entries.length - 1;
+    if (last === undefined || summarized) return "nothingToSummarize";
     const ended = await this.runSummary();
     if (ended === "done") await this.sendNextQueued();
     return "ran";

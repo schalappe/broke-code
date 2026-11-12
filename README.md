@@ -13,7 +13,7 @@ in the chat, unless you turn on auto-approval in your user settings; each comman
 always. You can follow each step, stop the agent at any time, read the model's reasoning collapsed above its answer,
 find a finished agent turn's steps folded under one row above its answer, and come back to past conversations. The model also sees the name and description of each of your skills, and loads a
 skill's instructions when your task matches it. Type `/` at the start of a message to start a new conversation, choose
-the model, or pick a skill; a message `/<name> args` loads that skill itself, with your arguments. In the Source
+the model, summarize the conversation to free context, or pick a skill; a message `/<name> args` loads that skill itself, with your arguments. In the Source
 Control view, a button writes a commit message for your staged changes.
 
 ## Requirements
@@ -250,8 +250,8 @@ meanwhile), and **Remove**. When a turn
 ends any other way (**Stop**, a failure, a limit) nothing more is sent: the panel says the queue is paused, and **Send
 now** on the first message sends it. A message you send yourself while the queue is paused goes first, and the queue
 resumes when its turn ends with an answer. **New chat**, `/new`, opening another conversation, and deleting the one
-shown put every queued message back in the message box, one per paragraph, so nothing you typed is lost. `/new` and
-`/model` are never queued. The queue survives hiding the panel but not a window reload.
+shown put every queued message back in the message box, one per paragraph, so nothing you typed is lost. `/new`,
+`/model`, and `/compact` are never queued; a message queued while `/compact` runs is sent once the summary is done. The queue survives hiding the panel but not a window reload.
 
 ## Context size and step limit
 
@@ -261,11 +261,12 @@ your messages with their attachments, the model's answers, and the tool results,
 4. Before each request of an agent turn, broke-code checks that estimate: when it leaves less than one eighth of the
 context for the reply, broke-code leaves the oldest tool results out of that request, one at a time, until it fits.
 Each one left out goes to the model as a single line, `[result left out to save context: N lines]`. The last three
-tool steps of the conversation, every skill load, your messages, and the model's answers always go whole, and so does a
+tool steps sent, every skill load, your messages, and the model's answers always go whole, and so does a
 result shorter than that line. The chat and the saved conversation keep every result whole; only the request changes.
 While the next request leaves results out, the panel says how many under the header, and the usage counts the request
 as it would be sent. When the request still does not fit, the turn stops without sending it, and the chat asks you to
-start a new chat with **New chat**. broke-code never summarizes the conversation by itself.
+summarize the conversation with `/compact` or start a new chat with **New chat**. broke-code never summarizes the
+conversation by itself.
 
 LLM services do not report a model's context size, so broke-code reads it from the `brokeCode.contextSizes` table
 in your **user** settings, by model name as the provider lists it. A model absent from the table uses 32,768 tokens,
@@ -282,6 +283,20 @@ in flight keeps the limits it started with. Like the providers, both settings ar
 
 broke-code adds your instructions to every request: `~/.agents/AGENTS.md`, then the `AGENTS.md` at the root of each
 workspace folder, when they exist. Each is read under the same limits as a mention. `CLAUDE.md` is never read.
+
+### Summarizing with `/compact`
+
+Send `/compact` alone, or pick it in the `/` menu, to ask the model for a summary of the conversation: the goal, the
+decisions, the files read or changed, and what remains to do. The summary streams in the chat under a **Conversation
+summarized** separator, and from then on each request sends it in place of everything before it, so the header's usage
+drops. The earlier messages stay in the chat and in the saved conversation, dimmed under a line saying they are no
+longer sent. To keep the summary request small, it leaves out every tool result it can, the most recent included: the
+model summarizes from the calls and the answers, not from the files it read. The request carries your `AGENTS.md`
+instructions but no tool list, and the model runs no tool while it summarizes. It is a reply like any other: **Stop**
+ends it, and while it runs, the messages you send are queued. When the summary fails, is stopped, comes back empty, or
+the conversation does not fit the model's context even so, nothing changes: the next request sends the history as
+before. `/compact` on an empty conversation, or right after a summary, sends nothing and says so. You can summarize
+again later: the next summary starts from the last one.
 
 ## Skills
 
@@ -323,7 +338,8 @@ The file tools cannot change the files of a skill outside the workspace, and bef
 (a command you approve can, like any file you can reach); there, a file
 that is a symbolic link to somewhere outside the skill's folder is refused. A workspace skill's folder is part of the
 workspace: the usual rules apply, so the model can change its files with your approval. A skill loaded in a past conversation is loaded again when you reopen it, as long as it is still
-there. `load_skill` is offered to the model only while a skill is listed to it.
+there. After a summary (`/compact`), a skill loaded before it stays readable, but its instructions are no longer sent:
+the model's next **load_skill** of it returns them again. `load_skill` is offered to the model only while a skill is listed to it.
 
 You can also load a skill yourself: start your message with `/` and the skill's name, then what you want, such as
 `/release-notes since v0.3`. The model receives the skill's instructions, as **load_skill** gives them, in place of
@@ -342,19 +358,22 @@ rest of the instructions.
 
 ## Slash commands
 
-Type `/` at the start of the message box to open a menu of commands: `/new`, `/model`, then each of your skills, each
+Type `/` at the start of the message box to open a menu of commands: `/new`, `/model`, `/compact`, then each of your skills, each
 with its description. The menu keeps the commands whose name starts with what you type after `/`, ignoring case. Move
-with the arrow keys, pick with Enter, Tab, or a click, and close the menu with Escape. Picking `/new` or `/model` runs
+with the arrow keys, pick with Enter, Tab, or a click, and close the menu with Escape. Picking `/new`, `/model`, or `/compact` runs
 it at once; picking a skill puts `/<name> ` in the message box, so you can type its arguments. A `/` anywhere else in a
 message, as in a path, opens no menu.
 
 - `/new`: pick it, or send it alone, to start a new conversation, as **New chat** does.
 - `/model`: pick it, or send it alone, to open the editor's list of the provider's models, the current one marked. Pick
   one to switch to it, as the **Model** list in the header does; Escape keeps the current model.
+- `/compact`: pick it, or send it alone, to summarize the conversation and free context (see
+  [Summarizing with `/compact`](#summarizing-with-compact)).
 
-Both run only when you could send a message: with a model chosen and no reply in progress. Otherwise, or when text
-follows the command in the message box, picking one only puts its name there. Nothing is sent to the model. With words after them, `/new` and `/model` are ordinary messages. The skills are read when the menu opens; if
-they cannot be read, the menu says so and still shows `/new` and `/model`. A skipped skill is not listed; its warning
+They run only when you could send a message: with a model chosen and no reply in progress. Otherwise, or when text
+follows the command in the message box, picking one only puts its name there. `/new` and `/model` send nothing to the
+model. With words after them, `/new`, `/model`, and `/compact` are ordinary messages. The skills are read when the menu
+opens; if they cannot be read, the menu says so and still shows the commands. A skipped skill is not listed; its warning
 shows after your next message.
 
 ## Code blocks
