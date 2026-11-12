@@ -5,6 +5,7 @@
   "version": "0.0.0",
   "publisher": "schalappe",
   "license": "MIT",
+  "icon": "media/logo.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/schalappe/broke-code"

@@ -195,6 +195,10 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   the skills discovered in a copy of the fixture home, never the real one;
   `report.ts` formats the scores; `bench.ts` is the CLI, guarded by `import.meta.main` so `bun test` never starts it.
   Its unit tests sit next to them and need no Ollama.
+- `media/`: `logo.png` (256 px), the extension icon on Open VSX and the Visual Studio Marketplace (`icon` in
+  `package.json`; the registries refuse SVG), rendered from its source `logo.svg` with
+  `rsvg-convert -w 256 media/logo.svg -o media/logo.png`; `icon.svg`, the same mark in one color (`currentColor`), the chat
+  view's icon in the activity bar. The README shows `logo.png` at its top.
 - `biome.jsonc`: the Biome linter and formatter settings. Markdown is excluded, because Biome's Markdown formatter
   breaks the YAML frontmatter of the ADRs.
 - `.vscode/`: the launch configuration, Biome as the workspace formatter for TS, TSX, JSON, and CSS, and the Biome

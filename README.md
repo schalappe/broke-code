@@ -1,3 +1,5 @@
+<p align="center"><img src="media/logo.png" width="128" height="128" alt="broke-code logo"></p>
+
 # broke-code
 
 broke-code is a VS Code extension that runs a coding agent against LLM services without native tool calling.
