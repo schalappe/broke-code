@@ -538,7 +538,12 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   on a visible entry under the row (maintainer decision, 2026-11-11). Known limit: a fold that leaves too little
   content under the view makes the browser lower the scroll position, moving the row down. It moves no focus.
 - Reasoning output (`<think>` tags, `reasoning`, or `reasoning_content`) shows collapsed in the chat. The parser
-  never looks for tool calls in it, and the conversation history sent back to the model drops it.
+  never looks for tool calls in it, and the conversation history sent back to the model drops it. A reply with no
+  reasoning yet whose content holds a bare `</think>` line (alone on its line, no `<think>` before it) reasoned as
+  content: a chat template opened `<think>` in the prompt, as Qwen 3.8 on vLLM without a reasoning parser does (#58).
+  Once that line streams in, the text before it moves to the reasoning and the answer starts after it (`lateReasoning`);
+  until then the reasoning shows as answer text. The commit message drops it the same way. Accepted cost: an answer
+  holding a bare `</think>` line loses the text before it.
 - A code block of an assistant answer (fenced or indented, rendered by the answer's Markdown) has Copy and Insert at
   cursor in a header above its code once its text is final: its closing fence was written, rendered text follows it
   (the parser closed it), or its reply has ended (done, stopped, failed, halted, or cut off). While its reply is

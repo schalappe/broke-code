@@ -10,7 +10,7 @@
  * roots and unsaved check through ports.
  */
 import type { ApprovalRequest, Decision, Preview } from "./approval";
-import { type ChatMessage, listModels, type ProviderAccess, streamChat } from "./client";
+import { type ChatMessage, lateReasoning, listModels, type ProviderAccess, streamChat } from "./client";
 import {
   CONVERSATION_VERSION,
   type ConversationRecord,
@@ -1084,6 +1084,16 @@ export class ChatController {
       if (signal.aborted || cut.signal.aborted) return;
       reply[field] += text;
       reply.status = "streaming";
+      if (field === "content" && reply.reasoning === "") {
+        // [>]: Reasoning streamed as content moves to the reasoning once its bare `</think>` arrives; the answer then
+        // starts over, so the cut scan does too.
+        const late = lateReasoning(reply.content);
+        if (late) {
+          reply.reasoning = late.reasoning;
+          reply.content = late.answer;
+          scanned = 0;
+        }
+      }
       if (field === "content") {
         const found = replyCut(reply.content, tools, scanned);
         scanned = found.scanned;

@@ -95,6 +95,7 @@ describe("cleanCommitMessage", () => {
 
   test("unwraps a code fence around the whole reply, with or without a language", () => {
     expect(cleanCommitMessage("```\nfix: a\n```")).toBe("fix: a");
+    expect(cleanCommitMessage("Staged: one file.\n</think>\n\nfix: a")).toBe("fix: a");
     expect(cleanCommitMessage("```text\nfix: a\n\nWhy.\n```\n")).toBe("fix: a\n\nWhy.");
     expect(cleanCommitMessage("~~~git\nfix: a\n~~~")).toBe("fix: a");
     expect(cleanCommitMessage("```text\n```\nfix: a\n```\n```")).toBe("fix: a");

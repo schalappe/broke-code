@@ -2000,6 +2000,19 @@ describe("ChatController agent turn", () => {
     expect(history.some((message) => message.content.includes("/home/user/skills"))).toBe(false);
   });
 
+  test("reasoning streamed as content up to a bare </think> becomes reasoning, so the call after it runs", async () => {
+    const call = readCall("README.md");
+    // [>]: Qwen on vLLM without a reasoning parser: an unclosed fence in the reasoning would hide the call otherwise.
+    const leaked = `The user wants the readme.\n\`\`\`\nunclosed\n</think>\n\n${call}`;
+    const { runner, calls } = okRunner();
+    const { controller, state, sent } = await scripted([{ content: leaked }, { content: "Done." }], runner);
+    await controller.send("read the docs");
+
+    expect(calls).toEqual([{ name: "read_file", args: { path: "README.md" } }]);
+    expect(state().entries[1]).toMatchObject({ reasoning: "The user wants the readme.\n```\nunclosed", content: call });
+    expect(sent()[1]!.messages[2]).toEqual({ role: "assistant", content: call });
+  });
+
   test("a call wrapped in <tool_call> runs, and a second call after it ends the reply there", async () => {
     const wrapped = `<tool_call>\n${readCall("README.md")}\n</tool_call>`;
     const repeating = `${wrapped}\n${wrapped}\n${wrapped}`;

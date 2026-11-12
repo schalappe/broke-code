@@ -4,7 +4,13 @@
  * the cleaning of the reply before it goes to the commit input box, and `CommitMessageGenerator`, the
  * `broke-code.generateCommitMessage` command over its ports (git, provider request, user interface). No `vscode` import.
  */
-import type { ChatMessage, ChatOutcome, ProviderAccess, StreamChatOptions } from "./client";
+import {
+  type ChatMessage,
+  type ChatOutcome,
+  lateReasoning,
+  type ProviderAccess,
+  type StreamChatOptions,
+} from "./client";
 import { fillsContext } from "./limits";
 import type { Translator } from "./modelList";
 import { describeProviderError, type ErrorText } from "./providerError";
@@ -89,14 +95,14 @@ const QUOTES: readonly [string, string][] = [
 ];
 
 /**
- * The commit message in `reply` (the answer, reasoning already dropped by the client): any `<think>` text dropped
- * (one never closed, to the end), then the wrappers of the whole of it removed, again and again until none is left: a
+ * The commit message in `reply` (the answer, reasoning already dropped by the client): reasoning streamed as content
+ * up to a bare `</think>` dropped (`lateReasoning`), any `<think>` text dropped (one never closed, to the end), then the wrappers of the whole of it removed, again and again until none is left: a
  * code fence (one holding fences of its own only when it starts with one, as nested wrappers do), or a quote pair. A quote pair wraps the whole reply whenever the trimmed text starts with an opening
  * quote and ends with its closing one, whatever lies between: a Conventional Commits message starts with its type,
  * never a quote, so a leading quote is always a wrapper. `undefined` when nothing is left.
  */
 export function cleanCommitMessage(reply: string): string | undefined {
-  let text = reply
+  let text = (lateReasoning(reply)?.answer ?? reply)
     .replace(/<think>[\s\S]*?<\/think>/g, "")
     .replace(/<think>[\s\S]*$/, "")
     .trim();

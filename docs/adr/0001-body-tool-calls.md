@@ -221,3 +221,26 @@ generic call shape 12 times, each time recovering after the malformed-call messa
 
 **Open.** Qwen's garbled `<parameter>` form and GLM's reply ending mid-call wait for their own measurement; GLM on a
 rented GPU is out of budget.
+
+## Amendment (2026-11-12): reasoning that closes with a bare `</think>`
+
+Decided by the maintainer (schalappe) on 2026-11-12, on eval evidence (#58): `qwen-latest` is Qwen 3.8, 27B, FP8
+(the employer's announcement), measured as `Qwen/Qwen3.8-27B-FP8` on vLLM 0.28 without a reasoning parser, with the
+rules of the amendment above. It passed `create` 4/10: each of its 216 replies reasoned as content, with no `<think>`
+and a bare `</think>` line, since its chat template opens `<think>` in the prompt; in the 6 failures the reasoning
+quoted the file with unbalanced fences, so the real `write_file` after `</think>` read as code and the reply as a final
+answer.
+
+**Decision.** A reply with no reasoning yet whose content holds a bare `</think>` line (alone on its line, no `<think>`
+before it) reasoned as content: once that line streams in, the text before it moves to the reasoning and the answer
+starts after it, so the parser and the history never see it. The commit message drops it the same way. Whether the
+employer's service runs a reasoning parser is unknown; with one, no such line reaches the content and nothing changes.
+
+**Cost, accepted.** Until the line arrives the reasoning shows as answer text, and the stream cut of the amendment
+above scans it: measured, none of the 214 replies holding such reasoning had a call tag or a result opening before
+`</think>`. An answer holding a bare `</think>` line loses the text before it.
+
+**Verified (2026-11-12).** `qwen-latest` on vLLM then passed `create` 10/10; `read`, `skill`, `slash`, and `hidden` 10/10,
+`edit` 9/10 (one run closed `edit_file` with `</tool_name>` three times), and `command` 8/10: in two runs it walked
+`logs/` with `list_files` until the step limit instead of running a command, the behavior seen live (#9). On 48 GB vLLM
+needs `--max-num-seqs 16` for this hybrid model (Mamba cache blocks).
