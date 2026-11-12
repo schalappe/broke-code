@@ -156,7 +156,7 @@ export class ChatView implements vscode.WebviewViewProvider {
       case "retryModels":
         return void controller.loadModels();
       case "send":
-        return void controller.send(message.text, message.mentions);
+        return void controller.send(message.text, message.mentions, message.replaces);
       case "queueMessage":
         return void controller.queueMessage(message.text, message.mentions);
       case "removeQueued":
@@ -178,6 +178,11 @@ export class ChatView implements vscode.WebviewViewProvider {
         return void controller.newChat();
       case "undoChanges":
         return void controller.undoChanges();
+      case "retry":
+        return void controller.retry(message.shown);
+      case "continueTurn":
+        // [>]: The entry shows the button's label as typed; the model gets the fixed English text.
+        return void controller.continueTurn(message.shown, vscode.l10n.t("Continue"));
       case "chooseModel":
         return void this.chooseModel();
       case "compact":

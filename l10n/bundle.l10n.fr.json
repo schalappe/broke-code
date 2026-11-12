@@ -234,5 +234,11 @@
   "skipped, it is no longer inside the workspace folders": "ignoré, il n'est plus dans les dossiers de l'espace de travail",
   "skipped, it could not be restored ({0})": "ignoré, il n'a pas pu être restauré ({0})",
   "undone, {0}": "annulé, {0}",
-  "Undo changes failed unexpectedly. Undo changes again to retry the files not yet undone.": "L'annulation des modifications a échoué de façon inattendue. Cliquez à nouveau sur Annuler les modifications pour réessayer les fichiers pas encore annulés."
+  "Undo changes failed unexpectedly. Undo changes again to retry the files not yet undone.": "L'annulation des modifications a échoué de façon inattendue. Cliquez à nouveau sur Annuler les modifications pour réessayer les fichiers pas encore annulés.",
+  "Retry anyway": "Réessayer quand même",
+  "Cancel": "Annuler",
+  "Continue": "Continuer",
+  "Retry does not revert the files this turn wrote or the commands it ran. To get the files back, use Undo changes first.": "Réessayer ne rétablit pas les fichiers que ce tour a écrits ni les commandes qu'il a lancées. Pour récupérer les fichiers, utilisez d'abord Annuler les modifications.",
+  "Sending replaces this message and its replies.": "L'envoi remplace ce message et ses réponses.",
+  "Sending replaces this message and its replies. It does not revert the files this turn wrote or the commands it ran. To get the files back, use Undo changes first.": "L'envoi remplace ce message et ses réponses. Il ne rétablit pas les fichiers que ce tour a écrits ni les commandes qu'il a lancées. Pour récupérer les fichiers, utilisez d'abord Annuler les modifications."
 }

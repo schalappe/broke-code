@@ -9,6 +9,16 @@ import {
 } from "./protocol";
 
 describe("parseWebviewMessage", () => {
+  const ID = "0f8fad5b-d9cb-469f-a165-70867728950e";
+  /** What a Retry, Continue, or replacing send must not carry: a bad entries count or a bad conversation id. */
+  const badShown = [
+    ...[undefined, "4", -1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1, null].map((entries) => ({
+      conversationId: ID,
+      entries,
+    })),
+    ...[undefined, "", "../x", ID.toUpperCase(), 3].map((conversationId) => ({ conversationId, entries: 4 })),
+  ];
+
   test("accepts the messages without fields and those with a string field", () => {
     expect(parseWebviewMessage({ type: "stop" })).toEqual({ type: "stop" });
     expect(parseWebviewMessage({ type: "addProvider", name: "ignored" })).toEqual({ type: "addProvider" });
@@ -53,6 +63,29 @@ describe("parseWebviewMessage", () => {
   test("accepts any number of picked mentions, since the text bounds which ones count", () => {
     const picked = Array.from({ length: 101 }, (_, index) => `my file ${index}.ts`);
     expect(parseWebviewMessage({ type: "send", text: "hi", mentions: picked })).toMatchObject({ mentions: picked });
+  });
+
+  test("accepts a send replacing the last turn with the conversation and entries count shown, and drops any other", () => {
+    const send = (replaces: unknown) => parseWebviewMessage({ type: "send", text: "hi", mentions: [], replaces });
+    for (const entries of [0, 4]) {
+      const replaces = { conversationId: ID, entries };
+      expect(send(replaces)).toEqual({ type: "send", text: "hi", mentions: [], replaces });
+    }
+    expect(send({ conversationId: ID, entries: 4, extra: true })).toMatchObject({
+      replaces: { conversationId: ID, entries: 4 },
+    });
+    expect(send(undefined)).toEqual({ type: "send", text: "hi", mentions: [] });
+    for (const replaces of [4, null, true, ...badShown]) {
+      expect(send(replaces)).toBeUndefined();
+    }
+  });
+
+  test("ignores replaces on a queued message, which never replaces", () => {
+    expect(parseWebviewMessage({ type: "queueMessage", text: "hi", mentions: [], replaces: 2 })).toEqual({
+      type: "queueMessage",
+      text: "hi",
+      mentions: [],
+    });
   });
 
   test("rejects a send whose mentions are missing, not strings, empty, or too long", () => {
@@ -170,6 +203,19 @@ describe("parseWebviewMessage", () => {
       for (const id of [undefined, "3", -1, 1.5, Number.NaN, null]) {
         expect(parseWebviewMessage({ type, id })).toBeUndefined();
       }
+    }
+  });
+
+  test("accepts Retry and Continue with the conversation and entries count shown, and drops any other", () => {
+    for (const type of ["retry", "continueTurn"] as const) {
+      for (const entries of [0, 4]) {
+        const shown = { conversationId: ID, entries };
+        expect(parseWebviewMessage({ type, shown, extra: true })).toEqual({ type, shown });
+      }
+      for (const shown of [undefined, 4, null, ...badShown]) {
+        expect(parseWebviewMessage({ type, shown })).toBeUndefined();
+      }
+      expect(parseWebviewMessage({ type, entries: 4 })).toBeUndefined();
     }
   });
 

@@ -2,6 +2,7 @@ import * as l10n from "@vscode/l10n";
 import {
   type ComponentProps,
   createContext,
+  Fragment,
   type KeyboardEvent,
   type ReactNode,
   type Ref,
@@ -14,6 +15,7 @@ import {
 import Markdown, { type Components, type ExtraProps } from "react-markdown";
 import { type ConversationSummary, filterConversations } from "../core/conversation";
 import { historyStart, isAutomaticSummary, sentEntries } from "../core/history";
+import { type LastTurnActions, lastTurnActions, unrevertedEffects } from "../core/lastTurn";
 import { codeBlockText, FENCE_CLOSED, hasTextAfter, remarkFenceClosed } from "../core/markdownCode";
 import { emptyModelsLabel } from "../core/modelList";
 import {
@@ -30,6 +32,8 @@ import {
   type PendingApproval,
   type QueuedMessage,
   type ReplyCall,
+  type ShownEntries,
+  sendWouldAct,
   type UndoState,
 } from "../core/protocol";
 import type { ProviderError } from "../core/providerError";
@@ -39,6 +43,7 @@ import {
   applyDraft,
   composerKeyAction,
   type Draft,
+  editDraft,
   type MentionRow,
   type MenuAnswer,
   type MenuToken,
@@ -52,6 +57,7 @@ import {
   type SlashRow,
   slashMenuView,
   slashPick,
+  stillReplacing,
 } from "./composer";
 import { moveHighlight, optionId, SuggestionMenu } from "./SuggestionMenu";
 import {
@@ -80,6 +86,8 @@ import { post } from "./vscodeApi";
  * message box applies and `takeDrafts` removes. An editor draft closes History; without a message box it is taken
  * unapplied, never held for a box that may never come. Queued texts the host returns (`paragraph` drafts) close
  * nothing, and wait for the message box when it is absent, since the user typed them: they are never dropped.
+ * Edit on the last user message starts the replacing state (what the panel showed then), held here because the conversation shows
+ * its mark and the composer's Send carries it; it ends on Cancel and once `stillReplacing` fails.
  */
 export function App({
   state,
@@ -96,6 +104,21 @@ export function App({
   const composerShown = configured || isReplying(state);
   const [historyOpen, setHistoryOpen] = useState(false);
   const historyButton = useRef<HTMLButtonElement>(null);
+  const [replacing, setReplacing] = useState<ShownEntries>();
+  /** Edit's draft until the message box has applied it, once: a composer mounted later never applies it again. */
+  const [editing, setEditing] = useState<DraftInsert>();
+  const replacingNow = replacing && stillReplacing(replacing, state) ? replacing : undefined;
+
+  // [>]: Once it fails, the state ends for good: a later snapshot that matches again (a Retry ending on as many
+  // entries) must not bring the mark back.
+  useEffect(() => {
+    if (replacing && !replacingNow) setReplacing(undefined);
+  }, [replacing, replacingNow]);
+
+  const edit = (entry: ChatEntry & { role: "user" }) => {
+    setReplacing({ conversationId: state.conversationId, entries: state.entries.length });
+    setEditing(editDraft(entry));
+  };
 
   useEffect(() => {
     if (drafts.length === 0) return;
@@ -142,10 +165,15 @@ export function App({
         // unmounted, while History shows, so the reason typed for an open approval survives.
         <Conversation
           key={state.conversationId}
+          conversationId={state.conversationId}
           entries={state.entries}
           approval={state.approval}
           undo={state.undo}
+          canAct={sendWouldAct(state)}
           hidden={historyOpen}
+          replacing={replacingNow !== undefined}
+          edit={edit}
+          cancelEdit={() => setReplacing(undefined)}
         />
       )}
       {composerShown && (
@@ -154,6 +182,9 @@ export function App({
           historyOpen={historyOpen}
           drafts={drafts}
           takeDrafts={takeDrafts}
+          editing={editing}
+          takeEditing={() => setEditing(undefined)}
+          replaces={replacingNow}
           startNewChat={() => {
             setHistoryOpen(false);
             post({ type: "newChat" });
@@ -483,45 +514,95 @@ export function ConversationList({
 
 /**
  * `approval`: the request open, shown on the last reply, the one in flight. `undo`: "Undo changes", shown under the
- * reply it names, and the last undo's outcome under the reply it undid. `hidden`: History shows instead.
+ * reply it names, and the last undo's outcome under the reply it undid. Retry and Continue show under the last turn's
+ * reply (`lastTurnActions`), enabled when `canAct` (Send would act). `hidden`: History shows instead. Edit sits under
+ * the last turn's user message when Retry is offered, enabled when `canAct`, and calls `edit`; while `replacing`, it
+ * goes, and the last turn (that message and every entry after it) sits in one dimmed group under the line saying that
+ * sending replaces it, with Retry's warning when the removal leaves files or commands behind, and Cancel
+ * (`cancelEdit`), which gives the focus back to Edit, since the button it was on goes.
  */
 function Conversation({
+  conversationId,
   entries,
   approval,
   undo,
+  canAct,
   hidden,
+  replacing,
+  edit,
+  cancelEdit,
 }: {
+  conversationId: string;
   entries: ChatEntry[];
   approval?: PendingApproval;
   undo: UndoState;
+  canAct: boolean;
   hidden: boolean;
+  replacing: boolean;
+  edit: (entry: ChatEntry & { role: "user" }) => void;
+  cancelEdit: () => void;
 }) {
   const end = useRef<HTMLDivElement>(null);
   const list = useRef<HTMLElement>(null);
+  const editButton = useRef<HTMLButtonElement>(null);
+  const focusEdit = useRef(false);
   // [>]: The host names no reply while one is in flight; a snapshot that lags behind never shows the button either.
   const last = entries.at(-1);
   const replying = last?.role === "assistant" && (last.status === "waiting" || last.status === "streaming");
   const [pinned, setPinned] = useState(true);
+  const lastTurn = lastTurnActions(entries);
+  const turnActions: TurnActionsProps | undefined = lastTurn && {
+    actions: lastTurn,
+    shown: { conversationId, entries: entries.length },
+    turn: entries.slice(lastTurn.user),
+    canAct,
+    // [>]: Retry reverts nothing: it asks first when the removed entries changed files or ran commands, or when
+    // "Undo changes" is offered for the turn it removes.
+    asks: hasEffects(unrevertedEffects(entries, lastTurn.user + 1)) || (undo.reply ?? -1) > lastTurn.user,
+  };
+
+  useEffect(() => {
+    if (!focusEdit.current || replacing) return;
+    focusEdit.current = false;
+    editButton.current?.focus();
+  });
 
   // Follow stream only while user stays at bottom. Unpinned, nothing moves the view: see `overflow-anchor` in the CSS.
   useLayoutEffect(() => {
     if (pinned) end.current?.scrollIntoView({ block: "end" });
   });
 
-  // [>]: Keyed by index: a conversation's entries are only appended, and another one remounts the list. An entry moving
-  // into a fold remounts, so a row opened inside comes back closed. The open request goes to the last entry, never
-  // folded, since only an ended turn folds.
-  const entry = (index: number) => (
-    <Entry
-      key={index}
-      entry={entries[index]!}
-      previous={entries[index - 1]}
-      next={entries[index + 1]}
-      approval={index === entries.length - 1 ? approval : undefined}
-      undo={index === undo.reply && !replying ? undo : undefined}
-      undone={index === undo.outcome?.reply ? undo.outcome : undefined}
-    />
-  );
+  // [>]: Keyed by index, and another conversation remounts the list. Retry and Edit remove the last turn's entries, and
+  // the new turn reuses their indexes: the host posts its first reply `waiting`, with no reasoning, answer, or call,
+  // before any read or request, so a removed entry's opened blocks unmount before the new reply fills that index.
+  // An entry moving into a fold remounts, so a row opened inside comes back closed. The open request goes to the last
+  // entry, never folded, since only an ended turn folds.
+  const entry = (index: number) => {
+    const shown = entries[index]!;
+    const rendered = (
+      <Entry
+        key={index}
+        entry={shown}
+        previous={entries[index - 1]}
+        next={entries[index + 1]}
+        approval={index === entries.length - 1 ? approval : undefined}
+        undo={index === undo.reply && !replying ? undo : undefined}
+        undone={index === undo.outcome?.reply ? undo.outcome : undefined}
+        turnActions={index === lastTurn?.reply ? turnActions : undefined}
+      />
+    );
+    if (index !== lastTurn?.user || replacing || shown.role !== "user") return rendered;
+    return (
+      <Fragment key={index}>
+        {rendered}
+        <div className="user-actions">
+          <button ref={editButton} type="button" className="secondary" disabled={!canAct} onClick={() => edit(shown)}>
+            {l10n.t("Edit")}
+          </button>
+        </div>
+      </Fragment>
+    );
+  };
 
   // [>]: Derived, never stored: the entries before the summary the history starts at are no longer sent, except the
   // turn's message an automatic summary quotes word for word, which stays at full opacity and says so. A summary is a
@@ -549,9 +630,14 @@ function Conversation({
         </div>
       </details>
     );
+  const at = (part: ConversationPart) => (part.kind === "entry" ? part.index : part.start);
+  // [>]: A user message is never folded and no fold crosses one, so the replaced turn starts a part of its own.
   const parts = foldTurns(entries);
-  const unsent = parts.filter((part) => (part.kind === "entry" ? part.index : part.start) < start);
-  const sent = parts.slice(unsent.length);
+  const cut = replacing && lastTurn ? lastTurn.user : entries.length;
+  const kept = parts.filter((part) => at(part) < cut);
+  const replaced = parts.slice(kept.length);
+  const unsent = kept.filter((part) => at(part) < start);
+  const sent = kept.slice(unsent.length);
 
   if (entries.length === 0) {
     return (
@@ -579,6 +665,30 @@ function Conversation({
         </div>
       )}
       {sent.map(render)}
+      {replaced.length > 0 && (
+        <div className="replacing">
+          <div className="replacing-head">
+            <p className="replacing-note" role="status">
+              {turnActions?.asks
+                ? l10n.t(
+                    "Sending replaces this message and its replies. It does not revert the files this turn wrote or the commands it ran. To get the files back, use Undo changes first.",
+                  )
+                : l10n.t("Sending replaces this message and its replies.")}
+            </p>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => {
+                focusEdit.current = true;
+                cancelEdit();
+              }}
+            >
+              {l10n.t("Cancel")}
+            </button>
+          </div>
+          {replaced.map(render)}
+        </div>
+      )}
       <div ref={end} />
     </section>
   );
@@ -587,7 +697,7 @@ function Conversation({
 /**
  * One entry of the conversation, with its neighbours: a tool step shows inside the reply before it. `approval`: the
  * request open, given to the last entry only. `undo` and `undone`: "Undo changes" and the last undo's files, given to
- * the reply they belong to.
+ * the reply they belong to. `turnActions`: Retry and Continue, given to the last turn's reply.
  */
 function Entry({
   entry,
@@ -596,6 +706,7 @@ function Entry({
   approval,
   undo,
   undone,
+  turnActions,
 }: {
   entry: ChatEntry;
   previous?: ChatEntry;
@@ -603,6 +714,7 @@ function Entry({
   approval?: PendingApproval;
   undo?: UndoState;
   undone?: UndoOutcomeState;
+  turnActions?: TurnActionsProps;
 }) {
   switch (entry.role) {
     case "user":
@@ -616,7 +728,7 @@ function Entry({
       return entry.summary ? (
         <>
           <p className="summary-separator">{describeSummary(entry, isAutomaticSummary(entry, next))}</p>
-          <Reply entry={entry} approval={approval} undo={undo} undone={undone} />
+          <Reply entry={entry} approval={approval} undo={undo} undone={undone} turnActions={turnActions} />
         </>
       ) : (
         <Reply
@@ -625,6 +737,7 @@ function Entry({
           approval={approval}
           undo={undo}
           undone={undone}
+          turnActions={turnActions}
         />
       );
     case "tool":
@@ -640,8 +753,9 @@ function Entry({
 /**
  * One reply of an agent turn: its reasoning, its answer as Markdown less its call block, the row of its tool step
  * (`step`: the entry after it), the decision its call waits on (`approval`, the request open, given while this is the
- * last reply), in one `decision` block with the call's row, how the turn ended when it ended here, then "Undo changes"
- * (`undo`) when this is the last reply of the turn whose writes are held, and what the last undo did (`undone`).
+ * last reply), in one `decision` block with the call's row, how the turn ended when it ended here, what the last undo
+ * did (`undone`), then one row of the turn's actions: Retry and Continue (`turnActions`) when this is the last turn's
+ * reply, and "Undo changes" (`undo`) when this is the last reply of the turn whose writes are held.
  */
 function Reply({
   entry,
@@ -649,12 +763,14 @@ function Reply({
   approval,
   undo,
   undone,
+  turnActions,
 }: {
   entry: ChatEntry & { role: "assistant" };
   step?: ChatEntry & { role: "tool" };
   approval?: PendingApproval;
   undo?: UndoState;
   undone?: UndoOutcomeState;
+  turnActions?: TurnActionsProps;
 }) {
   const { call } = entry;
   const answer = call ? (entry.content.slice(0, call.start) + entry.content.slice(call.end)).trim() : entry.content;
@@ -700,22 +816,96 @@ function Reply({
       )}
       {entry.error && <ErrorBlock error={entry.error} />}
       {undone && <UndoOutcome outcome={undone} />}
-      {undo && <UndoChanges undo={undo} />}
+      {(turnActions || undo) && <TurnActions turnActions={turnActions} undo={undo} />}
     </div>
   );
 }
 
 /**
- * "Undo changes" under the last reply of the turn whose writes are held, with a line saying commands are not undone
- * when the turn ran one. Disabled, and worded so, while the undo runs.
+ * Retry and Continue of the last turn. `actions`: where they apply and whether Continue is offered. `shown`: the
+ * conversation and entries count the requests carry, so the host ignores a click on a lagging panel. `turn`: the last
+ * turn's entries, from its user message on, which the confirmation is bound to. `canAct`: Send would act. `asks`:
+ * Retry would leave files or commands it does not revert, so its first click asks.
  */
-function UndoChanges({ undo }: { undo: UndoState }) {
+type TurnActionsProps = {
+  actions: LastTurnActions;
+  shown: ShownEntries;
+  turn: readonly ChatEntry[];
+  canAct: boolean;
+  asks: boolean;
+};
+
+function hasEffects(effects: { writes: number; commands: number }): boolean {
+  return effects.writes > 0 || effects.commands > 0;
+}
+
+/**
+ * The actions row under a reply: Retry, Continue, then "Undo changes", each a secondary button, wrapping when narrow.
+ * When Retry asks, its first click shows the line saying what it does not revert, renames the same button "Retry
+ * anyway", so the focus stays on it, and adds Cancel after it; the second click retries. Cancel, and any change of the
+ * turn's entries (one added or removed, a status, an `undone` mark), drop the confirmation; Cancel gives the focus back to Retry, since the button it was on goes. "Undo
+ * changes" is disabled, and worded so, while the undo runs, and a line says commands are not undone when its turn ran
+ * one.
+ */
+function TurnActions({ turnActions, undo }: { turnActions?: TurnActionsProps; undo?: UndoState }) {
+  const retryButton = useRef<HTMLButtonElement>(null);
+  // [>]: The whole state is posted again for unrelated reasons, each time as new objects: the turn's entries are
+  // compared by their text, and only while a confirmation is open.
+  const [askedAt, setAskedAt] = useState<string>();
+  const confirming =
+    turnActions?.asks === true && askedAt !== undefined && askedAt === JSON.stringify(turnActions.turn);
+  const retry = () => {
+    if (!turnActions) return;
+    if (turnActions.asks && !confirming) return setAskedAt(JSON.stringify(turnActions.turn));
+    setAskedAt(undefined);
+    post({ type: "retry", shown: turnActions.shown });
+  };
+  const cancel = () => {
+    setAskedAt(undefined);
+    retryButton.current?.focus();
+  };
   return (
-    <div className="undo">
-      <button type="button" className="secondary" disabled={undo.running} onClick={() => post({ type: "undoChanges" })}>
-        {undo.running ? l10n.t("Undoing changes…") : l10n.t("Undo changes")}
-      </button>
-      {undo.ranCommand && <p className="undo-hint">{l10n.t("Commands this turn ran are not undone.")}</p>}
+    <div className="turn-actions">
+      {confirming && (
+        <p className="retry-warning" role="status">
+          {l10n.t(
+            "Retry does not revert the files this turn wrote or the commands it ran. To get the files back, use Undo changes first.",
+          )}
+        </p>
+      )}
+      {turnActions && (
+        <>
+          <button ref={retryButton} type="button" className="secondary" disabled={!turnActions.canAct} onClick={retry}>
+            {confirming ? l10n.t("Retry anyway") : l10n.t("Retry")}
+          </button>
+          {confirming && (
+            <button type="button" className="secondary" onClick={cancel}>
+              {l10n.t("Cancel")}
+            </button>
+          )}
+          {turnActions.actions.continues && (
+            <button
+              type="button"
+              className="secondary"
+              disabled={!turnActions.canAct}
+              onClick={() => post({ type: "continueTurn", shown: turnActions.shown })}
+            >
+              {l10n.t("Continue")}
+            </button>
+          )}
+        </>
+      )}
+      {undo && (
+        <button
+          type="button"
+          className="secondary"
+          disabled={undo.running}
+          onClick={() => post({ type: "undoChanges" })}
+        >
+          {undo.running ? l10n.t("Undoing changes…") : l10n.t("Undo changes")}
+        </button>
+      )}
+      {undo?.ranCommand && <p className="undo-hint">{l10n.t("Commands this turn ran are not undone.")}</p>}
     </div>
   );
 }
@@ -1162,12 +1352,18 @@ function Composer({
   startNewChat,
   drafts,
   takeDrafts,
+  editing,
+  takeEditing = () => {},
+  replaces,
 }: {
   state: ChatState;
   historyOpen: boolean;
   startNewChat: () => void;
   drafts: readonly DraftInsert[];
   takeDrafts: (taken: readonly DraftInsert[]) => void;
+  editing?: DraftInsert;
+  takeEditing?: () => void;
+  replaces?: ShownEntries;
 }) {
   const [text, setText] = useState("");
   const [caret, setCaret] = useState(0);
@@ -1274,6 +1470,19 @@ function Composer({
     draftFocus.current = true;
   }, [drafts]);
 
+  // [>]: Edit on the last message puts its text in the box as a returned text lands, and focuses the box, since the
+  // user asked to edit there.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Edit's draft applies once, to the box as it stands.
+  useEffect(() => {
+    if (!editing) return;
+    takeEditing();
+    const next = applyDraft({ text, caret, picked }, editing);
+    setDraft(next);
+    // [>]: A message ending on a mention puts the caret on its token: its menu stays closed until the user types on.
+    setDismissed(menuToken(next.text, next.caret, next.picked));
+    input.current?.focus();
+  }, [editing]);
+
   // [!]: The view's focus command settles before the workbench has focused the webview, so a draft can land first:
   // the workbench's focus then blurs the box and gives the panel back its focus with nothing focused inside (#68,
   // seen live). Until the user acts in the panel, the box takes that focus back.
@@ -1304,7 +1513,7 @@ function Composer({
 
   // [!]: The one check of whether Send would act: Send, Enter, the built-in commands, and Send now all go through it.
   // An undo running blocks it as a mode change does: the host refuses a turn until the files are back.
-  const canSend = ready && !replying && !state.modePending && !state.undo.running;
+  const canSend = sendWouldAct(state);
   // [>]: Only a reply in flight queues; with no model or a mode change pending, Send does nothing either way.
   const canQueue = ready && replying && !state.modePending && state.queue.length < MAX_QUEUED_MESSAGES;
 
@@ -1337,7 +1546,9 @@ function Composer({
     // [>]: A built-in is never queued: during a reply it stays text in the box.
     const type = canSend ? "send" : canQueue && !command ? "queueMessage" : undefined;
     if (!type) return;
-    post({ type, text, mentions: pickedInText(picked, text) });
+    const mentions = pickedInText(picked, text);
+    // [>]: Only a send replaces: a queued message waits behind a reply, which ended the replacing state.
+    post(type === "send" && replaces !== undefined ? { type, text, mentions, replaces } : { type, text, mentions });
     clear();
   };
 

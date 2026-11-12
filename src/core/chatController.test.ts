@@ -32,7 +32,14 @@ import { SUMMARY_REQUEST } from "./history";
 import { estimateTokens, parseLimits } from "./limits";
 import { mentionReader } from "./mentionReader";
 import type { MentionReader, ReadMention } from "./mentions";
-import { type ChatEntry, type ChatState, type DraftInsert, isReplying } from "./protocol";
+import {
+  type ChatEntry,
+  type ChatState,
+  type DraftInsert,
+  isReplying,
+  type ReplyStatus,
+  type ShownEntries,
+} from "./protocol";
 import type { Provider } from "./providers";
 import { recordingApplier } from "./recordedChanges";
 import { LOAD_SKILL_TOOL, readSkills, type SkillDiscovery } from "./skills";
@@ -170,6 +177,11 @@ async function until(state: () => ChatState, predicate: (state: ChatState) => bo
   }
 }
 
+/** What a panel showing `state` with `entries` entries carries in a Retry, Continue, or replacing send. */
+const shown = (state: () => ChatState, entries = state().entries.length): ShownEntries => ({
+  conversationId: state().conversationId,
+  entries,
+});
 /** The text of a user or assistant entry; `undefined` for a tool step or no entry. */
 const contentOf = (entry: ChatEntry | undefined) => (entry && entry.role !== "tool" ? entry.content : undefined);
 
@@ -2902,6 +2914,37 @@ describe("ChatController agent turn", () => {
       expect(saved()!.entries[0]).toEqual({ ...entry, modelText: `${header("grilling", root)}\n\nGrill: my idea\n` });
     });
 
+    test("Retry of a /<name> message keeps the skill loaded, its text of then, and its folder readable", async () => {
+      const root = personalSkill("grilling", "Grill: $ARGUMENTS\n");
+      const seen: (readonly string[])[] = [];
+      const runner: ToolRunner = {
+        tools: READ_TOOLS,
+        run: async (call, context) => {
+          seen.push(context.skillRoots);
+          return { status: "ok", text: `read ${call.args.path}` };
+        },
+      };
+      const readCall = `<read_file>\n<path>${root}/notes.md</path>\n</read_file>`;
+      const { controller, state, sent } = await scripted(
+        ["fail", { content: readCall }, { content: "Done." }],
+        runner,
+        undefined,
+        undefined,
+        discovery,
+      );
+      await controller.send("/grilling my idea");
+      writeFileSync(join(root, "SKILL.md"), "---\nname: grilling\ndescription: D.\n---\n\nChanged since.\n");
+      await controller.retry(shown(state, 2));
+
+      expect(state().entries[0]).toMatchObject({ skill: { name: "grilling", status: "loaded" } });
+      expect(sent()[1]!.messages[1]).toEqual({
+        role: "user",
+        content: `${header("grilling", root)}\n\nGrill: my idea\n`,
+      });
+      expect(seen).toEqual([[root]]);
+      expect(state().entries.at(-1)).toMatchObject({ content: "Done.", status: "done" });
+    });
+
     test("a body without $ARGUMENTS is followed by a blank line and the arguments", async () => {
       const root = personalSkill("grilling", "Grill the user.\n");
       const { controller, sent } = await scripted([{ content: "Ok." }], undefined, undefined, undefined, discovery);
@@ -3958,6 +4001,250 @@ describe("ChatController agent turn", () => {
     });
   });
 
+  describe("retry and continue", () => {
+    const CONTINUE = "Continue from where you stopped.";
+    /** Send `text` and stop its reply once it streams. The script's first reply must be `"hang"`. */
+    async function stopped(controller: ChatController, state: () => ChatState, text: string) {
+      const turn = controller.send(text);
+      await until(state, (s) => contentOf(s.entries.at(-1)) === "Partial ");
+      controller.stop();
+      await turn;
+    }
+    /** A conversation record of `entries`, every user entry's model text its typed text. */
+    function record(entries: ChatEntry[]): ConversationRecord {
+      return {
+        version: 2,
+        id: newConversationId(),
+        createdAt: 1,
+        updatedAt: 2,
+        entries: entries.map((entry) => (entry.role === "user" ? { ...entry, modelText: entry.content } : entry)),
+      };
+    }
+    const userEntry = (content: string): ChatEntry => ({ role: "user", content, mentions: [] });
+    const replyEntry = (content: string, status: ReplyStatus, summary = false): ChatEntry => ({
+      role: "assistant",
+      reasoning: "",
+      content,
+      status,
+      ...(summary ? { summary: true as const } : {}),
+    });
+
+    test("Continue after Stop appends one user entry and keeps every earlier entry in the history sent", async () => {
+      const { controller, state, sent, saved } = await scripted(["hang", { content: "Carried on." }]);
+      await stopped(controller, state, "go");
+      await controller.continueTurn(shown(state), "Continue");
+
+      expect(state().entries).toEqual([
+        { role: "user", content: "go", mentions: [] },
+        { role: "assistant", reasoning: "", content: "Partial ", status: "stopped" },
+        { role: "user", content: "Continue", mentions: [] },
+        { role: "assistant", reasoning: "", content: "Carried on.", status: "done" },
+      ]);
+      expect(sent()[1]!.messages.slice(1)).toEqual([
+        { role: "user", content: "go" },
+        { role: "assistant", content: "Partial " },
+        { role: "user", content: CONTINUE },
+      ]);
+      await settledSave(saved, 4);
+      expect(saved()!.entries[2]).toEqual({ role: "user", content: "Continue", mentions: [], modelText: CONTINUE });
+    });
+
+    test("Continue after a step-limit halt sends the tool result, then the continue message", async () => {
+      const { controller, state, sent } = await scripted(
+        [{ content: readCall("a.ts") }, { content: "Next." }],
+        okRunner().runner,
+        undefined,
+        fixedLimits({ steps: 1 }),
+      );
+      await controller.send("read it");
+      expect(state().entries.at(-2)).toMatchObject({ status: "halted", haltReason: "stepLimit" });
+      await controller.continueTurn(shown(state, 3), "Continuer");
+
+      expect(state().entries.map((entry) => entry.role)).toEqual(["user", "assistant", "tool", "user", "assistant"]);
+      expect(state().entries[3]).toEqual({ role: "user", content: "Continuer", mentions: [] });
+      expect(state().entries[4]).toMatchObject({ content: "Next.", status: "done" });
+      expect(
+        sent()[1]!
+          .messages.slice(1)
+          .map((message) => [message.role, message.content]),
+      ).toEqual([
+        ["user", "read it"],
+        ["assistant", readCall("a.ts")],
+        ["user", '<tool_result tool="read_file" status="ok">\nread a.ts\n</tool_result>'],
+        ["user", CONTINUE],
+      ]);
+    });
+
+    test("Continue is ignored after done, failed, a contextFull halt, under a summary, during a reply, and on a stale count", async () => {
+      const cases: {
+        name: string;
+        script: ScriptedReply[];
+        run: (c: ChatController, s: () => ChatState) => Promise<void>;
+        limits?: LimitsSource;
+      }[] = [
+        { name: "done", script: [{ content: "Ok." }], run: (c) => c.send("go") },
+        { name: "failed", script: ["fail"], run: (c) => c.send("go") },
+        {
+          name: "contextFull",
+          script: [],
+          run: (c) => c.send("x".repeat(4000)),
+          limits: fixedLimits({ sizes: { m: 1000 } }),
+        },
+        {
+          name: "summary",
+          script: ["hang", "fail"],
+          run: async (c, s) => {
+            await stopped(c, s, "go");
+            await c.compact();
+          },
+        },
+      ];
+      for (const { name, script, run, limits } of cases) {
+        const { controller, state, sent } = await scripted(
+          [...script, { content: "never sent" }],
+          okRunner().runner,
+          undefined,
+          limits,
+        );
+        await run(controller, state);
+        const before = structuredClone(state().entries);
+        const requests = sent().length;
+        await controller.continueTurn(shown(state, before.length), "Continue");
+        expect({ name, entries: state().entries }).toEqual({ name, entries: before });
+        expect(sent()).toHaveLength(requests);
+      }
+
+      const { controller, state, sent } = await scripted(["hang", "hang", { content: "never sent" }]);
+      await stopped(controller, state, "go");
+      await controller.continueTurn(shown(state, 1), "Continue");
+      expect(state().entries).toHaveLength(2);
+      const turn = controller.send("again");
+      await until(state, (s) => s.entries.length === 4 && contentOf(s.entries.at(-1)) === "Partial ");
+      await controller.continueTurn(shown(state, 4), "Continue");
+      expect(state().entries).toHaveLength(4);
+      controller.stop();
+      await turn;
+      expect(sent()).toHaveLength(2);
+    });
+
+    test("Retry and Continue posted for another conversation with the same count remove and send nothing", async () => {
+      const { controller, state, sent, files } = await scripted([
+        "hang",
+        "hang",
+        { content: "never sent" },
+        { content: "never sent" },
+      ]);
+      await stopped(controller, state, "A question");
+      const fromA = shown(state);
+      await controller.newChat();
+      await stopped(controller, state, "B question");
+      const b = structuredClone(state().entries);
+      const saved = () => JSON.parse(files.files.get(`${state().conversationId}.json`)!) as ConversationRecord;
+      await settledSave(saved, 2);
+      const record = files.files.get(`${state().conversationId}.json`);
+
+      await controller.retry(fromA);
+      await controller.continueTurn(fromA, "Continue");
+
+      expect(fromA.entries).toBe(b.length);
+      expect(state().entries).toEqual(b);
+      expect(sent()).toHaveLength(2);
+      expect(files.files.get(`${state().conversationId}.json`)).toBe(record!);
+    });
+
+    test("Retry after a failed reply resends the same user message, without reading its mentions again", async () => {
+      const reads: string[] = [];
+      const reader: MentionReader = {
+        read: async (path) => {
+          reads.push(path);
+          return { path, kind: "file", status: "attached", lines: 1, content: "x\n", omitted: 0 };
+        },
+      };
+      const { controller, state, sent, saved } = await scripted(
+        ["fail", { content: "Fixed." }],
+        okRunner().runner,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        reader,
+      );
+      await controller.send("look at @a.ts");
+      expect(state().entries.at(-1)).toMatchObject({ status: "failed" });
+      const first = sent()[0]!.messages;
+      await controller.retry(shown(state, 2));
+
+      expect(reads).toEqual(["a.ts"]);
+      expect(sent()[1]!.messages).toEqual(first);
+      expect(first.at(-1)!.content).toStartWith("look at @a.ts\n\n@a.ts (file, 1 line)");
+      expect(state().entries).toHaveLength(2);
+      expect(state().entries[0]).toMatchObject({ content: "look at @a.ts", mentions: [{ path: "a.ts" }] });
+      expect(state().entries[1]).toMatchObject({ content: "Fixed.", status: "done" });
+      await settledSave(saved, 2);
+      expect(saved()!.entries.map((entry) => entry.role)).toEqual(["user", "assistant"]);
+      expect(saved()!.entries[0]).toMatchObject({ modelText: first.at(-1)!.content });
+    });
+
+    test("Retry removes the turn's automatic summary and a failed summary after it", async () => {
+      const { controller, state, sent, files } = await scripted([{ content: "Again." }]);
+      const saved = record([
+        userEntry("first"),
+        replyEntry("One.", "done"),
+        userEntry("second"),
+        replyEntry("Read.", "done"),
+        { role: "tool", name: "read_file", args: { path: "a.ts" }, status: "ok", text: "read a.ts" },
+        replyEntry("Summary.", "done", true),
+        replyEntry("Partial", "stopped"),
+        replyEntry("", "failed", true),
+      ]);
+      files.files.set(`${saved.id}.json`, JSON.stringify(saved));
+      await controller.openConversation(saved.id);
+      await controller.retry(shown(state, 8));
+
+      expect(state().entries.map(contentOf)).toEqual(["first", "One.", "second", "Again."]);
+      expect(sent()[0]!.messages.slice(1)).toEqual([
+        { role: "user", content: "first" },
+        { role: "assistant", content: "One." },
+        { role: "user", content: "second" },
+      ]);
+    });
+
+    test("Retry is ignored under a completed /compact summary, with no user entry, on a stale count, during a reply, and while a mode change is written", async () => {
+      const { controller, state, sent, files } = await scripted(["hang", { content: "never sent" }]);
+      await controller.retry(shown(state, 0));
+      expect(state().entries).toEqual([]);
+
+      const compacted = record([userEntry("go"), replyEntry("Ok.", "done"), replyEntry("Summary.", "done", true)]);
+      files.files.set(`${compacted.id}.json`, JSON.stringify(compacted));
+      await controller.openConversation(compacted.id);
+      await controller.retry(shown(state, 3));
+      expect(state().entries).toHaveLength(3);
+
+      const failed = record([userEntry("go"), replyEntry("", "failed")]);
+      files.files.set(`${failed.id}.json`, JSON.stringify(failed));
+      await controller.openConversation(failed.id);
+      await controller.retry(shown(state, 1));
+      await controller.retry(shown(state, 3));
+      expect(state().entries).toHaveLength(2);
+
+      const logged = spyOn(console, "error").mockImplementation(() => {});
+      void controller.setMode("autoEdit");
+      expect(state().modePending).toBe(true);
+      await controller.retry(shown(state, 2));
+      await until(state, (s) => !s.modePending);
+      logged.mockRestore();
+      expect(state().entries).toHaveLength(2);
+
+      const turn = controller.send("again");
+      await until(state, (s) => contentOf(s.entries.at(-1)) === "Partial ");
+      await controller.retry(shown(state, 4));
+      expect(state().entries).toHaveLength(4);
+      controller.stop();
+      await turn;
+      expect(sent()).toHaveLength(1);
+    });
+  });
+
   test("a later message resends the earlier steps as tool results", async () => {
     const { controller, sent } = await scripted([{ content: readCall("a.ts") }, { content: "A." }, { content: "B." }]);
     await controller.send("first");
@@ -4510,6 +4797,143 @@ describe("ChatController queue", () => {
     expect(sent()).toEqual([]);
   });
 
+  test("a Retry that ends done sends the first queued message", async () => {
+    scripts.set("queue", ["fail", { content: "retried" }, { content: "two" }]);
+    const { controller, state, release } = await gated();
+    const first = controller.send("A");
+    controller.queueMessage("B", []);
+    await release();
+    await first;
+    expect(state().entries.at(-1)).toMatchObject({ status: "failed" });
+    expect(state().queue.map((message) => message.text)).toEqual(["B"]);
+
+    const retried = controller.retry(shown(state, 2));
+    await release();
+    await until(state, (s) => userTexts(s).length === 2);
+    await release();
+    await retried;
+    expect(sentTexts()).toEqual(["A", "A", "B"]);
+    expect(state().entries.map(contentOf)).toEqual(["A", "retried", "B", "two"]);
+    expect(state().queue).toEqual([]);
+  });
+
+  describe("send replacing the last turn (Edit)", () => {
+    /** The record saved for the conversation shown in `files`, or `undefined` before its first save. */
+    const savedIn = (files: MemoryFiles, state: () => ChatState) => {
+      const text = files.files.get(`${state().conversationId}.json`);
+      return text === undefined ? undefined : (JSON.parse(text) as ConversationRecord);
+    };
+
+    test("sends the new message in place of the last one, its mentions read now, and saves without the old turn before the request", async () => {
+      const reads: string[] = [];
+      const reader: MentionReader = {
+        read: async (path) => {
+          reads.push(path);
+          return { path, kind: "file", status: "attached", lines: 1, content: "x\n", omitted: 0 };
+        },
+      };
+      scripts.set("queue", [{ content: "Old." }, { content: "New." }]);
+      const files = memoryFiles();
+      const { controller, state, release } = await gated({ mentions: reader, store: new ConversationStore(files) });
+      const first = controller.send("A");
+      await release();
+      await first;
+
+      const replaced = controller.send("look at @b.ts", [], shown(state, 2));
+      expect(state().entries.map((entry) => entry.role)).toEqual(["user", "assistant"]);
+      expect(state().entries[0]).toMatchObject({ content: "look at @b.ts" });
+      await until(state, () => contentOf(savedIn(files, state)?.entries[0]) === "look at @b.ts");
+      expect(sent()).toHaveLength(1);
+      expect(savedIn(files, state)!.entries.map((entry) => entry.role)).toEqual(["user", "assistant"]);
+      await release();
+      await replaced;
+
+      expect(reads).toEqual(["b.ts"]);
+      expect(
+        sent()[1]!
+          .messages.slice(1)
+          .map((message) => message.role),
+      ).toEqual(["user"]);
+      expect(sentTexts()[1]).toStartWith("look at @b.ts\n\n@b.ts (file, 1 line)");
+      expect(state().entries.map(contentOf)).toEqual(["look at @b.ts", "New."]);
+      expect(state().entries[0]).toMatchObject({ mentions: [{ path: "b.ts", status: "attached" }] });
+      await until(state, () => contentOf(savedIn(files, state)?.entries.at(-1)) === "New.");
+      expect(JSON.stringify(savedIn(files, state))).not.toContain("Old.");
+      expect(savedIn(files, state)!.entries.map(contentOf)).toEqual(["look at @b.ts", "New."]);
+    });
+
+    test("a stale count, no user entry, or a completed /compact summary after it removes nothing and returns the text", async () => {
+      scripts.set("queue", [{ content: "Old." }]);
+      const files = memoryFiles();
+      const { controller, state, release, returned } = await gated({ store: new ConversationStore(files) });
+      await controller.send("B", ["b.ts"], shown(state, 0));
+      expect(state().entries).toEqual([]);
+
+      const first = controller.send("A");
+      await release();
+      await first;
+      await controller.send("C", [], shown(state, 3));
+      await controller.send("D", [], shown(state, 1));
+      expect(state().entries.map(contentOf)).toEqual(["A", "Old."]);
+
+      const compacted: ConversationRecord = {
+        version: 2,
+        id: newConversationId(),
+        createdAt: 1,
+        updatedAt: 2,
+        entries: [
+          { role: "user", content: "go", mentions: [], modelText: "go" },
+          { role: "assistant", reasoning: "", content: "Ok.", status: "done" },
+          { role: "assistant", reasoning: "", content: "Summary.", status: "done", summary: true },
+        ],
+      };
+      files.files.set(`${compacted.id}.json`, JSON.stringify(compacted));
+      await controller.openConversation(compacted.id);
+      await controller.send("E", [], shown(state, 3));
+      expect(state().entries.map(contentOf)).toEqual(["go", "Ok.", "Summary."]);
+
+      expect(sent()).toHaveLength(1);
+      expect(returned).toEqual([paragraph("B", ["b.ts"]), paragraph("C"), paragraph("D"), paragraph("E")]);
+    });
+
+    test("a send replacing the last turn of another conversation with the same count removes nothing and returns the text", async () => {
+      scripts.set("queue", [{ content: "A answer" }, { content: "B answer" }]);
+      const files = memoryFiles();
+      const { controller, state, release, returned } = await gated({ store: new ConversationStore(files) });
+      const first = controller.send("A question");
+      await release();
+      await first;
+      const fromA = shown(state);
+      await controller.newChat();
+      const second = controller.send("B question");
+      await release();
+      await second;
+      await until(state, () => contentOf(savedIn(files, state)?.entries.at(-1)) === "B answer");
+      const record = files.files.get(`${state().conversationId}.json`);
+
+      await controller.send("edited A question", ["a.ts"], fromA);
+
+      expect(fromA.entries).toBe(2);
+      expect(state().entries.map(contentOf)).toEqual(["B question", "B answer"]);
+      expect(files.files.get(`${state().conversationId}.json`)).toBe(record!);
+      expect(sent()).toHaveLength(2);
+      expect(returned).toEqual([paragraph("edited A question", ["a.ts"])]);
+    });
+
+    test("during a reply it is queued as an ordinary message and removes nothing", async () => {
+      scripts.set("queue", [{ content: "one" }, { content: "two" }]);
+      const { controller, state, release } = await gated();
+      const first = controller.send("A");
+      await controller.send("B", [], shown(state, 2));
+      expect(state().queue.map((message) => message.text)).toEqual(["B"]);
+      await release();
+      await until(state, (s) => userTexts(s).length === 2);
+      await release();
+      await first;
+      expect(state().entries.map(contentOf)).toEqual(["A", "one", "B", "two"]);
+    });
+  });
+
   test("a failed turn sends nothing and keeps the queue", async () => {
     scripts.set("queue", ["fail"]);
     const { controller, state, release } = await gated();
@@ -5042,6 +5466,112 @@ describe("ChatController undo", () => {
     expect(text("b.txt")).toBe("b0\n");
     expect(state().undo.outcome?.files).toEqual([{ path: "b.txt", status: "restored" }]);
     expect(state().undo.reply).toBeUndefined();
+  });
+
+  test("Retry of the held turn drops its data and outcome and reverts nothing; a turn held from before stays held", async () => {
+    writeFileSync(file("a.txt"), "a0\n");
+    writeFileSync(file("b.txt"), "b0\n");
+    const { controller, state, unsaved } = await undoable([
+      { content: writeCall("a.txt", "a1") },
+      { content: "First." },
+      { content: writeCall("b.txt", "b1") },
+      { content: "Second." },
+      { content: "Again." },
+      { content: "Nothing written." },
+      { content: "Once more." },
+    ]);
+    await controller.send("first");
+    await controller.send("second");
+    unsaved.add(file("b.txt"));
+    await controller.undoChanges();
+    expect(state().undo).toMatchObject({ reply: 7, outcome: { reply: 7 } });
+
+    await controller.retry(shown(state, 8));
+    expect(text("b.txt")).toBe("b1\n");
+    expect(state().entries).toHaveLength(6);
+    expect(state().undo).toEqual({ reply: undefined, ranCommand: false, running: false, outcome: undefined });
+
+    await controller.send("third");
+    await controller.retry(shown(state, 8));
+    expect(state().entries.map(contentOf).at(-1)).toBe("Once more.");
+    expect(state().undo.reply).toBeUndefined();
+  });
+
+  test("a send replacing the held turn drops its data and outcome and reverts nothing", async () => {
+    writeFileSync(file("a.txt"), "a0\n");
+    writeFileSync(file("b.txt"), "b0\n");
+    const { controller, state, unsaved } = await undoable([
+      { content: writeCall("a.txt", "a1") },
+      { content: "First." },
+      { content: writeCall("b.txt", "b1") },
+      { content: "Second." },
+      { content: "Edited." },
+    ]);
+    await controller.send("first");
+    await controller.send("second");
+    unsaved.add(file("b.txt"));
+    await controller.undoChanges();
+    expect(state().undo).toMatchObject({ reply: 7, outcome: { reply: 7 } });
+
+    await controller.send("second, edited", [], shown(state, 8));
+    expect(text("b.txt")).toBe("b1\n");
+    expect(state().entries.map(contentOf).slice(4)).toEqual(["second, edited", "Edited."]);
+    expect(state().undo).toEqual({ reply: undefined, ranCommand: false, running: false, outcome: undefined });
+  });
+
+  test("a send replacing the last turn keeps a turn held from before it", async () => {
+    writeFileSync(file("a.txt"), "a0\n");
+    const { controller, state } = await undoable([
+      { content: writeCall("a.txt", "a1") },
+      { content: "First." },
+      { content: "Nothing written." },
+      { content: "Edited." },
+    ]);
+    await controller.send("first");
+    await controller.send("second");
+    expect(state().undo.reply).toBe(3);
+    await controller.send("second, edited", [], shown(state, 6));
+    expect(state().entries.map(contentOf).slice(4)).toEqual(["second, edited", "Edited."]);
+    expect(state().undo.reply).toBe(3);
+    await controller.undoChanges();
+    expect(text("a.txt")).toBe("a0\n");
+  });
+
+  test("Retry keeps a turn held from before the last user entry", async () => {
+    writeFileSync(file("a.txt"), "a0\n");
+    const { controller, state } = await undoable([
+      { content: writeCall("a.txt", "a1") },
+      { content: "First." },
+      { content: "Nothing written." },
+      { content: "Again." },
+    ]);
+    await controller.send("first");
+    await controller.send("second");
+    expect(state().undo.reply).toBe(3);
+    await controller.retry(shown(state, 6));
+    expect(state().entries.map(contentOf).at(-1)).toBe("Again.");
+    expect(state().undo.reply).toBe(3);
+    await controller.undoChanges();
+    expect(text("a.txt")).toBe("a0\n");
+  });
+
+  test("Retry is ignored while an undo runs", async () => {
+    writeFileSync(file("a.txt"), "a0\n");
+    let open: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const { controller, state } = await undoable([{ content: writeCall("a.txt", "a1") }, { content: "First." }], {
+      restoreGate: () => gate,
+    });
+    await controller.send("first");
+    const undo = controller.undoChanges();
+    expect(state().undo.running).toBe(true);
+    await controller.retry(shown(state, 4));
+    expect(state().entries).toHaveLength(4);
+    open();
+    await undo;
+    expect(text("a.txt")).toBe("a0\n");
   });
 
   test("a file with unsaved editor changes is skipped and stays held", async () => {

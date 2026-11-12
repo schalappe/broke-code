@@ -274,13 +274,23 @@ export type HostMessage =
    */
   | ({ type: "insertDraft" } & DraftInsert);
 
+/**
+ * What the panel showed when the user asked to Retry, Continue, or send while replacing the last turn (Edit): the
+ * conversation shown (`ChatState.conversationId`) and its entries count. The host acts only on that conversation with
+ * that count, so a click on a lagging panel removes or extends nothing but the turn it showed.
+ */
+export type ShownEntries = { conversationId: string; entries: number };
+
 export type WebviewMessage =
   | { type: "ready" }
   | { type: "selectProvider"; provider: string }
   | { type: "selectModel"; model: string }
   | { type: "retryModels" }
-  /** `mentions`: paths picked in the menu; see `ChatController.send`. */
-  | { type: "send"; text: string; mentions: string[] }
+  /**
+   * `mentions`: paths picked in the menu; see `ChatController.send`. `replaces`: sent while the panel was replacing the
+   * last turn (Edit), what it showed; the host removes that turn first when it still may.
+   */
+  | { type: "send"; text: string; mentions: string[]; replaces?: ShownEntries }
   /** Send while a reply is in flight: queue the message, with its picked mention paths, as `send` carries them. */
   | { type: "queueMessage"; text: string; mentions: string[] }
   /** Remove queued message `id`. */
@@ -319,7 +329,9 @@ export type WebviewMessage =
    */
   | { type: "setMode"; mode: Mode }
   /** "Undo changes": restore the files of the turn `ChatState.undo.reply` names. */
-  | { type: "undoChanges" };
+  | { type: "undoChanges" }
+  /** Retry or Continue the last turn (see `lastTurnActions`) of what the panel showed. */
+  | { type: "retry" | "continueTurn"; shown: ShownEntries };
 
 /** Chat state carried by `message`; `undefined` for a message that must leave the panel's state alone. */
 export function chatStateOf(message: HostMessage): ChatState | undefined {
@@ -333,6 +345,15 @@ export function chatStateOf(message: HostMessage): ChatState | undefined {
 export function isReplying(state: ChatState): boolean {
   const last = state.entries.at(-1);
   return last?.role === "assistant" && (last.status === "waiting" || last.status === "streaming");
+}
+
+/**
+ * Whether Send would act now: a model chosen, no reply in flight, no mode change being written, and no undo running.
+ * The one check of the panel's Send, Enter, built-in commands, Send now, Retry, and Continue; the host checks the same
+ * conditions again (`mayStartTurn`), since the panel's state may lag.
+ */
+export function sendWouldAct(state: ChatState): boolean {
+  return state.model !== undefined && !isReplying(state) && !state.modePending && !state.undo.running;
 }
 
 /**
@@ -383,11 +404,21 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | undefined {
       const model = text("model");
       return model ? { type: "setContextSize", model } : undefined;
     }
-    case "send":
+    case "send": {
+      const value = text("text");
+      const mentions = pathList(message.mentions);
+      const { replaces } = message;
+      if (value === undefined || mentions === undefined) return undefined;
+      if (replaces === undefined) return { type: "send", text: value, mentions };
+      const shown = shownEntries(replaces);
+      return shown ? { type: "send", text: value, mentions, replaces: shown } : undefined;
+    }
     case "queueMessage": {
       const value = text("text");
       const mentions = pathList(message.mentions);
-      return value === undefined || mentions === undefined ? undefined : { type: message.type, text: value, mentions };
+      return value === undefined || mentions === undefined
+        ? undefined
+        : { type: "queueMessage", text: value, mentions };
     }
     case "removeQueued":
     case "editQueued":
@@ -418,11 +449,23 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | undefined {
       const value = text("text");
       return value === undefined || value.length > REPLY_MAX_LENGTH ? undefined : { type: "insertCode", text: value };
     }
+    case "retry":
+    case "continueTurn": {
+      const shown = shownEntries(message.shown);
+      return shown ? { type: message.type, shown } : undefined;
+    }
     case "setMode":
       return isMode(message.mode) ? { type: "setMode", mode: message.mode } : undefined;
     default:
       return undefined;
   }
+}
+
+/** `value` as `ShownEntries`, its unknown keys dropped; `undefined` for any other shape. */
+function shownEntries(value: unknown): ShownEntries | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const { conversationId, entries } = value as Record<string, unknown>;
+  return isConversationId(conversationId) && isRequestId(entries) ? { conversationId, entries } : undefined;
 }
 
 function isRequestId(id: unknown): id is number {

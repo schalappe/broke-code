@@ -23,6 +23,25 @@ One user request and every tool call and tool result it triggers, up to the mode
 and no call. An empty reply is no final answer.
 _Avoid_: run, task, iteration
 
+**Retry**:
+Running the last agent turn again in place of its first attempt: every entry after the last user message is removed
+for good, and that message goes to the model again as it did then, its mentions and skill text not read again. Files
+written and commands run by the removed steps stay as they are, so the chat asks first when there are any. Offered
+under the last reply while no `/compact` summary follows the last user message.
+_Avoid_: regenerate, redo, rerun
+
+**Continue**:
+A new user message, shown as "Continue", that asks the model to carry on from where its last agent turn stopped:
+offered after **Stop**, the step limit, or three malformed calls, never after a context-full stop. It removes nothing.
+_Avoid_: resume, keep going
+
+**Edit**:
+On the last user message, wherever **Retry** is offered: puts the message's text back in the message box and marks its
+agent turn as about to be replaced. Sending then removes that message and its replies for good and sends the new text
+as an ordinary message; Cancel, or any change of the conversation, leaves them. Like Retry, it reverts no file and no
+command. Not the Edit of a queued message, which takes that message out of the queue.
+_Avoid_: rewrite, amend, edit and resend
+
 **Tool step**:
 One body tool call inside an agent turn and the result sent back to the model; a malformed call, or an empty reply, and
 the message saying what is wrong count as a step too. The chat shows each step as a compact row. When a request would
@@ -42,8 +61,8 @@ _Avoid_: confirmation, permission, consent
 The chat's way back from the writes of an agent turn: under the last reply of the latest turn of the conversation
 shown that wrote a file, it puts each file that turn wrote back to its text from before the turn, or deletes a file the
 turn created, file by file. A file changed since, or unsaved in an editor, is skipped untouched and retried at the next
-click. The text from before the turn is held in memory only, until a later turn writes a file, the conversation shown
-changes, or the window reloads. Commands are never undone. Each write step of a file put back is then **undone**: its
+click. The text from before the turn is held in memory only, until a later turn writes a file, Retry or Edit removes that turn,
+the conversation shown changes, or the window reloads. Commands are never undone. Each write step of a file put back is then **undone**: its
 row says so, the saved conversation keeps the mark, and the model reads that the user undid the change, also once a
 summary replaces that step.
 _Avoid_: revert, rollback, checkpoint, restore point
