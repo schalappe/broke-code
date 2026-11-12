@@ -35,7 +35,7 @@ This file says which file holds which responsibility. Update it when a module ga
   panel showed), the model list (`modelList.ts`: `emptyModelsLabel`, why the list is empty, for the
   header's select and the Quick Pick; `modelChoices`, the rows `/model` opens; `chooseModel`, the `/model` pick over a
   pick port the host fills with `showQuickPick`), workspace file access (`workspaceFiles.ts`: the inside-workspace check and its read-only
-  roots (the loaded skills' folders outside the workspace, for reads only), capped reads, one-level listings, line truncation, the write boundary and atomic writes, `removeWorkspaceFile`, the remove with the write's checks, with `node:fs`), mentions (`mentions.ts`: token detection, picked and typed
+  roots (the loaded skills' folders outside the workspace, for reads only), capped reads, one-level listings, line truncation and `cutLineRange`, the line range `read_file` shows, the write boundary and atomic writes, `removeWorkspaceFile`, the remove with the write's checks, with `node:fs`), mentions (`mentions.ts`: token detection, picked and typed
   mentions merged, reading, the text the model receives, and `cutToMentionCaps`, the cut of a reserved mention's text),
   the reserved mentions (`reservedMentions.ts`: `RESERVED_MENTIONS`, the table a new name is added to, `MentionKind`,
   `NOTHING_TO_ATTACH`, the statuses of a neutral chip, and
@@ -74,7 +74,7 @@ This file says which file holds which responsibility. Update it when a module ga
   approval, `runCommand` runs an approved command in its own process group with an injected shell and timeout, and,
   when given (the eval bench only), `environment`, the child's whole environment in place of the host's, and
   `launcher`, a program and its arguments placed before `<shell> -c <command>`, and
-  `commandShell` picks the shell), and the read tools (`tools.ts`: `read_file` and `list_files` over the mention reader, `search`
+  `commandShell` picks the shell), and the read tools (`tools.ts`: `list_files` over the mention reader, `read_file` over the same read and its own line range, header, and notice, `search`
   over ripgrep with its candidate paths, bounded `ok` or `error` results, each also reaching the loaded skills' folders
   by absolute path), the write tools (`writeTools.ts`:
   `write_file` and `edit_file` plan a change `{ path, target, before, after }` and never write; an applier port writes
@@ -138,7 +138,7 @@ This file says which file holds which responsibility. Update it when a module ga
   `Root.tsx` is the panel's root: it posts `ready`, renders each state, and queues the `insertDraft` drafts for the
   message box; `main.tsx` mounts it. `turns.ts` groups the entries for rendering without React (`foldTurns`: each entry once,
   an ended turn's fold and its step counts, a summary a boundary of its own), and `text.ts` words the fold's row (`describeFold`), the step row
-  (`describeToolStep`, "undone" included), and the undo's outcome (`describeUndoOutcome`, `describeUndoneFile`, each path a part of its own for the editor font,
+  (`mainArgument`, a `read_file` range after its path; `describeToolStep`, "undone" included), and the undo's outcome (`describeUndoOutcome`, `describeUndoneFile`, each path a part of its own for the editor font,
   `describeUndoFailure`).
 - `src/l10n.test.ts`: checks that every `l10n.t` message has a French translation and that the
   `package.nls*.json` files match.

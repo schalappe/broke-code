@@ -170,7 +170,8 @@ tools, which run without asking you, inside the workspace folders and the folder
 conversation (see [Skills](#skills)):
 
 - **read_file** reads a file, with the same limits as a mention: binary files and files over 1 MiB are refused, and
-  a file over 2,000 lines is cut to its first 2,000.
+  at most 2,000 lines are shown. It can read a range of lines, so the agent reads on past the first 2,000: a cut read
+  tells it the line to read on from, and the step's row shows the range after the path (`big.log 2001-4000`).
 - **list_files** lists the direct children of a folder.
 - **search** searches the workspace with ripgrep, the copy your editor ships or the `rg` on your `PATH`. It skips
   hidden files, files ignored by `.gitignore`, and symlinks, and stops after 30 seconds.
@@ -496,7 +497,7 @@ never hold an API key. A window with no folder open keeps its conversation in me
 ## Tested models
 
 broke-code's tool calls are measured on local models with Ollama: `qwen3.8:27b` and `gemma4:26b-a4b-it-qat`, ten
-runs of each task, with the bar at nine. The bench has seven tasks:
+runs of each task, with the bar at nine. The bench has eight tasks:
 
 - **Read**: answer with the value of a setting that only a file holds.
 - **Edit**: rename a function in a source file, changing nothing else.
@@ -506,6 +507,7 @@ runs of each task, with the bar at nine. The bench has seven tasks:
 - **Slash**: answer the skill task's question sent after `/` and the skill's name, which loads the skill for the model.
 - **Hidden**: the slash task with a skill kept from the model, which only you can load, beside an unrelated skill the
   model may load.
+- **Range**: give the code on the last line of a 2,400-line file, by reading on past its first 2,000 lines.
 
 Both models pass every task, 10 runs of 10 on each in the latest full run. When a model thinks, then stops without a
 word, broke-code tells it so and asks again. Contributors run the bench with `bun run eval`.

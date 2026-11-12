@@ -24,7 +24,7 @@ This file describes `bun run eval`: what it runs, its sandbox, its scenarios, it
   need `sandbox-exec` to apply a profile, so they fail inside a harness that is itself sandboxed. Skills are discovered as the extension
   does, but with a throwaway copy of the scenario's home fixture as the home folder, so the bench never reads the real
   `~/.agents`; a scenario without one gets no skill, and its prompt has neither the Skills section nor `load_skill`.
-  Seven scenarios, each judged on the turn ending `done` and on the workspace after it: every file the scenario writes
+  Eight scenarios, each judged on the turn ending `done` and on the workspace after it: every file the scenario writes
   holds its exact expected text, byte for byte, and every other entry is unchanged. The workspace is read back without
   following symlinks: every entry but a folder counts, a file by its text, a symlink by its target (`{ symlink }`), any
   other kind, such as a FIFO, by its kind (`{ special }`), so a command that adds a symlink fails `workspaceChanged`.
@@ -53,6 +53,13 @@ This file describes `bun run eval`: what it runs, its sandbox, its scenarios, it
     `depot-codes` stays off its list; judged the same way. It measures that the model follows a skill the user loaded
     although it was never listed to it, instead of refusing the loaded text as injected: live, a `load_skill` of it
     answered an error and the model refused (#50); it now answers "already loaded".
+  - `range`: `manifest.txt` lists 2,400 parcels, one per line (`<number> <code>`, 15 characters with the break), and a
+    README names it; the code of the last parcel, `VX7Q-K2RM`, is held once, on line 2,400. The message asks to read
+    the file and give the code of its last parcel, and names neither the tool, its arguments, a line number, nor a word
+    of that line, so `search` has no pattern for it. Passes when an `ok` `read_file` step called with a `start_line`
+    holds the code, the answer holds it, and no file changed; without such a step it is `wrongTool`, a `search` or
+    `run_command` that found the code included: it measures that the model follows the note of a cut read (#100). Both
+    reads fit the bench's 32,768-token context: the first shows 2,000 lines (about 32,000 characters), the second 400.
 
   A failed run shows one category and a one-line detail: `malformed`, `wrongTool`, `wrongAnswer`, `stepLimit`,
   `contextFull`, `providerError`, `wrongEdit` (a file the scenario writes is missing or holds other text, with the

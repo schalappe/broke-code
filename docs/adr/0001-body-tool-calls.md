@@ -252,3 +252,12 @@ rule (one command covers a whole folder tree, #120), `qwen-latest` on vLLM passe
 failed run on vLLM was traced to Qwen's garbled `<parameter>` form seen live on 2026-11-10, so it gets no parser rule.
 `glm-latest` stays unmeasured, a rented GPU for it being out of budget (maintainer decision): its reply ending mid-call
 gets no rule either, and the rule above stands: no parser change without eval evidence.
+
+## Addendum (2026-11-12): `read_file` takes a line range
+
+Decided by the maintainer (schalappe) on 2026-11-12 (#100). `read_file` gets two optional `oneLine` arguments,
+`start_line` and `end_line`, so the model can read past a file's first 2,000 lines. The call format is unchanged: they
+are ordinary named arguments in the body of the call, and the parser needs no new rule. A cut read without a range now
+gets the header `lines 1-2000 of T` and the notice `[truncated: N more lines not shown; read on with start_line 2001]`:
+the first read of a long file never has a range, so the notice is where the model learns it can read on. The bench's
+`range` scenario measures that the model follows it. Mentions and the other tools keep their wording.

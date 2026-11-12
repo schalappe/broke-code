@@ -35,6 +35,26 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
   `write_file` cannot create a file ending with an empty line; `edit_file` can.
 - The v1 tools are `read_file`, `list_files`, `search` (ripgrep), `write_file`, `edit_file`, `run_command`,
   and `load_skill`.
+- `read_file(path, start_line?, end_line?)` reads a file under the mention caps (binary or over 1 MiB refused whole)
+  and shows lines `start_line` to `end_line`, 1-based and inclusive, at most 2,000 of them (#100). Left out,
+  `start_line` is 1 and `end_line` the last line; either may come alone, and an `end_line` past the end reads to it.
+  Lines are counted as the 2,000-line cut counts them (`\n`, `\r\n`, and `\r` each end one; a final break ends the last
+  line, not a new one), each kept with its break as written.
+  - A read that shows the whole file is today's mention block, byte for byte: `@<path> (file, N lines)` and the fenced
+    text. A read that shows part of it, by its range or by the 2,000-line cut, has the header
+    `@<path> (file, lines A-B of T)` (`line A of T` for one line), `A` and `B` the lines shown and `T` the file's
+    count. When the cut stopped before the line asked for (`end_line`, or the last line), the result ends with
+    `[truncated: N more lines not shown; read on with start_line B+1]`, `N` the lines from `B+1` to that line; a range
+    that ended where asked has no notice. Mentions, `list_files`, `search`, `load_skill`, and the reserved mentions
+    keep `[truncated: N more lines not shown]`.
+  - Errors, as `error` results. Before any read: a value that, trimmed, is not digits only, at least 1, and a safe
+    integer (`read_file: start_line "2,001" is not a whole number of 1 or more.`, the value cut like other excerpts);
+    `end_line` before `start_line`. After the read: `start_line` past the last line, giving the line count
+    (`read_file: big.log: start_line 3001 is past the last line; the file has 3000 lines.`); an empty file reads from
+    line 1 as without a range and refuses a later `start_line` with 0 lines. A folder and every refusal of a path
+    (missing, outside, binary, over 1 MiB, unreadable) answer as without a range.
+  - The chat's step row shows the range after the path as the model wrote it: `big.log 2001-4000`, `big.log 2001-`
+    without `end_line`, `big.log 1-50` without `start_line`.
 - `edit_file` replaces exact text only, compared byte for byte, line endings included. If the text matches zero
   times or more than once (overlapping matches count), return an error to the model. Never guess the location.
 
