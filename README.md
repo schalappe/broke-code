@@ -285,6 +285,16 @@ another conversation, a reply starting (Retry, Continue, or a queued message sen
 window, which also clears the box. Edit is not offered once `/compact` has summarized the conversation after your last
 message.
 
+### See what a turn changed
+
+Under the last reply of the latest turn that wrote a file, above **Undo changes**, **Changed files** lists each file
+that turn created or edited, in the order it first wrote them: its path, "created" or "edited", and the lines added
+and removed since before the turn (`+2 −1`). Click a row to open the file's diff beside the chat: on the left its text
+from before the turn (empty for a file the turn created), on the right the file as it is now, your unsaved edits and
+any change since the turn included. A file deleted since opens no diff: a notification says so. The list follows the
+button: it goes when the button goes, an undo removes the files it put back and keeps the ones it skipped, and a
+file's diff tab closes when its row goes and when the window reloads. Changes made by commands are not listed.
+
 ### Undo the changes of a turn
 
 A change the agent writes goes straight to disk, outside the editor: neither the editor's **Undo** nor Local History
@@ -296,7 +306,7 @@ of yours, for instance), when an editor holds unsaved changes to it, or when it 
 stays, so you can fix that and click again to retry only the files skipped. The button stays until a later turn
 writes a file (that turn's button replaces it), **Retry** or a send after **Edit** removes that turn, you start a new chat or open another
 conversation, or the window reloads: the text from before the turn is kept in memory only, never on disk. After that, git is the way back.
-Commands are not undone: when the turn ran one, the chat says so beside the button. While the undo runs, **Send** waits
+Commands are not undone or listed: when the turn ran one, the chat says so beside the button. While the undo runs, **Send** waits
 for it. Each step that wrote a file put back then says **undone**, also after a reload, and the agent is told that you
 undid the change, so it reads the file again instead of answering from the change.
 

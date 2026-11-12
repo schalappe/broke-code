@@ -115,7 +115,7 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
     workspace (maintainer decision): writable with approval, its symlinks may resolve anywhere in the workspace, and
     `search` prints its paths relative to the workspace.
 
-## Approvals, modes, and "Undo changes"
+## Approvals, modes, "Undo changes", and "Changed files"
 
 - Approvals (ADR 0002):
   - Reads run without asking.
@@ -208,6 +208,43 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
     restore and the save leaves the steps unmarked (accepted: the held turn is memory only, so nothing retries it),
     and marking again is harmless. The step row says "undone" before its status, its line count unchanged (the line
     the model gets is not part of the step's text), also inside a folded turn, whose row counts are unchanged.
+  - "Changed files" (#99, ADR 0002, 2026-11-12): the held turn's files, as rows under the reply `ChatState.undo.reply`
+    names, so the list shows exactly when "Undo changes" does (never during a reply, never while nothing is held) and
+    has no state of its own: it follows the held turn's lifetime above (replaced by a later turn's first write, dropped
+    by New chat, open, delete, Retry, Edit's send, and a window reload; after an undo, restored and removed files leave
+    it and skipped ones stay). `ChatState.changedFiles` holds one `ChangedFile { path, kind, added, removed }` per file
+    still held, in the order of its first write, empty whenever `undo.reply` is absent: `path` as the file index
+    writes it (`workspacePath` over the real roots, else the model's spelling, as the undo's outcome names a file),
+    `kind` `created` (its original is `undefined`) or `edited`. The rows are named when the held turn records a write
+    (`nameRows`: the real roots are async, so not at each emit; a naming overtaken by a later one is dropped) and
+    filtered at each emit to the files still held. No file text reaches `ChatState` or the record, and the record is
+    unchanged. Plan writes nothing, so it never shows the list; writes made by commands are not listed, and the hint
+    under "Undo changes" says "Commands this turn ran are not listed or undone." when the turn ran one.
+  - Line counts (`lineDiffCount`, `src/core/lineDiff.ts`): the line diff between the file's text before the turn
+    and the text its last recorded write left, never the disk. A line is the text up to and including its line break,
+    the last one maybe without, compared byte for byte, so a changed line ending and a changed final line break each
+    count as one line removed and one added; a created file is `+N −0`; an empty created file, and a file edited back
+    to its first text, are `+0 −0` and still listed. The counts are those of a minimal line diff (Myers' forward pass
+    over the lines left after the common first and last lines), computed once per recorded write (cached by
+    `RecordedFile` identity), never at each state update. Work bound: `LINE_DIFF_WORK_LIMIT`, 4 million steps (one
+    per diagonal visited and per line matched), tens of milliseconds, enough for a minimal diff of up to about 2,800
+    changed lines whatever the file's size; two 1 MiB texts can hold a million lines each, which would otherwise take
+    minutes. Past it the lines left after the common first and last lines count as all removed and all added: still
+    a true diff, no longer the smallest.
+  - A row's diff: the webview's `openChangeDiff { path }` carries the row's displayed path, validated as a non-empty
+    string within `MAX_MENTION_PATH_LENGTH`; `ChatController.openChangeDiff` opens the first row shown under that path
+    through the `changeDiffs` port (`ChangeDiffHost`, beside `UndoHost`) with its file's text before the turn
+    (`HeldFileDiff { path, realPath, original }`, `original` `undefined` for a created file), and does nothing for a
+    path no longer shown or without the port (tests, the eval bench: the rows still show). The host
+    (`src/extension/turnDiffs.ts`) opens VS Code's diff editor beside the chat, the focus kept in the panel, titled
+    "<path> (changes of this turn)": on the left the text before the turn, read-only, from a content provider on
+    `BEFORE_TURN_SCHEME` (empty for a created file); on the right the real file, so it shows what the file holds now,
+    unsaved editor changes included, and a hand edit since the turn shows what an undo would skip. A file no longer on
+    disk opens no diff: an error notification says so. A diff editor that fails to open is shown as an error
+    notification. A row's diff tab lives as long as its row: the controller tells the port to close the diffs of the
+    files that left the held turn (put back by an undo, or the turn no longer held), checked at each emit, the one
+    place every such change passes; the host closes them by their left side (`closeTurnDiffs`), and closes every one
+    at deactivation, so a reloaded window never restores one with an empty left side.
 
 ## Commands
 

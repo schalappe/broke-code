@@ -103,3 +103,23 @@ at the scouting of #93, `workingCopyHistoryTracker.ts`). The chat therefore offe
   summary replaces is no longer sent: the summary's message then names it on a line of its own after the summary's
   text, so an undo after `/compact` or an automatic summary still reaches the model (maintainer decision,
   2026-11-12).
+
+## Addendum (2026-11-12): the diff of a changed file
+
+"Changed files" (#99) lists the held turn's files above "Undo changes" and is the second use of the diff editor. A row
+opens its file's diff beside the chat, the focus kept in the panel: the held text before the turn on the left, served
+from memory by a content provider of its own scheme (`BEFORE_TURN_SCHEME`), read-only, empty for a created file; the
+real file on the right, not a snapshot, so the diff shows what the file holds now, unsaved editor changes included,
+and a hand edit since the turn shows what an undo would skip (scouting decision). A file gone from disk opens no diff:
+an error notification says so, since the diff editor would show it as an empty file (scouting decision).
+
+- The tab lives as long as its row: it closes when its file leaves the held turn (put back by an undo, or the turn no
+  longer held: a later turn's first write, Retry or Edit removing it, New chat, open, delete) and at deactivation, the
+  approval diff's rule, so a reloaded window never restores one with an empty left side (maintainer decision,
+  2026-11-12). The controller checks at each state update which opened diffs lost their file and tells the host's port
+  to close them.
+- The right side is a `file:` URI shared with every editor of that file, so these tabs are found by their left side's
+  scheme and URI (`closeTurnDiffs`), never by their right side as the approval's are.
+- The counts come from a minimal line diff written in the core with a fixed work bound (`LINE_DIFF_WORK_LIMIT`), no
+  diff library (scouting decision): past the bound, the lines left after the common first and last lines count as all
+  removed and all added.
