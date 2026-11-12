@@ -89,6 +89,14 @@ export class ChatView implements vscode.WebviewViewProvider {
     }
   }
 
+  /**
+   * Put queued texts the controller returns back in the message box. The request came from the panel, so it is not
+   * shown or focused: the draft waits for the webview's next `ready` when it is hidden.
+   */
+  returnDraft(draft: DraftInsert): void {
+    void this.drafts.queue(draft);
+  }
+
   /** Post one draft; `false` when the webview did not get it, which the queue keeps for its next `ready`. */
   private async sendDraft(draft: DraftInsert): Promise<boolean> {
     try {
@@ -149,6 +157,16 @@ export class ChatView implements vscode.WebviewViewProvider {
         return void controller.loadModels();
       case "send":
         return void controller.send(message.text, message.mentions);
+      case "queueMessage":
+        return void controller.queueMessage(message.text, message.mentions);
+      case "removeQueued":
+        controller.removeQueued(message.id);
+        return;
+      case "editQueued":
+        controller.editQueued(message.id);
+        return;
+      case "sendQueued":
+        return void controller.sendQueued(message.id);
       case "queryFiles":
         return void this.answerQuery(message.query, message.id);
       case "querySkills":

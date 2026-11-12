@@ -46,6 +46,14 @@ window; Plan is kept per workspace and wins over the setting while on. A turn re
 for Run in every mode that offers them.
 _Avoid_: agent mode, approval mode, permission mode
 
+**Queued message**:
+A message the user sends while an agent turn is in flight. It waits, under the message box, and is sent as if typed
+then when a turn ends with a final answer, its mentions read and its skill loaded at that moment; one turn each, in
+order, at most 10. A turn that ends any other way pauses the queue until "Send now" or a turn that ends with a final
+answer. Edit puts it back in the message box; New chat and leaving the conversation shown put every queued message
+back there. Never saved, and lost at a window reload.
+_Avoid_: pending message, steering, follow-up
+
 **Conversation**:
 One thread of messages in the chat panel, saved per workspace and listed in its history; a new chat starts a new
 one.

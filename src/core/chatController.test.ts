@@ -30,7 +30,7 @@ import { ConversationStore } from "./conversationStore";
 import { parseLimits } from "./limits";
 import { mentionReader } from "./mentionReader";
 import type { MentionReader, ReadMention } from "./mentions";
-import { type ChatEntry, type ChatState, isReplying } from "./protocol";
+import { type ChatEntry, type ChatState, type DraftInsert, isReplying } from "./protocol";
 import type { Provider } from "./providers";
 import { LOAD_SKILL_TOOL, readSkills, type SkillDiscovery } from "./skills";
 import { composeSystemPrompt, type InstructionFile, type Skill } from "./systemPrompt";
@@ -84,6 +84,8 @@ function scriptedResponse(reply: ScriptedReply | undefined): Response {
 const requests = new Map<string, unknown[]>();
 /** Number of model listings, by path prefix. */
 const listings = new Map<string, number>();
+/** Path prefixes whose model listing answers HTTP 500. */
+const failingListings = new Set<string>();
 
 // Provider that lists one model. Path `/a/` and `/b/` stream "Partial ", then finish only when `finishReply` is
 // called; `/shape-<name>/` streams that shape whole; `/unclosed/` streams `reasoningOnly`; `/vllm/` sends the vLLM
@@ -98,6 +100,7 @@ const server = Bun.serve({
     const prefix = path.split("/")[1]!;
     if (path.endsWith("/models")) {
       listings.set(prefix, (listings.get(prefix) ?? 0) + 1);
+      if (failingListings.has(prefix)) return new Response("listing down", { status: 500 });
       const models = prefix === "two-models" ? ["m", "n"] : ["m"];
       return Response.json({ data: models.map((id) => ({ id })) });
     }
@@ -3698,10 +3701,12 @@ describe("ChatController mode", () => {
     const pendingWrites: (() => void)[] = [];
     const releaseWrite = () => pendingWrites.shift()?.();
     const states: ChatState[] = [];
+    const returned: DraftInsert[] = [];
     const controller = new ChatController({
       apiKeys: { get: async () => undefined },
       workspaceState,
       publish: (state) => states.push(structuredClone(state)),
+      returnDraft: (draft) => returned.push(draft),
       mentions: noMentions,
       store: new ConversationStore(undefined),
       ...noTools,
@@ -3717,7 +3722,7 @@ describe("ChatController mode", () => {
     controller.modeChanged();
     controller.setProviders({ providers: [ollama], skipped: [] });
     await until(state, (s) => s.model === "m");
-    return { controller, state, written, states, pendingWrites, releaseWrite };
+    return { controller, state, written, states, pendingWrites, releaseWrite, returned };
   }
 
   test("follows the user value of the setting: absent or false is Ask, true is Auto-edit", async () => {
@@ -3903,18 +3908,19 @@ describe("ChatController mode", () => {
       }
     });
 
-    test("a send while a mode write is pending is ignored, like a send while replying", async () => {
+    test("a send while a mode write is pending starts no turn and goes back to the box", async () => {
       const workspaceState = memoryStore();
       await workspaceState.update("brokeCode.plan", true);
-      const { controller, state, pendingWrites, releaseWrite } = await withSetting(
+      const { controller, state, pendingWrites, releaseWrite, returned } = await withSetting(
         {},
         { workspaceState, deferWrites: true },
       );
       const requestsBefore = (requests.get("a") ?? []).length;
       const picked = controller.setMode("autoEdit");
       await until(state, () => pendingWrites.length === 1);
-      await controller.send("Hi");
+      await controller.send(" Hi @a.ts ", ["a.ts"]);
       expect(state().entries).toEqual([]);
+      expect(returned).toEqual([{ text: "Hi @a.ts", mode: "paragraph", picked: ["a.ts"] }]);
       releaseWrite();
       expect(await picked).toEqual({ kind: "written" });
       expect(state().mode).toBe("autoEdit");
@@ -3936,5 +3942,441 @@ describe("ChatController mode", () => {
       expect(state().entries).toEqual([]);
       expect((requests.get("a") ?? []).length).toBe(requestsBefore);
     });
+  });
+});
+
+describe("ChatController queue", () => {
+  const queueProvider: Provider = { name: "Queue", baseUrl: `http://localhost:${server.port}/queue/v1` };
+  type Request = { messages: { role: string; content: string }[] };
+  /** Chat requests sent to the queue provider in this test. */
+  const sent = () => (requests.get("queue") ?? []) as Request[];
+  /** The last user message of each request sent, in order. */
+  const sentTexts = () => sent().map((request) => request.messages.at(-1)?.content);
+  const userTexts = (state: ChatState) =>
+    state.entries.flatMap((entry) => (entry.role === "user" ? [entry.content] : []));
+
+  beforeEach(() => {
+    requests.delete("queue");
+    scripts.delete("queue");
+    failingListings.delete("queue");
+  });
+
+  /**
+   * Controller on the queue provider whose turns each hold, in flight, until `release` lets them go on: the instruction
+   * reader of each send waits for it. `release` waits for a held turn, then lets every held one go, a stopped one
+   * included, which has nothing left to do. The reader is called a microtask after the send starts, so `release`
+   * first lets that land. `returned`: the drafts the controller hands back to the message box, in order.
+   */
+  async function gated(options: { mentions?: MentionReader; store?: ConversationStore; limits?: LimitsSource } = {}) {
+    const gates: (() => void)[] = [];
+    const returned: DraftInsert[] = [];
+    const controller = new ChatController({
+      apiKeys: { get: async () => undefined },
+      workspaceState: memoryStore(),
+      publish: () => {},
+      mentions: options.mentions ?? noMentions,
+      store: options.store ?? new ConversationStore(undefined),
+      ...noTools,
+      instructions: { read: () => new Promise<InstructionFile[]>((resolve) => gates.push(() => resolve([]))) },
+      limits: options.limits,
+      returnDraft: (draft) => returned.push(draft),
+    });
+    const state = () => controller.snapshot;
+    controller.setProviders({ providers: [queueProvider], skipped: [] });
+    await until(state, (s) => s.model === "m");
+    const release = async () => {
+      await Bun.sleep(1);
+      for (let waited = 0; gates.length === 0; waited += 5) {
+        if (waited > 2000) throw new Error(`no turn to release; state: ${JSON.stringify(state())}`);
+        await Bun.sleep(5);
+      }
+      for (const open of gates.splice(0)) open();
+    };
+    return { controller, state, release, returned };
+  }
+
+  /** A draft returning `text` to the message box as a new paragraph, with `picked`. */
+  const paragraph = (text: string, picked: string[] = []): DraftInsert => ({ text, mode: "paragraph", picked });
+
+  test("a message queued during a turn is sent after it ends done, with its mentions read then", async () => {
+    const reads: string[] = [];
+    const reader: MentionReader = {
+      read: async (path) => {
+        reads.push(path);
+        return { path, kind: "file", status: "attached", lines: 1, content: "x\n", omitted: 0 };
+      },
+    };
+    scripts.set("queue", [{ content: "one" }, { content: "two" }]);
+    const { controller, state, release } = await gated({ mentions: reader });
+    const first = controller.send("A");
+    controller.queueMessage("  then read @my file.ts  ", ["my file.ts"]);
+    expect(state().queue).toEqual([
+      { id: expect.any(Number), text: "then read @my file.ts", mentions: ["my file.ts"] },
+    ]);
+    expect(reads).toEqual([]);
+
+    await release();
+    await until(state, (s) => userTexts(s).length === 2);
+    expect(state().queue).toEqual([]);
+    expect(reads).toEqual(["my file.ts"]);
+    await release();
+    await first;
+    expect(userTexts(state())).toEqual(["A", "then read @my file.ts"]);
+    expect(sentTexts()[1]).toStartWith("then read @my file.ts\n\n@my file.ts (file, 1 line)");
+    expect(state().entries.at(-1)).toMatchObject({ role: "assistant", content: "two", status: "done" });
+  });
+
+  test("two queued messages run in order, one turn each", async () => {
+    scripts.set("queue", [{ content: "one" }, { content: "two" }, { content: "three" }]);
+    const { controller, state, release } = await gated();
+    const first = controller.send("A");
+    controller.queueMessage("B", []);
+    controller.queueMessage("C", []);
+    await release();
+    await until(state, (s) => userTexts(s).length === 2);
+    expect(state().queue.map((message) => message.text)).toEqual(["C"]);
+    await release();
+    await release();
+    await first;
+    expect(sentTexts()).toEqual(["A", "B", "C"]);
+    expect(state().entries.map((entry) => entry.role)).toEqual([
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+    ]);
+    expect(state().queue).toEqual([]);
+  });
+
+  test("Stop during a turn never starts the next one: the queue stays, paused", async () => {
+    const { controller, state } = await gated();
+    const first = controller.send("A");
+    controller.queueMessage("B", []);
+    controller.stop();
+    await first;
+    await Bun.sleep(20);
+    expect(state().entries.at(-1)).toMatchObject({ status: "stopped" });
+    expect(state().queue.map((message) => message.text)).toEqual(["B"]);
+    expect(userTexts(state())).toEqual(["A"]);
+    expect(sent()).toEqual([]);
+  });
+
+  test("a failed turn sends nothing and keeps the queue", async () => {
+    scripts.set("queue", ["fail"]);
+    const { controller, state, release } = await gated();
+    const first = controller.send("A");
+    controller.queueMessage("B", []);
+    await release();
+    await first;
+    expect(state().entries.at(-1)).toMatchObject({ status: "failed" });
+    expect(state().queue.map((message) => message.text)).toEqual(["B"]);
+    expect(sentTexts()).toEqual(["A"]);
+  });
+
+  test("a halted turn sends nothing and keeps the queue", async () => {
+    const { controller, state, release } = await gated({ limits: fixedLimits({ sizes: { m: 10 } }) });
+    const first = controller.send("A");
+    controller.queueMessage("B", []);
+    await release();
+    await first;
+    expect(state().entries.at(-1)).toMatchObject({ status: "halted", haltReason: "contextFull" });
+    expect(state().queue.map((message) => message.text)).toEqual(["B"]);
+    expect(sent()).toEqual([]);
+  });
+
+  test("Send now sends the first queued message, and its done turn resumes the queue", async () => {
+    scripts.set("queue", [{ content: "two" }, { content: "three" }]);
+    const { controller, state, release } = await gated();
+    const first = controller.send("A");
+    controller.queueMessage("B", []);
+    controller.queueMessage("C", []);
+    controller.stop();
+    await first;
+    const [b, c] = state().queue;
+    controller.sendQueued(c!.id);
+    expect(state().queue).toHaveLength(2);
+    expect(isReplying(state())).toBe(false);
+
+    const resumed = controller.sendQueued(b!.id);
+    expect(state().queue.map((message) => message.text)).toEqual(["C"]);
+    await release();
+    await release();
+    await resumed;
+    expect(sentTexts()).toEqual(["B", "C"]);
+    expect(state().queue).toEqual([]);
+  });
+
+  test("a normal send while the queue is paused goes first, and its done sends the first queued message", async () => {
+    scripts.set("queue", [{ content: "now" }, { content: "queued" }]);
+    const { controller, state, release } = await gated();
+    const first = controller.send("A");
+    controller.queueMessage("B", []);
+    controller.stop();
+    await first;
+    const normal = controller.send("N");
+    expect(state().queue.map((message) => message.text)).toEqual(["B"]);
+    await release();
+    await release();
+    await normal;
+    expect(sentTexts()).toEqual(["N", "B"]);
+    expect(userTexts(state())).toEqual(["A", "N", "B"]);
+  });
+
+  test("a send made on a stale done snapshot after the queue started the next turn is queued, not lost", async () => {
+    scripts.set("queue", [{ content: "one" }, { content: "two" }, { content: "three" }]);
+    const { controller, state, release, returned } = await gated();
+    const first = controller.send("A");
+    controller.queueMessage("B", []);
+    await release();
+    await until(state, (s) => userTexts(s).length === 2);
+    expect(isReplying(state())).toBe(true);
+
+    // [>]: The panel saw A's `done` with B still queued, so Send posted `send`, not `queueMessage`.
+    controller.send(" C @a b.ts ", ["a b.ts"]);
+    expect(state().queue).toEqual([{ id: expect.any(Number), text: "C @a b.ts", mentions: ["a b.ts"] }]);
+    await release();
+    await release();
+    await first;
+    expect(userTexts(state())).toEqual(["A", "B", "C @a b.ts"]);
+    expect(returned).toEqual([]);
+  });
+
+  test("a done turn with no model chosen sends nothing and keeps the queue first", async () => {
+    scripts.set("queue", [{ content: "one" }]);
+    const { controller, state, release } = await gated();
+    const first = controller.send("A");
+    controller.queueMessage("B", []);
+    failingListings.add("queue");
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      controller.keyChanged("Queue");
+      await until(state, (s) => s.models.status === "failed");
+    } finally {
+      logged.mockRestore();
+    }
+    expect(state().model).toBeUndefined();
+    await release();
+    await first;
+    expect(state().entries.at(-1)).toMatchObject({ status: "done" });
+    expect(state().queue.map((message) => message.text)).toEqual(["B"]);
+    expect(sentTexts()).toEqual(["A"]);
+  });
+
+  test("an 11th message and exactly /new or /model are refused and go back to the box; a blank one is dropped", async () => {
+    const { controller, state, returned } = await gated();
+    const first = controller.send("A");
+    for (const text of ["", "  "]) controller.queueMessage(text, []);
+    controller.queueMessage("/new", []);
+    controller.queueMessage(" /model ", []);
+    expect(state().queue).toEqual([]);
+    controller.queueMessage("/new words", []);
+    for (let index = 2; index <= 10; index += 1) controller.queueMessage(`message ${index}`, []);
+    controller.queueMessage("message 11 @a b.ts", ["a b.ts"]);
+    expect(state().queue).toHaveLength(10);
+    expect(state().queue.map((message) => message.text)).toEqual([
+      "/new words",
+      ...Array.from({ length: 9 }, (_, index) => `message ${index + 2}`),
+    ]);
+    expect(returned).toEqual([paragraph("/new"), paragraph("/model"), paragraph("message 11 @a b.ts", ["a b.ts"])]);
+    controller.stop();
+    await first;
+  });
+
+  test("a message to queue when no reply is in flight is sent at once when a turn may start and nothing is queued", async () => {
+    scripts.set("queue", [{ content: "one" }]);
+    const { controller, state, release, returned } = await gated();
+    controller.queueMessage("late", []);
+    expect(isReplying(state())).toBe(true);
+    expect(state().queue).toEqual([]);
+    await release();
+    await until(state, (s) => s.entries.at(-1)?.role === "assistant" && !isReplying(s));
+    expect(sentTexts()).toEqual(["late"]);
+    expect(returned).toEqual([]);
+  });
+
+  test("a message to queue when no reply is in flight goes back to the box while the queue is paused or no turn may start", async () => {
+    const { controller, state, returned } = await gated();
+    const first = controller.send("A");
+    controller.queueMessage("B", []);
+    controller.stop();
+    await first;
+    controller.queueMessage("late", ["x.ts"]);
+    expect(state().queue.map((message) => message.text)).toEqual(["B"]);
+    expect(returned).toEqual([paragraph("late", ["x.ts"])]);
+
+    controller.removeQueued(state().queue[0]!.id);
+    failingListings.add("queue");
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      controller.keyChanged("Queue");
+      await until(state, (s) => s.models.status === "failed");
+    } finally {
+      logged.mockRestore();
+    }
+    controller.queueMessage("no model", []);
+    expect(state().queue).toEqual([]);
+    expect(isReplying(state())).toBe(false);
+    expect(returned.at(-1)).toEqual(paragraph("no model"));
+    expect(sent()).toEqual([]);
+  });
+
+  test("Edit takes a queued message out and returns its text and picked paths to the box; an id no longer queued does nothing", async () => {
+    scripts.set("queue", [{ content: "one" }, { content: "two" }]);
+    const { controller, state, release, returned } = await gated();
+    const first = controller.send("A");
+    controller.queueMessage("B @a b.ts", ["a b.ts"]);
+    controller.queueMessage("C", []);
+    const [b, c] = state().queue;
+    controller.editQueued(b!.id);
+    expect(state().queue.map((message) => message.text)).toEqual(["C"]);
+    expect(returned).toEqual([paragraph("B @a b.ts", ["a b.ts"])]);
+    controller.editQueued(b!.id);
+    expect(returned).toHaveLength(1);
+
+    await release();
+    await until(state, (s) => userTexts(s).length === 2);
+    // [>]: C was sent when A ended done: an Edit that comes after puts nothing in the box.
+    controller.editQueued(c!.id);
+    expect(returned).toHaveLength(1);
+    await release();
+    await first;
+    expect(sentTexts()).toEqual(["A", "C"]);
+  });
+
+  test("Remove takes a queued message out by id; an unknown id changes nothing", async () => {
+    const { controller, state } = await gated();
+    const first = controller.send("A");
+    controller.queueMessage("B", []);
+    controller.queueMessage("C", []);
+    const [b] = state().queue;
+    controller.removeQueued(b!.id + 100);
+    expect(state().queue.map((message) => message.text)).toEqual(["B", "C"]);
+    controller.removeQueued(b!.id);
+    expect(state().queue.map((message) => message.text)).toEqual(["C"]);
+    controller.removeQueued(state().queue[0]!.id);
+    expect(state().queue).toEqual([]);
+    controller.stop();
+    await first;
+  });
+
+  test("a queued message is never in the saved record before it is sent", async () => {
+    const files = memoryFiles();
+    const { controller, state } = await gated({ store: new ConversationStore(files) });
+    const first = controller.send("A");
+    controller.queueMessage("secret B", []);
+    controller.stop();
+    await first;
+    await until(state, (s) => s.conversations.length === 1);
+    const saved = [...files.files.values()].join("\n");
+    expect(saved).toContain('"A"');
+    expect(saved).not.toContain("secret B");
+  });
+
+  test("New chat empties the queue when asked and returns its texts to the box once, in order, so nothing queued is sent", async () => {
+    const { controller, state, returned } = await gated();
+    const first = controller.send("A");
+    controller.queueMessage("B @a b.ts", ["a b.ts"]);
+    controller.queueMessage("C @a b.ts", ["a b.ts"]);
+    const navigated = controller.newChat();
+    expect(state().queue).toEqual([]);
+    expect(returned).toEqual([paragraph("B @a b.ts\n\nC @a b.ts", ["a b.ts"])]);
+    await Promise.all([navigated, controller.newChat()]);
+    expect(returned).toHaveLength(1);
+    await first;
+    await Bun.sleep(20);
+    expect(state().entries).toEqual([]);
+    expect(sent()).toEqual([]);
+  });
+
+  test("opening another conversation empties the queue when asked, so nothing queued is sent while it loads", async () => {
+    scripts.set("queue", [{ content: "old" }]);
+    const files = memoryFiles();
+    const { controller, state, release, returned } = await gated({ store: new ConversationStore(files) });
+    const old = controller.send("old");
+    await release();
+    await old;
+    const oldId = state().conversationId;
+    await controller.newChat();
+
+    const first = controller.send("A");
+    controller.queueMessage("B", []);
+    await until(state, (s) => s.conversations.length === 2);
+    let load: () => void = () => {};
+    const read = files.read;
+    files.read = async (name) => {
+      await new Promise<void>((resolve) => {
+        load = resolve;
+      });
+      return read(name);
+    };
+    const opened = controller.openConversation(oldId);
+    expect(state().queue).toEqual([]);
+    expect(returned).toEqual([paragraph("B")]);
+    await first;
+    await release();
+    await Bun.sleep(20);
+    expect(state().entries.at(-1)).toMatchObject({ status: "stopped" });
+    expect(sentTexts()).toEqual(["old"]);
+
+    files.read = read;
+    load();
+    await opened;
+    expect(state().conversationId).toBe(oldId);
+    expect(state().queue).toEqual([]);
+    expect(sentTexts()).toEqual(["old"]);
+  });
+
+  test("opening the conversation shown keeps the queue", async () => {
+    const { controller, state, returned } = await gated();
+    const first = controller.send("A");
+    controller.queueMessage("B", []);
+    await controller.openConversation(state().conversationId);
+    expect(state().queue.map((message) => message.text)).toEqual(["B"]);
+    expect(returned).toEqual([]);
+    expect(isReplying(state())).toBe(true);
+    controller.stop();
+    await first;
+  });
+
+  test("deleting the conversation shown empties the queue when asked; deleting another row keeps it", async () => {
+    scripts.set("queue", [{ content: "other" }]);
+    const files = memoryFiles();
+    const { controller, state, release, returned } = await gated({ store: new ConversationStore(files) });
+    const other = controller.send("other");
+    await release();
+    await other;
+    const otherId = state().conversationId;
+    await controller.newChat();
+
+    const first = controller.send("A");
+    controller.queueMessage("B", []);
+    await until(state, (s) => s.conversations.length === 2);
+    await controller.deleteConversation(otherId);
+    expect(state().queue.map((message) => message.text)).toEqual(["B"]);
+    expect(returned).toEqual([]);
+    expect(isReplying(state())).toBe(true);
+
+    const deleted = controller.deleteConversation(state().conversationId);
+    expect(state().queue).toEqual([]);
+    expect(returned).toEqual([paragraph("B")]);
+    await deleted;
+    await first;
+    expect(sentTexts()).toEqual(["other"]);
+  });
+
+  test("deactivation sends nothing: the queue is emptied and the turn stopped", async () => {
+    scripts.set("queue", [{ content: "one" }]);
+    const { controller, state, returned } = await gated();
+    const first = controller.send("A");
+    controller.queueMessage("B", []);
+    controller.dispose();
+    await first;
+    await Bun.sleep(20);
+    expect(state().queue).toEqual([]);
+    expect(state().entries.at(-1)).toMatchObject({ status: "stopped" });
+    expect(sent()).toEqual([]);
+    expect(returned).toEqual([]);
   });
 });

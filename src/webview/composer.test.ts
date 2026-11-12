@@ -3,7 +3,6 @@ import { type DraftInsert, MAX_QUERY_LENGTH } from "../core/protocol";
 import type { SlashCommand, Suggestion } from "../core/suggestions";
 import {
   applyDraft,
-  builtInCommand,
   composerKeyAction,
   type MenuAnswer,
   mentionPick,
@@ -233,19 +232,6 @@ describe("slashMenuView", () => {
   });
 });
 
-describe("builtInCommand", () => {
-  test("is the built-in command a message is exactly, trimmed", () => {
-    expect(builtInCommand("/new")).toBe("new");
-    expect(builtInCommand("  /model \n")).toBe("model");
-  });
-
-  test("is none for a command with words after it, another word, or another case", () => {
-    for (const text of ["/new words", "/model gpt", "/news", "/grilling", "new", "/New", "see /new"]) {
-      expect(builtInCommand(text)).toBeUndefined();
-    }
-  });
-});
-
 describe("slashPick", () => {
   test("a built-in row runs its command when Send would act, and inserts /<name> and a space otherwise", () => {
     const row = { name: "new", description: "Start", builtIn: "new" as const };
@@ -297,6 +283,20 @@ describe("applyDraft", () => {
     // [>]: The caret goes past the space already there, so it follows a space and no menu opens.
     expect(atCaret("foo| bar")).toBe("foo @selection |bar");
     expect(atCaret("|bar")).toBe("@selection |bar");
+  });
+
+  test("a paragraph fills a blank box, else follows the text after a blank line, caret at the end", () => {
+    const insert: DraftInsert = { text: "B\n\nC", mode: "paragraph", picked: ["c d.ts"] };
+    expect(applyDraft({ text: " \n", caret: 1, picked: [] }, insert)).toEqual({
+      text: "B\n\nC",
+      caret: 4,
+      picked: ["c d.ts"],
+    });
+    expect(applyDraft({ text: "foo", caret: 1, picked: ["a.ts"] }, insert)).toEqual({
+      text: "foo\n\nB\n\nC",
+      caret: 9,
+      picked: ["a.ts", "c d.ts"],
+    });
   });
 
   test("fills a box that is empty or holds only whitespace, caret at the end", () => {

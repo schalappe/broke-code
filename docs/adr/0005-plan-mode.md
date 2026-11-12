@@ -35,7 +35,8 @@ A turn reads Plan once, when it starts: its tools and its prompt hold until it e
 `setMode` ignored while a reply is in flight, so the mode shown is the one the turn applies. The auto-approve setting
 is still read at each write's request (ADR 0002); Plan offers no write. The controller holds one mode pick at a time:
 while a pick's settings write is pending (`ChatState.modePending`), the selector and Send are disabled, and the
-controller ignores `setMode` and `send`, as while a reply is in flight. Otherwise an older pick's write, settling
+controller ignores `setMode` and starts no turn for a `send`, whose text goes back to the message box (a `send` while
+a reply is in flight is queued instead, #70). Otherwise an older pick's write, settling
 late, would undo a newer pick, or change the mode shown under a turn that started on the old one. A Plan pick writes
 no setting and never pends. A queue of picks, with `send` waiting for it, was tried first and rejected: a send
 waiting on it landed in whichever conversation was shown when the write settled, a New chat included. The usage display counts the prompt of the

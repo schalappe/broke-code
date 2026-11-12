@@ -39,6 +39,7 @@ const unsaved = {
   listFailed: undefined,
   storageProblem: undefined,
   context: { used: 0, size: 32768, known: true },
+  queue: [],
 };
 
 /** Panel markup for a conversation of one question and `reply`, English strings. */
@@ -2445,6 +2446,193 @@ describe("code block actions", () => {
         { type: "insertCode", text: "echo a\n  indented" },
         { type: "insertCode", text: "```js\nx\n```" },
       ]);
+    });
+  });
+});
+
+describe("queued messages", () => {
+  const waiting: ChatEntry[] = [hi[0]!, { role: "assistant", reasoning: "", content: "", status: "waiting" }];
+  const stopped: ChatEntry[] = [hi[0]!, { role: "assistant", reasoning: "", content: "Partial", status: "stopped" }];
+  const queue = [
+    { id: 4, text: "B", mentions: [] },
+    { id: 5, text: "C", mentions: [] },
+  ];
+  /** Text of each queued row, in order. */
+  const rows = (host: HTMLElement) =>
+    [...host.querySelectorAll(".queue li .queued-text")].map((row) => row.textContent);
+  const buttonLabels = (host: HTMLElement) => [...host.querySelectorAll("button")].map((button) => button.textContent);
+
+  test("during a reply, Enter queues the message with its picked paths, clears the box, and keeps the focus", async () => {
+    await withPanel(stateWith(true, { entries: waiting }), async ({ textarea, type, press }) => {
+      textarea.focus();
+      await type("next step");
+      posted.length = 0;
+      await press("Enter");
+      expect(posted).toEqual([{ type: "queueMessage", text: "next step", mentions: [] }]);
+      expect(textarea.value).toBe("");
+      expect(document.activeElement).toBe(textarea);
+    });
+  });
+
+  test("during a reply, Send queues the message beside Stop", async () => {
+    await withPanel(stateWith(true, { entries: waiting }), async ({ host, type, click }) => {
+      expect(buttonLabels(host)).toContain("Stop");
+      await type("next step");
+      posted.length = 0;
+      await click("Send");
+      expect(posted).toEqual([{ type: "queueMessage", text: "next step", mentions: [] }]);
+    });
+  });
+
+  test("with 10 queued, Send leaves the text in the box and a line says the queue is full", async () => {
+    const full = Array.from({ length: 10 }, (_, index) => ({ id: index, text: `m${index}`, mentions: [] }));
+    await withPanel(stateWith(true, { entries: waiting, queue: full }), async ({ host, textarea, type, press }) => {
+      expect(host.textContent).toContain("The queue is full: 10 messages at most.");
+      await type("one more");
+      posted.length = 0;
+      await press("Enter");
+      expect(posted).toEqual([]);
+      expect(textarea.value).toBe("one more");
+    });
+  });
+
+  test("shows each queued message under the message box, in order, with Edit and Remove, and no paused line during a reply", async () => {
+    await withPanel(stateWith(true, { entries: waiting, queue }), async ({ host, textarea }) => {
+      expect(rows(host)).toEqual(["B", "C"]);
+      expect(host.querySelectorAll(".queue li button")).toHaveLength(4);
+      expect(buttonLabels(host)).not.toContain("Send now");
+      expect(host.textContent).not.toContain("The queue is paused.");
+      const focusable = [...host.querySelectorAll<HTMLElement>("button, select, textarea, input, a[href], summary")];
+      const firstQueued = focusable.findIndex((element) => element.closest(".queue"));
+      expect(firstQueued).toBeGreaterThan(focusable.indexOf(textarea));
+      expect(focusable[firstQueued - 1]?.textContent).toBe("Stop");
+    });
+  });
+
+  test("Remove asks to remove that message", async () => {
+    await withPanel(stateWith(true, { entries: waiting, queue }), async ({ host }) => {
+      posted.length = 0;
+      const remove = host.querySelectorAll<HTMLButtonElement>(".queue li")[1]?.querySelectorAll("button");
+      await act(async () => [...(remove ?? [])].find((button) => button.textContent === "Remove")?.click());
+      expect(posted).toEqual([{ type: "removeQueued", id: 5 }]);
+    });
+  });
+
+  test("Edit asks the host for the message and focuses the box; its text and picked paths come back after the draft", async () => {
+    const picked = [{ id: 7, text: "read @my file.ts", mentions: ["my file.ts"] }];
+    await withPanel(
+      stateWith(true, { entries: stopped, queue: picked }),
+      async ({ host, textarea, type, click, press, receive }) => {
+        await type("foo");
+        posted.length = 0;
+        await click("Edit");
+        expect(posted).toEqual([{ type: "editQueued", id: 7 }]);
+        expect(textarea.value).toBe("foo");
+        expect(document.activeElement).toBe(textarea);
+        expect(host.querySelector(".queue")).not.toBeNull();
+
+        await receive({ type: "insertDraft", text: "read @my file.ts", mode: "paragraph", picked: ["my file.ts"] });
+        expect(textarea.value).toBe("foo\n\nread @my file.ts");
+        posted.length = 0;
+        await press("Enter");
+        expect(posted).toEqual([{ type: "send", text: "foo\n\nread @my file.ts", mentions: ["my file.ts"] }]);
+      },
+    );
+  });
+
+  test("after a stop, a line says the queue is paused and the first message has Send now", async () => {
+    await withPanel(stateWith(true, { entries: stopped, queue }), async ({ host, click }) => {
+      expect(host.textContent).toContain("The queue is paused.");
+      const rowButtons = [...host.querySelectorAll(".queue li")].map((row) =>
+        [...row.querySelectorAll("button")].map((button) => button.textContent),
+      );
+      expect(rowButtons).toEqual([
+        ["Send now", "Edit", "Remove"],
+        ["Edit", "Remove"],
+      ]);
+      posted.length = 0;
+      await click("Send now");
+      expect(posted).toEqual([{ type: "sendQueued", id: 4 }]);
+    });
+  });
+
+  test("Send now is disabled when Send would not act", async () => {
+    await withPanel(stateWith(true, { entries: stopped, queue, model: undefined }), async ({ host }) => {
+      const sendNow = [...host.querySelectorAll("button")].find((button) => button.textContent === "Send now");
+      expect(sendNow?.disabled).toBe(true);
+    });
+  });
+
+  test("New chat posts its request only: the queued texts come back from the host, after the draft", async () => {
+    await withPanel(stateWith(true, { entries: stopped, queue }), async ({ textarea, click, receive }) => {
+      posted.length = 0;
+      await click("New chat");
+      expect(posted).toEqual([{ type: "newChat" }]);
+      expect(textarea.value).toBe("");
+      await receive({ type: "insertDraft", text: "B\n\nC", mode: "paragraph", picked: [] });
+      expect(textarea.value).toBe("B\n\nC");
+    });
+    await withPanel(stateWith(true, { entries: waiting, queue }), async ({ textarea, type, click, receive }) => {
+      await type("foo");
+      await click("New chat");
+      expect(textarea.value).toBe("foo");
+      await receive({ type: "insertDraft", text: "B\n\nC", mode: "paragraph", picked: [] });
+      expect(textarea.value).toBe("foo\n\nB\n\nC");
+    });
+  });
+
+  test("returned texts close no History and move no focus, unlike an editor draft", async () => {
+    const conversations = [{ id: CONVERSATION_ID, title: "Shown", updatedAt: 1 }];
+    const state = stateWith(true, { entries: stopped, queue, conversations });
+    await withPanel(state, async ({ host, textarea, click, receive }) => {
+      await click("History");
+      const filter = host.querySelector<HTMLInputElement>(".history input");
+      expect(filter).not.toBeNull();
+      expect(document.activeElement).toBe(filter);
+      await receive({ type: "insertDraft", text: "B", mode: "paragraph", picked: [] });
+      expect(host.querySelector(".history")).not.toBeNull();
+      expect(document.activeElement).toBe(filter);
+      expect(textarea.value).toBe("B");
+    });
+  });
+
+  test("a returned text waits while there is no message box and lands when it comes back; an editor draft is dropped", async () => {
+    await withPanel(stateWith(true, { entries: stopped }), async ({ host, show, receive }) => {
+      await show(stateWith(false, { entries: stopped }));
+      expect(host.querySelector("textarea")).toBeNull();
+      await receive({ type: "insertDraft", text: "unsent B", mode: "paragraph", picked: [] });
+      await receive({ type: "insertDraft", text: "from the editor", mode: "fillOrAppend", picked: [] });
+      await show(stateWith(true, { entries: stopped }));
+      expect(host.querySelector("textarea")?.value).toBe("unsent B");
+    });
+  });
+
+  test("Send is secondary beside Stop during a reply, and primary otherwise", async () => {
+    const sendClass = (state: ChatState) =>
+      renderToStaticMarkup(<App state={state} language="en" />).match(/<button[^>]*>Send<\/button>/)?.[0];
+    expect(sendClass(stateWith(true, { entries: waiting }))).toContain('class="secondary"');
+    expect(sendClass(stateWith(true, { entries: hi }))).not.toContain("class=");
+  });
+
+  test("with an approval open and a queue, Shift+Tab from the message box still reaches Reject first", async () => {
+    const answer = "Renaming.\n<write_file>\n<path>a.ts</path>\n<content>\nx\n</content>\n</write_file>";
+    const writing: ChatEntry = {
+      role: "assistant",
+      reasoning: "",
+      content: answer,
+      status: "streaming",
+      call: { name: "write_file", args: { path: "a.ts", content: "x" }, start: 10, end: answer.length },
+    };
+    const state = stateWith(true, {
+      entries: [hi[0]!, writing],
+      approval: { id: 1, kind: "write", tool: "write_file", summary: "a.ts" },
+      queue,
+    });
+    await withPanel(state, async ({ host, textarea }) => {
+      const focusable = [...host.querySelectorAll<HTMLElement>("button, select, textarea, input, a[href], summary")];
+      const box = focusable.indexOf(textarea);
+      expect(focusable[box - 1]?.textContent).toBe("Reject");
+      expect(focusable.findIndex((element) => element.closest(".queue"))).toBeGreaterThan(box);
     });
   });
 });

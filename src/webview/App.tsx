@@ -21,19 +21,22 @@ import {
   type DraftInsert,
   type HostMessage,
   isMode,
+  isQueuePaused,
   isReplying,
+  MAX_QUEUED_MESSAGES,
   MODES,
   type Mode,
   type PendingApproval,
+  type QueuedMessage,
   type ReplyCall,
 } from "../core/protocol";
 import type { ProviderError } from "../core/providerError";
 import { isNothingToAttach, type ReservedMention, reservedMention } from "../core/reservedMentions";
-import { BUILT_IN_COMMANDS, type BuiltInCommand, type SlashCommand } from "../core/suggestions";
+import { BUILT_IN_COMMANDS, type BuiltInCommand, builtInCommand, type SlashCommand } from "../core/suggestions";
 import {
   applyDraft,
-  builtInCommand,
   composerKeyAction,
+  type Draft,
   type MentionRow,
   type MenuAnswer,
   type MenuToken,
@@ -68,9 +71,10 @@ import { foldTurns } from "./turns";
 import { post } from "./vscodeApi";
 
 /**
- * `language`: BCP 47 tag of the VS Code display language, for dates. `drafts`: editor drafts not yet applied, which the
- * message box applies and `takeDrafts` removes; one closes History. Without a message box they are taken unapplied:
- * a draft is never held for a box that may never come.
+ * `language`: BCP 47 tag of the VS Code display language, for dates. `drafts`: host drafts not yet applied, which the
+ * message box applies and `takeDrafts` removes. An editor draft closes History; without a message box it is taken
+ * unapplied, never held for a box that may never come. Queued texts the host returns (`paragraph` drafts) close
+ * nothing, and wait for the message box when it is absent, since the user typed them: they are never dropped.
  */
 export function App({
   state,
@@ -81,7 +85,7 @@ export function App({
   state: ChatState;
   language: string;
   drafts?: readonly DraftInsert[];
-  takeDrafts?: (count: number) => void;
+  takeDrafts?: (taken: readonly DraftInsert[]) => void;
 }) {
   const configured = state.providers.length > 0;
   const composerShown = configured || isReplying(state);
@@ -90,8 +94,10 @@ export function App({
 
   useEffect(() => {
     if (drafts.length === 0) return;
+    const fromTheEditor = drafts.filter(fromEditor);
+    if (fromTheEditor.length === 0) return;
     setHistoryOpen(false);
-    if (!composerShown) takeDrafts(drafts.length);
+    if (!composerShown) takeDrafts(fromTheEditor);
   }, [drafts, composerShown, takeDrafts]);
   return (
     <main className="panel">
@@ -150,6 +156,11 @@ export function App({
       )}
     </main>
   );
+}
+
+/** A draft from an editor entry point, which closes History and focuses the box; queued texts returned do neither. */
+function fromEditor(draft: DraftInsert): boolean {
+  return draft.mode !== "paragraph";
 }
 
 /** No provider: add one in the editor's guided flow, or write the settings by hand. */
@@ -380,7 +391,7 @@ export function HistoryPanel({
 /**
  * Saved conversations of the workspace, in the order given (newest first), under a filter field when there is one.
  * A row's title reopens it; the one shown is marked `aria-current`. Mounted only while History is open, so the filter
- * starts empty at each opening and takes the focus then (the one focus move DESIGN.md allows); it keeps its text while
+ * starts empty at each opening and takes the focus then (a focus move DESIGN.md allows); it keeps its text while
  * the list changes. In the field, Enter opens the first row listed; Escape clears the text, or calls `onDismiss` when
  * there is none.
  */
@@ -1007,6 +1018,9 @@ function Reasoning({ entry }: { entry: ChatEntry & { role: "assistant" } }) {
  * inserts `/<name> `. When a reply ends, the message box takes the focus, unless History is open (`historyOpen`): the
  * focus then stays where the user has it, so typing keeps going to the History filter. `drafts` from the editor are
  * applied in order (`applyDraft`), whatever the reply's state, then taken, and the message box takes the focus.
+ * While a reply is in flight, Send and Enter queue the message instead (`queueMessage`), up to `MAX_QUEUED_MESSAGES`,
+ * a built-in command excepted, which stays text in the box; the queue shows under the box (`QueuedMessages`). Queued
+ * texts the host returns arrive as `paragraph` drafts, applied like the editor's but without moving the focus.
  */
 function Composer({
   state,
@@ -1019,7 +1033,7 @@ function Composer({
   historyOpen: boolean;
   startNewChat: () => void;
   drafts: readonly DraftInsert[];
-  takeDrafts: (count: number) => void;
+  takeDrafts: (taken: readonly DraftInsert[]) => void;
 }) {
   const [text, setText] = useState("");
   const [caret, setCaret] = useState(0);
@@ -1106,15 +1120,22 @@ function Composer({
     return () => window.removeEventListener("message", onMessage);
   }, []);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: a draft applies to the box as it stands when it arrives.
-  useEffect(() => {
-    if (drafts.length === 0) return;
-    const next = drafts.reduce(applyDraft, { text, caret, picked });
+  /** Put `next` in the message box: its text, its picked paths, and its caret, placed once the box has rendered it. */
+  const setDraft = (next: Draft) => {
     setText(next.text);
     setCaret(next.caret);
     setPicked([...next.picked]);
     nextCaret.current = next.caret;
-    takeDrafts(drafts.length);
+  };
+
+  // [>]: An editor draft focuses the box, since the user asked for it from the editor; queued texts the host returns
+  // came from a request made in the panel, so the focus stays where the user has it.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a draft applies to the box as it stands when it arrives.
+  useEffect(() => {
+    if (drafts.length === 0) return;
+    setDraft(drafts.reduce(applyDraft, { text, caret, picked }));
+    takeDrafts(drafts);
+    if (!drafts.some(fromEditor)) return;
     input.current?.focus();
     draftFocus.current = true;
   }, [drafts]);
@@ -1147,14 +1168,12 @@ function Composer({
     nextCaret.current = undefined;
   });
 
-  // [!]: The one check of whether Send would act: Send, Enter, and the built-in commands all go through it.
+  // [!]: The one check of whether Send would act: Send, Enter, the built-in commands, and Send now all go through it.
   const canSend = ready && !replying && !state.modePending;
+  // [>]: Only a reply in flight queues; with no model or a mode change pending, Send does nothing either way.
+  const canQueue = ready && replying && !state.modePending && state.queue.length < MAX_QUEUED_MESSAGES;
 
-  const clear = () => {
-    setText("");
-    setCaret(0);
-    setPicked([]);
-  };
+  const clear = () => setDraft({ text: "", caret: 0, picked: [] });
 
   const run = (command: BuiltInCommand) => {
     if (command === "new") startNewChat();
@@ -1170,20 +1189,27 @@ function Composer({
     const mention = item ? mentionPick(item) : undefined;
     const inserted = action ? action.text : mention?.text;
     if (!token || inserted === undefined) return;
-    const next = replaceToken(text, token, caret, inserted);
-    setText(next.text);
-    setCaret(next.caret);
-    nextCaret.current = next.caret;
     const path = mention?.picked;
-    if (path !== undefined) setPicked((paths) => (paths.includes(path) ? paths : [...paths, path]));
+    const paths = path === undefined || picked.includes(path) ? picked : [...picked, path];
+    setDraft({ ...replaceToken(text, token, caret, inserted), picked: paths });
   };
 
   const send = () => {
-    if (!canSend || text.trim() === "") return;
+    if (text.trim() === "") return;
     const command = builtInCommand(text);
-    if (command) return run(command);
-    post({ type: "send", text, mentions: pickedInText(picked, text) });
+    if (canSend && command) return run(command);
+    // [>]: A built-in is never queued: during a reply it stays text in the box.
+    const type = canSend ? "send" : canQueue && !command ? "queueMessage" : undefined;
+    if (!type) return;
+    post({ type, text, mentions: pickedInText(picked, text) });
     clear();
+  };
+
+  // [>]: The host takes the message out and returns its text, so a message sent meanwhile never lands in the box too.
+  // The user asked to edit it, and the row they clicked goes: the message box takes the focus now.
+  const edit = (message: QueuedMessage) => {
+    post({ type: "editQueued", id: message.id });
+    input.current?.focus();
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1206,53 +1232,124 @@ function Composer({
   };
 
   return (
-    <footer className="composer">
-      {mentionMenu && (
-        <MentionMenu
-          items={mentionMenu.items}
-          capped={mentionMenu.capped}
-          failed={mentionMenu.failed}
-          highlighted={highlighted}
-          onPick={pick}
+    <>
+      <footer className="composer">
+        {mentionMenu && (
+          <MentionMenu
+            items={mentionMenu.items}
+            capped={mentionMenu.capped}
+            failed={mentionMenu.failed}
+            highlighted={highlighted}
+            onPick={pick}
+          />
+        )}
+        {slashMenu && (
+          <SlashMenu items={slashMenu.items} failed={slashMenu.failed} highlighted={highlighted} onPick={pick} />
+        )}
+        <textarea
+          ref={input}
+          rows={3}
+          value={text}
+          placeholder={
+            ready
+              ? l10n.t("Ask anything. Enter to send, Shift+Enter for a new line.")
+              : l10n.t("Choose a model to start.")
+          }
+          aria-label={l10n.t("Message")}
+          aria-autocomplete="list"
+          aria-controls={menuId}
+          aria-activedescendant={menuId && rows ? optionId(menuId, highlighted) : undefined}
+          onChange={(event) => {
+            setText(event.target.value);
+            setCaret(event.target.selectionStart);
+          }}
+          onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
+          onKeyDown={onKeyDown}
         />
-      )}
-      {slashMenu && (
-        <SlashMenu items={slashMenu.items} failed={slashMenu.failed} highlighted={highlighted} onPick={pick} />
-      )}
-      <textarea
-        ref={input}
-        rows={3}
-        value={text}
-        placeholder={
-          ready
-            ? l10n.t("Ask anything. Enter to send, Shift+Enter for a new line.")
-            : l10n.t("Choose a model to start.")
-        }
-        aria-label={l10n.t("Message")}
-        aria-autocomplete="list"
-        aria-controls={menuId}
-        aria-activedescendant={menuId && rows ? optionId(menuId, highlighted) : undefined}
-        onChange={(event) => {
-          setText(event.target.value);
-          setCaret(event.target.selectionStart);
-        }}
-        onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
-        onFocus={() => setFocused(true)}
-        onBlur={() => setFocused(false)}
-        onKeyDown={onKeyDown}
-      />
-      {/* [!]: After the message box, so Shift+Tab from it still reaches an open request's controls first. */}
-      <ModeSelect mode={state.mode} disabled={replying || state.modePending} />
-      {replying ? (
-        <button type="button" onClick={() => post({ type: "stop" })}>
-          {l10n.t("Stop")}
-        </button>
-      ) : (
-        <button type="button" disabled={!canSend || text.trim() === ""} onClick={send}>
+        {/* [!]: After the message box, so Shift+Tab from it still reaches an open request's controls first. */}
+        <ModeSelect mode={state.mode} disabled={replying || state.modePending} />
+        {/* [>]: During a reply Send queues, so it stays beside Stop, secondary: Stop is the region's primary button. */}
+        <button
+          type="button"
+          className={replying ? "secondary" : undefined}
+          disabled={!(canSend || canQueue) || text.trim() === ""}
+          onClick={send}
+        >
           {l10n.t("Send")}
         </button>
+        {replying && (
+          <button type="button" onClick={() => post({ type: "stop" })}>
+            {l10n.t("Stop")}
+          </button>
+        )}
+      </footer>
+      {state.queue.length > 0 && <QueuedMessages state={state} canSend={canSend} edit={edit} />}
+    </>
+  );
+}
+
+/**
+ * The queued messages under the message box, in order, after Send and Stop in the tab order, so nothing focusable
+ * comes between an approval's controls and the message box. Each has Edit and Remove; while the queue is paused
+ * (`isQueuePaused`), a line says so and the first has Send now, enabled when Send would act (`canSend`). A line says
+ * when the queue is full.
+ */
+function QueuedMessages({
+  state,
+  canSend,
+  edit,
+}: {
+  state: ChatState;
+  canSend: boolean;
+  edit: (message: QueuedMessage) => void;
+}) {
+  const paused = isQueuePaused(state);
+  return (
+    <section className="queue" aria-label={l10n.t("Queued messages")}>
+      {paused && (
+        <p className="notice" role="status">
+          {l10n.t("The queue is paused.")}
+        </p>
       )}
-    </footer>
+      {state.queue.length >= MAX_QUEUED_MESSAGES && (
+        <p className="notice" role="status">
+          {l10n.t("The queue is full: {0} messages at most.", MAX_QUEUED_MESSAGES)}
+        </p>
+      )}
+      <ol>
+        {state.queue.map((message, index) => (
+          <li key={message.id}>
+            <span className="queued-text" title={message.text}>
+              {message.text}
+            </span>
+            <div className="actions">
+              {paused && index === 0 && (
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={!canSend}
+                  onClick={() => post({ type: "sendQueued", id: message.id })}
+                >
+                  {l10n.t("Send now")}
+                </button>
+              )}
+              <button type="button" className="secondary" onClick={() => edit(message)}>
+                {l10n.t("Edit")}
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => post({ type: "removeQueued", id: message.id })}
+              >
+                {l10n.t("Remove")}
+              </button>
+            </div>
+          </li>
+        ))}
+      </ol>
+    </section>
   );
 }
 

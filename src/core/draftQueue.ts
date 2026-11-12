@@ -1,8 +1,9 @@
 /**
  * @module draftQueue
- * The editor drafts on their way to the chat webview ("Add selection to chat", "Fix with broke-code"): queued only once
- * the chat shows, delivered when the webview is ready and visible, in order, each once, and kept for its next `ready`
- * when a post does not reach it. The host's chat view wires it to `postMessage`.
+ * The drafts on their way to the chat webview: the editor's ("Add selection to chat", "Fix with broke-code"), queued
+ * only once the chat shows, and the queued texts the controller returns, queued at once. Delivered when the webview is
+ * ready and visible, in order, each once, and kept for its next `ready` when a post does not reach it. The host's chat
+ * view wires it to `postMessage`.
  */
 import type { DraftInsert } from "./protocol";
 
@@ -38,6 +39,15 @@ export class DraftQueue {
     this.queued.push(draft);
     await this.deliver();
     return "queued";
+  }
+
+  /**
+   * Queue `draft` without showing the chat, and deliver what can be: queued texts the controller returns to the message
+   * box, from a request made in the panel. A hidden panel gets it at its next `ready`.
+   */
+  async queue(draft: DraftInsert): Promise<void> {
+    this.queued.push(draft);
+    await this.deliver();
   }
 
   /**

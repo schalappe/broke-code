@@ -1158,6 +1158,10 @@ div.step-row:has(.step-status.loading)::before {
 
 .composer > button {
   flex: none;
+}
+
+/* The buttons sit at the right: Send alone, or Send then Stop while a reply is in flight. */
+.composer > button:first-of-type {
   margin-left: auto;
 }
 
@@ -1165,6 +1169,50 @@ div.step-row:has(.step-status.loading)::before {
   flex: none;
   max-width: 100%;
   padding: var(--bc-space-1) var(--bc-space-2);
+  font-size: var(--bc-fs-sm);
+}
+
+/* ---------- Queued messages ---------- */
+
+/* Under the message box, after it in the tab order: a quiet line when paused or full, then one filled row per message,
+   its text cut to one line, its actions at the right. */
+.queue {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bc-space-2);
+}
+
+.queue ol {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bc-space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.queue li {
+  display: flex;
+  align-items: center;
+  gap: var(--bc-space-3);
+  min-height: var(--bc-row);
+  padding: var(--bc-space-1) var(--bc-space-3);
+  background: var(--bc-fill);
+  border: 1px solid var(--bc-edge);
+  border-radius: var(--bc-radius);
+  font-size: var(--bc-fs-sm);
+}
+
+.queued-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queue li button {
+  padding: var(--bc-space-1) var(--bc-space-3);
   font-size: var(--bc-fs-sm);
 }
 

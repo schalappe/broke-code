@@ -241,6 +241,18 @@ a message saying the step limit was reached; and before a request that would fil
 older tool results left out (below), with a message asking you to start a new chat. A malformed call is sent back to the model with what is wrong, so it can try
 again; so is an empty reply, which counts as a malformed call.
 
+You can keep typing while a turn runs: **Send** (or Enter) then queues the message under the message box instead of
+sending it, up to 10 messages; a message the queue cannot take comes back to the message box. When the turn ends with the model's answer, the first queued message goes out as if you
+had just sent it: its mentions are read then, a `/<skill>` message loads its skill then, and the provider, model, and
+mode are those of that moment. The next one waits for that turn, and so on. Each queued message has **Edit**, which
+takes it out of the queue and puts it back in the message box, after what you are typing (unless it was sent
+meanwhile), and **Remove**. When a turn
+ends any other way (**Stop**, a failure, a limit) nothing more is sent: the panel says the queue is paused, and **Send
+now** on the first message sends it. A message you send yourself while the queue is paused goes first, and the queue
+resumes when its turn ends with an answer. **New chat**, `/new`, opening another conversation, and deleting the one
+shown put every queued message back in the message box, one per paragraph, so nothing you typed is lost. `/new` and
+`/model` are never queued. The queue survives hiding the panel but not a window reload.
+
 ## Context size and step limit
 
 The panel header shows, next to the model picker, how much of the model's context the next request would use, in

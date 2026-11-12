@@ -1,13 +1,12 @@
 /**
  * @module composer
  * Decisions of the message box, kept out of React so tests need no DOM: which token opens a menu (`@` mentions, `/`
- * commands), which menu rows to show, what a key does, which picked paths to send, which built-in command a message
- * runs, and how an editor entry point edits the draft.
+ * commands), which menu rows to show, what a key does, which picked paths to send, and how a host draft (an editor
+ * entry point, or queued texts returned) edits the message box.
  */
 import { type DraftInsert, MAX_QUERY_LENGTH } from "../core/protocol";
 import { type MentionKind, pickedPath, RESERVED_MENTIONS, reservedMention } from "../core/reservedMentions";
 import {
-  BUILT_IN_COMMANDS,
   type BuiltInCommand,
   filterSlashCommands,
   filterSuggestions,
@@ -109,15 +108,6 @@ export function slashMenuView(
   return items.length > 0 ? { items, failed: false } : undefined;
 }
 
-/**
- * The built-in command `text` runs: its trimmed text is exactly `/<name>`. With words after it, it is an ordinary
- * message.
- */
-export function builtInCommand(text: string): BuiltInCommand | undefined {
-  const trimmed = text.trim();
-  return BUILT_IN_COMMANDS.find((name) => trimmed === `/${name}`);
-}
-
 /** What picking a `/` menu row does: `run` its built-in command, or `insert` text in place of the token. */
 export type SlashPick = { type: "run"; command: BuiltInCommand } | { type: "insert"; text: string };
 
@@ -182,13 +172,14 @@ export type Draft = { text: string; caret: number; picked: readonly string[] };
 /**
  * `draft` with `insert` applied (see `DraftInsert`). At the caret, a space goes before the text unless the text before
  * the caret is empty or ends with whitespace, and one after it unless whitespace already follows, which the caret then
- * passes: the caret always follows whitespace, so no menu opens on the inserted token. Filled or appended, the caret
- * goes to the end. `insert.picked` joins the draft's picked paths, each once.
+ * passes: the caret always follows whitespace, so no menu opens on the inserted token. Filled or appended (after one
+ * line break, or a blank line for a `paragraph`), the caret goes to the end. `insert.picked` joins the draft's picked paths, each once.
  */
 export function applyDraft(draft: Draft, insert: DraftInsert): Draft {
   const unique = [...new Set([...draft.picked, ...insert.picked])];
-  if (insert.mode === "fillOrAppend") {
-    const text = draft.text.trim() === "" ? insert.text : `${draft.text}\n${insert.text}`;
+  if (insert.mode !== "caret") {
+    const separator = insert.mode === "paragraph" ? "\n\n" : "\n";
+    const text = draft.text.trim() === "" ? insert.text : `${draft.text}${separator}${insert.text}`;
     return { text, caret: text.length, picked: unique };
   }
   const before = draft.text.slice(0, draft.caret);

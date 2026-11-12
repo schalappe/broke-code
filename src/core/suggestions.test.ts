@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  builtInCommand,
   filterSlashCommands,
   filterSuggestions,
   findMentionToken,
@@ -205,6 +206,19 @@ describe("index exclusions", () => {
   test("a path that only resembles an excluded folder is kept", () => {
     for (const path of ["src/build.ts", "distribution/a.ts", "out.txt", ".gitignore", "src/core/sse.ts"]) {
       expect(isExcludedFromIndex(path)).toBe(false);
+    }
+  });
+});
+
+describe("builtInCommand", () => {
+  test("is the built-in command a message is exactly, trimmed", () => {
+    expect(builtInCommand("/new")).toBe("new");
+    expect(builtInCommand("  /model \n")).toBe("model");
+  });
+
+  test("is none for a command with words after it, another word, or another case", () => {
+    for (const text of ["/new words", "/model gpt", "/news", "/grilling", "new", "/New", "see /new"]) {
+      expect(builtInCommand(text)).toBeUndefined();
     }
   });
 });

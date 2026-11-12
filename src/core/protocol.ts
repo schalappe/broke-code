@@ -148,6 +148,16 @@ export function isMode(value: unknown): value is Mode {
   return MODES.some((mode) => mode === value);
 }
 
+/**
+ * A message the user sent while a reply was in flight, waiting in `ChatState.queue` for a turn to end `done`. `id`: the
+ * controller's, unique in the session. `text`: as sent, trimmed. `mentions`: the paths picked in the menu, as `send`
+ * carries them; the mentions are read when the message is sent, never when it is queued.
+ */
+export type QueuedMessage = { id: number; text: string; mentions: string[] };
+
+/** Most messages the queue holds: the whole state is posted at each streamed delta. */
+export const MAX_QUEUED_MESSAGES = 10;
+
 export type ChatState = {
   providers: string[];
   skipped: SkippedProvider[];
@@ -181,15 +191,23 @@ export type ChatState = {
    * and `send`, as while a reply is in flight.
    */
   modePending: boolean;
+  /**
+   * Messages queued while a reply was in flight, in order; the first is sent when a turn ends `done`. Kept in the
+   * panel's state only: never saved, lost at a window reload. Emptied by New chat, opening another conversation, and
+   * deleting the one shown, when they are asked.
+   */
+  queue: QueuedMessage[];
 };
 
 /**
- * Text an editor entry point puts in the message box, never sent: `caret` inserts it at the box's caret, spaced from
- * the text around it; `fillOrAppend` fills a box empty or holding only whitespace, else appends it after one line
- * break. `picked`: the paths its mentions name, added to the box's picked paths, so a path with spaces or trailing
- * punctuation is one mention.
+ * Text the host puts in the message box, never sent. From an editor entry point: `caret` inserts it at the box's
+ * caret, spaced from the text around it; `fillOrAppend` fills a box empty or holding only whitespace, else appends it
+ * after one line break; either closes History and focuses the box. From the queue: `paragraph`, the queued texts the
+ * controller took out without sending them (navigation, Edit) or refused to queue, fills a blank box, else follows its
+ * text after a blank line, and closes nothing and moves no focus. `picked`: the paths its mentions name, added to the
+ * box's picked paths, so a path with spaces or trailing punctuation is one mention.
  */
-export type DraftInsert = { text: string; mode: "caret" | "fillOrAppend"; picked: string[] };
+export type DraftInsert = { text: string; mode: "caret" | "fillOrAppend" | "paragraph"; picked: string[] };
 
 /** L10n bundle as `vscode.l10n.bundle`: absent in English. */
 export type L10nBundle = Record<string, string>;
@@ -220,6 +238,14 @@ export type WebviewMessage =
   | { type: "retryModels" }
   /** `mentions`: paths picked in the menu; see `ChatController.send`. */
   | { type: "send"; text: string; mentions: string[] }
+  /** Send while a reply is in flight: queue the message, with its picked mention paths, as `send` carries them. */
+  | { type: "queueMessage"; text: string; mentions: string[] }
+  /** Remove queued message `id`. */
+  | { type: "removeQueued"; id: number }
+  /** Edit queued message `id`: the host removes it and returns its text to the message box as a `paragraph` draft. */
+  | { type: "editQueued"; id: number }
+  /** "Send now" on queued message `id` while the queue is paused; acts only on the first, and only when Send would. */
+  | { type: "sendQueued"; id: number }
   /** `id`: grows with each query, so the webview can drop stale answers. */
   | { type: "queryFiles"; query: string; id: number }
   /** Ask once per `/` menu opening for the skills; the webview filters them as the user types. `id`: as `queryFiles`. */
@@ -262,6 +288,14 @@ export function isReplying(state: ChatState): boolean {
   return last?.role === "assistant" && (last.status === "waiting" || last.status === "streaming");
 }
 
+/**
+ * The queue waits for "Send now" or a turn that ends `done`: it holds a message and no reply is in flight, so the last
+ * turn did not end `done`, or Send could not act when it did.
+ */
+export function isQueuePaused(state: ChatState): boolean {
+  return state.queue.length > 0 && !isReplying(state);
+}
+
 /** Longest menu query the host answers; the webview asks nothing past it. */
 export const MAX_QUERY_LENGTH = 1024;
 /** Longest picked mention path accepted. */
@@ -300,11 +334,16 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | undefined {
       const model = text("model");
       return model ? { type: "setContextSize", model } : undefined;
     }
-    case "send": {
+    case "send":
+    case "queueMessage": {
       const value = text("text");
       const mentions = pathList(message.mentions);
-      return value === undefined || mentions === undefined ? undefined : { type: "send", text: value, mentions };
+      return value === undefined || mentions === undefined ? undefined : { type: message.type, text: value, mentions };
     }
+    case "removeQueued":
+    case "editQueued":
+    case "sendQueued":
+      return isRequestId(message.id) ? { type: message.type, id: message.id } : undefined;
     case "openConversation":
     case "deleteConversation": {
       // [!]: Ids name files in the storage directory: only the shape the host makes passes.

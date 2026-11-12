@@ -1,7 +1,8 @@
 /**
  * @module chatController
  * Chat state owner: provider and model choice, model listing, agent turns (streamed replies, body tool calls, tool
- * steps, their approval requests, step limit, context budget), context usage, stop, and the workspace's saved
+ * steps, their approval requests, step limit, context budget), the queue of messages sent during a turn, context
+ * usage, stop, and the workspace's saved
  * conversations (new chat, reopen, delete). The conversation shown is saved when a message is sent, at most every 500 ms while a reply streams, when a
  * call starts, after each tool step, and when the turn ends, so a reload or crash loses at most the reply streaming.
  * vscode-free: host passes key store, workspace memento, mention reader, conversation store, tool runner, instruction
@@ -27,8 +28,10 @@ import {
   type ChatEntry,
   type ChatState,
   type ContextUsage,
+  type DraftInsert,
   type HaltReason,
   isReplying,
+  MAX_QUEUED_MESSAGES,
   type Mode,
   type ReplyStatus,
   type StepApproval,
@@ -38,6 +41,7 @@ import type { ParsedProviders, Provider } from "./providers";
 import { reservedMention } from "./reservedMentions";
 import { SerialQueue } from "./serialQueue";
 import { findSlashSkill, loadSkillText, type SkillDiscovery } from "./skills";
+import { builtInCommand } from "./suggestions";
 import {
   composeSystemPrompt,
   type InstructionFile,
@@ -104,7 +108,9 @@ export type LimitsSource = { read(): TurnLimits };
  * reaches the next write of a turn in flight; absent or throwing means off. It also gives `ChatState.mode`, read at
  * `modeChanged` and after each `setMode`.
  * `writeAutoApproveWrites`: writes the user value of that setting; rejects when the write fails; absent, every write
- * fails. `now`: clock for record times, in milliseconds since the epoch.
+ * fails. `returnDraft`: puts a `paragraph` draft in the message box, delivered when the panel can take it: the queued
+ * texts the controller takes out without sending them, or refuses to queue, so nothing typed is lost; absent, each is
+ * logged as lost. `now`: clock for record times, in milliseconds since the epoch.
  */
 export type ChatPorts = {
   apiKeys: KeyStore;
@@ -118,6 +124,7 @@ export type ChatPorts = {
   limits?: LimitsSource;
   autoApproveWrites?: () => boolean;
   writeAutoApproveWrites?: (on: boolean) => Promise<void>;
+  returnDraft?: (draft: DraftInsert) => void;
   now?: () => number;
 };
 
@@ -171,6 +178,8 @@ export class ChatController {
   private reply: { abort: AbortController; provider: Provider; settled: Promise<void> } | undefined;
   /** Bumped per listing request; stale listings dropped. */
   private listingId = 0;
+  /** Last id given to a queued message. */
+  private queuedId = 0;
   /** Bumped per approval request shown; a decision counts only for the request open. */
   private approvalId = 0;
   /** The approval request open, mirrored in `ChatState.approval`, and how to settle it. */
@@ -202,6 +211,7 @@ export class ChatController {
   private readonly limitsSource: LimitsSource;
   private readonly autoApproveWrites: () => boolean;
   private readonly writeAutoApproveWrites: (on: boolean) => Promise<void>;
+  private readonly returnDraft: (draft: DraftInsert) => void;
   private readonly now: () => number;
   /** Limits the usage display reads, refreshed at each send and by `limitsChanged`. */
   private limits: TurnLimits;
@@ -232,6 +242,10 @@ export class ChatController {
       (async () => {
         throw new Error("no settings writer");
       });
+    // [>]: The extension always wires the port; only a controller built without it (tests, the eval) logs the loss.
+    this.returnDraft =
+      ports.returnDraft ??
+      ((draft) => console.error("broke-code: no message box to return unsent text to; it is lost", draft.text));
     this.now = ports.now ?? Date.now;
     this.plan = this.workspaceState.get<unknown>(PLAN_KEY) === true;
     // [>]: Instruction files and skills are read only at a send, never just to refresh the display.
@@ -254,6 +268,7 @@ export class ChatController {
       // constructor reads no setting.
       mode: "ask",
       modePending: false,
+      queue: [],
     };
   }
 
@@ -471,19 +486,131 @@ export class ChatController {
    * before each request, the first included: the oldest tool results are left out of a request that would fill the
    * model's context (see `toHistory`), and one that fills it even so is never sent. The
    * turn reads the settings and Plan once, when it starts: in Plan it offers the read tools only, and a call to a tool
-   * Plan leaves out gets an `error` step saying so, counted toward the step limit like any step. Ignored while replying, while a mode pick is written, or without provider and model. `picked`:
+   * Plan leaves out gets an `error` step saying so, counted toward the step limit like any step. The webview clears the
+   * box before the host answers and its state may lag, so a message that cannot start a turn now is never dropped: while
+   * a reply is in flight it goes through `queueMessage` (a turn the queue started after a stale `done`), and otherwise
+   * (a mode pick written, no provider or model) it goes back to the box. Blank text is dropped. `picked`:
    * paths chosen in the menu, mentions while their `@<path>` is still in the text. A mention that cannot be read is
    * reported to the model and in the entry; the message still goes. A message starting with `/<name>` of a discovered
    * skill sends that skill's text with the arguments instead of the text as typed (see `loadSkillText`), and the entry
    * records the skill, which opens its folder to the read tools; a `SKILL.md` that cannot be read is reported the same
-   * way as a mention.
+   * way as a mention. Once the turn has fully settled, and only when it ended `done`, the first queued message is sent
+   * the same way (see `sendNextQueued`); the returned promise settles after the turns it drained.
    */
   async send(text: string, picked: readonly string[] = []): Promise<void> {
+    const content = text.trim();
+    if (!content) return;
+    if (isReplying(this.state)) return this.queueMessage(content, picked);
+    if (!this.mayStartTurn()) return this.giveBack([{ text: content, mentions: [...picked] }]);
+    const ended = await this.runTurn(content, picked);
+    // [!]: Only once the turn has fully settled (`this.reply` cleared, navigation released), never inside `settle`.
+    if (ended === "done") await this.sendNextQueued();
+  }
+
+  /**
+   * Whether a send may start an agent turn now: a provider and a model chosen, no reply in flight, and no mode pick
+   * being written, since the turn would start on a mode about to change. The one check `send` and the queue share.
+   */
+  private mayStartTurn(): boolean {
+    return (
+      this.currentProvider() !== undefined &&
+      this.state.model !== undefined &&
+      !isReplying(this.state) &&
+      !this.state.modePending
+    );
+  }
+
+  /**
+   * Queue `text` while a reply is in flight, with its `picked` paths, to be sent as if typed when a turn ends `done`.
+   * The webview clears the box before the host answers and its state may lag, so a message not queued goes back to the
+   * box (`returnDraft`), never dropped: exactly a built-in command (`/new`, `/model`), which the webview runs itself, and
+   * a message past `MAX_QUEUED_MESSAGES`. With no reply in flight (it ended before the request arrived), the message is
+   * sent at once as `send` would, when a turn may start and nothing is queued; otherwise it goes back to the box, so no
+   * message waits paused because of a late request. Blank text is dropped, as `send` drops it.
+   */
+  async queueMessage(text: string, picked: readonly string[]): Promise<void> {
+    const content = text.trim();
+    if (!content) return;
+    const message = { text: content, mentions: [...picked] };
+    if (!isReplying(this.state) && !builtInCommand(content) && this.mayStartTurn() && this.state.queue.length === 0) {
+      return this.send(content, picked);
+    }
+    const queues = isReplying(this.state) && !builtInCommand(content) && this.state.queue.length < MAX_QUEUED_MESSAGES;
+    if (!queues) return this.giveBack([message]);
+    this.state.queue = [...this.state.queue, { id: ++this.queuedId, ...message }];
+    this.emit();
+  }
+
+  /** Edit: take queued message `id` out and return its text and picked paths to the box. Ignored when not queued. */
+  editQueued(id: number): void {
+    const message = this.state.queue.find((queued) => queued.id === id);
+    if (!message) return;
+    this.removeQueued(id);
+    this.giveBack([message]);
+  }
+
+  /** Remove queued message `id`. Ignored when no such message is queued. */
+  removeQueued(id: number): void {
+    if (!this.state.queue.some((message) => message.id === id)) return;
+    this.state.queue = this.state.queue.filter((message) => message.id !== id);
+    this.emit();
+  }
+
+  /**
+   * "Send now" on a paused queue: send queued message `id` when it is the first and a turn may start; its turn ending
+   * `done` resumes the queue. Ignored otherwise.
+   */
+  sendQueued(id: number): Promise<void> {
+    if (this.state.queue[0]?.id !== id) return Promise.resolve();
+    return this.sendNextQueued();
+  }
+
+  /**
+   * Send the first queued message, as if typed now: its mentions read now, and the provider, model, mode, and limits of
+   * now. When a turn may not start (the model gone after a failed listing, a mode pick written), nothing is sent and it
+   * stays first. Taken off the queue in the same step as `send` shows it, so it is never in both.
+   */
+  private sendNextQueued(): Promise<void> {
+    const next = this.state.queue[0];
+    if (!next || !this.mayStartTurn()) return Promise.resolve();
+    this.state.queue = this.state.queue.slice(1);
+    return this.send(next.text, next.mentions);
+  }
+
+  /**
+   * Navigation that changes the conversation shown, when asked: empty the queue and return its texts to the box, in
+   * order, one per paragraph. Emptied once, so a second request returns nothing again.
+   */
+  private returnQueue(): void {
+    const messages = this.state.queue;
+    if (messages.length === 0) return;
+    this.state.queue = [];
+    this.emit();
+    this.giveBack(messages);
+  }
+
+  /** `messages`' texts back in the message box as one `paragraph` draft, their picked paths each once. */
+  private giveBack(messages: readonly { text: string; mentions: readonly string[] }[]): void {
+    const text = messages.map((message) => message.text).join("\n\n");
+    const picked = [...new Set(messages.flatMap((message) => message.mentions))];
+    try {
+      this.returnDraft({ text, mode: "paragraph", picked });
+    } catch (error) {
+      console.error("broke-code: could not return unsent text to the message box; it is lost", text, error);
+    }
+  }
+
+  /** Deactivation: nothing queued is sent or returned, since the panel goes too, and the reply in flight is stopped. */
+  dispose(): void {
+    this.state.queue = [];
+    this.stop();
+  }
+
+  /** The agent turn of `send`, once `mayStartTurn` passed; its last status, or `undefined` when it did not start. */
+  private async runTurn(content: string, picked: readonly string[]): Promise<ReplyStatus | undefined> {
     const provider = this.currentProvider();
     const model = this.state.model;
-    const content = text.trim();
-    // [!]: Never while a mode pick is written: the turn would start on a mode about to change.
-    if (!provider || !model || !content || isReplying(this.state) || this.state.modePending) return;
+    if (!provider || !model) return undefined;
     this.limits = this.limitsSource.read();
     const { maxToolSteps } = this.limits;
     // [!]: Plan is read once: the turn's tools and prompt hold until it ends. The auto-approve setting is not read
@@ -508,11 +635,12 @@ export class ChatController {
     this.reply = { abort, provider, settled };
     this.emit();
     /** Last status of the turn, on its last reply, and its last save handed to the store. */
-    const settle = (status: ReplyStatus, haltReason?: HaltReason) => {
+    const settle = (status: ReplyStatus, haltReason?: HaltReason): ReplyStatus => {
       reply.status = status;
       if (haltReason !== undefined) reply.haltReason = haltReason;
       this.emit();
       void this.save(conversation);
+      return status;
     };
 
     try {
@@ -637,7 +765,7 @@ export class ChatController {
       // locked on a reply that will not end.
       console.error("broke-code: the agent turn failed unexpectedly", error instanceof Error ? error.stack : error);
       reply.error = { kind: "internal", message: error instanceof Error ? error.message : String(error) };
-      settle("failed");
+      return settle("failed");
     } finally {
       // [>]: Also on an unexpected throw, so navigation waiting for this turn never hangs.
       if (this.reply?.abort === abort) this.reply = undefined;
@@ -798,6 +926,7 @@ export class ChatController {
    */
   newChat(): Promise<void> {
     this.stop();
+    this.returnQueue();
     return this.navigate(async () => {
       await this.settleReply();
       this.show(this.freshConversation());
@@ -809,7 +938,10 @@ export class ChatController {
    * request -> `notFound`, and its row is dropped; a read that fails -> `openFailed`.
    */
   openConversation(id: string): Promise<void> {
-    if (id !== this.conversation.id) this.stop();
+    if (id !== this.conversation.id) {
+      this.stop();
+      this.returnQueue();
+    }
     return this.navigate(async () => {
       if (id === this.conversation.id) return;
       await this.settleReply();
@@ -831,7 +963,10 @@ export class ChatController {
    * and a new one shown first. Another row -> the reply keeps running. A failed delete keeps the row and is reported.
    */
   deleteConversation(id: string): Promise<void> {
-    if (id === this.conversation.id) this.stop();
+    if (id === this.conversation.id) {
+      this.stop();
+      this.returnQueue();
+    }
     return this.navigate(async () => {
       if (id === this.conversation.id) {
         await this.settleReply();
