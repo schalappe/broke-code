@@ -554,6 +554,7 @@ function Conversation({
   const turnActions: TurnActionsProps | undefined = lastTurn && {
     actions: lastTurn,
     shown: { conversationId, entries: entries.length },
+    turn: entries.slice(lastTurn.user),
     canAct,
     // [>]: Retry reverts nothing: it asks first when the removed entries changed files or ran commands, or when
     // "Undo changes" is offered for the turn it removes.
@@ -820,10 +821,17 @@ function Reply({
 
 /**
  * Retry and Continue of the last turn. `actions`: where they apply and whether Continue is offered. `shown`: the
- * conversation and entries count the requests carry, so the host ignores a click on a lagging panel. `canAct`: Send would act. `asks`:
+ * conversation and entries count the requests carry, so the host ignores a click on a lagging panel. `turn`: the last
+ * turn's entries, from its user message on, which the confirmation is bound to. `canAct`: Send would act. `asks`:
  * Retry would leave files or commands it does not revert, so its first click asks.
  */
-type TurnActionsProps = { actions: LastTurnActions; shown: ShownEntries; canAct: boolean; asks: boolean };
+type TurnActionsProps = {
+  actions: LastTurnActions;
+  shown: ShownEntries;
+  turn: readonly ChatEntry[];
+  canAct: boolean;
+  asks: boolean;
+};
 
 function hasEffects(effects: { writes: number; commands: number }): boolean {
   return effects.writes > 0 || effects.commands > 0;
@@ -833,17 +841,20 @@ function hasEffects(effects: { writes: number; commands: number }): boolean {
  * The actions row under a reply: Retry, Continue, then "Undo changes", each a secondary button, wrapping when narrow.
  * When Retry asks, its first click shows the line saying what it does not revert, renames the same button "Retry
  * anyway", so the focus stays on it, and adds Cancel after it; the second click retries. Cancel, and any change of the
- * entries count, drop the confirmation; Cancel gives the focus back to Retry, since the button it was on goes. "Undo
+ * turn's entries (one added or removed, a status, an `undone` mark), drop the confirmation; Cancel gives the focus back to Retry, since the button it was on goes. "Undo
  * changes" is disabled, and worded so, while the undo runs, and a line says commands are not undone when its turn ran
  * one.
  */
 function TurnActions({ turnActions, undo }: { turnActions?: TurnActionsProps; undo?: UndoState }) {
   const retryButton = useRef<HTMLButtonElement>(null);
-  const [askedAt, setAskedAt] = useState<number>();
-  const confirming = turnActions?.asks === true && askedAt === turnActions.shown.entries;
+  // [>]: The whole state is posted again for unrelated reasons, each time as new objects: the turn's entries are
+  // compared by their text, and only while a confirmation is open.
+  const [askedAt, setAskedAt] = useState<string>();
+  const confirming =
+    turnActions?.asks === true && askedAt !== undefined && askedAt === JSON.stringify(turnActions.turn);
   const retry = () => {
     if (!turnActions) return;
-    if (turnActions.asks && !confirming) return setAskedAt(turnActions.shown.entries);
+    if (turnActions.asks && !confirming) return setAskedAt(JSON.stringify(turnActions.turn));
     setAskedAt(undefined);
     post({ type: "retry", shown: turnActions.shown });
   };

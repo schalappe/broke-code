@@ -3031,6 +3031,26 @@ describe("retry and continue", () => {
     });
   });
 
+  test("a change of the turn's entries that keeps their count drops the confirmation; an unrelated post keeps it", async () => {
+    const both: ChatEntry[] = [
+      ...wrote,
+      { role: "tool", name: "run_command", args: { command: "ls" }, status: "ok", text: "x", approval: "accepted" },
+      reply("done"),
+    ];
+    await withPanel(stateWith(true, { entries: both }), async ({ host, click, show }) => {
+      await click("Retry");
+      await show(stateWith(true, { entries: structuredClone(both), context: { used: 9, size: 32768, known: true } }));
+      expect(host.textContent).toContain("Retry anyway");
+      const undone = both.map((entry) =>
+        entry.role === "tool" && entry.name === "write_file" ? { ...entry, undone: true as const } : entry,
+      );
+      await show(stateWith(true, { entries: undone }));
+      expect(host.textContent).toContain("Retry");
+      expect(host.textContent).not.toContain("Retry anyway");
+      expect(host.textContent).not.toContain("does not revert");
+    });
+  });
+
   test("an undone write asks nothing", async () => {
     const undone = wrote.map((entry) => (entry.role === "tool" ? { ...entry, undone: true as const } : entry));
     await withPanel(stateWith(true, { entries: undone }), async ({ click }) => {

@@ -655,8 +655,9 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   user ran (`accepted`), or "Undo changes" is offered for that turn (`ChatState.undo.reply` past the user entry), the
   panel's first click on Retry posts nothing: a line says what is not reverted and that "Undo changes" gets the files
   back first, the same button reads "Retry anyway" (the focus stays on it), and Cancel follows it; the second click
-  posts `retry`, and Cancel, or another entries count, drops the confirmation (scouting decision, 2026-11-12: in the
-  chat, no native modal). Accepted gap: a command whose step Stop dropped, in a turn that wrote nothing, is not
+  posts `retry`, and Cancel, or any change of the turn's entries (one added or removed, a status, an `undone` mark,
+  compared as their JSON text while the confirmation is open, since unrelated posts resend the whole state), drops the
+  confirmation (scouting decision, 2026-11-12: in the chat, no native modal). Accepted gap: a command whose step Stop dropped, in a turn that wrote nothing, is not
   warned about. `ChatState` and the record are unchanged.
 - Edit (#112, parent #73): the last user entry has Edit when the last turn offers Retry (`lastTurnActions`, the same
   conditions), enabled when Send would act. A click changes nothing on the host or on disk and posts nothing: the
