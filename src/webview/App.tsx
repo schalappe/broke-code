@@ -13,7 +13,7 @@ import {
 } from "react";
 import Markdown, { type Components, type ExtraProps } from "react-markdown";
 import { type ConversationSummary, filterConversations } from "../core/conversation";
-import { historyStart, isAutomaticSummary } from "../core/history";
+import { historyStart, isAutomaticSummary, sentEntries } from "../core/history";
 import { codeBlockText, FENCE_CLOSED, hasTextAfter, remarkFenceClosed } from "../core/markdownCode";
 import { emptyModelsLabel } from "../core/modelList";
 import {
@@ -508,9 +508,23 @@ function Conversation({
     />
   );
 
+  // [>]: Derived, never stored: the entries before the summary the history starts at are no longer sent, except the
+  // turn's message an automatic summary quotes word for word, which stays at full opacity and says so. A summary is a
+  // fold boundary, so no fold straddles it, and a user message is never folded.
+  const start = historyStart(entries);
+  // [>]: `sentEntries` leads with the quoted message when there is one, else with the entry the history starts at.
+  const first = sentEntries(entries)[0];
+  const quoted = first !== entries[start] ? first : undefined;
   const render = (part: ConversationPart) =>
     part.kind === "entry" ? (
-      entry(part.index)
+      entries[part.index] === quoted ? (
+        <div key={part.index} className="still-sent">
+          {entry(part.index)}
+          <p className="still-sent-note">{l10n.t("Still sent with the summary")}</p>
+        </div>
+      ) : (
+        entry(part.index)
+      )
     ) : (
       // [>]: Uncontrolled, as the reasoning block: the user's choice holds while the conversation stays shown.
       <details key={`fold-${part.start}`} className="turn-fold">
@@ -520,9 +534,6 @@ function Conversation({
         </div>
       </details>
     );
-  // [>]: Derived, never stored: the entries before the summary the history starts at are no longer sent. A summary is a
-  // fold boundary, so no fold straddles it.
-  const start = historyStart(entries);
   const parts = foldTurns(entries);
   const unsent = parts.filter((part) => (part.kind === "entry" ? part.index : part.start) < start);
   const sent = parts.slice(unsent.length);

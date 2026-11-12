@@ -303,6 +303,24 @@ describe("summary", () => {
       '<p class="summary-separator">Conversation not summarized</p>',
     );
   });
+
+  test("after an automatic summary, the turn's message it quotes is marked as still sent, and only that one", () => {
+    const next: ChatEntry = { role: "assistant", reasoning: "", content: "Done.", status: "done" };
+    const turn: ChatEntry = { role: "user", content: "Fix it", mentions: [] };
+    const html = panel([...hi, turn, summary("done"), next]);
+    expect(html).toContain('<div class="unsent">');
+    expect(html.match(/class="still-sent"/g)).toHaveLength(1);
+    expect(html.match(/class="still-sent-note"/g)).toHaveLength(1);
+    const still = html.indexOf('class="still-sent"');
+    expect(html.indexOf("Fix it")).toBeGreaterThan(still);
+    expect(html.indexOf("Still sent with the summary")).toBeGreaterThan(html.indexOf("Fix it"));
+    // [>]: The earlier turn is not quoted: it stays outside the still-sent block, dimmed with the rest.
+    expect(html.indexOf(">Hi<")).toBeGreaterThan(html.indexOf('class="unsent"'));
+    expect(html.indexOf(">Hi<")).toBeLessThan(still);
+    // [>]: After `/compact`, nothing before the summary is sent.
+    const manual = panel([...hi, turn, summary("done"), { role: "user", content: "Next", mentions: [] }]);
+    expect(manual).not.toContain("still-sent");
+  });
 });
 
 describe("folded turn", () => {

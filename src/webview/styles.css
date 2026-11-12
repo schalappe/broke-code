@@ -42,6 +42,8 @@
   --bc-rule: color-mix(in srgb, var(--vscode-foreground) 16%, transparent);
   --bc-fill: color-mix(in srgb, var(--vscode-foreground) 6%, transparent);
   --bc-fill-strong: color-mix(in srgb, var(--vscode-foreground) 11%, transparent);
+  /* The entries no longer sent to the model, faded as a group; a dim line says it in words. */
+  --bc-unsent-opacity: 0.6;
 
   /* The high-contrast rule: the boundary of a filled surface, and of the selected or hovered one. */
   --bc-edge: var(--vscode-contrastBorder, transparent);
@@ -122,6 +124,8 @@ body.vscode-high-contrast-light {
   --bc-fg-dim: color-mix(in srgb, var(--bc-fg) 88%, transparent);
   --bc-error-text: var(--bc-error);
   --bc-warning-text: var(--bc-warning);
+  /* Faded text would fall under the theme's contrast; the line over the unsent entries says it in words. */
+  --bc-unsent-opacity: 1;
 }
 
 html,
@@ -515,7 +519,8 @@ button.history-open:hover:not(:disabled) {
 
 /*
  * The entries before the summary the history starts at: still shown, no longer sent. Dimmed as a group under one line
- * that says so in words, so the state never rests on the dimming alone.
+ * that says so in words, so the state never rests on the dimming alone (high contrast drops the dimming). The turn's
+ * message an automatic summary quotes is still sent: full opacity, with its own dim line.
  */
 .unsent {
   display: flex;
@@ -523,11 +528,23 @@ button.history-open:hover:not(:disabled) {
   gap: var(--bc-space-4);
 }
 
-.unsent > :not(.unsent-note) {
-  opacity: 0.6;
+.unsent > :not(.unsent-note, .still-sent) {
+  opacity: var(--bc-unsent-opacity);
 }
 
-.unsent-note {
+.still-sent {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bc-space-2);
+}
+
+/* The user's message it wraps is its first child, so the turn's whitespace moves to the wrapper. */
+.still-sent:not(:first-child) {
+  margin-top: var(--bc-space-3);
+}
+
+.unsent-note,
+.still-sent-note {
   margin: 0;
   color: var(--bc-fg-dim);
   font-size: var(--bc-fs-sm);

@@ -212,6 +212,7 @@
   "Summarize the conversation to free context": "Résumer la discussion pour libérer du contexte",
   "The model's reply held no summary.": "La réponse du modèle ne contenait aucun résumé.",
   "Earlier messages are no longer sent to the model: the summary below replaces them.": "Les messages précédents ne sont plus envoyés au modèle : le résumé ci-dessous les remplace.",
+  "Still sent with the summary": "Toujours envoyé avec le résumé",
   "Summarizing the conversation…": "Résumé de la discussion en cours…",
   "Conversation summarized": "Discussion résumée",
   "Conversation summarized automatically": "Discussion résumée automatiquement",
