@@ -24,6 +24,10 @@ This file describes `bun run eval`: what it runs, its sandbox, its scenarios, it
   need `sandbox-exec` to apply a profile, so they fail inside a harness that is itself sandboxed. Skills are discovered as the extension
   does, but with a throwaway copy of the scenario's home fixture as the home folder, so the bench never reads the real
   `~/.agents`; a scenario without one gets no skill, and its prompt has neither the Skills section nor `load_skill`.
+  The bench drives the extension's chat controller and client, so its requests carry the usage field
+  (`stream_options: { include_usage: true }`) and follow its one-resend rule (`docs/spec/provider.md`); each run
+  starts with a fresh `ProviderSupport`, so what one run learns of the server never changes the next run's requests.
+  Results measured before 2026-11-13 were taken without the field.
   Eight scenarios, each judged on the turn ending `done` and on the workspace after it: every file the scenario writes
   holds its exact expected text, byte for byte, and every other entry is unchanged. The workspace is read back without
   following symlinks: every entry but a folder counts, a file by its text, a symlink by its target (`{ symlink }`), any

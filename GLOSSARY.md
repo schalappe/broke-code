@@ -113,6 +113,12 @@ models through the OpenAI chat contract. Configured in the user settings, by han
 stores its key.
 _Avoid_: profile, endpoint, backend, connection
 
+**Reported usage**:
+The token counts a provider reports for one reply, its prompt tokens and its completion tokens, which broke-code asks
+every provider for. The header's tooltip shows those of the last reply of the conversation shown; they are never
+saved. Not the estimate, which broke-code computes from characters before a request is sent.
+_Avoid_: token count (alone), actual usage, real tokens
+
 ## Commands and skills
 
 **Mention**:

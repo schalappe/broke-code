@@ -388,7 +388,15 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
   with reason `contextFull`, saved like the other halts; it is never a `ProviderError`, which means a request was sent.
   The usage display (`ChatState.context`) counts the request as it would be sent, and its optional `leftOut` counts the
   results left out; while it is set, the panel shows "N older tool results are left out of the request to save
-  context." in the place and look of the unknown-size notice, derived from the state, never saved or sent. Known cost,
+  context." in the place and look of the unknown-size notice, derived from the state, never saved or sent. Its
+  optional `reported` holds the counts the last chat request of the conversation shown reported (a turn's request or
+  a summary request; the commit message's never reaches the chat's state, see `docs/spec/provider.md`), which the
+  header's tooltip shows. While a request is in flight it keeps the counts of the request before it; when the request
+  ends, its counts replace them, or it is cleared when the request ended without reported usage (stopped, cut,
+  failed, or a reply that reported none). It is cleared too when the conversation shown changes (New chat, an open, a
+  delete of the conversation shown) and whenever the selected model is set or reset, even to the same model (a model
+  picked, a provider changed, a model list loaded again). Never saved: after a window reload there is none until the
+  next reply. The estimate does not read it. Known cost,
   accepted: when fewer steps may be replaced than the rounded count, every one of them is replaced and the count
   grows with the next step, which changes the prompt's prefix and defeats a provider's prompt cache for that request.
   A context that keeps 3 or more replaceable results whole beside the last 3 steps never gets there; with 2, 1, or 0,

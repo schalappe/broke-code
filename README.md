@@ -421,7 +421,10 @@ broke-code tells the agent that you undid the change, so it reads the file again
 Next to the model picker, the panel header shows how much of the model's context the next request would use, in tokens
 and as a percentage. It is an estimate. broke-code counts the characters of everything the request sends (the
 instructions, your messages with their attachments, the model's answers, and the tool results, but not its reasoning)
-and divides by 4.
+and divides by 4. When the provider reports how many tokens the last reply used, the tooltip of that line shows the
+reported counts too: "Last reply: 12,001 prompt tokens, 345 completion tokens". broke-code asks every provider for these
+counts. A provider that refuses the request field gets the request again without it, and broke-code stops asking that
+model until the window reloads.
 
 Before each request of an agent turn, broke-code checks that estimate. If the request leaves less than one eighth of
 the context for the reply, broke-code leaves the oldest tool results out of that request, as few as make it fit,
