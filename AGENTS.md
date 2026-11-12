@@ -1226,7 +1226,9 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   first differing line), or `workspaceChanged` (the written files are right, or none was asked for, but another file
   changed). The bar is 9 runs of 10 per model and scenario; the bench exits 1 when a model is under it, and before
   any run when Ollama is unreachable or does not list a model. `--model <name>`, `--scenario <name>` (both
-  repeatable; an unknown scenario exits 1 naming the others), and `--runs <n>` shorten a local iteration; `--dump <file>` appends each run's entries (tool steps with their call's arguments), verdict,
+  repeatable; an unknown scenario exits 1 naming the others), and `--runs <n>` shorten a local iteration;
+  `--base-url <url>` plays against another OpenAI-compatible server instead of the local Ollama, such as a rented vLLM
+  started with `--max-model-len 32768` (#58), its key read from `BENCH_API_KEY`, never a flag; `--dump <file>` appends each run's entries (tool steps with their call's arguments), verdict,
   `planned` (each change handed to the applier, in call order: tool, path, `before` (`null` for a new file), `after`,
   and the applier's status), and `changes` (each entry that differs from the fixture after the run, with its text,
   `{ symlink }`, or `{ special }`, `null` when removed) as JSON Lines, to read the

@@ -30,10 +30,10 @@ import type { Scenario, WorkspaceFiles, WorkspaceSnapshot } from "./scenarios";
 export const BENCH_COMMAND_ENV: CommandEnv = { shell: "/bin/sh", timeoutMs: 10_000 };
 
 /**
- * Where and how a run plays. `baseUrl`: an OpenAI-compatible provider without a key. `maxToolSteps`: the turn's step
- * limit, small so a looping model fails fast.
+ * Where and how a run plays. `baseUrl`: an OpenAI-compatible provider; `apiKey`: its key, `undefined` for none (local
+ * Ollama). `maxToolSteps`: the turn's step limit, small so a looping model fails fast.
  */
-export type RunTarget = { baseUrl: string; model: string; maxToolSteps: number };
+export type RunTarget = { baseUrl: string; apiKey: string | undefined; model: string; maxToolSteps: number };
 
 /**
  * A change a write tool handed to the applier, as the dump records it: `before` is `null` for a new file, `status` the
@@ -65,13 +65,14 @@ export async function playScenario(scenario: Scenario, target: RunTarget, tmpRoo
     // [>]: The tools compare resolved paths; on macOS the temporary directory sits behind the /var symlink.
     const root = { name: basename(copy), path: await realpath(copy) };
     const toolEnv = { ripgrepCandidates: ripgrepCandidates(undefined, process.env.PATH) };
-    // [>]: The loaded context, not the model card's: Ollama loads both bench models with 32,768 tokens.
+    // [>]: The loaded context, not the model card's: Ollama loads both bench models with 32,768 tokens, and a vLLM
+    // server for the bench is started with `--max-model-len 32768`.
     const limits = parseLimits({
       maxToolSteps: target.maxToolSteps,
       contextSizes: { [target.model]: DEFAULT_CONTEXT_SIZE },
     });
     const controller = new ChatController({
-      apiKeys: { get: async () => undefined },
+      apiKeys: { get: async () => target.apiKey },
       workspaceState: memoryChoices(),
       publish: () => {},
       mentions: {
@@ -94,7 +95,7 @@ export async function playScenario(scenario: Scenario, target: RunTarget, tmpRoo
       limits: { read: () => limits },
     });
 
-    controller.setProviders({ providers: [{ name: "Ollama", baseUrl: target.baseUrl }], skipped: [] });
+    controller.setProviders({ providers: [{ name: "bench", baseUrl: target.baseUrl }], skipped: [] });
     // [>]: `setProviders` starts a listing it does not return; this one supersedes it and can be awaited.
     await controller.loadModels();
     const models = controller.snapshot.models;
