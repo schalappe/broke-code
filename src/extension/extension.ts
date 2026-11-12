@@ -34,7 +34,7 @@ import { registerCommitMessageCommand } from "./commitMessage";
 import { askContextSize, LIMIT_SETTINGS, readCommandTimeoutSeconds, readLimits } from "./contextSizes";
 import { WorkspaceFileIndex } from "./fileIndex";
 import { gitDiffs } from "./git";
-import { TurnDiffs } from "./turnDiffs";
+import { registerTurnDiffs } from "./turnDiffs";
 
 export function activate(context: vscode.ExtensionContext): void {
   // [!]: User settings only. A workspace value could reuse a provider name with another base URL and receive its stored key.
@@ -77,7 +77,7 @@ export function activate(context: vscode.ExtensionContext): void {
   // [>]: `storageUri` is a `file:` URI in the desktop extension host, and only with a folder or workspace open.
   const conversations = new ConversationStore(directoryFiles(context.storageUri?.fsPath));
   let view: ChatView | undefined;
-  const turnDiffs = new TurnDiffs();
+  const turnDiffs = registerTurnDiffs();
   const controller = new ChatController({
     apiKeys,
     workspaceState: context.workspaceState,
@@ -94,7 +94,7 @@ export function activate(context: vscode.ExtensionContext): void {
     returnDraft: (draft) => view?.returnDraft(draft),
     // [>]: The write approval's unsaved check: a restore must not replace a file under an editor's unsaved text.
     undo: { roots: workspaceRoots, hasUnsavedChanges },
-    changeDiffs: turnDiffs,
+    changeDiffs: turnDiffs.diffs,
   });
   const fileIndex = new WorkspaceFileIndex();
   view = new ChatView(context.extensionUri, controller, {
@@ -167,7 +167,7 @@ export function activate(context: vscode.ExtensionContext): void {
       dispose: () => {
         controller.dispose();
         previews.dispose();
-        turnDiffs.dispose();
+        turnDiffs.registration.dispose();
       },
     },
   );

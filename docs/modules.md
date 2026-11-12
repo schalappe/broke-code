@@ -27,8 +27,9 @@ This file says which file holds which responsibility. Update it when a module ga
   "Changed files": the held turn's rows in `ChatState.changedFiles`, named at each recorded write, and
   `openChangeDiff` and the closing of the diffs of files no longer held over the `ChangeDiffHost` port), the line
   counts of a change (`lineDiff.ts`: `lineDiffCount`, a minimal line diff within `LINE_DIFF_WORK_LIMIT`), the
-  "Changed files" diffs' decisions (`turnDiffs.ts`: `BEFORE_TURN_SCHEME`, their left side's scheme, and
-  `closeTurnDiffs`, which tabs to close), the conversation record
+  "Changed files" diffs (`turnDiffs.ts`: `TurnDiffs`, the `ChangeDiffHost` over a `TurnDiffEditor` port, with the
+  left sides' text, the existence check, the error wording, an open cancelled when its file is closed meanwhile;
+  `BEFORE_TURN_SCHEME`, their left side's scheme; `closeTurnDiffs`, which tabs to close), the conversation record
   (`conversation.ts`: version 2, its validation on load, title, id, the summary file's shape, `filterConversations`, the
   History filter), its store
   (`conversationStore.ts`: a record and a summary file per conversation, the list from the summaries, reads, writes,
@@ -121,9 +122,8 @@ This file says which file holds which responsibility. Update it when a module ga
   `vscode.env.shell`, `$SHELL`, or `/bin/sh`), the write approval's editor side in
   `approval.ts` (the diff preview over `vscode.diff` and a content provider, the tabs, documents, and
   `brokeCode.autoApproveWrites` values it feeds the core decisions, and `writeAutoApproveWrites`, the user value the
-  mode selector writes), the "Changed files" diffs in `turnDiffs.ts` (`TurnDiffs`, the `changeDiffs` port: the text
-  before the turn from a content provider against the real file over `vscode.diff`, the existence check and error
-  notifications, the tabs closed with their row and at deactivation), the instruction reader and the skill reader from the home folder and the workspace folders, the latter logging the
+  mode selector writes), the "Changed files" diffs in `turnDiffs.ts` (`registerTurnDiffs`: the core `TurnDiffs` over
+  `vscode.diff`, `stat`, the tabs, and the error notifications, and the content provider of its left sides), the instruction reader and the skill reader from the home folder and the workspace folders, the latter logging the
   skills of each send, and the same discovery, unlogged, for the `/` menu's `querySkills`; `chatView.ts` opens the
   Quick Pick of `chooseModel`, runs `insertCode` over the active text editor, shows a failed mode write, and wires the
   `DraftQueue` to the view's focus command and `postMessage` (`insertDraft`); `extension.ts` registers `broke-code.addSelectionToChat`,

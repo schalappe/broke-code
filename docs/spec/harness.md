@@ -235,8 +235,8 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
     string within `MAX_MENTION_PATH_LENGTH`; `ChatController.openChangeDiff` opens the first row shown under that path
     through the `changeDiffs` port (`ChangeDiffHost`, beside `UndoHost`) with its file's text before the turn
     (`HeldFileDiff { path, realPath, original }`, `original` `undefined` for a created file), and does nothing for a
-    path no longer shown or without the port (tests, the eval bench: the rows still show). The host
-    (`src/extension/turnDiffs.ts`) opens VS Code's diff editor beside the chat, the focus kept in the panel, titled
+    path no longer shown or without the port (tests, the eval bench: the rows still show). The port
+    (`TurnDiffs`, `src/core/turnDiffs.ts`, over the editor the host wires in `src/extension/turnDiffs.ts`) opens VS Code's diff editor beside the chat, the focus kept in the panel, titled
     "<path> (changes of this turn)": on the left the text before the turn, read-only, from a content provider on
     `BEFORE_TURN_SCHEME` (empty for a created file); on the right the real file, so it shows what the file holds now,
     unsaved editor changes included, and a hand edit since the turn shows what an undo would skip. A file no longer on
@@ -244,7 +244,9 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
     notification. A row's diff tab lives as long as its row: the controller tells the port to close the diffs of the
     files that left the held turn (put back by an undo, or the turn no longer held), checked at each emit, the one
     place every such change passes; the host closes them by their left side (`closeTurnDiffs`), and closes every one
-    at deactivation, so a reloaded window never restores one with an empty left side.
+    at deactivation, so a reloaded window never restores one with an empty left side. A close also cancels an open
+    still in flight for that file: one closed during its existence check opens nothing and shows no error, and one
+    closed while the diff editor opens closes the tab it opened once it is open, so no tab outlives its row.
 
 ## Commands
 
