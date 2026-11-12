@@ -4,7 +4,8 @@
  * commands), which menu rows to show, what a key does, which picked paths to send, and how a draft (an editor entry
  * point, queued texts returned, or the last message put back by Edit) edits the message box.
  */
-import { type ChatEntry, type DraftInsert, MAX_QUERY_LENGTH } from "../core/protocol";
+import { lastTurnActions } from "../core/lastTurn";
+import { type ChatEntry, type ChatState, type DraftInsert, isReplying, MAX_QUERY_LENGTH } from "../core/protocol";
 import { type MentionKind, pickedPath, RESERVED_MENTIONS, reservedMention } from "../core/reservedMentions";
 import {
   type BuiltInCommand,
@@ -175,6 +176,26 @@ export function pickedInText(picked: readonly string[], text: string): string[] 
 export function editDraft(entry: ChatEntry & { role: "user" }): DraftInsert {
   const paths = entry.mentions.flatMap((mention) => (reservedMention(mention.kind) ? [] : [mention.path]));
   return { text: entry.content, mode: "paragraph", picked: paths };
+}
+
+/**
+ * The replacing state Edit starts, in the panel only: the conversation shown and its entries count at the click. A
+ * Send meanwhile carries the count (`replaces`), so the host removes the last turn the panel showed, or nothing.
+ */
+export type Replacing = { conversationId: string; entries: number };
+
+/**
+ * Whether the replacing state still holds for `state`: the same conversation, the same entries count, no reply in
+ * flight, and Edit still offered (`lastTurnActions`). Once it fails the state ends for good, even if a later state
+ * matches again (a Retry that ends with as many entries as before).
+ */
+export function stillReplacing(replacing: Replacing, state: ChatState): boolean {
+  return (
+    replacing.conversationId === state.conversationId &&
+    replacing.entries === state.entries.length &&
+    !isReplying(state) &&
+    lastTurnActions(state.entries) !== undefined
+  );
 }
 
 /** The message box's content: its text, its caret, and the paths picked in it. */

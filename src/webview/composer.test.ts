@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { type DraftInsert, MAX_QUERY_LENGTH } from "../core/protocol";
+import { type ChatEntry, type ChatState, type DraftInsert, MAX_QUERY_LENGTH } from "../core/protocol";
 import type { SlashCommand, Suggestion } from "../core/suggestions";
 import {
   applyDraft,
@@ -14,6 +14,7 @@ import {
   replaceToken,
   slashMenuView,
   slashPick,
+  stillReplacing,
 } from "./composer";
 
 const file = (path: string): Suggestion => ({ path, kind: "file" });
@@ -355,5 +356,24 @@ describe("editDraft", () => {
       caret: 15 + entry.content.length,
       picked: ["x y.ts", "src/a b.ts", "lib", "./diff"],
     });
+  });
+});
+
+describe("stillReplacing", () => {
+  const question: ChatEntry = { role: "user", content: "Do it", mentions: [] };
+  const reply = (status: "done" | "waiting"): ChatEntry => ({ role: "assistant", reasoning: "", content: "", status });
+  const state = (entries: ChatEntry[], conversationId = "c1") => ({ conversationId, entries }) as unknown as ChatState;
+  const replacing = { conversationId: "c1", entries: 2 };
+
+  test("holds for the same conversation and entries count while Edit is offered", () => {
+    expect(stillReplacing(replacing, state([question, reply("done")]))).toBe(true);
+  });
+
+  test("fails for another conversation, another count, a reply in flight, or a completed summary after the message", () => {
+    expect(stillReplacing(replacing, state([question, reply("done")], "c2"))).toBe(false);
+    expect(stillReplacing(replacing, state([question, reply("done"), question, reply("done")]))).toBe(false);
+    expect(stillReplacing(replacing, state([question, reply("waiting")]))).toBe(false);
+    const summary: ChatEntry = { role: "assistant", reasoning: "", content: "S.", status: "done", summary: true };
+    expect(stillReplacing({ ...replacing, entries: 3 }, state([question, reply("done"), summary]))).toBe(false);
   });
 });

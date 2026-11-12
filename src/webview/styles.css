@@ -550,6 +550,41 @@ button.history-open:hover:not(:disabled) {
   font-size: var(--bc-fs-sm);
 }
 
+/* Edit under the last user message, at its right, 4px under it rather than the 12px between entries. */
+.user-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: calc(var(--bc-space-2) - var(--bc-space-4));
+}
+
+/*
+ * The last turn while Edit replaces it: dimmed like the entries no longer sent (not in high contrast, through the same
+ * token), under a line in the full foreground, since it says what Send will do, with Cancel beside it.
+ */
+.replacing {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bc-space-4);
+}
+
+.replacing > :not(.replacing-head) {
+  opacity: var(--bc-unsent-opacity);
+}
+
+.replacing-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--bc-space-2) var(--bc-space-3);
+}
+
+.replacing-note {
+  flex: 1 1 16em;
+  margin: 0;
+  color: var(--bc-fg);
+  font-size: var(--bc-fs-sm);
+}
+
 /* A summary's separator: small dim words between two drawn rules, across the conversation. */
 .summary-separator {
   display: flex;

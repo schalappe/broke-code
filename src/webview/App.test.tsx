@@ -358,7 +358,11 @@ describe("folded turn", () => {
     expect(html).toContain(
       '</div></div></details><div class="message assistant"><div class="answer"><p>FINAL_ANSWER</p></div><div class="turn-actions"><button type="button" class="secondary">Retry</button></div></div>',
     );
-    expect(html.indexOf('<div class="message user">Hi</div><details class="turn-fold">')).toBeGreaterThan(-1);
+    expect(
+      html.indexOf(
+        '<div class="message user">Hi</div><div class="user-actions"><button type="button" class="secondary">Edit</button></div><details class="turn-fold">',
+      ),
+    ).toBeGreaterThan(-1);
   });
 
   test("a click expands the fold, and a step row inside still toggles on its own", async () => {
@@ -461,7 +465,7 @@ describe("folded turn", () => {
 
   test("a turn with one step renders the same markup as before folding existed", () => {
     expect(conversationOf([user, call, ok, final])).toBe(
-      '<section class="conversation"><div class="message user">Hi</div><div class="message assistant"><div class="answer"><p>Look.</p></div><details class="step"><summary class="step-row"><span class="step-tool">read_file</span><span class="step-arg">a.ts</span><span class="step-status">ok, 1 line</span></summary><pre class="step-result"><code>x</code></pre></details></div><div class="message assistant"><div class="answer"><p>FINAL_ANSWER</p></div><div class="turn-actions"><button type="button" class="secondary">Retry</button></div></div><div></div></section>',
+      '<section class="conversation"><div class="message user">Hi</div><div class="user-actions"><button type="button" class="secondary">Edit</button></div><div class="message assistant"><div class="answer"><p>Look.</p></div><details class="step"><summary class="step-row"><span class="step-tool">read_file</span><span class="step-arg">a.ts</span><span class="step-status">ok, 1 line</span></summary><pre class="step-result"><code>x</code></pre></details></div><div class="message assistant"><div class="answer"><p>FINAL_ANSWER</p></div><div class="turn-actions"><button type="button" class="secondary">Retry</button></div></div><div></div></section>',
     );
   });
 });
@@ -2617,10 +2621,14 @@ describe("queued messages", () => {
     const picked = [{ id: 7, text: "read @my file.ts", mentions: ["my file.ts"] }];
     await withPanel(
       stateWith(true, { entries: stopped, queue: picked }),
-      async ({ host, textarea, type, click, press, receive }) => {
+      async ({ host, textarea, type, press, receive }) => {
         await type("foo");
         posted.length = 0;
-        await click("Edit");
+        // [>]: The last user message has an Edit of its own, before the queue in the DOM.
+        const edit = [...host.querySelectorAll<HTMLButtonElement>(".queue button")].find(
+          (b) => b.textContent === "Edit",
+        );
+        await act(async () => edit?.click());
         expect(posted).toEqual([{ type: "editQueued", id: 7 }]);
         expect(textarea.value).toBe("foo");
         expect(document.activeElement).toBe(textarea);
@@ -3027,5 +3035,126 @@ describe("retry and continue", () => {
       await click("Retry");
       expect(posted).toEqual([{ type: "retry", entries: 4 }]);
     });
+  });
+});
+
+describe("edit the last message", () => {
+  const first: ChatEntry = { role: "user", content: "First", mentions: [] };
+  const firstReply: ChatEntry = { role: "assistant", reasoning: "", content: "One.", status: "done" };
+  const question: ChatEntry = {
+    role: "user",
+    content: "Fix @src/a b.ts and @problems",
+    mentions: [
+      { path: "src/a b.ts", kind: "file", status: "attached", lines: 1 },
+      { path: "problems", kind: "problems", status: "noProblems" },
+    ],
+  };
+  const reply = (status: Reply["status"], extra: Partial<Reply> = {}): ChatEntry => ({
+    role: "assistant",
+    reasoning: "",
+    content: `Reply ${status}.`,
+    status,
+    ...extra,
+  });
+  const entries = [first, firstReply, question, reply("done")];
+  const html = (shown: ChatEntry[], overrides: Partial<ChatState> = {}) =>
+    renderToStaticMarkup(<App state={stateWith(true, { entries: shown, ...overrides })} language="en" />);
+  const EDIT = ">Edit</button>";
+  const LINE = "Sending replaces this message and its replies.";
+  const WARNING = "It does not revert the files this turn wrote or the commands it ran.";
+
+  test("Edit shows once, on the last user message, before its reply", () => {
+    const shown = html(entries);
+    expect(shown.split(EDIT)).toHaveLength(2);
+    expect(shown.indexOf(EDIT)).toBeGreaterThan(shown.indexOf("Fix @src/a b.ts"));
+    expect(shown.indexOf(EDIT)).toBeLessThan(shown.indexOf("Reply done."));
+  });
+
+  test("Edit never shows during a reply, nor when a completed /compact summary follows the last user message", () => {
+    for (const status of ["waiting", "streaming"] as const) {
+      expect(html([first, firstReply, question, reply(status)])).not.toContain(EDIT);
+    }
+    expect(html([...entries, reply("done", { summary: true, content: "Summary." })])).not.toContain(EDIT);
+  });
+
+  test("Edit is disabled when Send would not act", () => {
+    expect(html(entries)).not.toContain('disabled="">Edit<');
+    expect(html(entries, { modePending: true })).toContain('disabled="">Edit<');
+    expect(html(entries, { model: undefined })).toContain('disabled="">Edit<');
+  });
+
+  test("a click posts nothing, fills and focuses the box, and marks the last turn with the line and Cancel", async () => {
+    await withPanel(stateWith(true, { entries }), async ({ host, textarea, click }) => {
+      await click("Edit");
+      // [>]: The caret ends on `@problems`: the mention lookup may run, but its menu stays closed.
+      expect(posted.filter((message) => (message as { type: string }).type !== "queryFiles")).toEqual([]);
+      expect(host.querySelector('[role="listbox"]')).toBeNull();
+      expect(textarea.value).toBe("Fix @src/a b.ts and @problems");
+      expect(document.activeElement).toBe(textarea);
+      const group = host.querySelector(".replacing")!;
+      expect(group.textContent).toContain(LINE);
+      expect(group.textContent).not.toContain(WARNING);
+      expect(group.textContent).toContain("Fix @src/a b.ts");
+      expect(group.textContent).toContain("Reply done.");
+      expect(group.textContent).not.toContain("One.");
+      expect(group.querySelector("button")?.textContent).toBe("Cancel");
+      expect(host.textContent).not.toContain("Edit");
+    });
+  });
+
+  test("the line carries the warning when a removed step applied a write", async () => {
+    const wrote: ChatEntry[] = [
+      question,
+      reply("done", { content: "Writing." }),
+      { role: "tool", name: "write_file", args: { path: "a.ts" }, status: "ok", text: "ok", approval: "auto" },
+      reply("done"),
+    ];
+    await withPanel(stateWith(true, { entries: wrote }), async ({ host, click }) => {
+      await click("Edit");
+      expect(host.querySelector(".replacing")!.textContent).toContain(WARNING);
+    });
+  });
+
+  test("Cancel removes the mark, posts nothing, keeps the box's text, and gives the focus back to Edit", async () => {
+    await withPanel(stateWith(true, { entries }), async ({ host, textarea, click }) => {
+      await click("Edit");
+      await click("Cancel");
+      expect(posted.filter((message) => (message as { type: string }).type !== "queryFiles")).toEqual([]);
+      expect(host.querySelector(".replacing")).toBeNull();
+      expect(textarea.value).toBe("Fix @src/a b.ts and @problems");
+      expect(document.activeElement?.textContent).toBe("Edit");
+    });
+  });
+
+  test("Send then posts the send with the entries count it replaces, the file paths picked", async () => {
+    await withPanel(stateWith(true, { entries }), async ({ textarea, click, type }) => {
+      await type("draft");
+      await click("Edit");
+      expect(textarea.value).toBe("draft\n\nFix @src/a b.ts and @problems");
+      posted.length = 0;
+      await click("Send");
+      expect(posted).toEqual([
+        { type: "send", text: "draft\n\nFix @src/a b.ts and @problems", mentions: ["src/a b.ts"], replaces: 4 },
+      ]);
+    });
+  });
+
+  test("another conversation, another entries count, or a reply starting ends the replacing state", async () => {
+    const others: [string, Partial<ChatState>][] = [
+      ["conversation", { entries, conversationId: "other" }],
+      ["count", { entries: [...entries, { role: "user", content: "More", mentions: [] }, reply("done")] }],
+      ["reply", { entries: [first, firstReply, question, reply("waiting")] }],
+    ];
+    for (const [name, overrides] of others) {
+      await withPanel(stateWith(true, { entries }), async ({ host, click, show }) => {
+        await click("Edit");
+        await show(stateWith(true, overrides));
+        await show(stateWith(true, { entries, conversationId: stateWith(true).conversationId }));
+        expect({ name, marked: host.querySelector(".replacing") !== null }).toEqual({ name, marked: false });
+        posted.length = 0;
+        await click("Send");
+        expect(posted).toEqual([{ type: "send", text: "Fix @src/a b.ts and @problems", mentions: ["src/a b.ts"] }]);
+      });
+    }
   });
 });

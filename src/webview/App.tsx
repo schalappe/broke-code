@@ -2,6 +2,7 @@ import * as l10n from "@vscode/l10n";
 import {
   type ComponentProps,
   createContext,
+  Fragment,
   type KeyboardEvent,
   type ReactNode,
   type Ref,
@@ -41,6 +42,7 @@ import {
   applyDraft,
   composerKeyAction,
   type Draft,
+  editDraft,
   type MentionRow,
   type MenuAnswer,
   type MenuToken,
@@ -49,11 +51,13 @@ import {
   menuView,
   openMenuToken,
   pickedInText,
+  type Replacing,
   replaceToken,
   type SkillAnswer,
   type SlashRow,
   slashMenuView,
   slashPick,
+  stillReplacing,
 } from "./composer";
 import { moveHighlight, optionId, SuggestionMenu } from "./SuggestionMenu";
 import {
@@ -82,6 +86,8 @@ import { post } from "./vscodeApi";
  * message box applies and `takeDrafts` removes. An editor draft closes History; without a message box it is taken
  * unapplied, never held for a box that may never come. Queued texts the host returns (`paragraph` drafts) close
  * nothing, and wait for the message box when it is absent, since the user typed them: they are never dropped.
+ * Edit on the last user message starts the replacing state (`Replacing`), held here because the conversation shows
+ * its mark and the composer's Send carries it; it ends on Cancel and once `stillReplacing` fails.
  */
 export function App({
   state,
@@ -98,6 +104,21 @@ export function App({
   const composerShown = configured || isReplying(state);
   const [historyOpen, setHistoryOpen] = useState(false);
   const historyButton = useRef<HTMLButtonElement>(null);
+  const [replacing, setReplacing] = useState<Replacing>();
+  /** The last Edit's draft for the message box; a new `id` per click, so the same text applies again. */
+  const [editing, setEditing] = useState<{ insert: DraftInsert; id: number }>();
+  const replacingNow = replacing && stillReplacing(replacing, state) ? replacing : undefined;
+
+  // [>]: Once it fails, the state ends for good: a later snapshot that matches again (a Retry ending on as many
+  // entries) must not bring the mark back.
+  useEffect(() => {
+    if (replacing && !replacingNow) setReplacing(undefined);
+  }, [replacing, replacingNow]);
+
+  const edit = (entry: ChatEntry & { role: "user" }) => {
+    setReplacing({ conversationId: state.conversationId, entries: state.entries.length });
+    setEditing((last) => ({ insert: editDraft(entry), id: (last?.id ?? 0) + 1 }));
+  };
 
   useEffect(() => {
     if (drafts.length === 0) return;
@@ -149,6 +170,9 @@ export function App({
           undo={state.undo}
           canAct={sendWouldAct(state)}
           hidden={historyOpen}
+          replacing={replacingNow !== undefined}
+          edit={edit}
+          cancelEdit={() => setReplacing(undefined)}
         />
       )}
       {composerShown && (
@@ -157,6 +181,8 @@ export function App({
           historyOpen={historyOpen}
           drafts={drafts}
           takeDrafts={takeDrafts}
+          editing={editing}
+          replaces={replacingNow?.entries}
           startNewChat={() => {
             setHistoryOpen(false);
             post({ type: "newChat" });
@@ -487,7 +513,11 @@ export function ConversationList({
 /**
  * `approval`: the request open, shown on the last reply, the one in flight. `undo`: "Undo changes", shown under the
  * reply it names, and the last undo's outcome under the reply it undid. Retry and Continue show under the last turn's
- * reply (`lastTurnActions`), enabled when `canAct` (Send would act). `hidden`: History shows instead.
+ * reply (`lastTurnActions`), enabled when `canAct` (Send would act). `hidden`: History shows instead. Edit sits under
+ * the last turn's user message when Retry is offered, enabled when `canAct`, and calls `edit`; while `replacing`, it
+ * goes, and the last turn (that message and every entry after it) sits in one dimmed group under the line saying that
+ * sending replaces it, with Retry's warning when the removal leaves files or commands behind, and Cancel
+ * (`cancelEdit`), which gives the focus back to Edit, since the button it was on goes.
  */
 function Conversation({
   entries,
@@ -495,15 +525,23 @@ function Conversation({
   undo,
   canAct,
   hidden,
+  replacing,
+  edit,
+  cancelEdit,
 }: {
   entries: ChatEntry[];
   approval?: PendingApproval;
   undo: UndoState;
   canAct: boolean;
   hidden: boolean;
+  replacing: boolean;
+  edit: (entry: ChatEntry & { role: "user" }) => void;
+  cancelEdit: () => void;
 }) {
   const end = useRef<HTMLDivElement>(null);
   const list = useRef<HTMLElement>(null);
+  const editButton = useRef<HTMLButtonElement>(null);
+  const focusEdit = useRef(false);
   // [>]: The host names no reply while one is in flight; a snapshot that lags behind never shows the button either.
   const last = entries.at(-1);
   const replying = last?.role === "assistant" && (last.status === "waiting" || last.status === "streaming");
@@ -518,6 +556,12 @@ function Conversation({
     asks: hasEffects(unrevertedEffects(entries, lastTurn.user + 1)) || (undo.reply ?? -1) > lastTurn.user,
   };
 
+  useEffect(() => {
+    if (!focusEdit.current || replacing) return;
+    focusEdit.current = false;
+    editButton.current?.focus();
+  });
+
   // Follow stream only while user stays at bottom. Unpinned, nothing moves the view: see `overflow-anchor` in the CSS.
   useLayoutEffect(() => {
     if (pinned) end.current?.scrollIntoView({ block: "end" });
@@ -526,18 +570,32 @@ function Conversation({
   // [>]: Keyed by index: a conversation's entries are only appended, and another one remounts the list. An entry moving
   // into a fold remounts, so a row opened inside comes back closed. The open request goes to the last entry, never
   // folded, since only an ended turn folds.
-  const entry = (index: number) => (
-    <Entry
-      key={index}
-      entry={entries[index]!}
-      previous={entries[index - 1]}
-      next={entries[index + 1]}
-      approval={index === entries.length - 1 ? approval : undefined}
-      undo={index === undo.reply && !replying ? undo : undefined}
-      undone={index === undo.outcome?.reply ? undo.outcome : undefined}
-      turnActions={index === lastTurn?.reply ? turnActions : undefined}
-    />
-  );
+  const entry = (index: number) => {
+    const shown = entries[index]!;
+    const rendered = (
+      <Entry
+        key={index}
+        entry={shown}
+        previous={entries[index - 1]}
+        next={entries[index + 1]}
+        approval={index === entries.length - 1 ? approval : undefined}
+        undo={index === undo.reply && !replying ? undo : undefined}
+        undone={index === undo.outcome?.reply ? undo.outcome : undefined}
+        turnActions={index === lastTurn?.reply ? turnActions : undefined}
+      />
+    );
+    if (index !== lastTurn?.user || replacing || shown.role !== "user") return rendered;
+    return (
+      <Fragment key={index}>
+        {rendered}
+        <div className="user-actions">
+          <button ref={editButton} type="button" className="secondary" disabled={!canAct} onClick={() => edit(shown)}>
+            {l10n.t("Edit")}
+          </button>
+        </div>
+      </Fragment>
+    );
+  };
 
   // [>]: Derived, never stored: the entries before the summary the history starts at are no longer sent, except the
   // turn's message an automatic summary quotes word for word, which stays at full opacity and says so. A summary is a
@@ -565,9 +623,14 @@ function Conversation({
         </div>
       </details>
     );
+  const at = (part: ConversationPart) => (part.kind === "entry" ? part.index : part.start);
+  // [>]: A user message is never folded and no fold crosses one, so the replaced turn starts a part of its own.
   const parts = foldTurns(entries);
-  const unsent = parts.filter((part) => (part.kind === "entry" ? part.index : part.start) < start);
-  const sent = parts.slice(unsent.length);
+  const cut = replacing && lastTurn ? lastTurn.user : entries.length;
+  const kept = parts.filter((part) => at(part) < cut);
+  const replaced = parts.slice(kept.length);
+  const unsent = kept.filter((part) => at(part) < start);
+  const sent = kept.slice(unsent.length);
 
   if (entries.length === 0) {
     return (
@@ -595,6 +658,30 @@ function Conversation({
         </div>
       )}
       {sent.map(render)}
+      {replaced.length > 0 && (
+        <div className="replacing">
+          <div className="replacing-head">
+            <p className="replacing-note" role="status">
+              {turnActions?.asks
+                ? l10n.t(
+                    "Sending replaces this message and its replies. It does not revert the files this turn wrote or the commands it ran. To get the files back, use Undo changes first.",
+                  )
+                : l10n.t("Sending replaces this message and its replies.")}
+            </p>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => {
+                focusEdit.current = true;
+                cancelEdit();
+              }}
+            >
+              {l10n.t("Cancel")}
+            </button>
+          </div>
+          {replaced.map(render)}
+        </div>
+      )}
       <div ref={end} />
     </section>
   );
@@ -1248,12 +1335,16 @@ function Composer({
   startNewChat,
   drafts,
   takeDrafts,
+  editing,
+  replaces,
 }: {
   state: ChatState;
   historyOpen: boolean;
   startNewChat: () => void;
   drafts: readonly DraftInsert[];
   takeDrafts: (taken: readonly DraftInsert[]) => void;
+  editing?: { insert: DraftInsert; id: number };
+  replaces?: number;
 }) {
   const [text, setText] = useState("");
   const [caret, setCaret] = useState(0);
@@ -1360,6 +1451,18 @@ function Composer({
     draftFocus.current = true;
   }, [drafts]);
 
+  // [>]: Edit on the last message puts its text in the box as a returned text lands, and focuses the box, since the
+  // user asked to edit there.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: each Edit click applies once, to the box as it stands.
+  useEffect(() => {
+    if (!editing) return;
+    const next = applyDraft({ text, caret, picked }, editing.insert);
+    setDraft(next);
+    // [>]: A message ending on a mention puts the caret on its token: its menu stays closed until the user types on.
+    setDismissed(menuToken(next.text, next.caret, next.picked));
+    input.current?.focus();
+  }, [editing?.id]);
+
   // [!]: The view's focus command settles before the workbench has focused the webview, so a draft can land first:
   // the workbench's focus then blurs the box and gives the panel back its focus with nothing focused inside (#68,
   // seen live). Until the user acts in the panel, the box takes that focus back.
@@ -1423,7 +1526,9 @@ function Composer({
     // [>]: A built-in is never queued: during a reply it stays text in the box.
     const type = canSend ? "send" : canQueue && !command ? "queueMessage" : undefined;
     if (!type) return;
-    post({ type, text, mentions: pickedInText(picked, text) });
+    const mentions = pickedInText(picked, text);
+    // [>]: Only a send replaces: a queued message waits behind a reply, which ended the replacing state.
+    post(type === "send" && replaces !== undefined ? { type, text, mentions, replaces } : { type, text, mentions });
     clear();
   };
 
