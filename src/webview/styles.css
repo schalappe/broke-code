@@ -936,6 +936,72 @@ p.loading::before {
   background: var(--bc-fg-dim);
 }
 
+/* "Undo changes" under the last reply of the turn whose writes are held; a secondary button, its hint beside it. */
+.undo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--bc-space-2) var(--bc-space-3);
+  margin: var(--bc-space-3) 0 0;
+}
+
+.undo-hint {
+  margin: 0;
+  color: var(--bc-fg-dim);
+  font-size: var(--bc-fs-sm);
+}
+
+/* What the last undo did, file by file: a notice when every file is back, a warning block when some were skipped. */
+.undo-outcome {
+  margin: var(--bc-space-3) 0 0;
+  color: var(--bc-fg-dim);
+  font-size: var(--bc-fs-sm);
+  overflow-wrap: anywhere;
+}
+
+.undo-outcome p {
+  margin: 0;
+}
+
+.undo-outcome ul {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bc-space-1);
+  margin: var(--bc-space-2) 0 0;
+  padding-left: var(--bc-space-5);
+}
+
+/* A file's path in the outcome, in the editor font like the other paths; the status around it stays prose. */
+.undo-outcome .undo-path {
+  font-family: var(--bc-mono);
+  font-size: var(--bc-fs-mono);
+}
+
+.undo-outcome.skipped {
+  padding: var(--bc-space-3) var(--bc-space-4);
+  color: var(--bc-warning-text);
+  background: var(--bc-warning-fill);
+  border: 1px solid var(--bc-warning-edge);
+  border-radius: var(--bc-radius);
+}
+
+/* An undo that failed unexpectedly: the error block's look, its cause in the editor font. */
+.undo-outcome.failed {
+  padding: var(--bc-space-3) var(--bc-space-4);
+  color: var(--bc-error-text);
+  background: var(--bc-error-fill);
+  border: 1px solid var(--bc-error-edge);
+  border-radius: var(--bc-radius);
+}
+
+.undo-outcome .detail {
+  margin: var(--bc-space-2) 0 0;
+  color: var(--bc-fg-dim);
+  font-family: var(--bc-mono);
+  font-size: var(--bc-fs-mono);
+  white-space: pre-wrap;
+}
+
 /* ---------- Reasoning ---------- */
 
 .reasoning {

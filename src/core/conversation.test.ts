@@ -189,6 +189,23 @@ describe("conversation record", () => {
     expect(parseConversation(serializeConversation(turn))).toEqual({ ok: true, record: turn });
   });
 
+  test("reads back an undone write step, and refuses an undone mark of another shape", () => {
+    const step = { role: "tool", name: "edit_file", args: { path: "a.ts" }, status: "ok", text: "t" } as const;
+    const undone = record({
+      entries: [
+        { role: "user", content: "edit", mentions: [], modelText: "edit" },
+        { ...step, approval: "accepted", undone: true },
+      ],
+    });
+    expect(parseConversation(serializeConversation(undone))).toEqual({ ok: true, record: undone });
+    for (const mark of [false, null, "true", 1]) {
+      expect(parse({ ...record(), entries: [{ ...step, undone: mark }] })).toEqual({
+        ok: false,
+        reason: "invalid entry 0",
+      });
+    }
+  });
+
   test("reads back a summary entry, and refuses a summary mark of another shape", () => {
     const summarized = record({
       entries: [

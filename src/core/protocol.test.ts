@@ -14,6 +14,7 @@ describe("parseWebviewMessage", () => {
     expect(parseWebviewMessage({ type: "addProvider", name: "ignored" })).toEqual({ type: "addProvider" });
     expect(parseWebviewMessage({ type: "chooseModel", model: "ignored" })).toEqual({ type: "chooseModel" });
     expect(parseWebviewMessage({ type: "compact", text: "ignored" })).toEqual({ type: "compact" });
+    expect(parseWebviewMessage({ type: "undoChanges", reply: 3 })).toEqual({ type: "undoChanges" });
     expect(parseWebviewMessage({ type: "selectModel", model: "m" })).toEqual({ type: "selectModel", model: "m" });
     expect(parseWebviewMessage({ type: "setApiKey", provider: "P" })).toEqual({ type: "setApiKey", provider: "P" });
   });
@@ -196,6 +197,7 @@ describe("chatStateOf", () => {
     mode: "ask",
     modePending: false,
     queue: [],
+    undo: { reply: undefined, ranCommand: false, running: false, outcome: undefined },
   };
 
   test("takes the chat state from init and state messages", () => {

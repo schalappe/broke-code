@@ -7,6 +7,10 @@ import {
   describeProviderError,
   describeSkillWarning,
   describeStorageProblem,
+  describeToolStep,
+  describeUndoFailure,
+  describeUndoneFile,
+  describeUndoOutcome,
   formatConversationDate,
 } from "./text";
 
@@ -199,5 +203,90 @@ describe("describeHalt", () => {
 
   test("a summary keeps the turn's wording for any other reason", () => {
     expect(describeHalt("stepLimit", true)).toBe("Stopped: the agent turn reached its tool step limit.");
+  });
+});
+
+describe("describeUndoOutcome", () => {
+  test("tells all restored, some skipped, and nothing restored apart", () => {
+    expect(
+      describeUndoOutcome([
+        { path: "a", status: "restored" },
+        { path: "b", status: "removed" },
+      ]),
+    ).toBe("Changes undone.");
+    expect(
+      describeUndoOutcome([
+        { path: "a", status: "removed" },
+        { path: "b", status: "skipped", reason: "symlink" },
+      ]),
+    ).toBe("Some changes were not undone. Undo changes again to retry the files skipped.");
+    expect(describeUndoOutcome([{ path: "b", status: "skipped", reason: "outsideWorkspace" }])).toBe(
+      "No change was undone. Undo changes again to retry the files skipped.",
+    );
+  });
+});
+
+describe("describeUndoFailure", () => {
+  test("says the undo failed and how to retry, with the error as detail", () => {
+    expect(describeUndoFailure("editor check broke")).toEqual({
+      message: "Undo changes failed unexpectedly. Undo changes again to retry the files not yet undone.",
+      detail: "editor check broke",
+    });
+  });
+});
+
+describe("describeToolStep", () => {
+  const step = { role: "tool", name: "edit_file", args: { path: "a.ts" }, status: "ok", text: "done\n" } as const;
+
+  test("an undone step says so first, its approval and line count unchanged", () => {
+    expect(describeToolStep({ ...step, undone: true })).toBe("undone, ok, 1 line");
+    expect(describeToolStep({ ...step, approval: "auto", undone: true })).toBe("undone, auto-approved, ok, 1 line");
+    expect(describeToolStep({ ...step, approval: "accepted", undone: true })).toBe("undone, ok, 1 line");
+    expect(describeToolStep({ ...step, approval: "auto" })).toBe("auto-approved, ok, 1 line");
+  });
+});
+
+describe("describeUndoneFile", () => {
+  /** The parts as one string, each path in backticks, to read the sentence at a glance. */
+  const flat = (file: Parameters<typeof describeUndoneFile>[0]) =>
+    describeUndoneFile(file)
+      .map((part) => ("path" in part ? `\`${part.path}\`` : part.text))
+      .join("");
+
+  test("names the file and what happened to it, with the reason it was skipped", () => {
+    expect(flat({ path: "a.ts", status: "restored" })).toBe("`a.ts`: restored");
+    expect(flat({ path: "a.ts", status: "removed" })).toBe("`a.ts`: removed, since this turn created it");
+    expect(flat({ path: "a.ts", status: "skipped", reason: "changed" })).toBe(
+      "`a.ts`: skipped, it changed since this turn wrote it",
+    );
+    expect(flat({ path: "a.ts", status: "skipped", reason: "unsaved" })).toBe(
+      "`a.ts`: skipped, it has unsaved changes in an editor",
+    );
+    expect(flat({ path: "a.ts", status: "skipped", reason: "symlink" })).toBe(
+      "`a.ts`: skipped, it is now a symbolic link",
+    );
+    expect(flat({ path: "a.ts", status: "skipped", reason: "outsideWorkspace" })).toBe(
+      "`a.ts`: skipped, it is no longer inside the workspace folders",
+    );
+    expect(flat({ path: "a.ts", status: "skipped", reason: "failed", cause: "ENOSPC" })).toBe(
+      "`a.ts`: skipped, it could not be restored (ENOSPC)",
+    );
+  });
+
+  test("gives each path a part of its own, apart from the prose", () => {
+    expect(describeUndoneFile({ path: "src/a b.ts", status: "restored" })).toEqual([
+      { path: "src/a b.ts" },
+      { text: ": restored" },
+    ]);
+  });
+
+  test("adds the temporary file left behind, as a path of its own", () => {
+    const leftover = { name: ".a.ts.broke-code-1.tmp", cause: "EPERM" };
+    expect(describeUndoneFile({ path: "a.ts", status: "restored", leftover })).toEqual([
+      { path: "a.ts" },
+      { text: ": restored; its temporary file " },
+      { path: ".a.ts.broke-code-1.tmp" },
+      { text: " could not be removed (EPERM)" },
+    ]);
   });
 });

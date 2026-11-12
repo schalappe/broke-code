@@ -7,6 +7,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -33,6 +34,7 @@ import { mentionReader } from "./mentionReader";
 import type { MentionReader, ReadMention } from "./mentions";
 import { type ChatEntry, type ChatState, type DraftInsert, isReplying } from "./protocol";
 import type { Provider } from "./providers";
+import { recordingApplier } from "./recordedChanges";
 import { LOAD_SKILL_TOOL, readSkills, type SkillDiscovery } from "./skills";
 import { composeSummaryPrompt, composeSystemPrompt, type InstructionFile, type Skill } from "./systemPrompt";
 import { createTlsFixture, removeTlsFixture } from "./tlsFixture";
@@ -4823,5 +4825,539 @@ describe("ChatController queue", () => {
     expect(state().entries.at(-1)).toMatchObject({ status: "stopped" });
     expect(sent()).toEqual([]);
     expect(returned).toEqual([]);
+  });
+});
+
+describe("ChatController undo", () => {
+  let undoCount = 0;
+  let dir = "";
+  beforeEach(() => {
+    dir = realpathSync(mkdtempSync(join(tmpdir(), "broke-code-undo-")));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+  const file = (name: string) => join(dir, name);
+  const text = (name: string) => readFileSync(file(name), "utf8");
+  const writeCall = (path: string, content: string) =>
+    `<write_file>\n<path>${path}</path>\n<content>\n${content}\n</content>\n</write_file>`;
+  const editCall = (path: string, old: string, replacement: string) =>
+    `<edit_file>\n<path>${path}</path>\n<old>${old}</old>\n<new>${replacement}</new>\n</edit_file>`;
+  const commandCall = (command: string) => `<run_command>\n<command>\n${command}\n</command>\n</run_command>`;
+
+  /**
+   * A `beforeWrite` that lets the first `free` writes through and holds the next ones until `release`; `reached` settles
+   * once a held write waits, so a test stops or navigates while that write is in flight, never before the tool reached
+   * the disk (a Stop before then aborts the write instead).
+   */
+  function heldWrites(free = 0) {
+    let writes = 0;
+    let release: () => void = () => {};
+    let reach: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const reached = new Promise<void>((resolve) => {
+      reach = resolve;
+    });
+    const beforeWrite = () => {
+      if (writes++ < free) return Promise.resolve();
+      reach();
+      return gate;
+    };
+    return { beforeWrite, reached, release: () => release() };
+  }
+
+  /**
+   * Controller over a temporary workspace whose provider answers with `script`, writes going through `approvalApplier`
+   * around the recording applier, as the extension wires them. `auto`: writes are auto-approved (default true).
+   * `unsaved`: the targets an editor holds unsaved. `beforeWrite`: awaited before each write reaches the disk.
+   * `restoreGate`: awaited by the unsaved check, to hold an undo while it runs.
+   */
+  async function undoable(
+    script: ScriptedReply[],
+    options: { auto?: boolean; beforeWrite?: () => Promise<void>; restoreGate?: () => Promise<void> } = {},
+  ) {
+    const prefix = `undo-${undoCount++}`;
+    scripts.set(prefix, [...script]);
+    const roots = [{ name: "ws", path: dir }];
+    const unsaved = new Set<string>();
+    const hasUnsavedChanges = async (target: string) => {
+      await options.restoreGate?.();
+      return unsaved.has(target);
+    };
+    const host: WriteApprovalHost = {
+      preview: async () => ({ close: async () => {} }),
+      hasUnsavedChanges: async () => false,
+    };
+    const runner = workspaceToolRunner(
+      () => roots,
+      { ripgrepCandidates: [] },
+      (current, { requestApproval, changes }) => {
+        const write = fileApplier(current);
+        const delayed: typeof write = async (change) => {
+          await options.beforeWrite?.();
+          return write(change);
+        };
+        return approvalApplier(recordingApplier(delayed, changes), host, requestApproval);
+      },
+      () => ({ shell: "/bin/sh", timeoutMs: 10_000 }),
+    );
+    const files = memoryFiles();
+    const states: ChatState[] = [];
+    const returned: DraftInsert[] = [];
+    const controller = new ChatController({
+      apiKeys: { get: async () => undefined },
+      workspaceState: memoryStore(),
+      publish: (state) => states.push(JSON.parse(JSON.stringify(state)) as ChatState),
+      mentions: noMentions,
+      store: new ConversationStore(files),
+      tools: runner,
+      instructions: { read: async () => [] },
+      skills: noSkills,
+      autoApproveWrites: () => options.auto ?? true,
+      returnDraft: (draft) => returned.push(draft),
+      undo: { roots: () => roots, hasUnsavedChanges },
+    });
+    const state = () => controller.snapshot;
+    controller.setProviders({
+      providers: [{ name: "Agent", baseUrl: `http://localhost:${server.port}/${prefix}/v1` }],
+      skipped: [],
+    });
+    await until(state, (s) => s.model === "m");
+    const saved = () => [...files.files.values()].join("\n");
+    return { controller, state, states, unsaved, saved, returned, prefix };
+  }
+
+  test("a turn that edits a file three times and creates another: undo restores the first and removes the second", async () => {
+    writeFileSync(file("a.txt"), "one\n");
+    const { controller, state } = await undoable([
+      { content: editCall("a.txt", "one", "two") },
+      { content: editCall("a.txt", "two", "three") },
+      { content: editCall("a.txt", "three", "four") },
+      { content: writeCall("b.txt", "created") },
+      { content: "Done." },
+    ]);
+    await controller.send("change them");
+    expect(text("a.txt")).toBe("four\n");
+    expect(state().undo).toEqual({ reply: 9, ranCommand: false, running: false, outcome: undefined });
+
+    await controller.undoChanges();
+    expect(text("a.txt")).toBe("one\n");
+    expect(existsSync(file("b.txt"))).toBe(false);
+    expect(state().undo).toEqual({
+      reply: undefined,
+      ranCommand: false,
+      running: false,
+      outcome: {
+        reply: 9,
+        files: [
+          { path: "a.txt", status: "restored" },
+          { path: "b.txt", status: "removed" },
+        ],
+      },
+    });
+  });
+
+  test("a rejected write holds nothing", async () => {
+    writeFileSync(file("a.txt"), "old\n");
+    const { controller, state } = await undoable([{ content: writeCall("a.txt", "new") }, { content: "Done." }], {
+      auto: false,
+    });
+    const done = controller.send("rewrite it");
+    await until(state, (s) => s.approval !== undefined);
+    controller.reject(state().approval!.id);
+    await done;
+    expect(state().undo.reply).toBeUndefined();
+    await controller.undoChanges();
+    expect(state().undo.outcome).toBeUndefined();
+  });
+
+  test("a later turn that writes nothing keeps the held turn; one that writes replaces it at its first file", async () => {
+    writeFileSync(file("a.txt"), "a0\n");
+    writeFileSync(file("b.txt"), "b0\n");
+    const { controller, state } = await undoable([
+      { content: writeCall("a.txt", "a1") },
+      { content: "First." },
+      { content: "Nothing written." },
+      { content: writeCall("b.txt", "b1") },
+      { content: "Third." },
+    ]);
+    await controller.send("first");
+    expect(state().undo.reply).toBe(3);
+    await controller.send("second");
+    expect(state().undo.reply).toBe(3);
+    await controller.send("third");
+    expect(state().undo.reply).toBe(9);
+
+    await controller.undoChanges();
+    expect(text("a.txt")).toBe("a1\n");
+    expect(text("b.txt")).toBe("b0\n");
+  });
+
+  test("New chat, opening another conversation, and deleting the one shown drop the held turn", async () => {
+    for (const leave of ["newChat", "open", "delete"] as const) {
+      writeFileSync(file("a.txt"), "old\n");
+      const writes = [{ content: writeCall("a.txt", "new") }, { content: "Done." }];
+      const { controller, state } = await undoable(leave === "open" ? [{ content: "Other." }, ...writes] : writes);
+      let other = "";
+      if (leave === "open") {
+        await controller.send("other");
+        other = state().conversationId;
+        await controller.newChat();
+      }
+      await controller.send("write");
+      expect(state().undo.reply).toBeDefined();
+      if (leave === "newChat") await controller.newChat();
+      if (leave === "open") await controller.openConversation(other);
+      if (leave === "delete") await controller.deleteConversation(state().conversationId);
+      expect(state().undo.reply).toBeUndefined();
+      await controller.undoChanges();
+      expect(text("a.txt")).toBe("new\n");
+    }
+  });
+
+  test("a file changed by hand is skipped untouched; a second click retries only it, then the button goes", async () => {
+    writeFileSync(file("a.txt"), "a0\n");
+    writeFileSync(file("b.txt"), "b0\n");
+    const { controller, state } = await undoable([
+      { content: writeCall("a.txt", "a1") },
+      { content: writeCall("b.txt", "b1") },
+      { content: "Done." },
+    ]);
+    await controller.send("write both");
+    writeFileSync(file("b.txt"), "by hand\n");
+
+    await controller.undoChanges();
+    expect(text("a.txt")).toBe("a0\n");
+    expect(text("b.txt")).toBe("by hand\n");
+    expect(state().undo.outcome?.files).toEqual([
+      { path: "a.txt", status: "restored" },
+      { path: "b.txt", status: "skipped", reason: "changed" },
+    ]);
+    expect(state().undo.reply).toBe(5);
+
+    writeFileSync(file("a.txt"), "a by hand\n");
+    writeFileSync(file("b.txt"), "b1\n");
+    await controller.undoChanges();
+    expect(text("a.txt")).toBe("a by hand\n");
+    expect(text("b.txt")).toBe("b0\n");
+    expect(state().undo.outcome?.files).toEqual([{ path: "b.txt", status: "restored" }]);
+    expect(state().undo.reply).toBeUndefined();
+  });
+
+  test("a file with unsaved editor changes is skipped and stays held", async () => {
+    writeFileSync(file("a.txt"), "old\n");
+    const { controller, state, unsaved } = await undoable([
+      { content: writeCall("a.txt", "new") },
+      { content: "Done." },
+    ]);
+    await controller.send("write");
+    unsaved.add(file("a.txt"));
+    await controller.undoChanges();
+    expect(text("a.txt")).toBe("new\n");
+    expect(state().undo.outcome?.files).toEqual([{ path: "a.txt", status: "skipped", reason: "unsaved" }]);
+    expect(state().undo.reply).toBe(3);
+  });
+
+  test("a write that lands after Stop is held and undone by the button", async () => {
+    writeFileSync(file("a.txt"), "old\n");
+    const { beforeWrite, reached, release } = heldWrites();
+    const { controller, state } = await undoable([{ content: writeCall("a.txt", "new") }, { content: "Done." }], {
+      beforeWrite,
+    });
+    const done = controller.send("write");
+    await reached;
+    controller.stop();
+    await done;
+    expect(state().entries.at(-1)).toMatchObject({ status: "stopped" });
+    release();
+    await until(state, (s) => s.undo.reply !== undefined);
+    expect(text("a.txt")).toBe("new\n");
+
+    await controller.undoChanges();
+    expect(text("a.txt")).toBe("old\n");
+  });
+
+  test("a write that lands after the conversation changed is not held", async () => {
+    writeFileSync(file("a.txt"), "old\n");
+    const { beforeWrite, reached, release } = heldWrites();
+    const { controller, state } = await undoable([{ content: writeCall("a.txt", "new") }], { beforeWrite });
+    const done = controller.send("write");
+    await reached;
+    await controller.newChat();
+    await done;
+    release();
+    await until(
+      () => ({ ...state(), model: text("a.txt") }),
+      (s) => s.model === "new\n",
+    );
+    await Bun.sleep(10);
+    expect(state().undo.reply).toBeUndefined();
+  });
+
+  test("the button is hidden while a reply is in flight, and undoChanges is then ignored", async () => {
+    writeFileSync(file("a.txt"), "old\n");
+    const { controller, state } = await undoable([
+      { content: writeCall("a.txt", "new") },
+      { content: "Done." },
+      "hang",
+    ]);
+    await controller.send("write");
+    expect(state().undo.reply).toBe(3);
+    const second = controller.send("more");
+    await until(state, (s) => isReplying(s));
+    expect(state().undo.reply).toBeUndefined();
+    await controller.undoChanges();
+    expect(text("a.txt")).toBe("new\n");
+    controller.stop();
+    await second;
+    expect(state().undo.reply).toBe(3);
+  });
+
+  test("during an undo: a second undo, a send, and a compact are ignored; a navigation runs after it", async () => {
+    writeFileSync(file("a.txt"), "old\n");
+    let release: () => void = () => {};
+    let gate: Promise<void> | undefined;
+    const { controller, state, returned, prefix } = await undoable(
+      [{ content: writeCall("a.txt", "new") }, { content: "Done." }],
+      { restoreGate: () => gate ?? Promise.resolve() },
+    );
+    await controller.send("write");
+    gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const undo = controller.undoChanges();
+    expect(state().undo.running).toBe(true);
+    await controller.undoChanges();
+    await controller.send("blocked");
+    expect(returned).toEqual([{ text: "blocked", mode: "paragraph", picked: [] }]);
+    expect(await controller.compact()).toBe("ignored");
+    const requestsBefore = requests.get(prefix)?.length;
+    const shown = state().conversationId;
+    const fresh = controller.newChat();
+    await Bun.sleep(20);
+    expect(state().conversationId).toBe(shown);
+
+    release();
+    await undo;
+    await fresh;
+    expect(text("a.txt")).toBe("old\n");
+    expect(requests.get(prefix)?.length).toBe(requestsBefore);
+    expect(state().conversationId).not.toBe(shown);
+    expect(state().undo).toEqual({ reply: undefined, ranCommand: false, running: false, outcome: undefined });
+  });
+
+  test("the published state and the saved record never hold the original text", async () => {
+    writeFileSync(file("a.txt"), "ORIGINAL-SECRET\n");
+    const { controller, states, saved } = await undoable([
+      { content: writeCall("a.txt", "new") },
+      { content: "Done." },
+    ]);
+    await controller.send("rewrite");
+    await controller.undoChanges();
+    expect(text("a.txt")).toBe("ORIGINAL-SECRET\n");
+    expect(JSON.stringify(states)).not.toContain("ORIGINAL-SECRET");
+    expect(saved()).not.toContain("ORIGINAL-SECRET");
+  });
+
+  test("the outcome is cleared by the next send", async () => {
+    writeFileSync(file("a.txt"), "old\n");
+    const { controller, state } = await undoable([
+      { content: writeCall("a.txt", "new") },
+      { content: "Done." },
+      { content: "Next." },
+    ]);
+    await controller.send("write");
+    await controller.undoChanges();
+    expect(state().undo.outcome).toBeDefined();
+    await controller.send("next");
+    expect(state().undo.outcome).toBeUndefined();
+  });
+
+  /** Whether each entry is a tool step marked undone. */
+  const undoneMarks = (entries: ChatEntry[]) => entries.map((entry) => entry.role === "tool" && entry.undone === true);
+
+  test("marks the steps of each restored or removed file undone, three edits of one file three steps, and saves it", async () => {
+    writeFileSync(file("a.txt"), "one\n");
+    const { controller, state, saved } = await undoable([
+      { content: editCall("a.txt", "one", "two") },
+      { content: editCall("a.txt", "two", "three") },
+      { content: editCall("a.txt", "three", "four") },
+      { content: writeCall("b.txt", "created") },
+      { content: "Done." },
+    ]);
+    await controller.send("change them");
+    expect(undoneMarks(state().entries).some(Boolean)).toBe(false);
+
+    await controller.undoChanges();
+    const marked = [false, false, true, false, true, false, true, false, true, false];
+    expect(undoneMarks(state().entries)).toEqual(marked);
+    expect(saved()).toContain('"undone":true');
+
+    const id = state().conversationId;
+    await controller.newChat();
+    await controller.openConversation(id);
+    expect(undoneMarks(state().entries)).toEqual(marked);
+    expect(state().undo.reply).toBeUndefined();
+  });
+
+  test("a skipped file's steps stay unmarked until a later undo restores it", async () => {
+    writeFileSync(file("a.txt"), "a0\n");
+    writeFileSync(file("b.txt"), "b0\n");
+    const { controller, state } = await undoable([
+      { content: writeCall("a.txt", "a1") },
+      { content: writeCall("b.txt", "b1") },
+      { content: "Done." },
+    ]);
+    await controller.send("write both");
+    writeFileSync(file("b.txt"), "by hand\n");
+    await controller.undoChanges();
+    expect(undoneMarks(state().entries)).toEqual([false, false, true, false, false, false]);
+
+    writeFileSync(file("b.txt"), "b1\n");
+    await controller.undoChanges();
+    expect(undoneMarks(state().entries)).toEqual([false, false, true, false, true, false]);
+  });
+
+  test("a step is tied to the file its write recorded, not to its path argument read again", async () => {
+    mkdirSync(file("real"));
+    mkdirSync(file("other"));
+    writeFileSync(file("real/a.txt"), "old\n");
+    writeFileSync(file("other/a.txt"), "other\n");
+    symlinkSync(file("real"), file("link"));
+    const { controller, state } = await undoable([{ content: writeCall("link/a.txt", "new") }, { content: "Done." }]);
+    await controller.send("write");
+    // [>]: Read again now, the argument would name `other/a.txt`, a file no write touched.
+    rmSync(file("link"));
+    symlinkSync(file("other"), file("link"));
+    await controller.undoChanges();
+    expect(text("real/a.txt")).toBe("old\n");
+    expect(text("other/a.txt")).toBe("other\n");
+    expect(undoneMarks(state().entries)).toEqual([false, false, true, false]);
+  });
+
+  test("a write that lands after Stop is undone but marks no step; the turn's other steps are marked", async () => {
+    writeFileSync(file("a.txt"), "a0\n");
+    writeFileSync(file("b.txt"), "b0\n");
+    const { beforeWrite, reached, release } = heldWrites(1);
+    const { controller, state } = await undoable(
+      [{ content: writeCall("a.txt", "a1") }, { content: writeCall("b.txt", "b1") }, { content: "Done." }],
+      { beforeWrite },
+    );
+    const done = controller.send("write both");
+    await reached;
+    controller.stop();
+    await done;
+    release();
+    await until(
+      () => ({ ...state(), model: text("b.txt") }),
+      (s) => s.model === "b1\n",
+    );
+    await Bun.sleep(10);
+
+    await controller.undoChanges();
+    expect(text("a.txt")).toBe("a0\n");
+    expect(text("b.txt")).toBe("b0\n");
+    expect(undoneMarks(state().entries)).toEqual([false, false, true, false]);
+  });
+
+  test("the next request tells the model each undone step was undone, and the usage counts it", async () => {
+    writeFileSync(file("a.txt"), "one\n");
+    const { controller, state, prefix } = await undoable([
+      { content: editCall("a.txt", "one", "two") },
+      { content: "Done." },
+      { content: "It holds one." },
+    ]);
+    await controller.send("edit");
+    const before = state().context?.used ?? 0;
+    await controller.undoChanges();
+    expect(state().context?.used ?? 0).toBeGreaterThan(before);
+
+    await controller.send("what does a.txt hold?");
+    const body = requests.get(prefix)?.at(-1) as { messages: { role: string; content: string }[] };
+    expect(body.messages[3]).toEqual({
+      role: "user",
+      content: `<tool_result tool="edit_file" status="ok">\n${(state().entries[2] as { text: string }).text}\nThe user undid this change afterwards.\n</tool_result>`,
+    });
+  });
+
+  test("an undo after /compact reaches the model as a line after the summary's text", async () => {
+    writeFileSync(file("a.txt"), "old\n");
+    const { controller, prefix } = await undoable([
+      { content: writeCall("a.txt", "new") },
+      { content: "Done." },
+      { content: "a.txt now says new." },
+      { content: "It holds old." },
+    ]);
+    await controller.send("rewrite a.txt");
+    expect(await controller.compact()).toBe("ran");
+    await controller.undoChanges();
+    expect(text("a.txt")).toBe("old\n");
+
+    await controller.send("what does a.txt hold?");
+    const body = requests.get(prefix)?.at(-1) as { messages: { role: string; content: string }[] };
+    expect(body.messages.slice(1)).toEqual([
+      {
+        role: "user",
+        content:
+          "Summary of the conversation so far:\n\na.txt now says new.\n\nThe user undid this change, which the summary above may still describe: write_file a.txt\n\nwhat does a.txt hold?",
+      },
+    ]);
+  });
+
+  test("a restore that throws is shown as a failure, logged, and keeps the files held for a retry", async () => {
+    writeFileSync(file("a.txt"), "a0\n");
+    writeFileSync(file("b.txt"), "b0\n");
+    let checks = 0;
+    let broken = true;
+    const { controller, state } = await undoable(
+      [{ content: writeCall("a.txt", "a1") }, { content: writeCall("b.txt", "b1") }, { content: "Done." }],
+      {
+        restoreGate: async () => {
+          if (broken && checks++ === 1) throw new Error("editor check broke");
+        },
+      },
+    );
+    await controller.send("write both");
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    let calls: unknown[][] = [];
+    try {
+      await controller.undoChanges();
+      calls = [...logged.mock.calls];
+    } finally {
+      logged.mockRestore();
+    }
+    // [>]: Logged with its stack, so the bug can be traced.
+    expect(
+      calls.some(([, detail]) => String(detail).includes("at ") && String(detail).includes("editor check broke")),
+    ).toBe(true);
+    expect(text("a.txt")).toBe("a0\n");
+    expect(text("b.txt")).toBe("b1\n");
+    expect(state().undo).toEqual({
+      reply: 5,
+      ranCommand: false,
+      running: false,
+      outcome: { reply: 5, files: [{ path: "a.txt", status: "restored" }], error: "editor check broke" },
+    });
+    expect(undoneMarks(state().entries)).toEqual([false, false, true, false, false, false]);
+
+    broken = false;
+    await controller.undoChanges();
+    expect(text("b.txt")).toBe("b0\n");
+    expect(state().undo.outcome).toEqual({ reply: 5, files: [{ path: "b.txt", status: "restored" }] });
+    expect(undoneMarks(state().entries)).toEqual([false, false, true, false, true, false]);
+  });
+
+  test("a turn that ran a command says so beside its button", async () => {
+    writeFileSync(file("a.txt"), "old\n");
+    const { controller, state } = await undoable([
+      { content: commandCall("true") },
+      { content: writeCall("a.txt", "new") },
+      { content: "Done." },
+    ]);
+    const done = controller.send("run and write");
+    await until(state, (s) => s.approval !== undefined);
+    controller.approve(state().approval!.id);
+    await done;
+    expect(state().undo).toMatchObject({ reply: 5, ranCommand: true });
   });
 });

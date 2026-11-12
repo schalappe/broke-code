@@ -1,12 +1,21 @@
 /**
  * @module text
- * Localized panel text for provider errors (worded in the core, translated here), skipped providers and skills, mentions, tool steps, folded turns, halted agent turns, context
- * usage, and saved conversations.
+ * Localized panel text for provider errors (worded in the core, translated here), skipped providers and skills,
+ * mentions, tool steps, folded turns, halted agent turns, the outcome of "Undo changes", context usage, and saved
+ * conversations.
  */
 import * as l10n from "@vscode/l10n";
 import { resultLineCount } from "../core/history";
 import type { MentionResult } from "../core/mentions";
-import type { ChatEntry, ContextUsage, HaltReason, SkillWarning, StorageProblem } from "../core/protocol";
+import type {
+  ChatEntry,
+  ContextUsage,
+  HaltReason,
+  SkillWarning,
+  StorageProblem,
+  UndoneFile,
+  UndoneStatus,
+} from "../core/protocol";
 import {
   describeProviderError as describeProviderErrorWith,
   type ErrorText,
@@ -174,7 +183,8 @@ export function mainArgument(args: Record<string, string>): string | undefined {
 /**
  * Short status of a finished tool step: `ok` or `error` and the result's size in lines, or the first line of a
  * malformed call's message, which says what is wrong. A call the user rejected says so, its reason in the expanded
- * result; one auto-approved says so before its status. Model-facing messages are English, never localized.
+ * result; one auto-approved says so before its status; a write "Undo changes" undid says so first, its line count the
+ * result's as shown. Model-facing messages are English, never localized.
  */
 export function describeToolStep(step: ChatEntry & { role: "tool" }): string {
   if (step.status === "malformed") return step.text.split("\n")[0] ?? "";
@@ -184,7 +194,8 @@ export function describeToolStep(step: ChatEntry & { role: "tool" }): string {
   const ending = step.name === "run_command" ? describeCommandEnding(step.text) : undefined;
   if (ending !== undefined) return l10n.t("{0}, {1}", ending, size);
   const status = step.status === "ok" ? l10n.t("ok, {0}", size) : l10n.t("error, {0}", size);
-  return step.approval === "auto" ? l10n.t("auto-approved, {0}", status) : status;
+  const approved = step.approval === "auto" ? l10n.t("auto-approved, {0}", status) : status;
+  return step.undone ? l10n.t("undone, {0}", approved) : approved;
 }
 
 /**
@@ -235,6 +246,73 @@ export function describeHalt(reason: HaltReason, summary = false): string {
       return l10n.t(
         "Stopped: the conversation fills the model's context. Summarize it with /compact, or start a new chat with New chat.",
       );
+  }
+}
+
+/**
+ * The line over an undo's files: every file back (`restored` or `removed`), some skipped, or none back. A skipped file
+ * stays held, so the button stays and retries it.
+ */
+export function describeUndoOutcome(files: readonly UndoneFile[]): string {
+  const skipped = files.filter((file) => file.status === "skipped").length;
+  if (skipped === 0) return l10n.t("Changes undone.");
+  if (skipped < files.length) {
+    return l10n.t("Some changes were not undone. Undo changes again to retry the files skipped.");
+  }
+  return l10n.t("No change was undone. Undo changes again to retry the files skipped.");
+}
+
+/** An undo that failed unexpectedly (a bug): how to retry, and the error as detail. */
+export function describeUndoFailure(error: string): ErrorText {
+  return {
+    message: l10n.t("Undo changes failed unexpectedly. Undo changes again to retry the files not yet undone."),
+    detail: error,
+  };
+}
+
+/** A piece of a sentence: prose in the UI font, or a path, which the panel sets in the editor font. */
+export type TextPart = { text: string } | { path: string };
+
+// [>]: Private-use characters stand for the paths inside a translated sentence, so a translator still orders it; the
+// sentence is then cut at them. No path, status, or cause holds one.
+const FILE_MARK = "\uE000";
+const LEFTOVER_MARK = "\uE001";
+
+/**
+ * One file of an undo: its path, then what happened to it, and the temporary file it left behind, if any; each path a
+ * part of its own.
+ */
+export function describeUndoneFile(file: UndoneFile): TextPart[] {
+  const row = l10n.t("{0}: {1}", FILE_MARK, undoneStatus(file));
+  const sentence =
+    file.leftover === undefined
+      ? row
+      : l10n.t("{0}; its temporary file {1} could not be removed ({2})", row, LEFTOVER_MARK, file.leftover.cause);
+  return sentence
+    .split(/([\uE000\uE001])/)
+    .filter((piece) => piece !== "")
+    .map((piece) => {
+      if (piece === FILE_MARK) return { path: file.path };
+      if (piece === LEFTOVER_MARK) return { path: file.leftover?.name ?? "" };
+      return { text: piece };
+    });
+}
+
+function undoneStatus(file: UndoneStatus): string {
+  if (file.status !== "skipped") {
+    return file.status === "restored" ? l10n.t("restored") : l10n.t("removed, since this turn created it");
+  }
+  switch (file.reason) {
+    case "changed":
+      return l10n.t("skipped, it changed since this turn wrote it");
+    case "unsaved":
+      return l10n.t("skipped, it has unsaved changes in an editor");
+    case "symlink":
+      return l10n.t("skipped, it is now a symbolic link");
+    case "outsideWorkspace":
+      return l10n.t("skipped, it is no longer inside the workspace folders");
+    case "failed":
+      return l10n.t("skipped, it could not be restored ({0})", file.cause);
   }
 }
 

@@ -83,7 +83,8 @@ export type ChatEntry =
     }
   /**
    * A tool step: one body tool call of the reply before it, or its malformed block, and the text the model got back.
-   * `approval`: set when the call asked for one.
+   * `approval`: set when the call asked for one. `undone`: a write step whose file "Undo changes" later restored or
+   * removed; the history tells the model so, and never leaves its result out.
    */
   | {
       role: "tool";
@@ -92,6 +93,7 @@ export type ChatEntry =
       status: ToolStepStatus;
       text: string;
       approval?: StepApproval;
+      undone?: true;
     };
 
 /**
@@ -160,6 +162,44 @@ export type QueuedMessage = { id: number; text: string; mentions: string[] };
 /** Most messages the queue holds: the whole state is posted at each streamed delta. */
 export const MAX_QUEUED_MESSAGES = 10;
 
+/**
+ * Why "Undo changes" left a file untouched. `changed`: it holds neither the text the writes left nor its original text
+ * (edited since, removed, made a folder, or no longer text). `unsaved`: an editor holds unsaved changes to it.
+ * `symlink`: it is now a symbolic link. `outsideWorkspace`: it is in no workspace folder now, or its path leads out of
+ * them. `failed`: the write or the removal failed on disk, or the file could not be read (`cause`).
+ */
+export type RestoreRefusal = "changed" | "unsaved" | "symlink" | "outsideWorkspace" | "failed";
+
+/**
+ * What "Undo changes" did to one file of the held turn, named as the file index writes it. `restored`: it holds its
+ * text from before the turn again; `removed`: the turn created it, and it is gone; `skipped`: untouched, for `reason`
+ * (see `RestoreRefusal`), and still held, so the next undo retries it. `leftover`: the temporary file of the restoring
+ * write could not be removed and sits beside the file as `name`.
+ */
+export type UndoneFile = { path: string; leftover?: { name: string; cause: string } } & UndoneStatus;
+
+/** What an undo did to one file; see `UndoneFile`. */
+export type UndoneStatus =
+  | { status: "restored" | "removed" }
+  | { status: "skipped"; reason: Exclude<RestoreRefusal, "failed"> }
+  | { status: "skipped"; reason: "failed"; cause: string };
+
+/**
+ * "Undo changes" in the panel: the file changes of the latest turn of the conversation shown that wrote a file, held
+ * in the host's memory only; never their text here. `reply`: the index in `entries` of that turn's last reply, which
+ * carries the button; absent while nothing is held, or a reply is in flight. `ranCommand`: that turn ran a command,
+ * which no undo reverts. `running`: an undo runs; Send does not act and no other undo starts. `outcome`: what the last
+ * undo did, file by file, shown under the reply `reply` names; cleared by the next send, the next undo, and any change
+ * of the conversation shown. `outcome.error`: the undo failed unexpectedly (a bug), with this message; `files` then
+ * lists only the files restored or removed before the failure, and the others stay held for a retry.
+ */
+export type UndoState = {
+  reply: number | undefined;
+  ranCommand: boolean;
+  running: boolean;
+  outcome: { reply: number; files: UndoneFile[]; error?: string } | undefined;
+};
+
 export type ChatState = {
   providers: string[];
   skipped: SkippedProvider[];
@@ -199,6 +239,7 @@ export type ChatState = {
    * deleting the one shown, when they are asked.
    */
   queue: QueuedMessage[];
+  undo: UndoState;
 };
 
 /**
@@ -276,7 +317,9 @@ export type WebviewMessage =
    * Pick a mode in the message box: Plan is kept in the workspace memento; Ask and Auto-edit write the user setting
    * `brokeCode.autoApproveWrites` when its value must change.
    */
-  | { type: "setMode"; mode: Mode };
+  | { type: "setMode"; mode: Mode }
+  /** "Undo changes": restore the files of the turn `ChatState.undo.reply` names. */
+  | { type: "undoChanges" };
 
 /** Chat state carried by `message`; `undefined` for a message that must leave the panel's state alone. */
 export function chatStateOf(message: HostMessage): ChatState | undefined {
@@ -324,6 +367,7 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | undefined {
     case "compact":
     case "openSettings":
     case "addProvider":
+    case "undoChanges":
       return { type: message.type };
     case "selectProvider":
     case "setApiKey": {

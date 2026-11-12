@@ -81,17 +81,20 @@ function isSentSummary(entry: ChatEntry): boolean {
  * `entries` as sent to the model, from `historyStart`: user messages as `userText` gives them (the text composed at
  * send time), assistant answers verbatim, their call blocks included (stopped and cut-off partials too), and each tool
  * step as a `user` message holding a `<tool_result>` tag, never the `tool` role, which needs native tool calling (ADR
- * 0001). Reasoning is never sent. A reply without text is left out, unless a tool step follows it: an empty answer goes
- * back with its malformed step, so the roles keep alternating, which some chat templates (Gemma's) require. The summary
- * the history starts at goes as one user message, `Summary of the conversation so far:` then its text, joined by the
- * user message right after it, for the same reason; an automatic one (`isAutomaticSummary`) is followed by its turn's
- * user message instead, after a blank line, then by the turn's next reply. Every other summary entry (failed, stopped,
- * halted, or empty) is never sent.
+ * 0001); an undone step's result ends with `UNDONE_LINE`. Reasoning is never sent. A reply without text is left out,
+ * unless a tool step follows it: an empty answer goes back with its malformed step, so the roles keep alternating,
+ * which some chat templates (Gemma's) require. The summary the history starts at goes as one user message, `Summary of
+ * the conversation so far:` then its text, joined by the user message right after it, for the same reason; an automatic
+ * one (`isAutomaticSummary`) is followed by its turn's user message instead, after a blank line, then by the turn's
+ * next reply. Undone steps before the summary, no longer sent, each get a line after the summary's text (see
+ * `replacedUndoneLines`), before that user message. Every other summary entry (failed, stopped, halted, or empty) is
+ * never sent.
  *
  * When `budget.system` plus that history fills the context (`fillsContext`), the text of the oldest tool steps is
  * replaced, one step at a time, by `[result left out to save context: N lines]`, until the request fits. Never
  * replaced: the last `KEPT_RECENT_STEPS` steps sent, every `load_skill` step (a second load answers "already loaded"
- * without the body, so the model could not get it back), and a result no longer than its replacement line. When the
+ * without the body, so the model could not get it back), every undone step, and a result no longer than its
+ * replacement line. When the
  * request cannot fit even then, the history goes whole and `leftOut` is 0: nothing is sent, so nothing is left out.
  * Pure and linear in the entries, since the usage display runs it at each streamed delta.
  */
@@ -164,7 +167,8 @@ function sentMessages(
       // [!]: An automatic summary quotes its turn's message as composed when sent, so the model still holds the request
       // it is working on, word for word, instead of reading the same files again and overflowing anew.
       const quoted = quotedMessage(entries, index);
-      const text = `${SUMMARY_LEAD}\n\n${entry.content}`;
+      const undone = replacedUndoneLines(entries, start);
+      const text = [`${SUMMARY_LEAD}\n\n${entry.content}`, ...(undone ? [undone] : [])].join("\n\n");
       messages.push({ role: "user", content: quoted ? `${text}\n\n${userText(quoted)}` : text });
     } else if (entry.content !== "" || entries[index + 1]?.role === "tool") {
       messages.push({ role: "assistant", content: entry.content });
@@ -173,6 +177,24 @@ function sentMessages(
   return { messages, steps };
 }
 
+/**
+ * One `SUMMARY_UNDONE_LEAD` line per undone step before `start`, the steps the summary replaces, in order, joined by
+ * line breaks; `""` when none. Such a step is no longer sent, so its own `UNDONE_LINE` never reaches the model, and the
+ * summary may have been written before the undo. The path is the step's `path` argument, as the model wrote it.
+ */
+function replacedUndoneLines(entries: readonly ChatEntry[], start: number): string {
+  const lines: string[] = [];
+  for (const entry of entries.slice(0, start)) {
+    if (entry.role !== "tool" || !entry.undone) continue;
+    const path = entry.args.path;
+    lines.push(`${SUMMARY_UNDONE_LEAD} ${entry.name}${path === undefined ? "" : ` ${path}`}`);
+  }
+  return lines.join("\n");
+}
+
+/** Leads each undone step a summary replaces, after the summary's text. */
+const SUMMARY_UNDONE_LEAD = "The user undid this change, which the summary above may still describe:";
+
 /** Append `text` as a user message: after a blank line in the last message when that one is a user message. */
 function appendUser(messages: ChatMessage[], text: string): void {
   const last = messages.at(-1);
@@ -180,9 +202,12 @@ function appendUser(messages: ChatMessage[], text: string): void {
   else messages.push({ role: "user", content: text });
 }
 
-/** `step`'s message with its result left out, or `undefined` when it must go whole (`load_skill`, or short enough). */
+/**
+ * `step`'s message with its result left out, or `undefined` when it must go whole: `load_skill`, an undone step (a
+ * left-out line would tell the model the change stands), or a result short enough.
+ */
 function leftOutResult(step: ToolStep): string | undefined {
-  if (step.name === "load_skill") return undefined;
+  if (step.name === "load_skill" || step.undone) return undefined;
   const line = leftOutLine(resultLineCount(step.text));
   return line.length >= step.text.length ? undefined : toolResultMessage(step, line);
 }
@@ -196,8 +221,15 @@ function leftOutLine(lines: number): string {
   return `[result left out to save context: ${lines === 1 ? "1 line" : `${lines} lines`}]`;
 }
 
-/** A tool step as the model reads it, holding `text`. A malformed call goes back as an error. */
+/** The last line of an undone step's result: the file no longer holds what the step wrote. */
+const UNDONE_LINE = "The user undid this change afterwards.";
+
+/**
+ * A tool step as the model reads it, holding `text`, then `UNDONE_LINE` when the step is undone. A malformed call goes
+ * back as an error.
+ */
 function toolResultMessage(step: ToolStep, text: string): string {
   const status = step.status === "malformed" ? "error" : step.status;
-  return `<tool_result tool="${step.name}" status="${status}">\n${text}\n</tool_result>`;
+  const result = step.undone ? `${text}\n${UNDONE_LINE}` : text;
+  return `<tool_result tool="${step.name}" status="${status}">\n${result}\n</tool_result>`;
 }

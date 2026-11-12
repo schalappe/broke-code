@@ -249,6 +249,17 @@ async function realRootPaths(roots: WorkspaceRoot[]): Promise<string[]> {
 }
 
 /**
+ * The roots that resolve, in order, each under its own name at its real path: a real path found inside one is inside it
+ * as written. A root that no longer resolves is left out.
+ */
+export async function realWorkspaceRoots(roots: WorkspaceRoot[]): Promise<WorkspaceRoot[]> {
+  return (await resolveWorkspaceRoots(roots)).resolved.map(({ root, realRoot }) => ({
+    name: root.name,
+    path: realRoot,
+  }));
+}
+
+/**
  * The roots that resolve, in order, each with its real path, and those that do not (deleted, unmounted, a parent
  * denying access), each with the error code. A caller that covers every root must report the unresolved ones.
  */
@@ -394,7 +405,8 @@ export async function locateWriteTarget(
 }
 
 /**
- * What applying a change did. `alreadyWritten`: the file already holds the new text, so running twice changes nothing.
+ * What applying a change did. `written`: the new text took the file's place at `realPath`, its folder's real path plus
+ * its name. `alreadyWritten`: the file already holds the new text, so running twice changes nothing.
  * `changed`: the file no longer holds the planned text, or the path no longer leads where it did; nothing is written.
  * `notWritten`: a disk failure (`cause`) stopped the write; the file is as it was, but folders created for it stay.
  * `unwritable`: the new text would not read back identically (`reason`, see `unwritableText`); nothing is touched.
@@ -402,7 +414,8 @@ export async function locateWriteTarget(
  * removed (`cause`); it sits in the file's folder under `name`.
  */
 export type WriteOutcome = (
-  | { status: "written" | "alreadyWritten" | "changed" }
+  | { status: "written"; realPath: string }
+  | { status: "alreadyWritten" | "changed" }
   | Exclude<WriteTarget, { status: "ok" }>
   | { status: "notWritten"; cause: string }
   | { status: "unwritable"; reason: UnwritableText }
@@ -482,6 +495,50 @@ export async function writeWorkspaceFile(
   }
 }
 
+/**
+ * What removing a file did. `alreadyRemoved`: nothing is at the path, so running twice changes nothing. `changed`: the
+ * file holds other text than expected; it stays. `notRemoved`: a disk failure (`cause`) stopped the removal; the file
+ * stays. The check's refusals come back as `locateWriteTarget` gives them; the file stays.
+ */
+export type RemoveOutcome =
+  | { status: "removed" | "alreadyRemoved" | "changed" }
+  | Exclude<WriteTarget, { status: "ok" }>
+  | { status: "notRemoved"; cause: string };
+
+/**
+ * Remove the file at absolute `path` inside `roots` only when it still holds exactly `expected`, with the checks of
+ * `writeWorkspaceFile`'s last check: its folder resolves inside a workspace folder, the file is a regular file and not a
+ * symlink, the open handle is that file, and it holds `expected`, byte for byte. Then the folder is checked to still
+ * lead where it did, and the file is unlinked. Folders above it stay. Never rejects. `seam`: for tests, `afterCheck`
+ * runs between the check and the folder's second look.
+ *
+ * [!]: As for the write, the check reads the file by name, then the unlink goes by name: a write landing between the
+ * two is lost with the file. The window is one `realpath` long.
+ */
+export async function removeWorkspaceFile(
+  roots: WorkspaceRoot[],
+  path: string,
+  expected: string,
+  seam: Pick<WriteSeam, "afterCheck"> = {},
+): Promise<RemoveOutcome> {
+  const checked = await checkWriteTarget(roots, [resolve(path)]);
+  if (checked.status === "missing") return { status: "alreadyRemoved" };
+  if (checked.status !== "ok") return checked;
+  if (checked.before === undefined) return { status: "alreadyRemoved" };
+  if (checked.before !== expected) return { status: "changed" };
+  try {
+    await seam.afterCheck?.();
+    const moved = await folderMoved(checked);
+    if (moved !== undefined) return { status: moved };
+    await unlink(checked.realPath);
+    return { status: "removed" };
+  } catch (error) {
+    // [>]: Removed meanwhile, or its folder with it: what was asked holds.
+    if (MISSING_CODES.has(errorCode(error) ?? "")) return { status: "alreadyRemoved" };
+    return { status: "notRemoved", cause: errorCode(error) ?? String(error) };
+  }
+}
+
 /** Bytes a file name may hold on macOS (APFS, HFS+). */
 const NAME_MAX_BYTES = 255;
 const TEMPORARY_SUFFIX_BYTES = ".broke-code-".length + 12 + ".tmp".length;
@@ -521,11 +578,11 @@ async function swapIn(
 
   if (checked.before !== undefined) {
     await rename(temp, checked.realPath);
-    return { status: "written" };
+    return { status: "written", realPath: checked.realPath };
   }
   // [>]: `link` never replaces an existing name, unlike `rename`: a file created since the last check stays.
   return link(temp, checked.realPath).then(
-    () => ({ status: "written" }),
+    () => ({ status: "written", realPath: checked.realPath }),
     (error: unknown) => {
       if (errorCode(error) === "EEXIST") return { status: "changed" };
       throw error;
