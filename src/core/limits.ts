@@ -76,7 +76,8 @@ export function contextOf(limits: TurnLimits, model: string | undefined): Contex
 
 /**
  * Estimated tokens of a request made of `messages`: the characters (UTF-16 code units) of their contents divided by 4,
- * rounded up. A decision, not a tokenizer: no provider reports usage without `stream_options`.
+ * rounded up. A decision, not a tokenizer: the counts a provider reports (`ReportedUsage`) arrive only with the reply,
+ * after the request was sized.
  */
 export function estimateTokens(messages: readonly { content: string }[]): number {
   return tokensOfCharacters(messages.reduce((total, message) => total + message.content.length, 0));

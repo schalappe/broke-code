@@ -9,6 +9,7 @@ import {
   streamChat,
 } from "./client";
 import { REPLY_MAX_LENGTH } from "./protocol";
+import { ProviderSupport } from "./providerSupport";
 import { vllmOpening, vllmPlainStream, vllmReasoningRest } from "./vllmFixture";
 
 type Handler = (request: Request) => Response | Promise<Response>;
@@ -105,18 +106,28 @@ describe("buildChatRequest", () => {
   };
   const messages = [{ role: "user" as const, content: "Hi" }];
 
-  test("posts to /chat/completions with stream true, the model, the messages, and no tools key", () => {
-    const request = buildChatRequest(access, "qwen3.8:27b", messages);
+  test("posts to /chat/completions with stream true, the usage request, the model, the messages, and no tools key", () => {
+    const request = buildChatRequest(access, "qwen3.8:27b", messages, true);
     expect(request.url).toBe("http://localhost:11434/v1/chat/completions");
     expect(request.method).toBe("POST");
     const body = JSON.parse(String(request.body));
-    expect(body).toEqual({ model: "qwen3.8:27b", messages: [{ role: "user", content: "Hi" }], stream: true });
+    expect(body).toEqual({
+      model: "qwen3.8:27b",
+      messages: [{ role: "user", content: "Hi" }],
+      stream: true,
+      stream_options: { include_usage: true },
+    });
     expect("tools" in body).toBe(false);
+  });
+
+  test("leaves the usage request out when asked to", () => {
+    const body = JSON.parse(String(buildChatRequest(access, "m", messages, false).body));
+    expect(body).toEqual({ model: "m", messages: [{ role: "user", content: "Hi" }], stream: true });
   });
 
   test("passes a system message through first, still with no tools key", () => {
     const withSystem = [{ role: "system" as const, content: "You are a coding agent." }, ...messages];
-    const body = JSON.parse(String(buildChatRequest(access, "m", withSystem).body));
+    const body = JSON.parse(String(buildChatRequest(access, "m", withSystem, true).body));
     expect(body.messages).toEqual([
       { role: "system", content: "You are a coding agent." },
       { role: "user", content: "Hi" },
@@ -125,11 +136,11 @@ describe("buildChatRequest", () => {
   });
 
   test("sends no Authorization header without a key, and a bearer header with one", () => {
-    const withoutKey = new Headers(buildChatRequest(access, "m", messages).headers);
+    const withoutKey = new Headers(buildChatRequest(access, "m", messages, true).headers);
     expect(withoutKey.has("authorization")).toBe(false);
-    const withEmptyKey = new Headers(buildChatRequest({ ...access, apiKey: "" }, "m", messages).headers);
+    const withEmptyKey = new Headers(buildChatRequest({ ...access, apiKey: "" }, "m", messages, true).headers);
     expect(withEmptyKey.has("authorization")).toBe(false);
-    const withKey = new Headers(buildChatRequest({ ...access, apiKey: "sk-1" }, "m", messages).headers);
+    const withKey = new Headers(buildChatRequest({ ...access, apiKey: "sk-1" }, "m", messages, true).headers);
     expect(withKey.get("authorization")).toBe("Bearer sk-1");
   });
 });
@@ -301,6 +312,7 @@ describe("streamChat", () => {
       model: "m",
       messages,
       signal: signal ?? new AbortController().signal,
+      support: new ProviderSupport(),
       onContent: (text) => parts.push(text),
       onReasoning: (text) => reasoningParts.push(text),
     });
@@ -413,6 +425,7 @@ describe("streamChat", () => {
       model: "m",
       messages,
       signal: new AbortController().signal,
+      support: new ProviderSupport(),
       onContent: (text) => {
         parts.push(text);
         release();
@@ -433,6 +446,7 @@ describe("streamChat", () => {
       model: "m",
       messages,
       signal: new AbortController().signal,
+      support: new ProviderSupport(),
       onContent: (text) => answer.push(text),
       onReasoning: (text) => reasoning.push(text),
     });
@@ -468,6 +482,7 @@ describe("streamChat", () => {
       model: "m",
       messages,
       signal: new AbortController().signal,
+      support: new ProviderSupport(),
       onContent: (text) => answer.push(text),
       onReasoning: (text) => reasoning.push(text),
     });
@@ -476,7 +491,7 @@ describe("streamChat", () => {
 
   test("replays a vLLM reasoning stream: reasoning_content without content, extra keys, usage details", async () => {
     expect(await pieces("chat-vllm-reasoning", [vllmOpening, ...vllmReasoningRest])).toEqual({
-      outcome: { status: "done" },
+      outcome: { status: "done", usage: { prompt: 12, completion: 32 } },
       reasoning: ["The user greets me.", " Reply politely."],
       answer: ["Hello!", " How can I help?"],
     });
@@ -484,7 +499,7 @@ describe("streamChat", () => {
 
   test("replays a vLLM stream without reasoning: onReasoning never called, whole answer kept", async () => {
     expect(await pieces("chat-vllm-plain", vllmPlainStream)).toEqual({
-      outcome: { status: "done" },
+      outcome: { status: "done", usage: { prompt: 12, completion: 20 } },
       reasoning: [],
       answer: ["Hello!", " How can I help?"],
     });
@@ -577,7 +592,74 @@ describe("streamChat", () => {
         "data: [DONE]\n\n",
       ]),
     );
-    expect(await run(access)).toEqual({ outcome: { status: "done" }, text: "Hi", reasoning: "hmm" });
+    expect(await run(access)).toEqual({
+      outcome: { status: "done", usage: { prompt: 3, completion: 1 } },
+      text: "Hi",
+      reasoning: "hmm",
+    });
+  });
+
+  test("reads the usage of a chunk with choices, the last valid one winning", async () => {
+    const access = routed("usage-choices", () =>
+      sse([
+        event({ choices: [{ delta: { content: "Hi" } }], usage: { prompt_tokens: 5, completion_tokens: 1 } }),
+        event({ choices: [{ delta: { content: "!" } }], usage: { prompt_tokens: 5, completion_tokens: 2 } }),
+        delta("", "stop"),
+        "data: [DONE]\n\n",
+      ]),
+    );
+    expect(await run(access)).toEqual({
+      outcome: { status: "done", usage: { prompt: 5, completion: 2 } },
+      text: "Hi!",
+      reasoning: "",
+    });
+  });
+
+  test("ignores a usage of another shape and completes the reply with its text", async () => {
+    const invalid = [
+      null,
+      "12",
+      { prompt_tokens: "5", completion_tokens: 1 },
+      { prompt_tokens: 5, completion_tokens: -1 },
+      { prompt_tokens: 5 },
+      { prompt_tokens: 1.5, completion_tokens: 1 },
+    ];
+    for (const [index, usage] of invalid.entries()) {
+      const access = routed(`usage-invalid-${index}`, () =>
+        sse([delta("Hi", "stop"), event({ choices: [], usage }), "data: [DONE]\n\n"]),
+      );
+      expect(await run(access)).toEqual({ outcome: { status: "done" }, text: "Hi", reasoning: "" });
+    }
+  });
+
+  test("keeps a valid usage when an invalid one follows it", async () => {
+    const access = routed("usage-valid-then-invalid", () =>
+      sse([
+        event({ choices: [{ delta: { content: "Hi" } }], usage: { prompt_tokens: 7, completion_tokens: 1 } }),
+        event({
+          choices: [{ delta: {}, finish_reason: "stop" }],
+          usage: { prompt_tokens: 7, completion_tokens: null },
+        }),
+        "data: [DONE]\n\n",
+      ]),
+    );
+    expect((await run(access)).outcome).toEqual({ status: "done", usage: { prompt: 7, completion: 1 } });
+  });
+
+  test("reports no usage on a stopped reply", async () => {
+    const controller = new AbortController();
+    const access = routed("usage-stopped", () =>
+      sse([event({ choices: [{ delta: { content: "Hi" } }], usage: { prompt_tokens: 7, completion_tokens: 1 } })]),
+    );
+    const outcome = await streamChat(access, {
+      model: "m",
+      messages,
+      signal: controller.signal,
+      support: new ProviderSupport(),
+      onContent: () => controller.abort(),
+      onReasoning: () => {},
+    });
+    expect(outcome).toEqual({ status: "stopped" });
   });
 
   test("reports stop as stopped even when [DONE] is already buffered behind the content", async () => {
@@ -587,6 +669,7 @@ describe("streamChat", () => {
       model: "m",
       messages,
       signal: controller.signal,
+      support: new ProviderSupport(),
       // Stop lands after this content is handled, while [DONE] waits in the same buffer.
       onContent: () => queueMicrotask(() => controller.abort()),
       onReasoning: () => {},
@@ -610,6 +693,7 @@ describe("streamChat", () => {
       model: "m",
       messages,
       signal: controller.signal,
+      support: new ProviderSupport(),
       onContent: (text) => {
         parts.push(text);
         controller.abort();
@@ -690,6 +774,160 @@ describe("streamChat", () => {
   });
 });
 
+describe("the usage field", () => {
+  const messages = [{ role: "user" as const, content: "Hi" }];
+  const reply = () => sse([delta("Hi", "stop"), "data: [DONE]\n\n"]);
+  const refusal = (status: number) => () => Response.json({ error: { message: "unknown field" } }, { status });
+
+  /**
+   * `access` answered by `answers` in turn, the last one repeating; returns whether each request received carried the
+   * usage field, in order.
+   */
+  function scripted(prefix: string, answers: Handler[], name = `P-${prefix}`) {
+    const askedUsage: boolean[] = [];
+    routes.set(prefix, (request) => {
+      askedUsage.push("stream_options" in JSON.parse(received.get(prefix)?.body ?? "{}"));
+      const answer = answers[Math.min(askedUsage.length, answers.length) - 1]!;
+      return answer(request);
+    });
+    const access: ProviderAccess = {
+      provider: { name, baseUrl: `http://localhost:${server.port}/${prefix}/v1` },
+      apiKey: undefined,
+    };
+    return { access, askedUsage };
+  }
+
+  async function chat(access: ProviderAccess, support: ProviderSupport, model = "m", signal?: AbortSignal) {
+    return await streamChat(access, {
+      model,
+      messages,
+      signal: signal ?? new AbortController().signal,
+      support,
+      onContent: () => {},
+      onReasoning: () => {},
+    });
+  }
+
+  for (const status of [400, 422]) {
+    test(`sends a ${status} once more without the field, then leaves the field out for that model`, async () => {
+      const support = new ProviderSupport();
+      const { access, askedUsage } = scripted(`field-refused-${status}`, [refusal(status), reply]);
+      expect(await chat(access, support)).toEqual({ status: "done" });
+      expect(askedUsage).toEqual([true, false]);
+      expect(support.usageField(access.provider, "m")).toBe("refuses");
+      expect(await chat(access, support)).toEqual({ status: "done" });
+      expect(askedUsage).toEqual([true, false, false]);
+    });
+  }
+
+  test("reports the second request's error when it fails too, and asks for usage again next time", async () => {
+    const support = new ProviderSupport();
+    const { access, askedUsage } = scripted("field-both-fail", [
+      refusal(400),
+      () => Response.json({ error: { message: "context too long" } }, { status: 400 }),
+      reply,
+    ]);
+    expect(await chat(access, support)).toEqual({
+      status: "failed",
+      error: { kind: "rejected", provider: "P-field-both-fail", status: 400, detail: "context too long" },
+    });
+    expect(askedUsage).toEqual([true, false]);
+    expect(support.usageField(access.provider, "m")).toBe("unknown");
+    await chat(access, support);
+    expect(askedUsage).toEqual([true, false, true]);
+  });
+
+  test("sends a 400 once only once the model's stream has started with the field", async () => {
+    const support = new ProviderSupport();
+    const { access, askedUsage } = scripted("field-accepted", [reply, refusal(400)]);
+    expect(await chat(access, support)).toEqual({ status: "done" });
+    expect(support.usageField(access.provider, "m")).toBe("accepts");
+    expect(await chat(access, support)).toMatchObject({ status: "failed", error: { kind: "rejected", status: 400 } });
+    expect(askedUsage).toEqual([true, true]);
+  });
+
+  test("counts a started stream that then carries an error event as the field accepted", async () => {
+    const support = new ProviderSupport();
+    const { access, askedUsage } = scripted("field-error-event", [
+      () => sse([`data: ${JSON.stringify({ error: { message: "out of memory" } })}\n\n`]),
+      refusal(400),
+    ]);
+    expect(await chat(access, support)).toMatchObject({ status: "failed", error: { reason: "providerError" } });
+    expect(support.usageField(access.provider, "m")).toBe("accepts");
+    await chat(access, support);
+    expect(askedUsage).toEqual([true, true]);
+  });
+
+  for (const status of [401, 500]) {
+    test(`sends a ${status} once`, async () => {
+      const support = new ProviderSupport();
+      const { access, askedUsage } = scripted(`field-status-${status}`, [refusal(status), reply]);
+      expect(await chat(access, support)).toMatchObject({ status: "failed" });
+      expect(askedUsage).toEqual([true]);
+      expect(support.usageField(access.provider, "m")).toBe("unknown");
+    });
+  }
+
+  test("sends nothing more when Stop lands after the 400's headers", async () => {
+    const support = new ProviderSupport();
+    const stop = new AbortController();
+    const { access, askedUsage } = scripted("field-stop-first", [
+      () => {
+        // The headers go at once; the body waits until Stop.
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('{"error":'));
+            setTimeout(() => stop.abort(), 50);
+          },
+        });
+        return new Response(body, { status: 400, headers: { "content-type": "application/json" } });
+      },
+      reply,
+    ]);
+    expect(await chat(access, support, "m", stop.signal)).toEqual({ status: "stopped" });
+    await Bun.sleep(50);
+    expect(askedUsage).toEqual([true]);
+    expect(support.usageField(access.provider, "m")).toBe("unknown");
+  });
+
+  test("leaves the model unknown when Stop lands before the second request's headers", async () => {
+    const support = new ProviderSupport();
+    const stop = new AbortController();
+    let answer: (response: Response) => void = () => {};
+    const { access, askedUsage } = scripted("field-stop-second", [
+      refusal(400),
+      () => {
+        stop.abort();
+        return new Promise<Response>((resolve) => {
+          answer = resolve;
+        });
+      },
+    ]);
+    try {
+      expect(await chat(access, support, "m", stop.signal)).toEqual({ status: "stopped" });
+      expect(askedUsage).toEqual([true, false]);
+      expect(support.usageField(access.provider, "m")).toBe("unknown");
+    } finally {
+      answer(reply());
+    }
+  });
+
+  test("remembers apart two base URLs under one name and two models of one provider", async () => {
+    const support = new ProviderSupport();
+    const first = scripted("field-apart-a", [refusal(400), reply], "Same");
+    const second = scripted("field-apart-b", [reply], "Same");
+    await chat(first.access, support);
+    expect(support.usageField(first.access.provider, "m")).toBe("refuses");
+    await chat(second.access, support);
+    expect(second.askedUsage).toEqual([true]);
+    expect(support.usageField(second.access.provider, "m")).toBe("accepts");
+    await chat(first.access, support, "other");
+    expect(first.askedUsage).toEqual([true, false, true]);
+    expect(support.usageField(first.access.provider, "other")).toBe("accepts");
+    expect(support.usageField(first.access.provider, "m")).toBe("refuses");
+  });
+});
+
 describe("compressed responses", () => {
   const modelList = '{"data":[{"id":"m"}]}';
   const reply = [
@@ -708,6 +946,7 @@ describe("compressed responses", () => {
       model: "m",
       messages: [{ role: "user", content: "Hi" }],
       signal: new AbortController().signal,
+      support: new ProviderSupport(),
       onContent: (text) => parts.push(text),
       onReasoning: () => {},
     });
@@ -806,6 +1045,7 @@ describe("compressed responses", () => {
       model: "m",
       messages: [{ role: "user", content: "Hi" }],
       signal: controller.signal,
+      support: new ProviderSupport(),
       onContent: () => controller.abort(),
       onReasoning: () => {},
     });
@@ -961,6 +1201,7 @@ describe("timeouts", () => {
         model: "m",
         messages: [{ role: "user", content: "Hi" }],
         signal: new AbortController().signal,
+        support: new ProviderSupport(),
         onContent: (text) => parts.push(text),
         onReasoning: () => {},
         network,
@@ -1021,6 +1262,7 @@ describe("timeouts", () => {
           model: "m",
           messages: [{ role: "user", content: "Hi" }],
           signal: controller.signal,
+          support: new ProviderSupport(),
           onContent: () => controller.abort(),
           onReasoning: () => {},
           network: { timeoutMs: 44 },

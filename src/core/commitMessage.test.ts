@@ -11,6 +11,7 @@ import {
 } from "./commitMessage";
 import { estimateTokens } from "./limits";
 import type { ErrorText } from "./providerError";
+import { ProviderSupport } from "./providerSupport";
 
 /** A file's section of a `git diff --cached`, `lines` added lines of 39 characters each, plus their line breaks. */
 function fileDiff(name: string, lines: number): string {
@@ -193,6 +194,7 @@ describe("CommitMessageGenerator", () => {
         calls.requests.push(request);
         return options.reply ? options.reply(request) : answer("feat: add a")(request);
       },
+      providerSupport: new ProviderSupport(),
       confirmReplace: async () => {
         calls.questions++;
         const { confirm } = options;

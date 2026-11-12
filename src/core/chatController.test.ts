@@ -36,11 +36,13 @@ import type { MentionReader, ReadMention } from "./mentions";
 import {
   type ChatEntry,
   type ChatState,
+  type ContextUsage,
   type DraftInsert,
   isReplying,
   type ReplyStatus,
   type ShownEntries,
 } from "./protocol";
+import { ProviderSupport } from "./providerSupport";
 import type { Provider } from "./providers";
 import { recordingApplier } from "./recordedChanges";
 import { LOAD_SKILL_TOOL, readSkills, type SkillDiscovery } from "./skills";
@@ -67,9 +69,12 @@ const reasoningOnly = [event({ content: "<think>Plan, never closed" })];
 
 /**
  * One scripted reply: its answer and optional reasoning, streamed whole, or with `open` streamed and then never ended;
- * `hang` streams "Partial " and never ends; `fail` answers HTTP 500.
+ * `usage`: the counts a whole reply reports last; `hang` streams "Partial " and never ends; `fail` answers HTTP 500.
  */
-type ScriptedReply = { content: string; reasoning?: string; open?: true } | "hang" | "fail";
+type ScriptedReply =
+  | { content: string; reasoning?: string; open?: true; usage?: { prompt_tokens: number; completion_tokens: number } }
+  | "hang"
+  | "fail";
 /** Replies still to send, by path prefix, one per request. */
 const scripts = new Map<string, ScriptedReply[]>();
 
@@ -88,7 +93,10 @@ function scriptedResponse(reply: ScriptedReply | undefined): Response {
     const body = new ReadableStream({ start: (controller) => controller.enqueue(encoder.encode(events)) });
     return new Response(body, { headers });
   }
-  return new Response(`${[...reasoning, event({ content: reply.content })].join("")}data: [DONE]\n\n`, { headers });
+  const usage = reply.usage ? [`data: ${JSON.stringify({ choices: [], usage: reply.usage })}\n\n`] : [];
+  return new Response(`${[...reasoning, event({ content: reply.content }), ...usage].join("")}data: [DONE]\n\n`, {
+    headers,
+  });
 }
 
 /** Body of each chat request, by path prefix. */
@@ -240,6 +248,7 @@ async function ready(
     publish,
     mentions,
     store: new ConversationStore(undefined),
+    providerSupport: new ProviderSupport(),
     ...noTools,
   });
   const state = () => controller.snapshot;
@@ -330,6 +339,7 @@ describe("ChatController CA file change", () => {
       publish: () => {},
       mentions: noMentions,
       store: new ConversationStore(undefined),
+      providerSupport: new ProviderSupport(),
       ...noTools,
     });
     const state = () => controller.snapshot;
@@ -379,6 +389,7 @@ describe("ChatController reasoning", () => {
       },
       mentions: noMentions,
       store: new ConversationStore(undefined),
+      providerSupport: new ProviderSupport(),
       ...noTools,
     });
     const state = () => controller.snapshot;
@@ -724,6 +735,7 @@ describe("ChatController conversations", () => {
       publish: () => {},
       mentions: options.mentions ?? noMentions,
       store: new ConversationStore(ws.files),
+      providerSupport: new ProviderSupport(),
       now: options.now,
       ...noTools,
     });
@@ -1189,6 +1201,7 @@ describe("ChatController conversations", () => {
       publish: () => {},
       mentions: noMentions,
       store: new ConversationStore(undefined),
+      providerSupport: new ProviderSupport(),
       ...noTools,
     });
     const state = () => controller.snapshot;
@@ -1528,6 +1541,7 @@ describe("ChatController conversations", () => {
       publish: () => {},
       mentions: noMentions,
       store: new ConversationStore(ws.files),
+      providerSupport: new ProviderSupport(),
       ...noTools,
     });
     return { controller, state: () => controller.snapshot };
@@ -1890,6 +1904,7 @@ describe("ChatController agent turn", () => {
       publish: () => {},
       mentions,
       store: new ConversationStore(files),
+      providerSupport: new ProviderSupport(),
       tools: runner,
       instructions,
       skills,
@@ -4375,7 +4390,7 @@ describe("ChatController context usage", () => {
     skills?: SkillReader;
     script?: ScriptedReply[];
   }) {
-    const usages: { entries: number; waiting: boolean; used: number; size: number; known: boolean }[] = [];
+    const usages: (ContextUsage & { entries: number; waiting: boolean })[] = [];
     const prefix = `usage-${crypto.randomUUID()}`;
     if (options.script) scripts.set(prefix, [...options.script]);
     const controller = new ChatController({
@@ -4388,6 +4403,7 @@ describe("ChatController context usage", () => {
       },
       mentions: noMentions,
       store: new ConversationStore(undefined),
+      providerSupport: new ProviderSupport(),
       tools: options.tools ?? noTools.tools,
       instructions: options.instructions ?? noTools.instructions,
       skills: options.skills ?? noSkills,
@@ -4486,6 +4502,61 @@ describe("ChatController context usage", () => {
     expect(state().context).toMatchObject({ size: 2000, known: true });
   });
 
+  test("carries a reply's reported usage through the next request, and drops it after a reply without usage", async () => {
+    const tools: ToolRunner = { tools: READ_TOOLS, run: async () => ({ status: "ok", text: "file text" }) };
+    const { controller, state, usages } = await watched({
+      limits: fixedLimits({}),
+      tools,
+      script: [
+        { content: readCall("a.ts"), usage: { prompt_tokens: 1200, completion_tokens: 30 } },
+        { content: "Done." },
+      ],
+    });
+    await controller.send("go");
+
+    const duringNext = usages.filter((usage) => usage.entries === 4 && usage.waiting);
+    expect(duringNext.length).toBeGreaterThan(0);
+    for (const usage of duringNext) expect(usage.reported).toEqual({ prompt: 1200, completion: 30 });
+    expect(state().context.reported).toBeUndefined();
+  });
+
+  test("keeps the last reply's reported usage once the turn ends", async () => {
+    const { controller, state } = await watched({
+      limits: fixedLimits({}),
+      script: [{ content: "ok", usage: { prompt_tokens: 22, completion_tokens: 8 } }],
+    });
+    await controller.send("hi");
+    expect(state().context.reported).toEqual({ prompt: 22, completion: 8 });
+  });
+
+  test("drops the reported usage after New chat", async () => {
+    const { controller, state } = await watched({
+      limits: fixedLimits({}),
+      script: [{ content: "ok", usage: { prompt_tokens: 22, completion_tokens: 8 } }],
+    });
+    await controller.send("hi");
+    await controller.newChat();
+    expect(state().context.reported).toBeUndefined();
+  });
+
+  test("drops the reported usage when the model is set again, even to the same one, or listed again", async () => {
+    const usage = { prompt_tokens: 22, completion_tokens: 8 };
+    const { controller, state } = await watched({
+      limits: fixedLimits({}),
+      script: [
+        { content: "ok", usage },
+        { content: "ok", usage },
+      ],
+    });
+    await controller.send("hi");
+    controller.selectModel("m");
+    expect(state().context.reported).toBeUndefined();
+    await controller.send("again");
+    expect(state().context.reported).toEqual({ prompt: 22, completion: 8 });
+    await controller.loadModels();
+    expect(state().context.reported).toBeUndefined();
+  });
+
   test("a settings change is published at once, with the new size and the model known", async () => {
     let limits = parseLimits({ maxToolSteps: undefined, contextSizes: {} });
     const { controller, usages } = await watched({ limits: { read: () => limits } });
@@ -4545,6 +4616,7 @@ describe("ChatController mode", () => {
       returnDraft: (draft) => returned.push(draft),
       mentions: noMentions,
       store: new ConversationStore(undefined),
+      providerSupport: new ProviderSupport(),
       ...noTools,
       autoApproveWrites: () => autoApproveWrites(setting),
       writeAutoApproveWrites: async (on) => {
@@ -4812,6 +4884,7 @@ describe("ChatController queue", () => {
       publish: () => {},
       mentions: options.mentions ?? noMentions,
       store: options.store ?? new ConversationStore(undefined),
+      providerSupport: new ProviderSupport(),
       ...noTools,
       instructions: { read: () => new Promise<InstructionFile[]>((resolve) => gates.push(() => resolve([]))) },
       limits: options.limits,
@@ -5437,6 +5510,7 @@ describe("ChatController undo", () => {
       publish: (state) => states.push(JSON.parse(JSON.stringify(state)) as ChatState),
       mentions: noMentions,
       store: new ConversationStore(files),
+      providerSupport: new ProviderSupport(),
       tools: runner,
       instructions: { read: async () => [] },
       skills: noSkills,

@@ -2,6 +2,8 @@
  * @module client
  * Provider HTTP client: `GET {baseUrl}/models`, streaming `POST {baseUrl}/chat/completions`.
  * Never sends `tools`, never reads `tool_calls` (ADR 0001). Failures returned as typed values, never thrown.
+ * Asks for usage (`stream_options`) and reads the counts a reply reports; a model that refuses the field gets one
+ * resend without it, remembered in `ProviderSupport`.
  * Only module that knows the reasoning wire shapes: callers see the reasoning and the answer apart.
  * One network path for every request: `http`/`https` requests, with the provider's CA trust (see `tls`).
  */
@@ -11,8 +13,9 @@ import * as https from "node:https";
 import type { LookupFunction } from "node:net";
 import { pipeline, Readable, Transform } from "node:stream";
 import * as zlib from "node:zlib";
-import { REPLY_MAX_LENGTH } from "./protocol";
+import { REPLY_MAX_LENGTH, type ReportedUsage } from "./protocol";
 import type { CutOffReason, ProviderError } from "./providerError";
+import type { ProviderSupport } from "./providerSupport";
 import type { Provider } from "./providers";
 import { readSseData, SseEventTooLargeError } from "./sse";
 import { certificateErrorCode, providerTrust } from "./tls";
@@ -30,7 +33,11 @@ export type HttpRequest = { url: string; method: "GET" | "POST"; headers: Record
 
 export type ModelListing = { ok: true; models: string[] } | { ok: false; error: ProviderError };
 
-export type ChatOutcome = { status: "done" } | { status: "stopped" } | { status: "failed"; error: ProviderError };
+/** `usage`: the counts the reply reported, when it reported valid ones. */
+export type ChatOutcome =
+  | { status: "done"; usage?: ReportedUsage }
+  | { status: "stopped" }
+  | { status: "failed"; error: ProviderError };
 
 const DETAIL_LIMIT = 500;
 
@@ -52,14 +59,27 @@ export type NetworkOptions = {
 };
 
 /**
- * Build streaming chat request. Body: `model`, `messages`, `stream: true`. No `tools` key, ever.
+ * Build streaming chat request. Body: `model`, `messages`, `stream: true`, and, when `askUsage`,
+ * `stream_options: { include_usage: true }`, which asks the provider to end the stream with the reply's token counts.
+ * No `tools` key, ever.
  */
-export function buildChatRequest(access: ProviderAccess, model: string, messages: ChatMessage[]): HttpRequest {
+export function buildChatRequest(
+  access: ProviderAccess,
+  model: string,
+  messages: ChatMessage[],
+  askUsage: boolean,
+): HttpRequest {
+  const body = {
+    model,
+    messages: messages.map(({ role, content }) => ({ role, content })),
+    stream: true,
+    ...(askUsage ? { stream_options: { include_usage: true } } : {}),
+  };
   return {
     url: `${access.provider.baseUrl}/chat/completions`,
     method: "POST",
     headers: { ...authorization(access.apiKey), "Content-Type": "application/json", Accept: "text/event-stream" },
-    body: JSON.stringify({ model, messages: messages.map(({ role, content }) => ({ role, content })), stream: true }),
+    body: JSON.stringify(body),
   };
 }
 
@@ -90,6 +110,8 @@ export type StreamChatOptions = {
   messages: ChatMessage[];
   /** Abort -> outcome `stopped`, never `cutOff`. */
   signal: AbortSignal;
+  /** Which models take the usage field: read to build the request, taught by its answer. One per extension host. */
+  support: ProviderSupport;
   /** Called with each non-empty piece of the answer, in order. Answer starts at its first non-blank line. */
   onContent: (text: string) => void;
   /** Called with each non-empty piece of the reasoning, in order, tags removed. */
@@ -104,6 +126,8 @@ export type StreamChatOptions = {
  * Complete when `[DONE]` arrives, or stream ends after a `finish_reason`.
  * Reply over `REPLY_MAX_LENGTH`, or one event over the SSE cap -> cut off (`tooLarge`), stream cancelled.
  * Text held back to recognize a split tag is flushed before any outcome returns.
+ * The request asks for usage unless the model refuses the field (see `openStream`). A completed reply's outcome carries
+ * the last valid usage a chunk reported, whether or not the request asked for it: a proxy may add it by itself.
  */
 export async function streamChat(access: ProviderAccess, options: StreamChatOptions): Promise<ChatOutcome> {
   const splitter = new ReplySplitter(options.onReasoning, options.onContent);
@@ -119,8 +143,7 @@ async function readReply(
 ): Promise<ChatOutcome> {
   const { signal } = options;
   const provider = access.provider.name;
-  const request = buildChatRequest(access, options.model, options.messages);
-  const sent = await send(access, request, options.network ?? {}, signal);
+  const sent = await openStream(access, options);
   if (!sent.ok) return signal.aborted ? { status: "stopped" } : { status: "failed", error: sent.error };
 
   const body = sent.response.body;
@@ -131,14 +154,17 @@ async function readReply(
 
   let finished = false;
   let length = 0;
+  let usage: ReportedUsage | undefined;
+  const done = (): ChatOutcome => (usage === undefined ? { status: "done" } : { status: "done", usage });
   try {
     for await (const data of readSseData(body)) {
       // [!]: Check before each event: buffered events (even `[DONE]`) must not override a Stop.
       if (signal.aborted) return { status: "stopped" };
-      if (data === "[DONE]") return { status: "done" };
+      if (data === "[DONE]") return done();
       const chunk = parseChunk(data);
       if (chunk.kind === "malformed") return cutOff("malformed", truncate(data));
       if (chunk.kind === "error") return cutOff("providerError", chunk.message);
+      if (chunk.usage) usage = chunk.usage;
       length += chunk.reasoning.length + chunk.content.length;
       if (length > REPLY_MAX_LENGTH) return cutOff("tooLarge");
       if (chunk.reasoning) options.onReasoning(chunk.reasoning);
@@ -155,7 +181,45 @@ async function readReply(
     });
   }
   if (signal.aborted) return { status: "stopped" };
-  return finished ? { status: "done" } : cutOff("ended");
+  return finished ? done() : cutOff("ended");
+}
+
+/** Statuses a provider may answer the usage field with when it does not take it; nothing in them says which field. */
+const FIELD_REFUSAL_STATUSES = new Set([400, 422]);
+
+/**
+ * Send the chat request and return its started stream or its error. The request carries the usage field unless the
+ * model refuses it. A 400 or 422 to a request with the field, while the model has not accepted the field and the user
+ * has not stopped, is sent once more without it; a started stream then marks the model `refuses`. A started stream to
+ * a request with the field marks it `accepts`. Any other answer is sent once, and a second failure is reported as is.
+ */
+async function openStream(access: ProviderAccess, options: StreamChatOptions): Promise<Sent> {
+  const { model, messages, signal, support } = options;
+  const { provider } = access;
+  const network = options.network ?? {};
+  const askUsage = support.usageField(provider, model) !== "refuses";
+  const exchanged = await exchange(access, buildChatRequest(access, model, messages, askUsage), network, signal);
+  if (!exchanged.ok) return exchanged;
+  const { response } = exchanged;
+  // [!]: Recognized by its status alone, before `classify` looks at the encoding. The model's state is read again now,
+  // not taken from when the request left: a stream started meanwhile for another request may have proved the field.
+  const refused =
+    askUsage && FIELD_REFUSAL_STATUSES.has(response.status) && support.usageField(provider, model) !== "accepts";
+  if (!refused) {
+    const sent = await classify(provider.name, response);
+    if (sent.ok && askUsage) support.usageFieldAccepted(provider, model);
+    return sent;
+  }
+  // [>]: Read to its end before the resend, so a Stop while it arrives sends nothing more. Its text is shown only when
+  // that Stop leaves it the last answer; the resend's answer is otherwise what the user sees.
+  const read = await readText(response.body, ERROR_BODY_MAX_BYTES);
+  if (signal.aborted) {
+    const detail = read.ok ? errorDetail(read.text) : "";
+    return { ok: false, error: { kind: "rejected", provider: provider.name, status: response.status, detail } };
+  }
+  const resent = await send(access, buildChatRequest(access, model, messages, false), network, signal);
+  if (resent.ok) support.usageFieldRefused(provider, model);
+  return resent;
 }
 
 const THINK_OPEN = "<think>";
@@ -287,18 +351,31 @@ async function send(
   network: NetworkOptions,
   signal?: AbortSignal,
 ): Promise<Sent> {
+  const exchanged = await exchange(access, request, network, signal);
+  return exchanged.ok ? await classify(access.provider.name, exchanged.response) : exchanged;
+}
+
+/** Send request with the provider's CA trust; the response whatever its status, or why none came. */
+async function exchange(
+  access: ProviderAccess,
+  request: HttpRequest,
+  network: NetworkOptions,
+  signal?: AbortSignal,
+): Promise<Sent> {
   const { name, baseUrl } = access.provider;
   const trust = await providerTrust(access.provider);
   if (!trust.ok) return trust;
-
-  let response: ProviderResponse;
   try {
-    response = await transmit(request, trust.ca, network, signal);
+    return { ok: true, response: await transmit(request, trust.ca, network, signal) };
   } catch (error) {
     const code = certificateErrorCode(error);
     if (code !== undefined) return { ok: false, error: { kind: "certificate", provider: name, baseUrl, code } };
     return { ok: false, error: { kind: "unreachable", provider: name, baseUrl, cause: describeError(error) } };
   }
+}
+
+/** A 2xx response the client can decode, or the error its status, encoding, or body gives. */
+async function classify(name: string, response: ProviderResponse): Promise<Sent> {
   const { status } = response;
   const redirected = status >= 300 && status < 400;
   if (redirected || status === 401 || status === 403) {
@@ -460,7 +537,7 @@ function authorization(apiKey: string | undefined): Record<string, string> {
 }
 
 type Chunk =
-  | { kind: "delta"; reasoning: string; content: string; finished: boolean }
+  | { kind: "delta"; reasoning: string; content: string; finished: boolean; usage?: ReportedUsage }
   | { kind: "error"; message: string }
   | { kind: "malformed" };
 
@@ -468,6 +545,8 @@ type Chunk =
  * Validate fields read from chunk. Absent or `null` fields fine (role-only, reasoning-only, usage-only,
  * empty `choices`); present with wrong type -> malformed, never silently dropped.
  * `reasoning` = `delta.reasoning` then `delta.reasoning_content`; a server sends one or the other.
+ * `usage` is the exception: read from any chunk, with or without choices, and ignored when it is not two counts, since
+ * it is advisory and must never cut a reply off (see `reportedUsage`).
  */
 function parseChunk(data: string): Chunk {
   let value: unknown;
@@ -480,7 +559,8 @@ function parseChunk(data: string): Chunk {
   if (!isAbsent(value.error))
     return { kind: "error", message: errorMessage(value.error) ?? JSON.stringify(value.error) };
 
-  const empty: Chunk = { kind: "delta", reasoning: "", content: "", finished: false };
+  const usage = reportedUsage(value.usage);
+  const empty: Chunk = { kind: "delta", reasoning: "", content: "", finished: false, ...(usage ? { usage } : {}) };
   if (isAbsent(value.choices)) return empty;
   if (!Array.isArray(value.choices)) return { kind: "malformed" };
   const choice: unknown = value.choices[0];
@@ -494,7 +574,18 @@ function parseChunk(data: string): Chunk {
   );
   if (!fields.every((field) => typeof field === "string")) return { kind: "malformed" };
   const [content, reasoning, reasoningContent, finishReason] = fields as string[];
-  return { kind: "delta", reasoning: reasoning! + reasoningContent!, content: content!, finished: finishReason !== "" };
+  return { ...empty, reasoning: reasoning! + reasoningContent!, content: content!, finished: finishReason !== "" };
+}
+
+/** `prompt_tokens` and `completion_tokens` of a chunk's `usage` when both are non-negative safe integers. */
+function reportedUsage(usage: unknown): ReportedUsage | undefined {
+  if (!isRecord(usage)) return undefined;
+  const { prompt_tokens: prompt, completion_tokens: completion } = usage;
+  return isCount(prompt) && isCount(completion) ? { prompt, completion } : undefined;
+}
+
+function isCount(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
 }
 
 function isAbsent(value: unknown): value is null | undefined {

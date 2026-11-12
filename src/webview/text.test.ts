@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { SkillProblem } from "../core/protocol";
 import {
+  describeContextTitle,
   describeContextUsage,
   describeFold,
   describeHalt,
@@ -143,6 +144,16 @@ describe("describeContextUsage", () => {
 
   test("falls back to the runtime's language for a tag it cannot use", () => {
     expect(describeContextUsage({ used: 0, size: 1000, known: false }, "not a tag!")).toContain("0%");
+  });
+});
+
+describe("describeContextTitle", () => {
+  test("names the estimate, then the reported counts in the display language when there are any", () => {
+    expect(describeContextTitle({ used: 1, size: 2, known: true }, "en")).toBe("Estimated size of the next request");
+    const reported = { used: 1, size: 2, known: true, reported: { prompt: 12001, completion: 345 } };
+    expect(describeContextTitle(reported, "fr")).toBe(
+      "Estimated size of the next request. Last reply: 12\u202f001 prompt tokens, 345 completion tokens",
+    );
   });
 });
 

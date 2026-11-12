@@ -14,6 +14,7 @@ import {
 import { fillsContext } from "./limits";
 import type { Translator } from "./modelList";
 import { describeProviderError, type ErrorText } from "./providerError";
+import type { ProviderSupport } from "./providerSupport";
 
 export const COMMIT_MESSAGE_PROMPT = [
   "You write git commit messages. The user's message is the staged diff of a git repository.",
@@ -152,13 +153,15 @@ export type CommitSelection = { access: ProviderAccess; model: string; contextSi
 
 /**
  * What the command needs from the host. `selection`: the chat's provider and model, `undefined` when either is not
- * chosen. `stream`: `streamChat`. `confirmReplace`: asks whether to replace the text in the input box, true to replace.
+ * chosen. `stream`: `streamChat`. `providerSupport`: the memory the chat's requests share, passed to every request.
+ * `confirmReplace`: asks whether to replace the text in the input box, true to replace.
  * `withProgress`: runs `task` under a cancellable progress notification, whose Cancel aborts the signal it gets.
  * `showError` and `showWarning`: native notifications.
  */
 export type CommitMessagePorts = {
   selection(): Promise<CommitSelection | undefined>;
   stream(access: ProviderAccess, options: StreamChatOptions): Promise<ChatOutcome>;
+  providerSupport: ProviderSupport;
   confirmReplace(repository: CommitRepository): Promise<boolean>;
   withProgress<T>(task: (cancelled: AbortSignal) => Promise<T>): Promise<T>;
   showError(text: ErrorText): void;
@@ -311,6 +314,7 @@ export class CommitMessageGenerator {
       model: selection.model,
       messages: request.messages,
       signal,
+      support: this.ports.providerSupport,
       onContent: (text) => {
         reply += text;
       },

@@ -62,6 +62,7 @@ import {
 } from "./composer";
 import { moveHighlight, optionId, SuggestionMenu } from "./SuggestionMenu";
 import {
+  describeContextTitle,
   describeContextUsage,
   describeFold,
   describeHalt,
@@ -243,7 +244,7 @@ export function Header({
     <header className="header">
       {state.providers.length > 0 && <Pickers state={state} />}
       {state.model !== undefined && (
-        <span className="usage" title={l10n.t("Estimated size of the next request")}>
+        <span className="usage" title={describeContextTitle(state.context, language)}>
           {describeContextUsage(state.context, language)}
         </span>
       )}
