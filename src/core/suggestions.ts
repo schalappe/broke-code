@@ -41,7 +41,7 @@ export function findSlashToken(text: string, caret: number): SlashToken | undefi
 }
 
 /** The slash commands the webview runs itself, in the order the menu lists them, before the skills. */
-export const BUILT_IN_COMMANDS = ["new", "model"] as const;
+export const BUILT_IN_COMMANDS = ["new", "model", "compact"] as const;
 export type BuiltInCommand = (typeof BUILT_IN_COMMANDS)[number];
 
 /**

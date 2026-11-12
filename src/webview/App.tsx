@@ -13,6 +13,7 @@ import {
 } from "react";
 import Markdown, { type Components, type ExtraProps } from "react-markdown";
 import { type ConversationSummary, filterConversations } from "../core/conversation";
+import { historyStart, isAutomaticSummary, sentEntries } from "../core/history";
 import { codeBlockText, FENCE_CLOSED, hasTextAfter, remarkFenceClosed } from "../core/markdownCode";
 import { emptyModelsLabel } from "../core/modelList";
 import {
@@ -67,7 +68,7 @@ import {
   formatConversationDate,
   mainArgument,
 } from "./text";
-import { foldTurns } from "./turns";
+import { type ConversationPart, foldTurns } from "./turns";
 import { post } from "./vscodeApi";
 
 /**
@@ -507,6 +508,36 @@ function Conversation({
     />
   );
 
+  // [>]: Derived, never stored: the entries before the summary the history starts at are no longer sent, except the
+  // turn's message an automatic summary quotes word for word, which stays at full opacity and says so. A summary is a
+  // fold boundary, so no fold straddles it, and a user message is never folded.
+  const start = historyStart(entries);
+  // [>]: `sentEntries` leads with the quoted message when there is one, else with the entry the history starts at.
+  const first = sentEntries(entries)[0];
+  const quoted = first !== entries[start] ? first : undefined;
+  const render = (part: ConversationPart) =>
+    part.kind === "entry" ? (
+      entries[part.index] === quoted ? (
+        <div key={part.index} className="still-sent">
+          {entry(part.index)}
+          <p className="still-sent-note">{l10n.t("Still sent with the summary")}</p>
+        </div>
+      ) : (
+        entry(part.index)
+      )
+    ) : (
+      // [>]: Uncontrolled, as the reasoning block: the user's choice holds while the conversation stays shown.
+      <details key={`fold-${part.start}`} className="turn-fold">
+        <summary className="turn-fold-row">{describeFold(part.counts)}</summary>
+        <div className="turn-fold-entries">
+          {Array.from({ length: part.end - part.start }, (_, offset) => entry(part.start + offset))}
+        </div>
+      </details>
+    );
+  const parts = foldTurns(entries);
+  const unsent = parts.filter((part) => (part.kind === "entry" ? part.index : part.start) < start);
+  const sent = parts.slice(unsent.length);
+
   if (entries.length === 0) {
     return (
       <section className="conversation start" hidden={hidden}>
@@ -524,19 +555,15 @@ function Conversation({
         if (element) setPinned(element.scrollHeight - element.scrollTop - element.clientHeight < 24);
       }}
     >
-      {foldTurns(entries).map((part) =>
-        part.kind === "entry" ? (
-          entry(part.index)
-        ) : (
-          // [>]: Uncontrolled, as the reasoning block: the user's choice holds while the conversation stays shown.
-          <details key={`fold-${part.start}`} className="turn-fold">
-            <summary className="turn-fold-row">{describeFold(part.counts)}</summary>
-            <div className="turn-fold-entries">
-              {Array.from({ length: part.end - part.start }, (_, offset) => entry(part.start + offset))}
-            </div>
-          </details>
-        ),
+      {unsent.length > 0 && (
+        <div className="unsent">
+          <p className="unsent-note">
+            {l10n.t("Earlier messages are no longer sent to the model: the summary below replaces them.")}
+          </p>
+          {unsent.map(render)}
+        </div>
       )}
+      {sent.map(render)}
       <div ref={end} />
     </section>
   );
@@ -566,7 +593,14 @@ function Entry({
         </div>
       );
     case "assistant":
-      return <Reply entry={entry} step={next?.role === "tool" ? next : undefined} approval={approval} />;
+      return entry.summary ? (
+        <>
+          <p className="summary-separator">{describeSummary(entry, isAutomaticSummary(entry, next))}</p>
+          <Reply entry={entry} approval={approval} />
+        </>
+      ) : (
+        <Reply entry={entry} step={next?.role === "tool" ? next : undefined} approval={approval} />
+      );
     case "tool":
       // [>]: A step without a reply before it is still shown, never lost.
       return previous?.role === "assistant" ? null : (
@@ -627,7 +661,12 @@ function Reply({
         </p>
       )}
       {entry.status === "stopped" && <p className="mark">{l10n.t("Stopped")}</p>}
-      {entry.status === "halted" && entry.haltReason && <p className="mark">{describeHalt(entry.haltReason)}</p>}
+      {entry.status === "halted" && entry.haltReason && (
+        <p className="mark">{describeHalt(entry.haltReason, entry.summary)}</p>
+      )}
+      {entry.summary && entry.status === "done" && entry.content.trim() === "" && (
+        <p className="mark">{l10n.t("The model's reply held no summary.")}</p>
+      )}
       {entry.error && <ErrorBlock error={entry.error} />}
     </div>
   );
@@ -976,11 +1015,22 @@ export function SlashMenu({
   );
 }
 
+/**
+ * The separator above a summary: in flight, sent (done with text), or not summarized (any other end). `automatic`: the
+ * turn ran it itself (`isAutomaticSummary`), worded so once sent.
+ */
+function describeSummary(entry: ChatEntry & { role: "assistant" }, automatic: boolean): string {
+  if (entry.status === "waiting" || entry.status === "streaming") return l10n.t("Summarizing the conversation…");
+  if (entry.status !== "done" || entry.content.trim() === "") return l10n.t("Conversation not summarized");
+  return automatic ? l10n.t("Conversation summarized automatically") : l10n.t("Conversation summarized");
+}
+
 /** The `/` menu's built-in rows, in `BUILT_IN_COMMANDS` order. */
 function builtInRows(): SlashRow[] {
   const descriptions: Record<BuiltInCommand, string> = {
     new: l10n.t("Start a new conversation"),
     model: l10n.t("Choose the model"),
+    compact: l10n.t("Summarize the conversation to free context"),
   };
   return BUILT_IN_COMMANDS.map((name) => ({ name, description: descriptions[name], builtIn: name }));
 }
@@ -1013,8 +1063,8 @@ function Reasoning({ entry }: { entry: ChatEntry & { role: "assistant" } }) {
  * the token with `@<path> ` and records the path, so a path with spaces still counts as one mention. Picked paths are
  * sent while their `@<path>` text is still in the message. A `/` at the start of the message asks the host once for the
  * skills and lists them after the built-in commands, filtered as the user types; picking a skill inserts `/<name> `.
- * Picking a built-in row, or sending exactly `/new` or `/model`, runs it when Send would act (`startNewChat`, or the
- * editor's model list through `chooseModel`) and empties the box; otherwise, or with text after the token, the pick
+ * Picking a built-in row, or sending exactly `/new`, `/model`, or `/compact`, runs it when Send would act (`startNewChat`,
+ * the editor's model list through `chooseModel`, or the summary request `compact`) and empties the box; otherwise, or with text after the token, the pick
  * inserts `/<name> `. When a reply ends, the message box takes the focus, unless History is open (`historyOpen`): the
  * focus then stays where the user has it, so typing keeps going to the History filter. `drafts` from the editor are
  * applied in order (`applyDraft`), whatever the reply's state, then taken, and the message box takes the focus.
@@ -1177,7 +1227,8 @@ function Composer({
 
   const run = (command: BuiltInCommand) => {
     if (command === "new") startNewChat();
-    else post({ type: "chooseModel" });
+    else if (command === "model") post({ type: "chooseModel" });
+    else post({ type: "compact" });
     clear();
   };
 

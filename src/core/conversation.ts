@@ -206,6 +206,7 @@ function parseEntry(raw: unknown): StoredEntry | undefined {
     const halted = raw.status === "halted";
     if (halted !== HALT_REASONS.includes(raw.haltReason as HaltReason)) return undefined;
     if (!halted && raw.haltReason !== undefined) return undefined;
+    if (raw.summary !== undefined && raw.summary !== true) return undefined;
     // [>]: Cut by a reload or crash, a call that was running included: its step never came, so the turn stopped there.
     const inFlight = raw.status === "waiting" || raw.status === "streaming";
     const status: ReplyStatus = inFlight ? "stopped" : (raw.status as ReplyStatus);
@@ -217,6 +218,7 @@ function parseEntry(raw: unknown): StoredEntry | undefined {
       ...(error ? { error } : {}),
       ...(call ? { call } : {}),
       ...(halted ? { haltReason: raw.haltReason as HaltReason } : {}),
+      ...(raw.summary === true ? { summary: true } : {}),
     };
   }
   if (raw.role === "tool") {

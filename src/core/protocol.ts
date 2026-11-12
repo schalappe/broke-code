@@ -68,7 +68,8 @@ export type ChatEntry =
   /**
    * `reasoning`: text the model writes before its answer, shown collapsed, never sent back. `content`: the whole
    * answer, its call block included, so the history resends exactly what the model wrote; the chat hides the block by
-   * `call`'s range. `haltReason`: set exactly when `status` is `halted`.
+   * `call`'s range. `haltReason`: set exactly when `status` is `halted`. `summary`: the reply to `/compact`, a summary
+   * of the conversation before it; once it ends `done` with text, the history sent starts at it (`historyStart`).
    */
   | {
       role: "assistant";
@@ -78,6 +79,7 @@ export type ChatEntry =
       error?: ProviderError;
       call?: ReplyCall;
       haltReason?: HaltReason;
+      summary?: true;
     }
   /**
    * A tool step: one body tool call of the reply before it, or its malformed block, and the text the model got back.
@@ -252,6 +254,8 @@ export type WebviewMessage =
   | { type: "querySkills"; id: number }
   /** `/model`: open the editor's model list over the selected provider's models; a pick goes as `selectModel`. */
   | { type: "chooseModel" }
+  /** `/compact`: summarize the conversation shown; later requests send the summary in place of what came before. */
+  | { type: "compact" }
   | { type: "stop" }
   | { type: "newChat" }
   /** `id`: a conversation of `ChatState.conversations`. */
@@ -317,6 +321,7 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | undefined {
     case "stop":
     case "newChat":
     case "chooseModel":
+    case "compact":
     case "openSettings":
     case "addProvider":
       return { type: message.type };

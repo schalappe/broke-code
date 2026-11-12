@@ -189,6 +189,21 @@ describe("conversation record", () => {
     expect(parseConversation(serializeConversation(turn))).toEqual({ ok: true, record: turn });
   });
 
+  test("reads back a summary entry, and refuses a summary mark of another shape", () => {
+    const summarized = record({
+      entries: [
+        { role: "user", content: "x", mentions: [], modelText: "x" },
+        { role: "assistant", reasoning: "", content: "Answer", status: "done" },
+        { role: "assistant", reasoning: "", content: "The goal is x.", status: "done", summary: true },
+      ],
+    });
+    expect(parseConversation(serializeConversation(summarized))).toEqual({ ok: true, record: summarized });
+    for (const summary of [false, null, "true", 1]) {
+      const entries = [{ role: "assistant", reasoning: "", content: "s", status: "done", summary }];
+      expect(parse({ ...record(), entries })).toEqual({ ok: false, reason: "invalid entry 0" });
+    }
+  });
+
   test("reads back a reply halted on a full context before its request, with no content", () => {
     const halted = record({
       entries: [

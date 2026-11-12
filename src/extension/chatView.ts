@@ -178,6 +178,13 @@ export class ChatView implements vscode.WebviewViewProvider {
         return void controller.newChat();
       case "chooseModel":
         return void this.chooseModel();
+      case "compact":
+        return void controller.compact().then((outcome) => {
+          if (outcome !== "nothingToSummarize") return;
+          void vscode.window.showInformationMessage(
+            vscode.l10n.t("Nothing to summarize: the conversation is empty or was just summarized."),
+          );
+        });
       case "openConversation":
         return void controller.openConversation(message.id);
       case "deleteConversation":

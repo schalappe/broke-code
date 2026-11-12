@@ -96,3 +96,19 @@ version 2, since a version bump would hide the conversation from an older build 
 scout of #81 on 2026-11-11: such a record shows again once the newer build is back. The same holds for the mention kind
 `diff` and its statuses `noChanges`, `noRepository`, and `gitUnavailable` (#82), and for the mention
 kind `selection` and its statuses `noEditor` and `emptySelection` (#83); its optional `range` follows the rule above.
+
+## Note (2026-11-12): loaded skills after a summary
+
+`/compact` (#90) adds a summary to the conversation, and from then on the history sent starts at the last summary that
+ended `done` with text. The loaded set above is still derived from the whole record, so a skill loaded before the
+summary keeps its folder readable. But the text of that load is no longer sent, so "already loaded" would now claim a
+body the model can no longer see: `load_skill` answers "already loaded" only for a skill loaded in the history sent,
+from that summary on (`ToolContext.sentSkillRoots`, beside `skillRoots`), and returns the body again for one loaded
+only before it, a skill kept from the model that the user loaded with `/<name>` included (schalappe, 2026-11-12). The
+mark is an optional `summary: true` on the assistant entry, so the record stays version 2 under the rule above: an
+older build shows the summary as an ordinary answer and resends the whole history, which is harmless.
+
+An automatic summary (#91, `brokeCode.autoCompact`) also sends its turn's user message after it, so that message, a
+`/<name>` load included, counts as sent: the history sent is derived by `sentEntries`, the quoted message then the
+entries from the summary on. No field marks the summary automatic: the turn's next reply following it does
+(`isAutomaticSummary`), so the record stays version 2.

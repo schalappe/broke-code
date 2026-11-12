@@ -21,7 +21,7 @@ import {
   summarize,
 } from "./conversation";
 import type { ConversationStore } from "./conversationStore";
-import { type HistoryBudget, toHistory } from "./history";
+import { type HistoryBudget, historyStart, sentEntries, summaryHistory, toHistory } from "./history";
 import { contextOf, estimateTokens, fillsContext, parseLimits, type TurnLimits } from "./limits";
 import { composeUserMessage, findMentions, type MentionReader, type MentionResult, type ReadMention } from "./mentions";
 import {
@@ -43,6 +43,7 @@ import { SerialQueue } from "./serialQueue";
 import { findSlashSkill, loadSkillText, type SkillDiscovery } from "./skills";
 import { builtInCommand } from "./suggestions";
 import {
+  composeSummaryPrompt,
   composeSystemPrompt,
   type InstructionFile,
   offeredTools,
@@ -62,6 +63,17 @@ export type ChoiceStore = {
 };
 
 /**
+ * A reply in flight as `runReply` hands it to its body. `reply`: the entry `settle` ends, which an agent turn moves to
+ * each new reply or summary it appends. `signal`: aborted by Stop, navigation, and a provider change. `settle`: ends
+ * `reply` with its status (and halt reason), publishes, hands the save to the store, and returns the status.
+ */
+type ReplyRun = {
+  reply: ChatEntry & { role: "assistant" };
+  readonly signal: AbortSignal;
+  settle(status: ReplyStatus, haltReason?: HaltReason): ReplyStatus;
+};
+
+/**
  * What a tool run gets from its turn. `signal`: Stop; the turn does not wait for a run that ignores it.
  * `requestApproval`: asks the user to accept or reject what the call is about to do, and settles with the decision.
  * The request shows in `ChatState.approval` with its preview open until the user decides; Stop, and the navigation
@@ -69,13 +81,16 @@ export type ChoiceStore = {
  * auto-approve setting is on; a command always waits. Rejects only when the preview cannot open, or when another
  * request of the run is still open. `skills`: the valid skills the send discovered. `skillRoots`: the real folders of
  * the skills loaded in the conversation, the ones the read tools may also read, derived at each call (see
- * `loadedSkillRoots`), so a load earlier in the turn counts.
+ * `loadedSkillRoots`), so a load earlier in the turn counts. `sentSkillRoots`: those of them loaded in the history
+ * sent, from the last summary on (see `historyStart`): `load_skill` answers "already loaded" for these only, since the
+ * text of an earlier load is no longer sent.
  */
 export type ToolContext = {
   signal: AbortSignal;
   requestApproval: (request: ApprovalRequest) => Promise<Decision>;
   skills: readonly Skill[];
   skillRoots: readonly string[];
+  sentSkillRoots: readonly string[];
 };
 
 /**
@@ -134,6 +149,13 @@ export type ChatPorts = {
  * `cause`, logged, and the mode shown is still the one before (Plan stays on).
  */
 export type ModeChange = { kind: "written" | "unchanged" | "ignored" } | { kind: "failed"; cause: string };
+
+/**
+ * What `/compact` did: `ran`, a summary reply ran to its end, whatever that end (done, failed, stopped, halted);
+ * `nothingToSummarize`, the conversation is empty or its last entry is already a done summary, and nothing was sent;
+ * `ignored`, a turn may not start (no provider or model, a reply in flight, a mode pick being written).
+ */
+export type CompactOutcome = "ran" | "nothingToSummarize" | "ignored";
 
 /** Malformed calls in a row that halt an agent turn; a call that parses resets the count. */
 export const MAX_MALFORMED_IN_A_ROW = 3;
@@ -523,7 +545,7 @@ export class ChatController {
   /**
    * Queue `text` while a reply is in flight, with its `picked` paths, to be sent as if typed when a turn ends `done`.
    * The webview clears the box before the host answers and its state may lag, so a message not queued goes back to the
-   * box (`returnDraft`), never dropped: exactly a built-in command (`/new`, `/model`), which the webview runs itself, and
+   * box (`returnDraft`), never dropped: exactly a built-in command (`/new`, `/model`, `/compact`), which the webview runs itself, and
    * a message past `MAX_QUEUED_MESSAGES`. With no reply in flight (it ended before the request arrived), the message is
    * sent at once as `send` would, when a turn may start and nothing is queued; otherwise it goes back to the box, so no
    * message waits paused because of a late request. Blank text is dropped, as `send` drops it.
@@ -612,7 +634,8 @@ export class ChatController {
     const model = this.state.model;
     if (!provider || !model) return undefined;
     this.limits = this.limitsSource.read();
-    const { maxToolSteps } = this.limits;
+    // [!]: Read once: `limitsChanged` during the turn reaches the usage display, never this turn.
+    const { maxToolSteps, autoCompact } = this.limits;
     // [!]: Plan is read once: the turn's tools and prompt hold until it ends. The auto-approve setting is not read
     // here: each write's request reads it (see `askApproval`).
     const mode: Mode | undefined = this.plan ? "plan" : undefined;
@@ -622,28 +645,12 @@ export class ChatController {
     conversation.provider = provider.name;
     conversation.model = model;
     const user: ChatEntry & { role: "user" } = { role: "user", content, mentions: [] };
-    let reply = waitingReply();
+    const first = waitingReply();
     // [>]: Published before the reads, so the panel shows a reply in flight (Stop, composer locked) while they run;
     // published again once the mentions are known.
-    conversation.entries.push(user, reply);
-    const abort = new AbortController();
-    const signal = abort.signal;
-    let markSettled: () => void = () => {};
-    const settled = new Promise<void>((resolve) => {
-      markSettled = resolve;
-    });
-    this.reply = { abort, provider, settled };
-    this.emit();
-    /** Last status of the turn, on its last reply, and its last save handed to the store. */
-    const settle = (status: ReplyStatus, haltReason?: HaltReason): ReplyStatus => {
-      reply.status = status;
-      if (haltReason !== undefined) reply.haltReason = haltReason;
-      this.emit();
-      void this.save(conversation);
-      return status;
-    };
-
-    try {
+    conversation.entries.push(user, first);
+    return this.runReply(provider, conversation, first, "the agent turn", async (run) => {
+      const { signal, settle } = run;
       // [>]: The message is on disk before the request goes, so a crash keeps it. A failed save is shown and the
       // reply still goes. Stop ends the wait at once, even if a read, the key lookup, or the save never settles.
       const prepared = await unlessAborted(
@@ -685,29 +692,55 @@ export class ChatController {
       this.emit();
       let steps = 0;
       let malformedInARow = 0;
+      /** This request was already compacted: at most one automatic summary per request. */
+      let compacted = false;
       for (;;) {
         const { messages } = this.requestMessages(conversation, { system, contextSize });
         // [>]: Never a provider error: no request goes. The reply that would have carried it ends halted.
         if (fillsContext(estimateTokens(messages), contextSize)) {
-          return settle("halted", "contextFull");
+          if (!autoCompact || compacted) return settle("halted", "contextFull");
+          const summary = this.summaryMessages(conversation.entries, instructions);
+          if (fillsContext(estimateTokens(summary), contextSize)) return settle("halted", "contextFull");
+          // [>]: The summary takes the place of the reply still waiting, which comes back after it once it ends done:
+          // the turn stays in flight across it, and a failed or stopped summary ends the turn as its last entry.
+          conversation.entries.pop();
+          const summaryEntry: ChatEntry & { role: "assistant" } = { ...waitingReply(), summary: true };
+          run.reply = summaryEntry;
+          conversation.entries.push(run.reply);
+          this.emit();
+          const ended = await this.stream(access, model, summary, [], conversation, run.reply, signal);
+          if (!ended) return settle("stopped");
+          if (ended.status === "failed") run.reply.error = ended.error;
+          if (ended.status !== "done") return settle(ended.status);
+          // [>]: The summary and the next reply land in one update, so a summary that ended done is never the last
+          // entry: that reply following it is what marks it automatic (`isAutomaticSummary`).
+          run.reply.status = "done";
+          run.reply = waitingReply();
+          conversation.entries.push(run.reply);
+          if (summaryEntry.content.trim() === "") return settle("halted", "contextFull");
+          this.emit();
+          void this.save(conversation);
+          compacted = true;
+          continue;
         }
-        const outcome = await this.stream(access, model, messages, tools, conversation, reply, signal);
+        compacted = false;
+        const outcome = await this.stream(access, model, messages, tools, conversation, run.reply, signal);
         if (!outcome) return settle("stopped");
-        if (outcome.status === "failed") reply.error = outcome.error;
+        if (outcome.status === "failed") run.reply.error = outcome.error;
         if (outcome.status !== "done") return settle(outcome.status);
 
         // [!]: The parser reads the answer only, never the reasoning.
-        const parsed = parseToolCall(reply.content, tools);
+        const parsed = parseToolCall(run.reply.content, tools);
         if (parsed.kind === "none") return settle("done");
         let step: ChatEntry & { role: "tool" };
         if (parsed.kind === "call") {
           const { name, args, start, end } = parsed;
           // [!]: One call per reply. What follows it never reaches the chat or the history: a model that goes on writes
           // calls that never run and results it invented, which it would then read back as true.
-          reply.content = reply.content.slice(0, end);
+          run.reply.content = run.reply.content.slice(0, end);
           // [>]: The reply stays `streaming` while its call runs, so the turn reads as in flight and a crash meanwhile
           // brings it back stopped.
-          reply.call = { name, args, start, end };
+          run.reply.call = { name, args, start, end };
           this.emit();
           void this.save(conversation);
           let approval: StepApproval | undefined;
@@ -720,6 +753,7 @@ export class ChatController {
             },
             skills: discovery.skills,
             skillRoots: loadedSkillRoots(conversation.entries, discovery.skills),
+            sentSkillRoots: loadedSkillRoots(sentEntries(conversation.entries), discovery.skills),
           };
           const result = await unlessAborted(this.runTool({ name, args }, context), signal);
           if (!result) return settle("stopped");
@@ -732,17 +766,17 @@ export class ChatController {
             ...(approval ? { approval } : {}),
           };
           malformedInARow = 0;
-        } else if (mode === "plan" && planBlocked(reply.content, parsed)) {
-          const name = malformedToolName(reply.content, parsed);
+        } else if (mode === "plan" && planBlocked(run.reply.content, parsed)) {
+          const name = malformedToolName(run.reply.content, parsed);
           // [>]: An ordinary tool step, like a rejection: it counts toward the step limit and resets the malformed
           // count. Nothing is planned and no approval opens. What follows the block is dropped, as after a call.
-          reply.content = reply.content.slice(0, parsed.end);
+          run.reply.content = run.reply.content.slice(0, parsed.end);
           step = { role: "tool", name, args: {}, status: "error", text: `${name} is not available in Plan mode.` };
           malformedInARow = 0;
         } else {
           step = {
             role: "tool",
-            name: malformedToolName(reply.content, parsed),
+            name: malformedToolName(run.reply.content, parsed),
             args: {},
             status: "malformed",
             text: parsed.message,
@@ -754,23 +788,13 @@ export class ChatController {
         if (malformedInARow >= MAX_MALFORMED_IN_A_ROW) return settle("halted", "malformedCalls");
         if (steps >= maxToolSteps) return settle("halted", "stepLimit");
         // [>]: The step and the next reply land in one update, so the turn never reads as ended between them.
-        reply.status = "done";
-        reply = waitingReply();
-        conversation.entries.push(reply);
+        run.reply.status = "done";
+        run.reply = waitingReply();
+        conversation.entries.push(run.reply);
         this.emit();
         void this.save(conversation);
       }
-    } catch (error) {
-      // [!]: A bug, never the provider's failure: logged with its stack, and shown, so the composer never stays
-      // locked on a reply that will not end.
-      console.error("broke-code: the agent turn failed unexpectedly", error instanceof Error ? error.stack : error);
-      reply.error = { kind: "internal", message: error instanceof Error ? error.message : String(error) };
-      return settle("failed");
-    } finally {
-      // [>]: Also on an unexpected throw, so navigation waiting for this turn never hangs.
-      if (this.reply?.abort === abort) this.reply = undefined;
-      markSettled();
-    }
+    });
   }
 
   /**
@@ -818,6 +842,111 @@ export class ChatController {
     );
     if (outcome && cut.signal.aborted) return { status: "done" as const };
     return outcome;
+  }
+
+  /**
+   * `/compact`: one request asking the model for a summary of the conversation shown, streamed into an assistant entry
+   * marked `summary`, a reply like any other for Stop, saving, navigation, and "a reply is in flight". The request
+   * holds the summary system prompt (`composeSummaryPrompt`, the instruction files read now) and `summaryHistory`;
+   * over the context threshold even so, nothing is sent and the entry ends `halted` (`contextFull`). The answer is
+   * never parsed for a call. Once it ends `done` with text, the history sent starts at it (`historyStart`). As after a
+   * send, a summary that ends `done` then sends the first queued message.
+   */
+  async compact(): Promise<CompactOutcome> {
+    const entries = this.conversation.entries;
+    const last = entries.at(-1);
+    if (!this.mayStartTurn()) return "ignored";
+    const summarized =
+      last?.role === "assistant" && last.summary === true && historyStart(entries) === entries.length - 1;
+    if (last === undefined || summarized) return "nothingToSummarize";
+    const ended = await this.runSummary();
+    if (ended === "done") await this.sendNextQueued();
+    return "ran";
+  }
+
+  /** The summary reply of `compact`, once `mayStartTurn` passed; its status, `undefined` when it did not start. */
+  private async runSummary(): Promise<ReplyStatus | undefined> {
+    const provider = this.currentProvider();
+    const model = this.state.model;
+    if (!provider || !model) return undefined;
+    this.limits = this.limitsSource.read();
+    const contextSize = contextOf(this.limits, model).size;
+    const conversation = this.conversation;
+    conversation.provider = provider.name;
+    conversation.model = model;
+    // [>]: The history is taken before the reply joins the entries; a summary entry not yet done is never sent anyway.
+    const entries = [...conversation.entries];
+    const reply: ChatEntry & { role: "assistant" } = { ...waitingReply(), summary: true };
+    conversation.entries.push(reply);
+    return this.runReply(provider, conversation, reply, "the summary", async ({ signal, settle }) => {
+      const prepared = await unlessAborted(
+        Promise.all([this.accessOf(provider), this.readInstructions(), this.save(conversation)]),
+        signal,
+      );
+      if (!prepared) return settle("stopped");
+      const [access, instructions] = prepared;
+      const messages = this.summaryMessages(entries, instructions);
+      if (fillsContext(estimateTokens(messages), contextSize)) return settle("halted", "contextFull");
+      // [!]: No tools: the answer is never parsed for a call, so a call-shaped block in it runs nothing.
+      const outcome = await this.stream(access, model, messages, [], conversation, reply, signal);
+      if (!outcome) return settle("stopped");
+      if (outcome.status === "failed") reply.error = outcome.error;
+      return settle(outcome.status);
+    });
+  }
+
+  /**
+   * The lifecycle of a reply in flight, an agent turn's or a summary's: `reply`, already among the conversation's
+   * entries, becomes the reply in flight (Stop, navigation, and a provider change abort its signal) and is published,
+   * then `body` runs with its `ReplyRun`. An unexpected throw inside `body` (a bug, never the provider's failure) ends
+   * the reply `failed` with an `internal` error, logged with its stack under `what`, so the composer never stays
+   * locked on a reply that will not end. Whatever ended `body`, the reply in flight is then released and navigation
+   * waiting for it goes on.
+   */
+  private async runReply(
+    provider: Provider,
+    conversation: Conversation,
+    reply: ChatEntry & { role: "assistant" },
+    what: string,
+    body: (run: ReplyRun) => Promise<ReplyStatus>,
+  ): Promise<ReplyStatus> {
+    const abort = new AbortController();
+    let markSettled: () => void = () => {};
+    const settled = new Promise<void>((resolve) => {
+      markSettled = resolve;
+    });
+    this.reply = { abort, provider, settled };
+    const run: ReplyRun = {
+      reply,
+      signal: abort.signal,
+      settle: (status, haltReason) => {
+        run.reply.status = status;
+        if (haltReason !== undefined) run.reply.haltReason = haltReason;
+        this.emit();
+        void this.save(conversation);
+        return status;
+      },
+    };
+    this.emit();
+    try {
+      return await body(run);
+    } catch (error) {
+      console.error(`broke-code: ${what} failed unexpectedly`, error instanceof Error ? error.stack : error);
+      run.reply.error = { kind: "internal", message: error instanceof Error ? error.message : String(error) };
+      return run.settle("failed");
+    } finally {
+      if (this.reply?.abort === abort) this.reply = undefined;
+      markSettled();
+    }
+  }
+
+  /**
+   * The summary request for `entries`, `/compact`'s and the automatic one's: the summary system prompt with the
+   * `instructions`, then `summaryHistory`. The caller checks its size.
+   */
+  private summaryMessages(entries: readonly ChatEntry[], instructions: readonly InstructionFile[]): ChatMessage[] {
+    const history = summaryHistory(entries, (entry) => this.modelText.get(entry) ?? entry.content);
+    return [{ role: "system", content: composeSummaryPrompt(instructions) }, ...history.messages];
   }
 
   /** Run `call`. A runner that rejects despite its contract gives an `error` result, logged. */

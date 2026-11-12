@@ -36,6 +36,34 @@ function rendered(parts: ConversationPart[]): number[] {
 }
 
 describe("foldTurns", () => {
+  test("renders a summary outside any fold, and the turn before it keeps its own final reply", () => {
+    const S = A("done", { summary: true, content: "Summary." });
+    expect(shape(foldTurns([U, A(), T(), A(), T(), A("done"), S]))).toEqual(["0", "fold 1-5 2/0/0", "5", "6"]);
+    expect(shape(foldTurns([U, A(), T(), A(), T(), A("done"), A("streaming", { summary: true })]))).toEqual([
+      "0",
+      "fold 1-5 2/0/0",
+      "5",
+      "6",
+    ]);
+    expect(shape(foldTurns([U, A(), T(), A(), T(), A("done"), S, U, A(), T(), A(), T(), A("done")]))).toEqual([
+      "0",
+      "fold 1-5 2/0/0",
+      "5",
+      "6",
+      "7",
+      "fold 8-12 2/0/0",
+      "12",
+    ]);
+  });
+
+  test("an automatic summary inside a turn stays rendered, and each side of it folds on its own", () => {
+    const S = A("done", { summary: true, content: "Summary." });
+    const entries = [U, A(), T(), A(), T(), A(), T(), S, A(), T(), A(), T(), A("done")];
+    const parts = foldTurns(entries);
+    expect(shape(parts)).toEqual(["0", "fold 1-5 2/0/0", "5", "6", "7", "fold 8-12 2/0/0", "12"]);
+    expect(rendered(parts)).toEqual(entries.map((_, index) => index));
+  });
+
   test("folds an ended turn's steps and intermediate replies, leaving the final reply in view", () => {
     const parts = foldTurns([U, A(), T(), A(), T(), A(), T(), A("done")]);
     expect(shape(parts)).toEqual(["0", "fold 1-7 3/0/0", "7"]);

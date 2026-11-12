@@ -214,10 +214,11 @@ describe("builtInCommand", () => {
   test("is the built-in command a message is exactly, trimmed", () => {
     expect(builtInCommand("/new")).toBe("new");
     expect(builtInCommand("  /model \n")).toBe("model");
+    expect(builtInCommand("/compact")).toBe("compact");
   });
 
   test("is none for a command with words after it, another word, or another case", () => {
-    for (const text of ["/new words", "/model gpt", "/news", "/grilling", "new", "/New", "see /new"]) {
+    for (const text of ["/new words", "/model gpt", "/compact now", "/news", "/grilling", "new", "/New", "see /new"]) {
       expect(builtInCommand(text)).toBeUndefined();
     }
   });

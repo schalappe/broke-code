@@ -27,13 +27,14 @@ import { RUN_COMMAND_TOOL } from "./commands";
 import { type ConversationRecord, newConversationId, serializeSummary } from "./conversation";
 import { type MemoryFiles, memoryFiles } from "./conversationFixture";
 import { ConversationStore } from "./conversationStore";
-import { parseLimits } from "./limits";
+import { SUMMARY_REQUEST } from "./history";
+import { estimateTokens, parseLimits } from "./limits";
 import { mentionReader } from "./mentionReader";
 import type { MentionReader, ReadMention } from "./mentions";
 import { type ChatEntry, type ChatState, type DraftInsert, isReplying } from "./protocol";
 import type { Provider } from "./providers";
 import { LOAD_SKILL_TOOL, readSkills, type SkillDiscovery } from "./skills";
-import { composeSystemPrompt, type InstructionFile, type Skill } from "./systemPrompt";
+import { composeSummaryPrompt, composeSystemPrompt, type InstructionFile, type Skill } from "./systemPrompt";
 import { createTlsFixture, removeTlsFixture } from "./tlsFixture";
 import { workspaceToolRunner } from "./toolRunner";
 import { READ_TOOLS, runReadTool, type ToolResult } from "./tools";
@@ -170,9 +171,17 @@ async function until(state: () => ChatState, predicate: (state: ChatState) => bo
 /** The text of a user or assistant entry; `undefined` for a tool step or no entry. */
 const contentOf = (entry: ChatEntry | undefined) => (entry && entry.role !== "tool" ? entry.content : undefined);
 
-/** Limits source that always answers the same: `steps` and `sizes` unset by default, as with no setting. */
-function fixedLimits({ steps, sizes }: { steps?: number; sizes?: Record<string, number> }): LimitsSource {
-  const limits = parseLimits({ maxToolSteps: steps, contextSizes: sizes });
+/** Limits source that always answers the same: every setting unset by default, as with no setting. */
+function fixedLimits({
+  steps,
+  sizes,
+  autoCompact,
+}: {
+  steps?: number;
+  sizes?: Record<string, number>;
+  autoCompact?: boolean;
+}): LimitsSource {
+  const limits = parseLimits({ maxToolSteps: steps, contextSizes: sizes, autoCompact });
   return { read: () => limits };
 }
 
@@ -3081,6 +3090,42 @@ describe("ChatController agent turn", () => {
         text: "load_skill: deploy: no skill of that name can be loaded. Skills you can load: review.",
       });
     });
+
+    test("after a summary, a skill loaded before it stays readable and load_skill returns its body; after, already loaded", async () => {
+      const root = personalSkill("grilling", "Grill: $ARGUMENTS\n");
+      writeFileSync(join(root, "reference.md"), "the reference\n");
+      const runner = workspaceToolRunner(
+        () => [{ name: "ws", path: workspaceDir }],
+        { ripgrepCandidates: [] },
+        (roots) => fileApplier(roots),
+      );
+      const loadCall = "<load_skill>\n<name>grilling</name>\n</load_skill>";
+      const { controller, state } = await scripted(
+        [
+          { content: "Ok." },
+          { content: "The user grills an idea." },
+          { content: readCall(join(root, "reference.md")) },
+          { content: loadCall },
+          { content: loadCall },
+          { content: "Done." },
+        ],
+        runner,
+        undefined,
+        undefined,
+        discovery,
+      );
+      await controller.send("/grilling my idea");
+      expect(await controller.compact()).toBe("ran");
+      await controller.send("go on");
+      const steps = state()
+        .entries.slice(4)
+        .filter((entry) => entry.role === "tool");
+      expect(steps.map((entry) => [entry.status, entry.text])).toEqual([
+        ["ok", expect.stringContaining("the reference")],
+        ["ok", `${header("grilling", root)}\n\nGrill: $ARGUMENTS\n`],
+        ["ok", `Skill grilling is already loaded; its files live in ${root}; read them by that absolute path.`],
+      ]);
+    });
   });
 
   test("without instruction files the system message is the prompt alone", async () => {
@@ -3508,6 +3553,406 @@ describe("ChatController agent turn", () => {
       ask();
       expect(await late).toEqual({ kind: "cancel" });
       expect(state().approval).toBeUndefined();
+    });
+  });
+
+  describe("compact", () => {
+    const summarySystem = { role: "system", content: composeSummaryPrompt([]) };
+    const lead = "Summary of the conversation so far:\n\n";
+
+    test("asks for a summary, marks the reply as one, and the next request starts at it", async () => {
+      const { controller, state, sent, saved } = await scripted([
+        { content: "A." },
+        { content: "The goal is x.", reasoning: "Thinking." },
+        { content: "B." },
+      ]);
+      await controller.send("first");
+      expect(await controller.compact()).toBe("ran");
+      expect(sent()[1]!.messages).toEqual([
+        summarySystem,
+        { role: "user", content: "first" },
+        { role: "assistant", content: "A." },
+        { role: "user", content: SUMMARY_REQUEST },
+      ]);
+      const summary: ChatEntry = {
+        role: "assistant",
+        reasoning: "Thinking.",
+        content: "The goal is x.",
+        status: "done",
+        summary: true,
+      };
+      expect(state().entries[2]).toEqual(summary);
+      await settledSave(saved, 3);
+      expect(saved()!.entries[2]).toEqual(summary);
+
+      await controller.send("second");
+      expect(sent()[2]!.messages).toEqual([SYSTEM, { role: "user", content: `${lead}The goal is x.\n\nsecond` }]);
+    });
+
+    test("a reopened conversation with a summary rebuilds the same request", async () => {
+      const { controller, state, sent } = await scripted([
+        { content: "A." },
+        { content: "S." },
+        { content: "B." },
+        { content: "C." },
+      ]);
+      await controller.send("first");
+      await controller.compact();
+      await controller.send("second");
+      const id = state().conversationId;
+      await controller.newChat();
+      await controller.openConversation(id);
+      expect(state().entries[2]).toMatchObject({ summary: true, content: "S." });
+      await controller.send("third");
+      expect(sent()[3]!.messages).toEqual([
+        SYSTEM,
+        { role: "user", content: `${lead}S.\n\nsecond` },
+        { role: "assistant", content: "B." },
+        { role: "user", content: "third" },
+      ]);
+    });
+
+    test("leaves out every result it may, the last 3 included, and keeps the instruction last", async () => {
+      const result = "line\n".repeat(50);
+      const { runner } = fakeRunner(async () => ({ status: "ok", text: result }));
+      const { controller, sent } = await scripted(
+        [{ content: readCall("a.ts") }, { content: "Done." }, { content: "S." }],
+        runner,
+      );
+      await controller.send("first");
+      await controller.compact();
+      const request = sent()[2]!.messages;
+      expect(request[0]).toEqual(summarySystem);
+      expect(request[0]!.content).not.toContain("# Tools");
+      expect(request[0]!.content).not.toContain("<tool_name>");
+      expect(request[3]).toEqual({
+        role: "user",
+        content:
+          '<tool_result tool="read_file" status="ok">\n[result left out to save context: 50 lines]\n</tool_result>',
+      });
+      expect(request.at(-1)).toEqual({ role: "user", content: SUMMARY_REQUEST });
+    });
+
+    test("over the threshold even so, sends nothing and the summary ends halted on a full context", async () => {
+      let limits = parseLimits({ maxToolSteps: undefined, contextSizes: undefined });
+      const { controller, state, sent } = await scripted([{ content: "A." }], undefined, undefined, {
+        read: () => limits,
+      });
+      await controller.send("x".repeat(4000));
+      limits = parseLimits({ maxToolSteps: undefined, contextSizes: { m: 1000 } });
+      expect(await controller.compact()).toBe("ran");
+      expect(sent()).toHaveLength(1);
+      expect(state().entries[2]).toEqual({
+        role: "assistant",
+        reasoning: "",
+        content: "",
+        status: "halted",
+        haltReason: "contextFull",
+        summary: true,
+      });
+    });
+
+    test("a call-shaped block in the summary runs no tool", async () => {
+      const { runner, calls } = okRunner();
+      const { controller, state } = await scripted([{ content: "A." }, { content: readCall("a.ts") }], runner);
+      await controller.send("first");
+      await controller.compact();
+      expect(calls).toEqual([]);
+      expect(state().entries).toHaveLength(3);
+      expect(state().entries[2]).toMatchObject({ status: "done", summary: true, content: readCall("a.ts") });
+    });
+
+    test("a failed, stopped, or empty summary leaves the history as it was", async () => {
+      for (const summary of ["fail", "hang", { content: "" }] as ScriptedReply[]) {
+        const { controller, state, sent } = await scripted([{ content: "A." }, summary, { content: "B." }]);
+        await controller.send("first");
+        const compacting = controller.compact();
+        if (summary === "hang") {
+          await until(state, (s) => contentOf(s.entries[2]) === "Partial ");
+          controller.stop();
+        }
+        await compacting;
+        expect(state().entries[2]).toMatchObject({
+          summary: true,
+          status: summary === "fail" ? "failed" : summary === "hang" ? "stopped" : "done",
+        });
+        await controller.send("second");
+        expect(sent()[2]!.messages).toEqual([
+          SYSTEM,
+          { role: "user", content: "first" },
+          { role: "assistant", content: "A." },
+          { role: "user", content: "second" },
+        ]);
+      }
+    });
+
+    test("a failed summary keeps the provider's error on its entry, saved", async () => {
+      const { controller, state, saved } = await scripted([{ content: "A." }, "fail"]);
+      await controller.send("first");
+      await controller.compact();
+      const failed = { summary: true, status: "failed", error: { kind: "rejected", status: 500 } };
+      expect(state().entries[2]).toMatchObject(failed);
+      await settledSave(saved, 3);
+      expect(saved()!.entries[2]).toMatchObject(failed);
+    });
+
+    test("a summary's end releases the reply in flight: a send right after runs its turn", async () => {
+      const { controller, state, sent } = await scripted([{ content: "A." }, { content: "S." }, { content: "B." }]);
+      await controller.send("first");
+      await controller.compact();
+      expect(isReplying(state())).toBe(false);
+      await controller.send("second");
+      expect(sent()).toHaveLength(3);
+      expect(state().entries.at(-1)).toMatchObject({ content: "B.", status: "done" });
+    });
+
+    test("New chat during a summary stops it, waits for it to settle, and shows a new conversation", async () => {
+      const { controller, state, saved } = await scripted([{ content: "A." }, "hang"]);
+      await controller.send("first");
+      const id = state().conversationId;
+      const compacting = controller.compact();
+      await until(state, (s) => contentOf(s.entries[2]) === "Partial ");
+      await controller.newChat();
+      expect(await compacting).toBe("ran");
+      expect(state().entries).toEqual([]);
+      expect(state().conversationId).not.toBe(id);
+      await controller.openConversation(id);
+      expect(state().entries[2]).toMatchObject({ summary: true, status: "stopped", content: "Partial " });
+      expect(saved()).toBeDefined();
+    });
+
+    test("sends nothing on an empty conversation, or right after a done summary", async () => {
+      const { controller, sent } = await scripted([{ content: "A." }, { content: "S." }]);
+      expect(await controller.compact()).toBe("nothingToSummarize");
+      expect(sent()).toHaveLength(0);
+      await controller.send("first");
+      await controller.compact();
+      expect(await controller.compact()).toBe("nothingToSummarize");
+      expect(sent()).toHaveLength(2);
+    });
+
+    test("is ignored while a reply is in flight", async () => {
+      const { controller, state } = await scripted(["hang"]);
+      const sending = controller.send("first");
+      await until(state, (s) => contentOf(s.entries[1]) === "Partial ");
+      expect(await controller.compact()).toBe("ignored");
+      controller.stop();
+      await sending;
+      expect(state().entries).toHaveLength(2);
+    });
+
+    test("the usage display after a summary counts only what is sent", async () => {
+      const { controller, state } = await scripted([{ content: "A".repeat(4000) }, { content: "S." }]);
+      await controller.send("first");
+      const before = state().context.used;
+      await controller.compact();
+      expect(state().context.used).toBe(estimateTokens([SYSTEM, { content: `${lead}S.` }]));
+      expect(state().context.used).toBeLessThan(before - 900);
+    });
+
+    test("a message queued while the summary is in flight is sent once it ends done", async () => {
+      const { controller, state, sent } = await scripted([{ content: "A." }, { content: "S." }, { content: "B." }]);
+      await controller.send("first");
+      const compacting = controller.compact();
+      await controller.queueMessage("next", []);
+      expect(state().queue).toHaveLength(1);
+      await compacting;
+      expect(state().queue).toEqual([]);
+      expect(sent()[2]!.messages.at(-1)).toEqual({ role: "user", content: `${lead}S.\n\nnext` });
+    });
+  });
+
+  describe("automatic compaction", () => {
+    const summarySystem = { role: "system", content: composeSummaryPrompt([]) };
+    const lead = "Summary of the conversation so far:\n\n";
+    // [>]: Threshold 875 tokens (3,500 characters): the system prompt (about 2,200) and one 2,000-character result do
+    // not fit, and the last result is never left out; the summary request, every result left out, fits.
+    const bigRunner = () =>
+      fakeRunner(async (call) => ({ status: "ok", text: call.args.path === "big.ts" ? "y".repeat(2000) : "small" }));
+    const on = (steps?: number) => fixedLimits({ sizes: { m: 1000 }, autoCompact: true, steps });
+
+    test("a request over the threshold sends one summary request, then the turn's request quoting the message", async () => {
+      const { controller, state, sent } = await scripted(
+        [{ content: readCall("big.ts") }, { content: "The goal is x." }, { content: "Done." }],
+        bigRunner().runner,
+        undefined,
+        on(),
+      );
+      await controller.send("go");
+
+      expect(sent()).toHaveLength(3);
+      expect(sent()[1]!.messages[0]).toEqual(summarySystem);
+      expect(sent()[1]!.messages.at(-1)!.content.endsWith(SUMMARY_REQUEST)).toBe(true);
+      expect(sent()[2]!.messages).toEqual([SYSTEM, { role: "user", content: `${lead}The goal is x.\n\ngo` }]);
+      expect(state().entries).toMatchObject([
+        { role: "user", content: "go" },
+        { role: "assistant", status: "done", call: { name: "read_file" } },
+        { role: "tool", status: "ok" },
+        { role: "assistant", status: "done", summary: true, content: "The goal is x." },
+        { role: "assistant", status: "done", content: "Done." },
+      ]);
+      expect(isReplying(state())).toBe(false);
+    });
+
+    test("the summary adds nothing to the step count", async () => {
+      const { controller, state, sent } = await scripted(
+        [
+          { content: readCall("big.ts") },
+          { content: "S." },
+          { content: readCall("a.ts") },
+          { content: readCall("b.ts") },
+          { content: "never sent" },
+        ],
+        bigRunner().runner,
+        undefined,
+        on(3),
+      );
+      await controller.send("go");
+      expect(sent()).toHaveLength(4);
+      expect(state().entries.filter((entry) => entry.role === "tool")).toHaveLength(3);
+      expect(state().entries.at(-2)).toMatchObject({ status: "halted", haltReason: "stepLimit" });
+    });
+
+    test("still over the threshold after the summary, the reply ends contextFull with no second summary", async () => {
+      const { controller, state, sent } = await scripted(
+        [{ content: readCall("big.ts") }, { content: "s".repeat(4000) }, { content: "never sent" }],
+        bigRunner().runner,
+        undefined,
+        on(),
+      );
+      await controller.send("go");
+      expect(sent()).toHaveLength(2);
+      expect(state().entries.slice(3)).toMatchObject([
+        { summary: true, status: "done" },
+        { role: "assistant", content: "", status: "halted", haltReason: "contextFull" },
+      ]);
+    });
+
+    test("a summary request that does not fit ends contextFull with no request and no summary entry", async () => {
+      const { controller, state, sent } = await scripted([{ content: "never sent" }], undefined, undefined, on());
+      await controller.send("x".repeat(4000));
+      expect(sent()).toHaveLength(0);
+      expect(state().entries).toEqual([
+        { role: "user", content: "x".repeat(4000), mentions: [] },
+        { role: "assistant", reasoning: "", content: "", status: "halted", haltReason: "contextFull" },
+      ]);
+    });
+
+    test("a failed summary ends the turn failed with the provider's error", async () => {
+      const { controller, state, sent } = await scripted(
+        [{ content: readCall("big.ts") }, "fail"],
+        bigRunner().runner,
+        undefined,
+        on(),
+      );
+      await controller.send("go");
+      expect(sent()).toHaveLength(2);
+      expect(state().entries).toHaveLength(4);
+      expect(state().entries.at(-1)).toMatchObject({
+        summary: true,
+        status: "failed",
+        error: { kind: "rejected", status: 500 },
+      });
+      expect(isReplying(state())).toBe(false);
+    });
+
+    test("an empty summary ends the turn contextFull", async () => {
+      const { controller, state, sent } = await scripted(
+        [{ content: readCall("big.ts") }, { content: "" }, { content: "never sent" }],
+        bigRunner().runner,
+        undefined,
+        on(),
+      );
+      await controller.send("go");
+      expect(sent()).toHaveLength(2);
+      expect(state().entries.slice(3)).toMatchObject([
+        { summary: true, status: "done", content: "" },
+        { role: "assistant", status: "halted", haltReason: "contextFull" },
+      ]);
+    });
+
+    test("Stop during the summary ends the turn stopped and leaves the history unchanged", async () => {
+      const { controller, state, sent } = await scripted(
+        [{ content: readCall("big.ts") }, "hang", { content: "S2." }, { content: "B." }],
+        bigRunner().runner,
+        undefined,
+        on(),
+      );
+      const turn = controller.send("go");
+      await until(state, (s) => s.entries.at(-1)?.role === "assistant" && contentOf(s.entries.at(-1)) === "Partial ");
+      expect(state().entries.at(-1)).toMatchObject({ summary: true, status: "streaming" });
+      expect(isReplying(state())).toBe(true);
+      controller.stop();
+      await turn;
+      expect(state().entries).toHaveLength(4);
+      expect(state().entries.at(-1)).toMatchObject({ summary: true, status: "stopped" });
+
+      // [>]: The next turn overflows again: its summary request still starts at the first message, and its request
+      // quotes its own message.
+      await controller.send("more");
+      expect(sent()[2]!.messages[1]).toEqual({ role: "user", content: "go" });
+      expect(sent()[3]!.messages).toEqual([SYSTEM, { role: "user", content: `${lead}S2.\n\nmore` }]);
+      expect(state().entries.at(-1)).toMatchObject({ content: "B.", status: "done" });
+    });
+
+    test("with the setting off, a turn never sends a summary request and halts as before", async () => {
+      const { controller, state, sent } = await scripted(
+        [{ content: readCall("big.ts") }, { content: "never sent" }],
+        bigRunner().runner,
+        undefined,
+        fixedLimits({ sizes: { m: 1000 }, autoCompact: false }),
+      );
+      await controller.send("go");
+      expect(sent()).toHaveLength(1);
+      expect(state().entries.at(-1)).toMatchObject({ status: "halted", haltReason: "contextFull" });
+      expect(state().entries.some((entry) => entry.role === "assistant" && entry.summary)).toBe(false);
+    });
+
+    test("a turn reads the setting once, when it starts", async () => {
+      let release: () => void = () => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const { runner } = fakeRunner(async () => {
+        await gate;
+        return { status: "ok", text: "y".repeat(2000) };
+      });
+      let limits = parseLimits({ maxToolSteps: undefined, contextSizes: { m: 1000 }, autoCompact: false });
+      const { controller, state, sent } = await scripted(
+        [{ content: readCall("big.ts") }, { content: "S." }, { content: "Done." }],
+        runner,
+        undefined,
+        { read: () => limits },
+      );
+      const turn = controller.send("go");
+      await until(state, (s) => s.entries.at(-1)?.role === "assistant" && "call" in s.entries.at(-1)!);
+      limits = parseLimits({ maxToolSteps: undefined, contextSizes: { m: 1000 }, autoCompact: true });
+      controller.limitsChanged();
+      release();
+      await turn;
+      expect(sent()).toHaveLength(1);
+      expect(state().entries.at(-1)).toMatchObject({ status: "halted", haltReason: "contextFull" });
+    });
+
+    test("a reopened conversation knows the summary was automatic and rebuilds the same request", async () => {
+      const { controller, state, sent, saved } = await scripted(
+        [{ content: readCall("big.ts") }, { content: "S." }, { content: "Done." }, { content: "Next." }],
+        bigRunner().runner,
+        undefined,
+        on(),
+      );
+      await controller.send("go");
+      await settledSave(saved, 5);
+      const id = state().conversationId;
+      await controller.newChat();
+      await controller.openConversation(id);
+      await controller.send("more");
+      expect(sent()[3]!.messages).toEqual([
+        SYSTEM,
+        { role: "user", content: `${lead}S.\n\ngo` },
+        { role: "assistant", content: "Done." },
+        { role: "user", content: "more" },
+      ]);
     });
   });
 
