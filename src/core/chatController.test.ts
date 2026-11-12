@@ -3686,6 +3686,41 @@ describe("ChatController agent turn", () => {
       }
     });
 
+    test("a failed summary keeps the provider's error on its entry, saved", async () => {
+      const { controller, state, saved } = await scripted([{ content: "A." }, "fail"]);
+      await controller.send("first");
+      await controller.compact();
+      const failed = { summary: true, status: "failed", error: { kind: "rejected", status: 500 } };
+      expect(state().entries[2]).toMatchObject(failed);
+      await settledSave(saved, 3);
+      expect(saved()!.entries[2]).toMatchObject(failed);
+    });
+
+    test("a summary's end releases the reply in flight: a send right after runs its turn", async () => {
+      const { controller, state, sent } = await scripted([{ content: "A." }, { content: "S." }, { content: "B." }]);
+      await controller.send("first");
+      await controller.compact();
+      expect(isReplying(state())).toBe(false);
+      await controller.send("second");
+      expect(sent()).toHaveLength(3);
+      expect(state().entries.at(-1)).toMatchObject({ content: "B.", status: "done" });
+    });
+
+    test("New chat during a summary stops it, waits for it to settle, and shows a new conversation", async () => {
+      const { controller, state, saved } = await scripted([{ content: "A." }, "hang"]);
+      await controller.send("first");
+      const id = state().conversationId;
+      const compacting = controller.compact();
+      await until(state, (s) => contentOf(s.entries[2]) === "Partial ");
+      await controller.newChat();
+      expect(await compacting).toBe("ran");
+      expect(state().entries).toEqual([]);
+      expect(state().conversationId).not.toBe(id);
+      await controller.openConversation(id);
+      expect(state().entries[2]).toMatchObject({ summary: true, status: "stopped", content: "Partial " });
+      expect(saved()).toBeDefined();
+    });
+
     test("sends nothing on an empty conversation, or right after a done summary", async () => {
       const { controller, sent } = await scripted([{ content: "A." }, { content: "S." }]);
       expect(await controller.compact()).toBe("nothingToSummarize");

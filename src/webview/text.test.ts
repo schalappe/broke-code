@@ -3,6 +3,7 @@ import type { SkillProblem } from "../core/protocol";
 import {
   describeContextUsage,
   describeFold,
+  describeHalt,
   describeProviderError,
   describeSkillWarning,
   describeStorageProblem,
@@ -180,5 +181,23 @@ describe("describeFold", () => {
     expect(describeFold({ steps: 3, failed: 2, rejected: 1 })).toBe("3 steps, 2 failed, 1 rejected");
     expect(describeFold({ steps: 4, failed: 0, rejected: 1 })).toBe("4 steps, 1 rejected");
     expect(describeFold({ steps: 5, failed: 0, rejected: 2 })).toBe("5 steps, 2 rejected");
+  });
+});
+
+describe("describeHalt", () => {
+  test("a summary halted on a full context says it was not summarized, without naming /compact", () => {
+    expect(describeHalt("contextFull", true)).toBe(
+      "Not summarized: the conversation does not fit the model's context, even with its tool results left out. Start a new chat with New chat.",
+    );
+  });
+
+  test("an agent turn halted on a full context names /compact and New chat", () => {
+    expect(describeHalt("contextFull")).toBe(
+      "Stopped: the conversation fills the model's context. Summarize it with /compact, or start a new chat with New chat.",
+    );
+  });
+
+  test("a summary keeps the turn's wording for any other reason", () => {
+    expect(describeHalt("stepLimit", true)).toBe("Stopped: the agent turn reached its tool step limit.");
   });
 });
