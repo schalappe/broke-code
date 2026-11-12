@@ -222,7 +222,8 @@ type LastChoice = { provider: string; model?: string };
  * running), never by reading the step's path again; a write recorded without a step (it landed after Stop) has none.
  * `reply`: its last reply, set once it has ended. `ranCommand`: the user ran one of its commands, which no undo
  * reverts. `rows`: "Changed files" as last named (see `nameRows`), one per file of `changes` then; `naming`: bumped
- * per naming, so only the latest lands.
+ * per naming, so only the latest lands; `named`: the latest naming, which the turn awaits before it ends, so a settled
+ * turn shows its rows.
  */
 type Turn = {
   conversation: Conversation;
@@ -233,6 +234,7 @@ type Turn = {
   ranCommand: boolean;
   rows: ChangedRow[];
   naming: number;
+  named: Promise<void>;
 };
 
 /** A row of "Changed files" with the real path of its file, the key the held turn knows it by. */
@@ -831,7 +833,7 @@ export class ChatController {
       changes: new RecordedChanges((file) => {
         turn.written = file.realPath;
         this.holdTurn(turn);
-        if (this.heldTurn === turn) void this.nameRows(turn);
+        if (this.heldTurn === turn) turn.named = this.nameRows(turn);
       }),
       steps: new Map(),
       written: undefined,
@@ -839,6 +841,7 @@ export class ChatController {
       ranCommand: false,
       rows: [],
       naming: 0,
+      named: Promise.resolve(),
     };
     this.lastTurn = turn;
     this.undoOutcome = undefined;
@@ -1006,6 +1009,7 @@ export class ChatController {
         void this.save(conversation);
       }
     });
+    await turn.named;
     turn.reply = ended.reply;
     if (this.heldTurn === turn) this.emit();
     return ended.status;
