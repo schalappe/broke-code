@@ -177,12 +177,12 @@ async function until(state: () => ChatState, predicate: (state: ChatState) => bo
   }
 }
 
-/** The text of a user or assistant entry; `undefined` for a tool step or no entry. */
 /** What a panel showing `state` with `entries` entries carries in a Retry, Continue, or replacing send. */
 const shown = (state: () => ChatState, entries = state().entries.length): ShownEntries => ({
   conversationId: state().conversationId,
   entries,
 });
+/** The text of a user or assistant entry; `undefined` for a tool step or no entry. */
 const contentOf = (entry: ChatEntry | undefined) => (entry && entry.role !== "tool" ? entry.content : undefined);
 
 /** Limits source that always answers the same: every setting unset by default, as with no setting. */
