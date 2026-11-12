@@ -240,5 +240,8 @@
   "Continue": "Continuer",
   "Retry does not revert the files this turn wrote or the commands it ran. To get the files back, use Undo changes first.": "Réessayer ne rétablit pas les fichiers que ce tour a écrits ni les commandes qu'il a lancées. Pour récupérer les fichiers, utilisez d'abord Annuler les modifications.",
   "Sending replaces this message and its replies.": "L'envoi remplace ce message et ses réponses.",
-  "Sending replaces this message and its replies. It does not revert the files this turn wrote or the commands it ran. To get the files back, use Undo changes first.": "L'envoi remplace ce message et ses réponses. Il ne rétablit pas les fichiers que ce tour a écrits ni les commandes qu'il a lancées. Pour récupérer les fichiers, utilisez d'abord Annuler les modifications."
+  "Sending replaces this message and its replies. It does not revert the files this turn wrote or the commands it ran. To get the files back, use Undo changes first.": "L'envoi remplace ce message et ses réponses. Il ne rétablit pas les fichiers que ce tour a écrits ni les commandes qu'il a lancées. Pour récupérer les fichiers, utilisez d'abord Annuler les modifications.",
+  "{0} (changes of this turn)": "{0} (modifications de ce tour)",
+  "Could not open the changes of {0}: the file no longer exists.": "Impossible d'ouvrir les modifications de {0} : le fichier n'existe plus.",
+  "Could not open the changes of {0}: {1}": "Impossible d'ouvrir les modifications de {0} : {1}"
 }

@@ -2,7 +2,7 @@
  * @module extension
  * Activation entry point: wires settings, API keys, mentions (and the diagnostics `@problems`, the git diffs `@diff`,
  * and the selection `@selection` read), read tools, write tools and commands behind their approval, each turn's
- * written files recorded for "Undo changes", instruction files, skills, turn limits, file index, saved conversations, chat controller, chat view, `broke-code.setApiKey`,
+ * written files recorded for "Undo changes" and listed in "Changed files" with their diffs, instruction files, skills, turn limits, file index, saved conversations, chat controller, chat view, `broke-code.setApiKey`,
  * `broke-code.addProvider`, `broke-code.generateCommitMessage`, and the editor's entry points into the chat:
  * `broke-code.addSelectionToChat` and the quick fix "Fix with broke-code" (`broke-code.fixDiagnostic`).
  */
@@ -34,6 +34,7 @@ import { registerCommitMessageCommand } from "./commitMessage";
 import { askContextSize, LIMIT_SETTINGS, readCommandTimeoutSeconds, readLimits } from "./contextSizes";
 import { WorkspaceFileIndex } from "./fileIndex";
 import { gitDiffs } from "./git";
+import { TurnDiffs } from "./turnDiffs";
 
 export function activate(context: vscode.ExtensionContext): void {
   // [!]: User settings only. A workspace value could reuse a provider name with another base URL and receive its stored key.
@@ -76,6 +77,7 @@ export function activate(context: vscode.ExtensionContext): void {
   // [>]: `storageUri` is a `file:` URI in the desktop extension host, and only with a folder or workspace open.
   const conversations = new ConversationStore(directoryFiles(context.storageUri?.fsPath));
   let view: ChatView | undefined;
+  const turnDiffs = new TurnDiffs();
   const controller = new ChatController({
     apiKeys,
     workspaceState: context.workspaceState,
@@ -92,6 +94,7 @@ export function activate(context: vscode.ExtensionContext): void {
     returnDraft: (draft) => view?.returnDraft(draft),
     // [>]: The write approval's unsaved check: a restore must not replace a file under an editor's unsaved text.
     undo: { roots: workspaceRoots, hasUnsavedChanges },
+    changeDiffs: turnDiffs,
   });
   const fileIndex = new WorkspaceFileIndex();
   view = new ChatView(context.extensionUri, controller, {
@@ -159,11 +162,12 @@ export function activate(context: vscode.ExtensionContext): void {
     fileIndex,
     registerCommitMessageCommand(commitSelection),
     // [>]: Stop first, so an open approval request is cancelled before its diff closes with the others. Nothing queued
-    // is sent.
+    // is sent. The changed files' diffs close too: the held turn does not survive a reload.
     {
       dispose: () => {
         controller.dispose();
         previews.dispose();
+        turnDiffs.dispose();
       },
     },
   );
