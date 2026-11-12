@@ -373,47 +373,46 @@ function numberTokens(text: string): string[] {
   return runs.filter((run) => /\d/.test(run)).map((run) => run.replace(/[.,]+$/, ""));
 }
 
-const MANIFEST_PATH = "manifest.txt";
-const MANIFEST_LINES = 2400;
-const LAST_PARCEL_CODE = "VX7Q-K2RM";
-const CODE_LETTERS = "ABCDEFGHJKLMNPQRSTUWYZ23456789";
+const DISPATCH_LOG = "dispatch.log";
+const DISPATCH_LINES = 2400;
+const SEAL_CODE = "VX7Q-K2RM";
+const DEPOTS = ["lyon", "brest", "lille", "nantes", "rouen", "dijon"];
+const STATES = ["sent", "held", "late"];
 
 /**
- * One parcel per line, `<number> <code>`, 15 characters with the line break: codes drawn from a fixed seed, so the
- * fixture is the same on every run, their letters without the V and X of the last code, so it is held once.
+ * One dispatch per line, `<depot> <state>`, at most 13 characters with the line break, drawn from a fixed seed so the
+ * fixture is the same on every run; the last line, `nice seal <code>`, alone holds a code.
+ *
+ * [!]: Plain words, not numbered codes: a line of digits and random letters costs about 12 tokens, so 2,000 of them
+ * (about 25,000 tokens) left no room for the second read in the bench's 32,768-token context, and their prefill took
+ * `qwen3.8:27b` over the 300-second reply timeout on the first run.
  */
-function manifest(): string {
+function dispatchLog(): string {
   // [>]: The Park-Miller generator: its products stay under 2^53, so every step is exact.
   let seed = 2_400_100;
-  const letter = () => {
+  const pick = (words: readonly string[]) => {
     seed = (seed * 48_271) % 2_147_483_647;
-    return CODE_LETTERS[seed % CODE_LETTERS.length];
+    return words[seed % words.length];
   };
-  const code = () =>
-    Array.from({ length: 8 }, letter)
-      .join("")
-      .replace(/^(.{4})/, "$1-");
-  const lines = Array.from(
-    { length: MANIFEST_LINES - 1 },
-    (_, index) => `${String(index + 1).padStart(4, "0")} ${code()}`,
-  );
-  return [...lines, `${MANIFEST_LINES} ${LAST_PARCEL_CODE}`, ""].join("\n");
+  const lines = Array.from({ length: DISPATCH_LINES - 1 }, () => `${pick(DEPOTS)} ${pick(STATES)}`);
+  return [...lines, `nice seal ${SEAL_CODE}`, ""].join("\n");
 }
 
 /**
- * Read past the first 2,000 lines: the code of the last parcel in a 2,400-line manifest. The first read is cut at line
- * 2,000 and its note names the `start_line` to read on from; the message names neither the tool, its arguments, nor a
- * word of the last line, so `search` has no pattern to find it. Passes when an `ok` `read_file` step called with a
- * `start_line` holds the code, the answer holds it, and no file changed; without such a step it is `wrongTool`, a
- * `search` or `run_command` that found the code included: the scenario measures that the model follows the note.
+ * Read past the first 2,000 lines: the code on the last line of a 2,400-line log. The first read is cut at line 2,000
+ * and its note names the `start_line` to read on from; the message names neither the tool, its arguments, a line
+ * number, nor a word of the last line, so `search` has no pattern to find it. Passes when an `ok` `read_file` step
+ * called with a `start_line` holds the code, the answer holds it, and no file changed; without such a step it is
+ * `wrongTool`, a `search` or `run_command` that found the code included: the scenario measures that the model follows
+ * the note.
  */
 export const RANGE_SCENARIO: Scenario = {
   name: "range",
   files: {
-    "README.md": `# Courier\n\n${MANIFEST_PATH} lists the parcels of the day, one per line: its number, then its code.\n`,
-    [MANIFEST_PATH]: manifest(),
+    "README.md": `# Courier\n\n${DISPATCH_LOG} records the day's dispatches, one per line.\n`,
+    [DISPATCH_LOG]: dispatchLog(),
   },
-  message: `Read ${MANIFEST_PATH} and tell me the code of its last parcel. Reply with the exact code.`,
+  message: `Read ${DISPATCH_LOG} and tell me the code on its last line. Reply with the exact code.`,
   writes: {},
   check(entries) {
     const steps = entries.filter((entry) => entry.role === "tool");
@@ -422,10 +421,10 @@ export const RANGE_SCENARIO: Scenario = {
         step.name === "read_file" &&
         step.status === "ok" &&
         step.args.start_line !== undefined &&
-        step.text.includes(LAST_PARCEL_CODE),
+        step.text.includes(SEAL_CODE),
     );
     if (!readOn) return { pass: false, category: "wrongTool", detail: `steps: ${describeSteps(steps)}` };
-    return answerHolds(entries, LAST_PARCEL_CODE);
+    return answerHolds(entries, SEAL_CODE);
   },
 };
 

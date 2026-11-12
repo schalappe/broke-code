@@ -53,13 +53,15 @@ This file describes `bun run eval`: what it runs, its sandbox, its scenarios, it
     `depot-codes` stays off its list; judged the same way. It measures that the model follows a skill the user loaded
     although it was never listed to it, instead of refusing the loaded text as injected: live, a `load_skill` of it
     answered an error and the model refused (#50); it now answers "already loaded".
-  - `range`: `manifest.txt` lists 2,400 parcels, one per line (`<number> <code>`, 15 characters with the break), and a
-    README names it; the code of the last parcel, `VX7Q-K2RM`, is held once, on line 2,400. The message asks to read
-    the file and give the code of its last parcel, and names neither the tool, its arguments, a line number, nor a word
-    of that line, so `search` has no pattern for it. Passes when an `ok` `read_file` step called with a `start_line`
-    holds the code, the answer holds it, and no file changed; without such a step it is `wrongTool`, a `search` or
-    `run_command` that found the code included: it measures that the model follows the note of a cut read (#100). Both
-    reads fit the bench's 32,768-token context: the first shows 2,000 lines (about 32,000 characters), the second 400.
+  - `range`: `dispatch.log` holds 2,400 lines, `<depot> <state>` in plain words drawn from a fixed seed, and a README
+    names it; its last line, `nice seal VX7Q-K2RM`, alone holds a code. The message asks to read the file and give the
+    code on its last line, and names neither the tool, its arguments, a line number, nor a word of that line, so
+    `search` has no pattern for it. Passes when an `ok` `read_file` step called with a `start_line` holds the code, the
+    answer holds it, and no file changed; without such a step it is `wrongTool`, a `search` or `run_command` that found
+    the code included: it measures that the model follows the note of a cut read (#100). The lines are plain words
+    because a first fixture of numbered random codes (`0001 98UJ-YCK7`) cost about 25,900 tokens for the first read on
+    `gemma4`, close to the 32,768-token context with the second, and its prefill took `qwen3.8:27b` over the
+    300-second reply timeout on its first run (twice in 2 tries).
 
   A failed run shows one category and a one-line detail: `malformed`, `wrongTool`, `wrongAnswer`, `stepLimit`,
   `contextFull`, `providerError`, `wrongEdit` (a file the scenario writes is missing or holds other text, with the
