@@ -245,3 +245,10 @@ above scans it: measured, none of the 214 replies holding such reasoning had a c
 `edit` 9/10 (one run closed `edit_file` with `</tool_name>` three times), and `command` 8/10: in two runs it walked
 `logs/` with `list_files` until the step limit instead of running a command, the behavior seen live (#9). On 48 GB vLLM
 needs `--max-num-seqs 16` for this hybrid model (Mamba cache blocks).
+
+**Closed (2026-11-12).** The measurement of #58 ends here. With one sentence added to the system prompt's `run_command`
+rule (one command covers a whole folder tree, #120), `qwen-latest` on vLLM passed 70 of 70 runs, `gemma-4-31b-it` 69 of
+70 (one `edit` run wrote an invented `<tool_read_file>` tag three times), and the local Ollama bench 140 of 140. No
+failed run on vLLM was traced to Qwen's garbled `<parameter>` form seen live on 2026-11-10, so it gets no parser rule.
+`glm-latest` stays unmeasured, a rented GPU for it being out of budget (maintainer decision): its reply ending mid-call
+gets no rule either, and the rule above stands: no parser change without eval evidence.

@@ -1284,7 +1284,13 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   On edc18b5 the seven scenarios took 56 min 39 s, 10/10 for every scenario on both models (140 of 140 runs); one
   `gemma4` `edit` run alone took 19 min 19 s and passed. With `--base-url` against `gemma-4-31b-it` on vLLM 0.28 (a rented A100, #58), before the
   wrapper and forged-result rules `skill` passed 6/10 and `command` 9/10; with them, 70 of 70 in 6 min 32 s, and the
-  local bench stayed at 140 of 140 (58 min 23 s).
+  local bench stayed at 140 of 140 (58 min 23 s). `qwen-latest`, measured as `Qwen/Qwen3.8-27B-FP8` on vLLM 0.28
+  without a reasoning parser (`--max-num-seqs 16` on 48 GB), passed `create` 4/10 and `command` 8/10 with those
+  rules; with the bare `</think>` rule, `create` 10/10 and `edit` 9/10, `command` still 8/10 (it walked `logs/` with
+  `list_files` until the step limit). With the `run_command` sentence about folder trees (#120), `qwen-latest` passed
+  70 of 70, `gemma-4-31b-it` 69 of 70 (one `edit` run halted on an invented `<tool_read_file>` tag written three
+  times), and the local bench 140 of 140. `glm-latest` is not measured: renting a GPU for GLM is out of budget
+  (maintainer decision, 2026-11-12), so no parser rule exists for its replies ending mid-call.
 - v1 supports macOS only. Windows and Linux are planned for v2.
 
 ## Git and release workflow
