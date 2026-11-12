@@ -5267,6 +5267,30 @@ describe("ChatController undo", () => {
     });
   });
 
+  test("an undo after /compact reaches the model as a line after the summary's text", async () => {
+    writeFileSync(file("a.txt"), "old\n");
+    const { controller, prefix } = await undoable([
+      { content: writeCall("a.txt", "new") },
+      { content: "Done." },
+      { content: "a.txt now says new." },
+      { content: "It holds old." },
+    ]);
+    await controller.send("rewrite a.txt");
+    expect(await controller.compact()).toBe("ran");
+    await controller.undoChanges();
+    expect(text("a.txt")).toBe("old\n");
+
+    await controller.send("what does a.txt hold?");
+    const body = requests.get(prefix)?.at(-1) as { messages: { role: string; content: string }[] };
+    expect(body.messages.slice(1)).toEqual([
+      {
+        role: "user",
+        content:
+          "Summary of the conversation so far:\n\na.txt now says new.\n\nThe user undid this change, which the summary above may still describe: write_file a.txt\n\nwhat does a.txt hold?",
+      },
+    ]);
+  });
+
   test("a restore that throws is shown as a failure, logged, and keeps the files held for a retry", async () => {
     writeFileSync(file("a.txt"), "a0\n");
     writeFileSync(file("b.txt"), "b0\n");

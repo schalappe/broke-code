@@ -277,6 +277,79 @@ describe("history after a summary", () => {
   });
 });
 
+describe("undone steps a summary replaces", () => {
+  const undoneLine = (tool: string, path: string) =>
+    `The user undid this change, which the summary above may still describe: ${tool} ${path}`;
+  const write = (path: string, tool = "write_file"): ChatEntry =>
+    ({ ...step(`${tool}: wrote ${path}.`, tool), args: { path }, undone: true }) as ChatEntry;
+
+  test("after a /compact summary: one line per undone step before it, after the summary's text", () => {
+    const entries: ChatEntry[] = [
+      user("change a"),
+      answer("call"),
+      write("a.txt"),
+      answer("call"),
+      step("read", "read_file"),
+      answer("call"),
+      write("./a.txt", "edit_file"),
+      answer("Done."),
+      summary("a.txt now says new."),
+      user("next"),
+    ];
+    expect(toHistory(entries, typed, roomy).messages).toEqual([
+      {
+        role: "user",
+        content: `Summary of the conversation so far:\n\na.txt now says new.\n\n${undoneLine("write_file", "a.txt")}\n${undoneLine("edit_file", "./a.txt")}\n\nnext`,
+      },
+    ]);
+  });
+
+  test("after an automatic summary: the lines come before the turn's quoted message", () => {
+    const entries: ChatEntry[] = [
+      user("go"),
+      answer("call 0"),
+      write("a.txt"),
+      summary("The goal is x."),
+      answer("call 1"),
+    ];
+    expect(toHistory(entries, typed, roomy).messages).toEqual([
+      {
+        role: "user",
+        content: `Summary of the conversation so far:\n\nThe goal is x.\n\n${undoneLine("write_file", "a.txt")}\n\ngo`,
+      },
+      { role: "assistant", content: "call 1" },
+    ]);
+  });
+
+  test("a step still sent keeps its own line only, and the summary gets none for it", () => {
+    const entries: ChatEntry[] = [
+      user("first"),
+      answer("Ok."),
+      summary("S."),
+      user("go"),
+      answer("call"),
+      write("a.txt"),
+    ];
+    expect(toHistory(entries, typed, roomy).messages).toEqual([
+      { role: "user", content: "Summary of the conversation so far:\n\nS.\n\ngo" },
+      { role: "assistant", content: "call" },
+      {
+        role: "user",
+        content: wrapped("write_file: wrote a.txt.\nThe user undid this change afterwards.", "write_file"),
+      },
+    ]);
+  });
+
+  test("the summary request after an earlier summary carries the lines too", () => {
+    const entries: ChatEntry[] = [user("go"), answer("call"), write("a.txt"), summary("S."), user("next")];
+    const { messages } = summaryHistory(entries, typed);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.content).toStartWith(
+      `Summary of the conversation so far:\n\nS.\n\n${undoneLine("write_file", "a.txt")}\n\nnext\n\n`,
+    );
+  });
+});
+
 describe("history after an automatic summary", () => {
   const composed = (entry: ChatEntry & { role: "user" }) => `${entry.content}\n\n@a.ts (file, 3 lines)`;
   /** A turn that compacted before its third request: the summary is followed by the turn's next reply. */

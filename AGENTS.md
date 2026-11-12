@@ -539,7 +539,12 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   reply without text is left out of the history, unless a tool step follows it: an empty reply goes back as an
   assistant message with `content: ""` before its step, so the roles keep alternating (Gemma's chat template requires
   it). An undone write step (#94) goes back with one more line after its text, inside the same wrapper: `The user undid
-  this change afterwards.`, so the model does not answer from a change that no longer stands. `toHistory`
+  this change afterwards.`, so the model does not answer from a change that no longer stands. An undone step before the
+  summary the history starts at is no longer sent, so its own line never reaches the model: after the summary's text
+  comes, per such step in order, a blank line then one line each, `The user undid this change, which the summary above may still describe: <tool> <path>`, the path being
+  the step's `path` argument as the model wrote it (maintainer decision, 2026-11-12), before any text joined after the
+  summary; derived from the entries at each build, never stored, counted by the estimate, and in `/compact`'s request
+  too. A step still sent gets its own line only. `toHistory`
   (`history.ts`) builds it, and leaves the oldest tool results out of a request that would fill the context (below). After a summary (`/compact`, below), the history starts at it.
 - While a reply streams, a `<tool_result` the model writes after a complete call (`forgedResultCut`) cancels the request,
   and the reply ends `done` at the end of that call (ADR 0001, 2026-11-10): models forge results of calls that never
@@ -652,8 +657,8 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   never parsed for a call (a call-shaped block runs nothing), and reasoning is handled as for any reply. As after a
   send, a summary that ends `done` sends the first queued message.
 - From then on the history sent starts at the last summary entry that ended `done` with text (`historyStart`): the
-  system prompt, one user message `Summary of the conversation so far:`, a blank line, and the summary, then the
-  entries after it; when the next entry sent is a user message, its composed text joins the summary's message after a
+  system prompt, one user message `Summary of the conversation so far:`, a blank line, and the summary (then the lines of
+  the undone steps it replaces, see the history above), then the entries after it; when the next entry sent is a user message, its composed text joins the summary's message after a
   blank line, so two user messages never follow each other there. A summary that failed, was stopped, halted, or came
   back empty (only whitespace) changes nothing and is never sent; its error shows as for any reply, and a `done` empty
   one says "The model's reply held no summary.". The leave-out rule, its last 3 steps, and the usage display count
@@ -676,7 +681,7 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   summary that fails ends the turn `failed` with the provider's error on the summary entry; stopped, the turn ends
   `stopped` with the summary as its last entry, and the history is unchanged; `done` but empty, the reply after it
   ends `halted` (`contextFull`). The history sent from an automatic summary: the system prompt, then one user message,
-  `Summary of the conversation so far:`, a blank line, the summary, a blank line, and the turn's user message as
+  `Summary of the conversation so far:`, a blank line, the summary (and the undone steps' lines), a blank line, and the turn's user message as
   composed when it was sent (mentions and a `/<name>` skill text included), word for word, so the model keeps the
   request it is working on (scouting decision, 2026-11-12); then the entries after the summary. A later request of the
   same turn may compact again, quoting the same message. No record field tells an automatic summary from a manual

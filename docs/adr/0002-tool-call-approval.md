@@ -99,4 +99,7 @@ at the scouting of #93, `workingCopyHistoryTracker.ts`). The chat therefore offe
   it, and while it runs no turn starts (the one Send check). Commands are not undone, and the chat says so.
 - The write steps of each file put back are marked `undone` in the record, an optional field (ADR 0003's rule), tied
   to their file when recorded, never by resolving the path again; the history tells the model with one more line in
-  the step's result, and never leaves such a step out to save context (#94, scouting decision, 2026-11-12).
+  the step's result, and never leaves such a step out to save context (#94, scouting decision, 2026-11-12). A step a
+  summary replaces is no longer sent: the summary's message then names it on a line of its own after the summary's
+  text, so an undo after `/compact` or an automatic summary still reaches the model (maintainer decision,
+  2026-11-12).
