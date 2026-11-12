@@ -480,6 +480,9 @@ on an error or warning puts a request to fix it there, with its file as a mentio
     restore and the save leaves the steps unmarked (accepted: the held turn is memory only, so nothing retries it),
     and marking again is harmless. The step row says "undone" before its status, its line count unchanged (the line
     the model gets is not part of the step's text), also inside a folded turn, whose row counts are unchanged.
+- The system prompt's `run_command` rule, shown only when the tool is offered, also says that one command covers a
+  whole folder tree in one step where `list_files` takes one per folder: Qwen 3.8 on vLLM otherwise walked `logs/`
+  folder by folder until the step limit (#120).
 - `run_command(command, cwd?)` runs `<shell> -c <command>` in a hidden child process, no login shell, the shell being
   `vscode.env.shell`, else `$SHELL`, else `/bin/sh`. `cwd` resolves like a read tool's path and must be an existing
   folder inside the workspace; left out, the command runs in the first workspace folder. Without a workspace folder,

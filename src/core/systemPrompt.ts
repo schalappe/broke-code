@@ -58,7 +58,7 @@ const TOOL_RULES: Record<string, string> = {
     "- edit_file replaces an exact passage that must appear once in the file: copy it from the file, line breaks and indentation included.",
   write_file: "- write_file replaces the whole file: give its complete content.",
   run_command:
-    "- run_command runs the command with the user's shell, in the workspace folder unless cwd names another, and only once the user approves it: wait for its result.",
+    "- run_command runs the command with the user's shell, in the workspace folder unless cwd names another, and only once the user approves it: wait for its result. For work over a whole folder tree, such as counting or finding files in every subfolder, one command takes one step where list_files takes one per folder.",
   load_skill:
     "- Read a loaded skill's files with read_file, list_files, or search by the absolute path the load_skill result gives. A skill folder outside the workspace is read-only.",
 };
