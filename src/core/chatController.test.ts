@@ -4844,6 +4844,29 @@ describe("ChatController undo", () => {
   const commandCall = (command: string) => `<run_command>\n<command>\n${command}\n</command>\n</run_command>`;
 
   /**
+   * A `beforeWrite` that lets the first `free` writes through and holds the next ones until `release`; `reached` settles
+   * once a held write waits, so a test stops or navigates while that write is in flight, never before the tool reached
+   * the disk (a Stop before then aborts the write instead).
+   */
+  function heldWrites(free = 0) {
+    let writes = 0;
+    let release: () => void = () => {};
+    let reach: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const reached = new Promise<void>((resolve) => {
+      reach = resolve;
+    });
+    const beforeWrite = () => {
+      if (writes++ < free) return Promise.resolve();
+      reach();
+      return gate;
+    };
+    return { beforeWrite, reached, release: () => release() };
+  }
+
+  /**
    * Controller over a temporary workspace whose provider answers with `script`, writes going through `approvalApplier`
    * around the recording applier, as the extension wires them. `auto`: writes are auto-approved (default true).
    * `unsaved`: the targets an editor holds unsaved. `beforeWrite`: awaited before each write reaches the disk.
@@ -5037,15 +5060,12 @@ describe("ChatController undo", () => {
 
   test("a write that lands after Stop is held and undone by the button", async () => {
     writeFileSync(file("a.txt"), "old\n");
-    let release: () => void = () => {};
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
+    const { beforeWrite, reached, release } = heldWrites();
     const { controller, state } = await undoable([{ content: writeCall("a.txt", "new") }, { content: "Done." }], {
-      beforeWrite: () => gate,
+      beforeWrite,
     });
     const done = controller.send("write");
-    await until(state, (s) => s.entries[1]?.role === "assistant" && s.entries[1].call !== undefined);
+    await reached;
     controller.stop();
     await done;
     expect(state().entries.at(-1)).toMatchObject({ status: "stopped" });
@@ -5059,13 +5079,10 @@ describe("ChatController undo", () => {
 
   test("a write that lands after the conversation changed is not held", async () => {
     writeFileSync(file("a.txt"), "old\n");
-    let release: () => void = () => {};
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const { controller, state } = await undoable([{ content: writeCall("a.txt", "new") }], { beforeWrite: () => gate });
+    const { beforeWrite, reached, release } = heldWrites();
+    const { controller, state } = await undoable([{ content: writeCall("a.txt", "new") }], { beforeWrite });
     const done = controller.send("write");
-    await until(state, (s) => s.entries[1]?.role === "assistant" && s.entries[1].call !== undefined);
+    await reached;
     await controller.newChat();
     await done;
     release();
@@ -5221,17 +5238,13 @@ describe("ChatController undo", () => {
   test("a write that lands after Stop is undone but marks no step; the turn's other steps are marked", async () => {
     writeFileSync(file("a.txt"), "a0\n");
     writeFileSync(file("b.txt"), "b0\n");
-    let writes = 0;
-    let release: () => void = () => {};
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
+    const { beforeWrite, reached, release } = heldWrites(1);
     const { controller, state } = await undoable(
       [{ content: writeCall("a.txt", "a1") }, { content: writeCall("b.txt", "b1") }, { content: "Done." }],
-      { beforeWrite: () => (writes++ === 0 ? Promise.resolve() : gate) },
+      { beforeWrite },
     );
     const done = controller.send("write both");
-    await until(state, (s) => s.entries[3]?.role === "assistant" && s.entries[3].call !== undefined);
+    await reached;
     controller.stop();
     await done;
     release();
