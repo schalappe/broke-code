@@ -63,6 +63,17 @@ export type ChoiceStore = {
 };
 
 /**
+ * A reply in flight as `runReply` hands it to its body. `reply`: the entry `settle` ends, which an agent turn moves to
+ * each new reply or summary it appends. `signal`: aborted by Stop, navigation, and a provider change. `settle`: ends
+ * `reply` with its status (and halt reason), publishes, hands the save to the store, and returns the status.
+ */
+type ReplyRun = {
+  reply: ChatEntry & { role: "assistant" };
+  readonly signal: AbortSignal;
+  settle(status: ReplyStatus, haltReason?: HaltReason): ReplyStatus;
+};
+
+/**
  * What a tool run gets from its turn. `signal`: Stop; the turn does not wait for a run that ignores it.
  * `requestApproval`: asks the user to accept or reject what the call is about to do, and settles with the decision.
  * The request shows in `ChatState.approval` with its preview open until the user decides; Stop, and the navigation
@@ -634,28 +645,12 @@ export class ChatController {
     conversation.provider = provider.name;
     conversation.model = model;
     const user: ChatEntry & { role: "user" } = { role: "user", content, mentions: [] };
-    let reply = waitingReply();
+    const first = waitingReply();
     // [>]: Published before the reads, so the panel shows a reply in flight (Stop, composer locked) while they run;
     // published again once the mentions are known.
-    conversation.entries.push(user, reply);
-    const abort = new AbortController();
-    const signal = abort.signal;
-    let markSettled: () => void = () => {};
-    const settled = new Promise<void>((resolve) => {
-      markSettled = resolve;
-    });
-    this.reply = { abort, provider, settled };
-    this.emit();
-    /** Last status of the turn, on its last reply, and its last save handed to the store. */
-    const settle = (status: ReplyStatus, haltReason?: HaltReason): ReplyStatus => {
-      reply.status = status;
-      if (haltReason !== undefined) reply.haltReason = haltReason;
-      this.emit();
-      void this.save(conversation);
-      return status;
-    };
-
-    try {
+    conversation.entries.push(user, first);
+    return this.runReply(provider, conversation, first, "the agent turn", async (run) => {
+      const { signal, settle } = run;
       // [>]: The message is on disk before the request goes, so a crash keeps it. A failed save is shown and the
       // reply still goes. Stop ends the wait at once, even if a read, the key lookup, or the save never settles.
       const prepared = await unlessAborted(
@@ -710,18 +705,18 @@ export class ChatController {
           // the turn stays in flight across it, and a failed or stopped summary ends the turn as its last entry.
           conversation.entries.pop();
           const summaryEntry: ChatEntry & { role: "assistant" } = { ...waitingReply(), summary: true };
-          reply = summaryEntry;
-          conversation.entries.push(reply);
+          run.reply = summaryEntry;
+          conversation.entries.push(run.reply);
           this.emit();
-          const ended = await this.stream(access, model, summary, [], conversation, reply, signal);
+          const ended = await this.stream(access, model, summary, [], conversation, run.reply, signal);
           if (!ended) return settle("stopped");
-          if (ended.status === "failed") reply.error = ended.error;
+          if (ended.status === "failed") run.reply.error = ended.error;
           if (ended.status !== "done") return settle(ended.status);
           // [>]: The summary and the next reply land in one update, so a summary that ended done is never the last
           // entry: that reply following it is what marks it automatic (`isAutomaticSummary`).
-          reply.status = "done";
-          reply = waitingReply();
-          conversation.entries.push(reply);
+          run.reply.status = "done";
+          run.reply = waitingReply();
+          conversation.entries.push(run.reply);
           if (summaryEntry.content.trim() === "") return settle("halted", "contextFull");
           this.emit();
           void this.save(conversation);
@@ -729,23 +724,23 @@ export class ChatController {
           continue;
         }
         compacted = false;
-        const outcome = await this.stream(access, model, messages, tools, conversation, reply, signal);
+        const outcome = await this.stream(access, model, messages, tools, conversation, run.reply, signal);
         if (!outcome) return settle("stopped");
-        if (outcome.status === "failed") reply.error = outcome.error;
+        if (outcome.status === "failed") run.reply.error = outcome.error;
         if (outcome.status !== "done") return settle(outcome.status);
 
         // [!]: The parser reads the answer only, never the reasoning.
-        const parsed = parseToolCall(reply.content, tools);
+        const parsed = parseToolCall(run.reply.content, tools);
         if (parsed.kind === "none") return settle("done");
         let step: ChatEntry & { role: "tool" };
         if (parsed.kind === "call") {
           const { name, args, start, end } = parsed;
           // [!]: One call per reply. What follows it never reaches the chat or the history: a model that goes on writes
           // calls that never run and results it invented, which it would then read back as true.
-          reply.content = reply.content.slice(0, end);
+          run.reply.content = run.reply.content.slice(0, end);
           // [>]: The reply stays `streaming` while its call runs, so the turn reads as in flight and a crash meanwhile
           // brings it back stopped.
-          reply.call = { name, args, start, end };
+          run.reply.call = { name, args, start, end };
           this.emit();
           void this.save(conversation);
           let approval: StepApproval | undefined;
@@ -771,17 +766,17 @@ export class ChatController {
             ...(approval ? { approval } : {}),
           };
           malformedInARow = 0;
-        } else if (mode === "plan" && planBlocked(reply.content, parsed)) {
-          const name = malformedToolName(reply.content, parsed);
+        } else if (mode === "plan" && planBlocked(run.reply.content, parsed)) {
+          const name = malformedToolName(run.reply.content, parsed);
           // [>]: An ordinary tool step, like a rejection: it counts toward the step limit and resets the malformed
           // count. Nothing is planned and no approval opens. What follows the block is dropped, as after a call.
-          reply.content = reply.content.slice(0, parsed.end);
+          run.reply.content = run.reply.content.slice(0, parsed.end);
           step = { role: "tool", name, args: {}, status: "error", text: `${name} is not available in Plan mode.` };
           malformedInARow = 0;
         } else {
           step = {
             role: "tool",
-            name: malformedToolName(reply.content, parsed),
+            name: malformedToolName(run.reply.content, parsed),
             args: {},
             status: "malformed",
             text: parsed.message,
@@ -793,23 +788,13 @@ export class ChatController {
         if (malformedInARow >= MAX_MALFORMED_IN_A_ROW) return settle("halted", "malformedCalls");
         if (steps >= maxToolSteps) return settle("halted", "stepLimit");
         // [>]: The step and the next reply land in one update, so the turn never reads as ended between them.
-        reply.status = "done";
-        reply = waitingReply();
-        conversation.entries.push(reply);
+        run.reply.status = "done";
+        run.reply = waitingReply();
+        conversation.entries.push(run.reply);
         this.emit();
         void this.save(conversation);
       }
-    } catch (error) {
-      // [!]: A bug, never the provider's failure: logged with its stack, and shown, so the composer never stays
-      // locked on a reply that will not end.
-      console.error("broke-code: the agent turn failed unexpectedly", error instanceof Error ? error.stack : error);
-      reply.error = { kind: "internal", message: error instanceof Error ? error.message : String(error) };
-      return settle("failed");
-    } finally {
-      // [>]: Also on an unexpected throw, so navigation waiting for this turn never hangs.
-      if (this.reply?.abort === abort) this.reply = undefined;
-      markSettled();
-    }
+    });
   }
 
   /**
@@ -893,23 +878,7 @@ export class ChatController {
     const entries = [...conversation.entries];
     const reply: ChatEntry & { role: "assistant" } = { ...waitingReply(), summary: true };
     conversation.entries.push(reply);
-    const abort = new AbortController();
-    const signal = abort.signal;
-    let markSettled: () => void = () => {};
-    const settled = new Promise<void>((resolve) => {
-      markSettled = resolve;
-    });
-    this.reply = { abort, provider, settled };
-    this.emit();
-    const settle = (status: ReplyStatus, haltReason?: HaltReason): ReplyStatus => {
-      reply.status = status;
-      if (haltReason !== undefined) reply.haltReason = haltReason;
-      this.emit();
-      void this.save(conversation);
-      return status;
-    };
-
-    try {
+    return this.runReply(provider, conversation, reply, "the summary", async ({ signal, settle }) => {
       const prepared = await unlessAborted(
         Promise.all([this.accessOf(provider), this.readInstructions(), this.save(conversation)]),
         signal,
@@ -923,10 +892,48 @@ export class ChatController {
       if (!outcome) return settle("stopped");
       if (outcome.status === "failed") reply.error = outcome.error;
       return settle(outcome.status);
+    });
+  }
+
+  /**
+   * The lifecycle of a reply in flight, an agent turn's or a summary's: `reply`, already among the conversation's
+   * entries, becomes the reply in flight (Stop, navigation, and a provider change abort its signal) and is published,
+   * then `body` runs with its `ReplyRun`. An unexpected throw inside `body` (a bug, never the provider's failure) ends
+   * the reply `failed` with an `internal` error, logged with its stack under `what`, so the composer never stays
+   * locked on a reply that will not end. Whatever ended `body`, the reply in flight is then released and navigation
+   * waiting for it goes on.
+   */
+  private async runReply(
+    provider: Provider,
+    conversation: Conversation,
+    reply: ChatEntry & { role: "assistant" },
+    what: string,
+    body: (run: ReplyRun) => Promise<ReplyStatus>,
+  ): Promise<ReplyStatus> {
+    const abort = new AbortController();
+    let markSettled: () => void = () => {};
+    const settled = new Promise<void>((resolve) => {
+      markSettled = resolve;
+    });
+    this.reply = { abort, provider, settled };
+    const run: ReplyRun = {
+      reply,
+      signal: abort.signal,
+      settle: (status, haltReason) => {
+        run.reply.status = status;
+        if (haltReason !== undefined) run.reply.haltReason = haltReason;
+        this.emit();
+        void this.save(conversation);
+        return status;
+      },
+    };
+    this.emit();
+    try {
+      return await body(run);
     } catch (error) {
-      console.error("broke-code: the summary failed unexpectedly", error instanceof Error ? error.stack : error);
-      reply.error = { kind: "internal", message: error instanceof Error ? error.message : String(error) };
-      return settle("failed");
+      console.error(`broke-code: ${what} failed unexpectedly`, error instanceof Error ? error.stack : error);
+      run.reply.error = { kind: "internal", message: error instanceof Error ? error.message : String(error) };
+      return run.settle("failed");
     } finally {
       if (this.reply?.abort === abort) this.reply = undefined;
       markSettled();
