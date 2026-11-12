@@ -1046,7 +1046,7 @@ p.loading::before {
 
 /*
  * The turn's actions under a reply: Retry, Continue, and "Undo changes", secondary buttons on one line that wraps, the
- * undo's hint after them.
+ * hint that commands are neither listed nor undone after them.
  */
 .turn-actions {
   display: flex;
@@ -1068,6 +1068,70 @@ p.loading::before {
   margin: 0;
   color: var(--bc-fg-dim);
   font-size: var(--bc-fs-sm);
+}
+
+/*
+ * "Changed files": a small dim head, then one quiet row per file, each a button that opens the file's diff: its path
+ * in the editor font, what the turn did to it, and its line counts at the right. Rows take a fill only when hovered.
+ */
+.changed-files {
+  margin: var(--bc-space-3) 0 0;
+  font-size: var(--bc-fs-sm);
+}
+
+.changed-files-head {
+  margin: 0 0 var(--bc-space-1);
+  color: var(--bc-fg-dim);
+}
+
+.changed-files ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+button.changed-file {
+  display: flex;
+  align-items: baseline;
+  gap: var(--bc-space-3);
+  box-sizing: border-box;
+  width: 100%;
+  padding: var(--bc-space-1) var(--bc-space-2);
+  color: var(--bc-fg);
+  background: transparent;
+  border: 1px solid transparent;
+  text-align: left;
+}
+
+button.changed-file:hover:not(:disabled) {
+  background: var(--bc-row-hover);
+  border-color: var(--bc-edge-active);
+}
+
+button.changed-file:focus-visible {
+  outline-offset: -1px;
+}
+
+.changed-path {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-family: var(--bc-mono);
+  font-size: var(--bc-fs-mono);
+  overflow-wrap: anywhere;
+}
+
+.changed-kind {
+  flex: none;
+  color: var(--bc-fg-dim);
+}
+
+.changed-counts {
+  flex: none;
+  margin-left: auto;
+  color: var(--bc-fg-dim);
+  font-family: var(--bc-mono);
+  font-size: var(--bc-fs-mono);
+  font-variant-numeric: tabular-nums;
 }
 
 /* What the last undo did, file by file: a notice when every file is back, a warning block when some were skipped. */

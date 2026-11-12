@@ -29,6 +29,21 @@ describe("parseWebviewMessage", () => {
     expect(parseWebviewMessage({ type: "setApiKey", provider: "P" })).toEqual({ type: "setApiKey", provider: "P" });
   });
 
+  test("accepts a changed file's diff request for a non-empty path within the mention path limit", () => {
+    expect(parseWebviewMessage({ type: "openChangeDiff", path: "src/a.ts", extra: 1 })).toEqual({
+      type: "openChangeDiff",
+      path: "src/a.ts",
+    });
+    const longest = "a".repeat(MAX_MENTION_PATH_LENGTH);
+    expect(parseWebviewMessage({ type: "openChangeDiff", path: longest })).toEqual({
+      type: "openChangeDiff",
+      path: longest,
+    });
+    for (const path of [undefined, "", 3, null, ["a"], `${longest}a`]) {
+      expect(parseWebviewMessage({ type: "openChangeDiff", path })).toBeUndefined();
+    }
+  });
+
   test("accepts a context size request for a named model only", () => {
     expect(parseWebviewMessage({ type: "setContextSize", model: "qwen3:8b" })).toEqual({
       type: "setContextSize",
@@ -244,6 +259,7 @@ describe("chatStateOf", () => {
     modePending: false,
     queue: [],
     undo: { reply: undefined, ranCommand: false, running: false, outcome: undefined },
+    changedFiles: [],
   };
 
   test("takes the chat state from init and state messages", () => {

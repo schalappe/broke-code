@@ -19,6 +19,7 @@ import {
   ChatController,
   type ChatPorts,
   type ChoiceStore,
+  type HeldFileDiff,
   type InstructionReader,
   type LimitsSource,
   type SkillReader,
@@ -5400,6 +5401,7 @@ describe("ChatController undo", () => {
     const files = memoryFiles();
     const states: ChatState[] = [];
     const returned: DraftInsert[] = [];
+    const diffs = { opened: [] as HeldFileDiff[], closed: [] as string[] };
     const controller = new ChatController({
       apiKeys: { get: async () => undefined },
       workspaceState: memoryStore(),
@@ -5412,6 +5414,10 @@ describe("ChatController undo", () => {
       autoApproveWrites: () => options.auto ?? true,
       returnDraft: (draft) => returned.push(draft),
       undo: { roots: () => roots, hasUnsavedChanges },
+      changeDiffs: {
+        open: async (opened) => void diffs.opened.push(opened),
+        close: (realPaths) => void diffs.closed.push(...realPaths),
+      },
     });
     const state = () => controller.snapshot;
     controller.setProviders({
@@ -5420,7 +5426,7 @@ describe("ChatController undo", () => {
     });
     await until(state, (s) => s.model === "m");
     const saved = () => [...files.files.values()].join("\n");
-    return { controller, state, states, unsaved, saved, returned, prefix };
+    return { controller, state, states, unsaved, saved, returned, prefix, diffs };
   }
 
   test("a turn that edits a file three times and creates another: undo restores the first and removes the second", async () => {
@@ -5755,6 +5761,7 @@ describe("ChatController undo", () => {
       { content: "Done." },
     ]);
     await controller.send("rewrite");
+    expect(states.some((published) => published.changedFiles.length > 0)).toBe(true);
     await controller.undoChanges();
     expect(text("a.txt")).toBe("ORIGINAL-SECRET\n");
     expect(JSON.stringify(states)).not.toContain("ORIGINAL-SECRET");
@@ -5961,5 +5968,183 @@ describe("ChatController undo", () => {
     controller.approve(state().approval!.id);
     await done;
     expect(state().undo).toMatchObject({ reply: 5, ranCommand: true });
+  });
+
+  describe("changed files", () => {
+    test("a file edited twice and one created: two rows in first-write order, with their line counts", async () => {
+      writeFileSync(file("a.txt"), "one\ntwo\nthree\n");
+      const { controller, state } = await undoable([
+        { content: editCall("a.txt", "two", "TWO") },
+        { content: editCall("a.txt", "three", "three\nfour") },
+        { content: writeCall("b.txt", "x\ny") },
+        { content: "Done." },
+      ]);
+      await controller.send("change them");
+      expect(text("a.txt")).toBe("one\nTWO\nthree\nfour\n");
+      expect(state().changedFiles).toEqual([
+        { path: "a.txt", kind: "edited", added: 2, removed: 1 },
+        { path: "b.txt", kind: "created", added: 2, removed: 0 },
+      ]);
+    });
+
+    test("a rejected write and one the file already holds add no row", async () => {
+      writeFileSync(file("a.txt"), "old\n");
+      writeFileSync(file("same.txt"), "same\n");
+      writeFileSync(file("c.txt"), "c0\n");
+      const { controller, state } = await undoable(
+        [
+          { content: writeCall("a.txt", "new") },
+          { content: writeCall("same.txt", "same") },
+          { content: writeCall("c.txt", "c1") },
+          { content: "Done." },
+        ],
+        { auto: false },
+      );
+      const done = controller.send("write");
+      for (const decide of ["reject", "approve", "approve"] as const) {
+        await until(state, (s) => s.approval !== undefined);
+        const id = state().approval!.id;
+        if (decide === "reject") controller.reject(id);
+        else controller.approve(id);
+        await until(state, (s) => s.approval === undefined || s.approval.id !== id);
+      }
+      await done;
+      expect(state().changedFiles).toEqual([{ path: "c.txt", kind: "edited", added: 1, removed: 1 }]);
+    });
+
+    test("a file edited back to its first text, and an empty file created, stay listed at +0 −0", async () => {
+      writeFileSync(file("a.txt"), "one\n");
+      const { controller, state } = await undoable([
+        { content: editCall("a.txt", "one", "two") },
+        { content: editCall("a.txt", "two", "one") },
+        { content: "<write_file>\n<path>empty.txt</path>\n<content>\n</content>\n</write_file>" },
+        { content: "Done." },
+      ]);
+      await controller.send("change and change back");
+      expect(text("empty.txt")).toBe("");
+      expect(state().changedFiles).toEqual([
+        { path: "a.txt", kind: "edited", added: 0, removed: 0 },
+        { path: "empty.txt", kind: "created", added: 0, removed: 0 },
+      ]);
+    });
+
+    test("no row while a reply is in flight; a later turn's first write replaces the rows", async () => {
+      writeFileSync(file("a.txt"), "a0\n");
+      writeFileSync(file("b.txt"), "b0\n");
+      const { controller, state } = await undoable([
+        { content: writeCall("a.txt", "a1") },
+        { content: "First." },
+        { content: writeCall("b.txt", "b1\nb2") },
+        "hang",
+      ]);
+      await controller.send("first");
+      expect(state().changedFiles).toEqual([{ path: "a.txt", kind: "edited", added: 1, removed: 1 }]);
+      const second = controller.send("second");
+      await until(state, (s) => isReplying(s));
+      expect(state().changedFiles).toEqual([]);
+      await until(
+        () => ({ ...state(), model: text("b.txt") }),
+        (s) => s.model === "b1\nb2\n",
+      );
+      controller.stop();
+      await second;
+      await until(state, (s) => s.changedFiles.length > 0);
+      expect(state().changedFiles).toEqual([{ path: "b.txt", kind: "edited", added: 2, removed: 1 }]);
+    });
+
+    test("New chat, opening another conversation, and deleting the one shown drop the rows and close the diffs", async () => {
+      for (const leave of ["newChat", "open", "delete"] as const) {
+        writeFileSync(file("a.txt"), "old\n");
+        const writes = [{ content: writeCall("a.txt", "new") }, { content: "Done." }];
+        const { controller, state, diffs } = await undoable(
+          leave === "open" ? [{ content: "Other." }, ...writes] : writes,
+        );
+        let other = "";
+        if (leave === "open") {
+          await controller.send("other");
+          other = state().conversationId;
+          await controller.newChat();
+        }
+        await controller.send("write");
+        expect(state().changedFiles).toHaveLength(1);
+        await controller.openChangeDiff("a.txt");
+        if (leave === "newChat") await controller.newChat();
+        if (leave === "open") await controller.openConversation(other);
+        if (leave === "delete") await controller.deleteConversation(state().conversationId);
+        expect(state().changedFiles).toEqual([]);
+        expect(diffs.closed).toEqual([file("a.txt")]);
+      }
+    });
+
+    test("Retry of the turn drops its rows and closes its diffs", async () => {
+      writeFileSync(file("a.txt"), "a0\n");
+      const { controller, state, diffs } = await undoable([
+        { content: writeCall("a.txt", "a1") },
+        { content: "First." },
+        { content: "Again." },
+      ]);
+      await controller.send("first");
+      await controller.openChangeDiff("a.txt");
+      await controller.retry(shown(state, 4));
+      expect(state().entries.map(contentOf).at(-1)).toBe("Again.");
+      expect(state().changedFiles).toEqual([]);
+      expect(diffs.closed).toEqual([file("a.txt")]);
+    });
+
+    test("an undo removes the rows of the files put back; a skipped file's row and diff stay", async () => {
+      writeFileSync(file("a.txt"), "a0\n");
+      writeFileSync(file("b.txt"), "b0\n");
+      const { controller, state, diffs } = await undoable([
+        { content: writeCall("a.txt", "a1") },
+        { content: writeCall("b.txt", "b1") },
+        { content: "Done." },
+      ]);
+      await controller.send("write both");
+      await controller.openChangeDiff("a.txt");
+      await controller.openChangeDiff("b.txt");
+      writeFileSync(file("b.txt"), "by hand\n");
+
+      await controller.undoChanges();
+      expect(state().changedFiles).toEqual([{ path: "b.txt", kind: "edited", added: 1, removed: 1 }]);
+      expect(diffs.closed).toEqual([file("a.txt")]);
+
+      writeFileSync(file("b.txt"), "b1\n");
+      await controller.undoChanges();
+      expect(state().changedFiles).toEqual([]);
+      expect(diffs.closed).toEqual([file("a.txt"), file("b.txt")]);
+    });
+
+    test("a row asks the port for its file's diff with the text before the turn, undefined for a created file", async () => {
+      writeFileSync(file("a.txt"), "old\n");
+      const { controller, diffs } = await undoable([
+        { content: writeCall("a.txt", "new") },
+        { content: writeCall("b.txt", "created") },
+        { content: "Done." },
+      ]);
+      await controller.send("write");
+      await controller.openChangeDiff("a.txt");
+      await controller.openChangeDiff("b.txt");
+      await controller.openChangeDiff("unknown.txt");
+      expect(diffs.opened).toEqual([
+        { path: "a.txt", realPath: file("a.txt"), original: "old\n" },
+        { path: "b.txt", realPath: file("b.txt"), original: undefined },
+      ]);
+    });
+
+    test("a row's diff opened before a later turn's first write closes with it", async () => {
+      writeFileSync(file("a.txt"), "a0\n");
+      const { controller, diffs } = await undoable([
+        { content: writeCall("a.txt", "a1") },
+        { content: "First." },
+        { content: writeCall("a.txt", "a2") },
+        { content: "Second." },
+      ]);
+      await controller.send("first");
+      await controller.openChangeDiff("a.txt");
+      await controller.send("second");
+      expect(diffs.closed).toEqual([file("a.txt")]);
+      await controller.openChangeDiff("a.txt");
+      expect(diffs.opened.at(-1)).toEqual({ path: "a.txt", realPath: file("a.txt"), original: "a1\n" });
+    });
   });
 });
