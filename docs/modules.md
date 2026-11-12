@@ -16,8 +16,8 @@ This file says which file holds which responsibility. Update it when a module ga
   fills), the API key shape check, the provider
   HTTP client (`client.ts`: the request body with the usage field, its one resend without it after a 400 or 422, and
   the reply's reported usage in its outcome), the provider support memory (`providerSupport.ts`: `ProviderSupport`,
-  per provider name, base URL, and model, whether the usage field is taken; one instance, made by the host, shared by
-  the chat controller and the commit message), the CA trust and certificate error classification (`tls.ts`), the SSE reader, the typed provider
+  per provider name, base URL, and model, whether the usage field is taken and the characters per token the replies'
+  reported usage taught; one instance, made by the host, shared by the chat controller and the commit message), the CA trust and certificate error classification (`tls.ts`), the SSE reader, the typed provider
   errors and their wording (`providerError.ts`: `describeProviderError` with a translator, for the panel and the
   host's notifications), the generated commit message (`commitMessage.ts`: the request's system prompt, the diff cut to
   the context threshold, the reply's cleaning, and `CommitMessageGenerator`, the command over its git, provider
@@ -78,7 +78,8 @@ This file says which file holds which responsibility. Update it when a module ga
   skills, instruction files; `composeSummaryPrompt`, the summary request's own prompt; `offeredTools`, the tools a send
   offers, and `PLAN_BLOCKED_TOOLS`), the turn limits (`limits.ts`: `brokeCode.maxToolSteps`, `brokeCode.contextSizes`, and `brokeCode.autoCompact` parsing,
   `userLimits`, their user values only,
-  the token estimate, the context-full threshold, the typed size check, and `brokeCode.commandTimeoutSeconds` parsing),
+  the token estimate at a model's characters per token and the most characters that fit, exact in tenths, the
+  context-full threshold, the typed size check, and `brokeCode.commandTimeoutSeconds` parsing),
   the command tool (`commands.ts`: `RUN_COMMAND_TOOL`, `runCommandTool` checks the call and the folder and asks the
   approval, `runCommand` runs an approved command in its own process group with an injected shell and timeout, and,
   when given (the eval bench only), `environment`, the child's whole environment in place of the host's, and

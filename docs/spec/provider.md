@@ -11,7 +11,8 @@ This file specifies how broke-code talks to a provider: the HTTP contract, the s
   token counts (ADR 0001, addendum of 2026-11-13). `ProviderSupport`, one object for the chat and the commit message,
   remembers per model of a provider (the provider's name and base URL and the model's name together) whether the
   field is taken, in memory for the life of the extension host: unknown at the start, then accepts or refuses. A
-  request to a model that refuses is built without the field; any other carries it. A request with the field that
+  request to a model that refuses is built without the field; any other carries it. The same record keeps the
+  model's characters per token, which a completed reply's `prompt_tokens` teach (`docs/spec/harness.md`, ADR 0006). A request with the field that
   gets a started stream (a 2xx status that passes the client's checks of the response, whatever happens later in the
   stream) makes the model "accepts", for good. A request with the field answered by HTTP 400 or 422, recognized by its
   status alone before the other checks, is sent once more without the field when at that moment the model is not
