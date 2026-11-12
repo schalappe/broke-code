@@ -32,6 +32,7 @@ import {
   type PendingApproval,
   type QueuedMessage,
   type ReplyCall,
+  type ShownEntries,
   sendWouldAct,
   type UndoState,
 } from "../core/protocol";
@@ -51,7 +52,6 @@ import {
   menuView,
   openMenuToken,
   pickedInText,
-  type Replacing,
   replaceToken,
   type SkillAnswer,
   type SlashRow,
@@ -86,7 +86,7 @@ import { post } from "./vscodeApi";
  * message box applies and `takeDrafts` removes. An editor draft closes History; without a message box it is taken
  * unapplied, never held for a box that may never come. Queued texts the host returns (`paragraph` drafts) close
  * nothing, and wait for the message box when it is absent, since the user typed them: they are never dropped.
- * Edit on the last user message starts the replacing state (`Replacing`), held here because the conversation shows
+ * Edit on the last user message starts the replacing state (what the panel showed then), held here because the conversation shows
  * its mark and the composer's Send carries it; it ends on Cancel and once `stillReplacing` fails.
  */
 export function App({
@@ -104,7 +104,7 @@ export function App({
   const composerShown = configured || isReplying(state);
   const [historyOpen, setHistoryOpen] = useState(false);
   const historyButton = useRef<HTMLButtonElement>(null);
-  const [replacing, setReplacing] = useState<Replacing>();
+  const [replacing, setReplacing] = useState<ShownEntries>();
   /** Edit's draft until the message box has applied it, once: a composer mounted later never applies it again. */
   const [editing, setEditing] = useState<DraftInsert>();
   const replacingNow = replacing && stillReplacing(replacing, state) ? replacing : undefined;
@@ -165,6 +165,7 @@ export function App({
         // unmounted, while History shows, so the reason typed for an open approval survives.
         <Conversation
           key={state.conversationId}
+          conversationId={state.conversationId}
           entries={state.entries}
           approval={state.approval}
           undo={state.undo}
@@ -183,7 +184,7 @@ export function App({
           takeDrafts={takeDrafts}
           editing={editing}
           takeEditing={() => setEditing(undefined)}
-          replaces={replacingNow?.entries}
+          replaces={replacingNow}
           startNewChat={() => {
             setHistoryOpen(false);
             post({ type: "newChat" });
@@ -521,6 +522,7 @@ export function ConversationList({
  * (`cancelEdit`), which gives the focus back to Edit, since the button it was on goes.
  */
 function Conversation({
+  conversationId,
   entries,
   approval,
   undo,
@@ -530,6 +532,7 @@ function Conversation({
   edit,
   cancelEdit,
 }: {
+  conversationId: string;
   entries: ChatEntry[];
   approval?: PendingApproval;
   undo: UndoState;
@@ -550,7 +553,7 @@ function Conversation({
   const lastTurn = lastTurnActions(entries);
   const turnActions: TurnActionsProps | undefined = lastTurn && {
     actions: lastTurn,
-    entries: entries.length,
+    shown: { conversationId, entries: entries.length },
     canAct,
     // [>]: Retry reverts nothing: it asks first when the removed entries changed files or ran commands, or when
     // "Undo changes" is offered for the turn it removes.
@@ -816,11 +819,11 @@ function Reply({
 }
 
 /**
- * Retry and Continue of the last turn. `actions`: where they apply and whether Continue is offered. `entries`: the
- * entries count the requests carry, so the host ignores a click on a lagging panel. `canAct`: Send would act. `asks`:
+ * Retry and Continue of the last turn. `actions`: where they apply and whether Continue is offered. `shown`: the
+ * conversation and entries count the requests carry, so the host ignores a click on a lagging panel. `canAct`: Send would act. `asks`:
  * Retry would leave files or commands it does not revert, so its first click asks.
  */
-type TurnActionsProps = { actions: LastTurnActions; entries: number; canAct: boolean; asks: boolean };
+type TurnActionsProps = { actions: LastTurnActions; shown: ShownEntries; canAct: boolean; asks: boolean };
 
 function hasEffects(effects: { writes: number; commands: number }): boolean {
   return effects.writes > 0 || effects.commands > 0;
@@ -837,12 +840,12 @@ function hasEffects(effects: { writes: number; commands: number }): boolean {
 function TurnActions({ turnActions, undo }: { turnActions?: TurnActionsProps; undo?: UndoState }) {
   const retryButton = useRef<HTMLButtonElement>(null);
   const [askedAt, setAskedAt] = useState<number>();
-  const confirming = turnActions?.asks === true && askedAt === turnActions.entries;
+  const confirming = turnActions?.asks === true && askedAt === turnActions.shown.entries;
   const retry = () => {
     if (!turnActions) return;
-    if (turnActions.asks && !confirming) return setAskedAt(turnActions.entries);
+    if (turnActions.asks && !confirming) return setAskedAt(turnActions.shown.entries);
     setAskedAt(undefined);
-    post({ type: "retry", entries: turnActions.entries });
+    post({ type: "retry", shown: turnActions.shown });
   };
   const cancel = () => {
     setAskedAt(undefined);
@@ -872,7 +875,7 @@ function TurnActions({ turnActions, undo }: { turnActions?: TurnActionsProps; un
               type="button"
               className="secondary"
               disabled={!turnActions.canAct}
-              onClick={() => post({ type: "continueTurn", entries: turnActions.entries })}
+              onClick={() => post({ type: "continueTurn", shown: turnActions.shown })}
             >
               {l10n.t("Continue")}
             </button>
@@ -1347,7 +1350,7 @@ function Composer({
   takeDrafts: (taken: readonly DraftInsert[]) => void;
   editing?: DraftInsert;
   takeEditing?: () => void;
-  replaces?: number;
+  replaces?: ShownEntries;
 }) {
   const [text, setText] = useState("");
   const [caret, setCaret] = useState(0);

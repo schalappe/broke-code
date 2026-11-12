@@ -37,6 +37,7 @@ import {
   MAX_QUEUED_MESSAGES,
   type Mode,
   type ReplyStatus,
+  type ShownEntries,
   type StepApproval,
   type StorageProblem,
   type UndoneFile,
@@ -588,14 +589,14 @@ export class ChatController {
    * way as a mention. Once the turn has fully settled, and only when it ended `done`, the first queued message is sent
    * the same way (see `sendNextQueued`); the returned promise settles after the turns it drained.
    *
-   * `replaces`: sent from the panel's replacing state (Edit), the number of entries it showed. The send then first
-   * removes the last user entry and every entry after it, in the same synchronous step as the turn start, so the turn's
-   * first save, before its request, writes the record without them, and a crash before it keeps the conversation
-   * whole. The removal checks what Retry checks (`lastTurnNow`: the count is the current one and the last turn offers
-   * Retry); when it fails, nothing is removed and the text goes back to the box. While a reply is in flight the message
-   * is queued as an ordinary one, since the replacing state ended when that reply started.
+   * `replaces`: sent from the panel's replacing state (Edit), what it showed. The send then first removes the last
+   * user entry and every entry after it, in the same synchronous step as the turn start, so the turn's first save,
+   * before its request, writes the record without them, and a crash before it keeps the conversation whole. The
+   * removal checks what Retry checks (`lastTurnNow`: the conversation and the count are the current ones and the last
+   * turn offers Retry); when it fails, nothing is removed and the text goes back to the box. While a reply is in
+   * flight the message is queued as an ordinary one, since the replacing state ended when that reply started.
    */
-  async send(text: string, picked: readonly string[] = [], replaces?: number): Promise<void> {
+  async send(text: string, picked: readonly string[] = [], replaces?: ShownEntries): Promise<void> {
     const content = text.trim();
     if (!content) return;
     if (isReplying(this.state)) return this.queueMessage(content, picked);
@@ -613,12 +614,12 @@ export class ChatController {
    * Retry: remove every entry after the last user entry and run the turn again from it, with the text the model
    * received then (its mentions and skill are not read again; a skill it loaded stays loaded) and the provider, model,
    * mode, limits, instruction files, and skills of now. The removal is saved by the turn's first save, before its
-   * request; a crash before it keeps the conversation whole. `entries`: the number of entries the panel showed.
-   * Ignored unless it is the current number, a turn may start, and the last turn offers Retry (`lastTurnActions`), so a
-   * click on a lagging panel removes nothing. Removed writes and commands are not reverted: the panel asks first.
+   * request; a crash before it keeps the conversation whole. `shown`: what the panel showed. Ignored unless it is the
+   * conversation shown with its current count, a turn may start, and the last turn offers Retry (`lastTurnActions`),
+   * so a click on a lagging panel removes nothing. Removed writes and commands are not reverted: the panel asks first.
    */
-  retry(entries: number): Promise<void> {
-    const actions = this.lastTurnNow(entries);
+  retry(shown: ShownEntries): Promise<void> {
+    const actions = this.lastTurnNow(shown);
     if (!actions) return Promise.resolve();
     const user = this.conversation.entries[actions.user] as UserEntry;
     this.removeFrom(actions.user + 1);
@@ -627,20 +628,25 @@ export class ChatController {
 
   /**
    * Continue: append a user entry whose text as typed is `label` (the button's, in the display language) and whose
-   * model text is `CONTINUE_TEXT`, then run it as a send: a new step budget and the settings of now. `entries`: as for
+   * model text is `CONTINUE_TEXT`, then run it as a send: a new step budget and the settings of now. `shown`: as for
    * `retry`; also ignored unless the last turn offers Continue (stopped, or halted on the step limit or on malformed
    * calls).
    */
-  continueTurn(entries: number, label: string): Promise<void> {
-    if (!this.lastTurnNow(entries)?.continues) return Promise.resolve();
+  continueTurn(shown: ShownEntries, label: string): Promise<void> {
+    if (!this.lastTurnNow(shown)?.continues) return Promise.resolve();
     const user: UserEntry = { role: "user", content: label, mentions: [] };
     this.modelText.set(user, CONTINUE_TEXT);
     return this.startTurn({ kind: "continue", user });
   }
 
-  /** What the last turn offers now, for a request made while the panel showed `entries` entries. */
-  private lastTurnNow(entries: number): LastTurnActions | undefined {
-    if (entries !== this.conversation.entries.length || !this.mayStartTurn()) return undefined;
+  /**
+   * What the last turn offers now, for a request made while the panel showed `shown`. Another conversation with as many
+   * entries is refused; within the conversation shown, the count is the only check, so a request posted before a Retry
+   * that ended on as many entries acts on the turn that Retry ran.
+   */
+  private lastTurnNow({ conversationId, entries }: ShownEntries): LastTurnActions | undefined {
+    const current = conversationId === this.conversation.id && entries === this.conversation.entries.length;
+    if (!current || !this.mayStartTurn()) return undefined;
     return lastTurnActions(this.conversation.entries);
   }
 

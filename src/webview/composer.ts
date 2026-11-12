@@ -5,7 +5,14 @@
  * point, queued texts returned, or the last message put back by Edit) edits the message box.
  */
 import { lastTurnActions } from "../core/lastTurn";
-import { type ChatEntry, type ChatState, type DraftInsert, isReplying, MAX_QUERY_LENGTH } from "../core/protocol";
+import {
+  type ChatEntry,
+  type ChatState,
+  type DraftInsert,
+  isReplying,
+  MAX_QUERY_LENGTH,
+  type ShownEntries,
+} from "../core/protocol";
 import { type MentionKind, pickedPath, RESERVED_MENTIONS, reservedMention } from "../core/reservedMentions";
 import {
   type BuiltInCommand,
@@ -179,17 +186,13 @@ export function editDraft(entry: ChatEntry & { role: "user" }): DraftInsert {
 }
 
 /**
- * The replacing state Edit starts, in the panel only: the conversation shown and its entries count at the click. A
- * Send meanwhile carries the count (`replaces`), so the host removes the last turn the panel showed, or nothing.
- */
-export type Replacing = { conversationId: string; entries: number };
-
-/**
- * Whether the replacing state still holds for `state`: the same conversation, the same entries count, no reply in
+ * Whether the replacing state Edit starts, in the panel only, still holds for `state`. `replacing`: the conversation
+ * shown and its entries count at the click, which a Send meanwhile carries (`replaces`), so the host removes the last
+ * turn the panel showed, or nothing. It holds for the same conversation, the same entries count, no reply in
  * flight, and Edit still offered (`lastTurnActions`). Once it fails the state ends for good, even if a later state
  * matches again (a Retry that ends with as many entries as before).
  */
-export function stillReplacing(replacing: Replacing, state: ChatState): boolean {
+export function stillReplacing(replacing: ShownEntries, state: ChatState): boolean {
   return (
     replacing.conversationId === state.conversationId &&
     replacing.entries === state.entries.length &&

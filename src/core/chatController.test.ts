@@ -32,7 +32,14 @@ import { SUMMARY_REQUEST } from "./history";
 import { estimateTokens, parseLimits } from "./limits";
 import { mentionReader } from "./mentionReader";
 import type { MentionReader, ReadMention } from "./mentions";
-import { type ChatEntry, type ChatState, type DraftInsert, isReplying, type ReplyStatus } from "./protocol";
+import {
+  type ChatEntry,
+  type ChatState,
+  type DraftInsert,
+  isReplying,
+  type ReplyStatus,
+  type ShownEntries,
+} from "./protocol";
 import type { Provider } from "./providers";
 import { recordingApplier } from "./recordedChanges";
 import { LOAD_SKILL_TOOL, readSkills, type SkillDiscovery } from "./skills";
@@ -171,6 +178,11 @@ async function until(state: () => ChatState, predicate: (state: ChatState) => bo
 }
 
 /** The text of a user or assistant entry; `undefined` for a tool step or no entry. */
+/** What a panel showing `state` with `entries` entries carries in a Retry, Continue, or replacing send. */
+const shown = (state: () => ChatState, entries = state().entries.length): ShownEntries => ({
+  conversationId: state().conversationId,
+  entries,
+});
 const contentOf = (entry: ChatEntry | undefined) => (entry && entry.role !== "tool" ? entry.content : undefined);
 
 /** Limits source that always answers the same: every setting unset by default, as with no setting. */
@@ -2922,7 +2934,7 @@ describe("ChatController agent turn", () => {
       );
       await controller.send("/grilling my idea");
       writeFileSync(join(root, "SKILL.md"), "---\nname: grilling\ndescription: D.\n---\n\nChanged since.\n");
-      await controller.retry(2);
+      await controller.retry(shown(state, 2));
 
       expect(state().entries[0]).toMatchObject({ skill: { name: "grilling", status: "loaded" } });
       expect(sent()[1]!.messages[1]).toEqual({
@@ -4020,7 +4032,7 @@ describe("ChatController agent turn", () => {
     test("Continue after Stop appends one user entry and keeps every earlier entry in the history sent", async () => {
       const { controller, state, sent, saved } = await scripted(["hang", { content: "Carried on." }]);
       await stopped(controller, state, "go");
-      await controller.continueTurn(state().entries.length, "Continue");
+      await controller.continueTurn(shown(state), "Continue");
 
       expect(state().entries).toEqual([
         { role: "user", content: "go", mentions: [] },
@@ -4046,7 +4058,7 @@ describe("ChatController agent turn", () => {
       );
       await controller.send("read it");
       expect(state().entries.at(-2)).toMatchObject({ status: "halted", haltReason: "stepLimit" });
-      await controller.continueTurn(3, "Continuer");
+      await controller.continueTurn(shown(state, 3), "Continuer");
 
       expect(state().entries.map((entry) => entry.role)).toEqual(["user", "assistant", "tool", "user", "assistant"]);
       expect(state().entries[3]).toEqual({ role: "user", content: "Continuer", mentions: [] });
@@ -4097,22 +4109,47 @@ describe("ChatController agent turn", () => {
         await run(controller, state);
         const before = structuredClone(state().entries);
         const requests = sent().length;
-        await controller.continueTurn(before.length, "Continue");
+        await controller.continueTurn(shown(state, before.length), "Continue");
         expect({ name, entries: state().entries }).toEqual({ name, entries: before });
         expect(sent()).toHaveLength(requests);
       }
 
       const { controller, state, sent } = await scripted(["hang", "hang", { content: "never sent" }]);
       await stopped(controller, state, "go");
-      await controller.continueTurn(1, "Continue");
+      await controller.continueTurn(shown(state, 1), "Continue");
       expect(state().entries).toHaveLength(2);
       const turn = controller.send("again");
       await until(state, (s) => s.entries.length === 4 && contentOf(s.entries.at(-1)) === "Partial ");
-      await controller.continueTurn(4, "Continue");
+      await controller.continueTurn(shown(state, 4), "Continue");
       expect(state().entries).toHaveLength(4);
       controller.stop();
       await turn;
       expect(sent()).toHaveLength(2);
+    });
+
+    test("Retry and Continue posted for another conversation with the same count remove and send nothing", async () => {
+      const { controller, state, sent, files } = await scripted([
+        "hang",
+        "hang",
+        { content: "never sent" },
+        { content: "never sent" },
+      ]);
+      await stopped(controller, state, "A question");
+      const fromA = shown(state);
+      await controller.newChat();
+      await stopped(controller, state, "B question");
+      const b = structuredClone(state().entries);
+      const saved = () => JSON.parse(files.files.get(`${state().conversationId}.json`)!) as ConversationRecord;
+      await settledSave(saved, 2);
+      const record = files.files.get(`${state().conversationId}.json`);
+
+      await controller.retry(fromA);
+      await controller.continueTurn(fromA, "Continue");
+
+      expect(fromA.entries).toBe(b.length);
+      expect(state().entries).toEqual(b);
+      expect(sent()).toHaveLength(2);
+      expect(files.files.get(`${state().conversationId}.json`)).toBe(record!);
     });
 
     test("Retry after a failed reply resends the same user message, without reading its mentions again", async () => {
@@ -4135,7 +4172,7 @@ describe("ChatController agent turn", () => {
       await controller.send("look at @a.ts");
       expect(state().entries.at(-1)).toMatchObject({ status: "failed" });
       const first = sent()[0]!.messages;
-      await controller.retry(2);
+      await controller.retry(shown(state, 2));
 
       expect(reads).toEqual(["a.ts"]);
       expect(sent()[1]!.messages).toEqual(first);
@@ -4162,7 +4199,7 @@ describe("ChatController agent turn", () => {
       ]);
       files.files.set(`${saved.id}.json`, JSON.stringify(saved));
       await controller.openConversation(saved.id);
-      await controller.retry(8);
+      await controller.retry(shown(state, 8));
 
       expect(state().entries.map(contentOf)).toEqual(["first", "One.", "second", "Again."]);
       expect(sent()[0]!.messages.slice(1)).toEqual([
@@ -4174,33 +4211,33 @@ describe("ChatController agent turn", () => {
 
     test("Retry is ignored under a completed /compact summary, with no user entry, on a stale count, during a reply, and while a mode change is written", async () => {
       const { controller, state, sent, files } = await scripted(["hang", { content: "never sent" }]);
-      await controller.retry(0);
+      await controller.retry(shown(state, 0));
       expect(state().entries).toEqual([]);
 
       const compacted = record([userEntry("go"), replyEntry("Ok.", "done"), replyEntry("Summary.", "done", true)]);
       files.files.set(`${compacted.id}.json`, JSON.stringify(compacted));
       await controller.openConversation(compacted.id);
-      await controller.retry(3);
+      await controller.retry(shown(state, 3));
       expect(state().entries).toHaveLength(3);
 
       const failed = record([userEntry("go"), replyEntry("", "failed")]);
       files.files.set(`${failed.id}.json`, JSON.stringify(failed));
       await controller.openConversation(failed.id);
-      await controller.retry(1);
-      await controller.retry(3);
+      await controller.retry(shown(state, 1));
+      await controller.retry(shown(state, 3));
       expect(state().entries).toHaveLength(2);
 
       const logged = spyOn(console, "error").mockImplementation(() => {});
       void controller.setMode("autoEdit");
       expect(state().modePending).toBe(true);
-      await controller.retry(2);
+      await controller.retry(shown(state, 2));
       await until(state, (s) => !s.modePending);
       logged.mockRestore();
       expect(state().entries).toHaveLength(2);
 
       const turn = controller.send("again");
       await until(state, (s) => contentOf(s.entries.at(-1)) === "Partial ");
-      await controller.retry(4);
+      await controller.retry(shown(state, 4));
       expect(state().entries).toHaveLength(4);
       controller.stop();
       await turn;
@@ -4770,7 +4807,7 @@ describe("ChatController queue", () => {
     expect(state().entries.at(-1)).toMatchObject({ status: "failed" });
     expect(state().queue.map((message) => message.text)).toEqual(["B"]);
 
-    const retried = controller.retry(2);
+    const retried = controller.retry(shown(state, 2));
     await release();
     await until(state, (s) => userTexts(s).length === 2);
     await release();
@@ -4802,7 +4839,7 @@ describe("ChatController queue", () => {
       await release();
       await first;
 
-      const replaced = controller.send("look at @b.ts", [], 2);
+      const replaced = controller.send("look at @b.ts", [], shown(state, 2));
       expect(state().entries.map((entry) => entry.role)).toEqual(["user", "assistant"]);
       expect(state().entries[0]).toMatchObject({ content: "look at @b.ts" });
       await until(state, () => contentOf(savedIn(files, state)?.entries[0]) === "look at @b.ts");
@@ -4829,14 +4866,14 @@ describe("ChatController queue", () => {
       scripts.set("queue", [{ content: "Old." }]);
       const files = memoryFiles();
       const { controller, state, release, returned } = await gated({ store: new ConversationStore(files) });
-      await controller.send("B", ["b.ts"], 0);
+      await controller.send("B", ["b.ts"], shown(state, 0));
       expect(state().entries).toEqual([]);
 
       const first = controller.send("A");
       await release();
       await first;
-      await controller.send("C", [], 3);
-      await controller.send("D", [], 1);
+      await controller.send("C", [], shown(state, 3));
+      await controller.send("D", [], shown(state, 1));
       expect(state().entries.map(contentOf)).toEqual(["A", "Old."]);
 
       const compacted: ConversationRecord = {
@@ -4852,18 +4889,42 @@ describe("ChatController queue", () => {
       };
       files.files.set(`${compacted.id}.json`, JSON.stringify(compacted));
       await controller.openConversation(compacted.id);
-      await controller.send("E", [], 3);
+      await controller.send("E", [], shown(state, 3));
       expect(state().entries.map(contentOf)).toEqual(["go", "Ok.", "Summary."]);
 
       expect(sent()).toHaveLength(1);
       expect(returned).toEqual([paragraph("B", ["b.ts"]), paragraph("C"), paragraph("D"), paragraph("E")]);
     });
 
+    test("a send replacing the last turn of another conversation with the same count removes nothing and returns the text", async () => {
+      scripts.set("queue", [{ content: "A answer" }, { content: "B answer" }]);
+      const files = memoryFiles();
+      const { controller, state, release, returned } = await gated({ store: new ConversationStore(files) });
+      const first = controller.send("A question");
+      await release();
+      await first;
+      const fromA = shown(state);
+      await controller.newChat();
+      const second = controller.send("B question");
+      await release();
+      await second;
+      await until(state, () => contentOf(savedIn(files, state)?.entries.at(-1)) === "B answer");
+      const record = files.files.get(`${state().conversationId}.json`);
+
+      await controller.send("edited A question", ["a.ts"], fromA);
+
+      expect(fromA.entries).toBe(2);
+      expect(state().entries.map(contentOf)).toEqual(["B question", "B answer"]);
+      expect(files.files.get(`${state().conversationId}.json`)).toBe(record!);
+      expect(sent()).toHaveLength(2);
+      expect(returned).toEqual([paragraph("edited A question", ["a.ts"])]);
+    });
+
     test("during a reply it is queued as an ordinary message and removes nothing", async () => {
       scripts.set("queue", [{ content: "one" }, { content: "two" }]);
       const { controller, state, release } = await gated();
       const first = controller.send("A");
-      await controller.send("B", [], 2);
+      await controller.send("B", [], shown(state, 2));
       expect(state().queue.map((message) => message.text)).toEqual(["B"]);
       await release();
       await until(state, (s) => userTexts(s).length === 2);
@@ -5425,13 +5486,13 @@ describe("ChatController undo", () => {
     await controller.undoChanges();
     expect(state().undo).toMatchObject({ reply: 7, outcome: { reply: 7 } });
 
-    await controller.retry(8);
+    await controller.retry(shown(state, 8));
     expect(text("b.txt")).toBe("b1\n");
     expect(state().entries).toHaveLength(6);
     expect(state().undo).toEqual({ reply: undefined, ranCommand: false, running: false, outcome: undefined });
 
     await controller.send("third");
-    await controller.retry(8);
+    await controller.retry(shown(state, 8));
     expect(state().entries.map(contentOf).at(-1)).toBe("Once more.");
     expect(state().undo.reply).toBeUndefined();
   });
@@ -5452,7 +5513,7 @@ describe("ChatController undo", () => {
     await controller.undoChanges();
     expect(state().undo).toMatchObject({ reply: 7, outcome: { reply: 7 } });
 
-    await controller.send("second, edited", [], 8);
+    await controller.send("second, edited", [], shown(state, 8));
     expect(text("b.txt")).toBe("b1\n");
     expect(state().entries.map(contentOf).slice(4)).toEqual(["second, edited", "Edited."]);
     expect(state().undo).toEqual({ reply: undefined, ranCommand: false, running: false, outcome: undefined });
@@ -5469,7 +5530,7 @@ describe("ChatController undo", () => {
     await controller.send("first");
     await controller.send("second");
     expect(state().undo.reply).toBe(3);
-    await controller.send("second, edited", [], 6);
+    await controller.send("second, edited", [], shown(state, 6));
     expect(state().entries.map(contentOf).slice(4)).toEqual(["second, edited", "Edited."]);
     expect(state().undo.reply).toBe(3);
     await controller.undoChanges();
@@ -5487,7 +5548,7 @@ describe("ChatController undo", () => {
     await controller.send("first");
     await controller.send("second");
     expect(state().undo.reply).toBe(3);
-    await controller.retry(6);
+    await controller.retry(shown(state, 6));
     expect(state().entries.map(contentOf).at(-1)).toBe("Again.");
     expect(state().undo.reply).toBe(3);
     await controller.undoChanges();
@@ -5506,7 +5567,7 @@ describe("ChatController undo", () => {
     await controller.send("first");
     const undo = controller.undoChanges();
     expect(state().undo.running).toBe(true);
-    await controller.retry(4);
+    await controller.retry(shown(state, 4));
     expect(state().entries).toHaveLength(4);
     open();
     await undo;

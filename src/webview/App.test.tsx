@@ -2970,13 +2970,13 @@ describe("retry and continue", () => {
     reply("done"),
   ];
 
-  test("Retry posts at once when the turn left nothing on disk; Continue posts with the entries count", async () => {
+  test("Retry posts at once when the turn left nothing on disk; Continue posts with the conversation and entries count", async () => {
     await withPanel(stateWith(true, { entries: [question, reply("stopped")] }), async ({ click }) => {
       await click("Retry");
       await click("Continue");
       expect(posted).toEqual([
-        { type: "retry", entries: 2 },
-        { type: "continueTurn", entries: 2 },
+        { type: "retry", shown: { conversationId: CONVERSATION_ID, entries: 2 } },
+        { type: "continueTurn", shown: { conversationId: CONVERSATION_ID, entries: 2 } },
       ]);
     });
   });
@@ -3012,7 +3012,9 @@ describe("retry and continue", () => {
         expect(document.activeElement).toBe(retry);
         await click("Retry");
         await click("Retry anyway");
-        expect(posted).toEqual([{ type: "retry", entries: entries.length }]);
+        expect(posted).toEqual([
+          { type: "retry", shown: { conversationId: CONVERSATION_ID, entries: entries.length } },
+        ]);
       });
     });
   }
@@ -3033,7 +3035,7 @@ describe("retry and continue", () => {
     const undone = wrote.map((entry) => (entry.role === "tool" ? { ...entry, undone: true as const } : entry));
     await withPanel(stateWith(true, { entries: undone }), async ({ click }) => {
       await click("Retry");
-      expect(posted).toEqual([{ type: "retry", entries: 4 }]);
+      expect(posted).toEqual([{ type: "retry", shown: { conversationId: CONVERSATION_ID, entries: 4 } }]);
     });
   });
 });
@@ -3126,7 +3128,7 @@ describe("edit the last message", () => {
     });
   });
 
-  test("Send then posts the send with the entries count it replaces, the file paths picked", async () => {
+  test("Send then posts the send with the conversation and entries count it replaces, the file paths picked", async () => {
     await withPanel(stateWith(true, { entries }), async ({ textarea, click, type }) => {
       await type("draft");
       await click("Edit");
@@ -3134,7 +3136,12 @@ describe("edit the last message", () => {
       posted.length = 0;
       await click("Send");
       expect(posted).toEqual([
-        { type: "send", text: "draft\n\nFix @src/a b.ts and @problems", mentions: ["src/a b.ts"], replaces: 4 },
+        {
+          type: "send",
+          text: "draft\n\nFix @src/a b.ts and @problems",
+          mentions: ["src/a b.ts"],
+          replaces: { conversationId: CONVERSATION_ID, entries: 4 },
+        },
       ]);
     });
   });

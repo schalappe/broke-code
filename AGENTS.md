@@ -69,7 +69,8 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   the file port, and its implementation over a local directory with `node:fs`: missing versus failed, regular files
   only, atomic writes, leftover temporary files), the dialog queue, the host-webview message
   protocol and its validation (and `sendWouldAct`, the panel's one "Send would act" check; `send`'s optional
-  `replaces`, the entries count Edit replaces), the model list (`modelList.ts`: `emptyModelsLabel`, why the list is empty, for the
+  `replaces`, and `retry` and `continueTurn`, each carrying `ShownEntries`, the conversation and entries count the
+  panel showed), the model list (`modelList.ts`: `emptyModelsLabel`, why the list is empty, for the
   header's select and the Quick Pick; `modelChoices`, the rows `/model` opens; `chooseModel`, the `/model` pick over a
   pick port the host fills with `showQuickPick`), workspace file access (`workspaceFiles.ts`: the inside-workspace check and its read-only
   roots (the loaded skills' folders outside the workspace, for reads only), capped reads, one-level listings, line truncation, the write boundary and atomic writes, `removeWorkspaceFile`, the remove with the write's checks, with `node:fs`), mentions (`mentions.ts`: token detection, picked and typed
@@ -626,10 +627,14 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   reply that is not a summary (else the summary that took its only reply), whatever its status, and Continue too when
   the last entry is no summary and that reply ended `stopped`, or `halted` on `stepLimit` or `malformedCalls`
   (`contextFull` would halt again: it keeps pointing to `/compact` and New chat). The panel renders them before "Undo
-  changes" in one row, enabled when Send would act (`sendWouldAct`, the composer's one check). Each request carries the
-  entries count the panel showed (`retry { entries }`, `continueTurn { entries }`, validated like a request id); the
-  controller ignores it unless that count is the current one, `mayStartTurn` passes, and `lastTurnActions` (with
-  Continue's condition for Continue) holds as the host sees it, so a click on a lagging panel removes nothing.
+  changes" in one row, enabled when Send would act (`sendWouldAct`, the composer's one check). Each request carries
+  what the panel showed (`ShownEntries`: `retry { shown }`, `continueTurn { shown }`, `shown` being `{ conversationId,
+  entries }`, the id validated like `openConversation`'s, the count like a request id); the controller
+  (`lastTurnNow`) ignores it unless that is the conversation shown with its current count, `mayStartTurn` passes, and
+  `lastTurnActions` (with Continue's condition for Continue) holds as the host sees it, so a click on a lagging panel
+  removes nothing, also when the host has meanwhile shown another conversation with as many entries. Within the
+  conversation shown the count is the only check (no turn revision): a request posted before a Retry that ended on as
+  many entries acts on the turn that Retry ran (accepted).
   `ChatController.retry` removes every entry after the user entry (`removeFrom`: replies, tool steps, the turn's
   automatic summary, and an unsent summary) and runs the turn again from that same entry object (`TurnStart`
   `retry`), so its model text of then is resent: mentions and `SKILL.md` are not read again, a skill it loaded stays
@@ -638,7 +643,7 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   with the turn start and saved by the turn's first save, before the request; a crash before it keeps the
   conversation whole. `removeFrom` drops the held turn, `lastTurn`, and the undo outcome when their reply is in the
   removed range, so "Undo changes" for the removed attempt goes and a write of it that lands after its Stop is not
-  held; a turn held from before the user entry stays held. `ChatController.continueTurn(entries, label)` removes
+  held; a turn held from before the user entry stays held. `ChatController.continueTurn(shown, label)` removes
   nothing: it appends a user entry whose typed text is `label` (the host passes `l10n.t("Continue")`, since the
   controller imports nothing from `vscode`) and whose model text is `CONTINUE_TEXT` (`Continue from where you
   stopped.`), no mention, no skill, and runs it as a send (`TurnStart` `continue`: a new step budget). After a
@@ -660,7 +665,7 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   mentions as picked paths, so a path with spaces stays one mention (the entry does not say which were picked; a picked
   path counts only while its `@<path>` stands in the text, so giving them all is safe), a reserved mention staying
   typed text; the mention menu stays closed on a token the caret ends on; and the message box takes the focus. The
-  panel then holds the replacing state (`Replacing`: the conversation id and entries count at the click), in `App`
+  panel then holds the replacing state (a `ShownEntries`: the conversation id and entries count at the click), in `App`
   only, never in `ChatState` (scouting decision, 2026-11-12: the webview is not retained while hidden, so the box's text
   is lost there too, and the host keeps nothing in step). While it holds, Edit goes, and the last turn (that message and
   every entry after it) renders in one group (`.replacing`) under the line "Sending replaces this message and its
@@ -670,10 +675,10 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   the focus goes back to Edit), and for good once `stillReplacing` fails: another conversation shown, another entries
   count, a reply in flight, or Edit no longer offered; it is lost with the box's text when the panel is hidden or the
   window reloads. Retry, Continue, Send now, and the built-in `/new`, `/model`, and `/compact` act as usual and never
-  replace. A Send while it holds posts `send { text, mentions, replaces }`, `replaces` the entries count (validated like
-  a request id; absent, the send is the ordinary one; a `queueMessage` never carries it). `ChatController.send(text,
+  replace. A Send while it holds posts `send { text, mentions, replaces }`, `replaces` that `ShownEntries` (validated
+  as for Retry; absent, the send is the ordinary one; a `queueMessage` never carries it). `ChatController.send(text,
   picked, replaces)` then, in one synchronous step before the first save: checks `mayStartTurn` and `lastTurnNow`
-  (the count is the current one and the last turn still offers Retry), removes the last user entry and every entry
+  (the conversation and the count are the current ones and the last turn still offers Retry), removes the last user entry and every entry
   after it (`removeFrom`, which drops the held turn, `lastTurn`, and the undo outcome with it, a turn held from before
   staying held), and starts an ordinary send (mentions read now, a `/<name>` skill loaded now, the settings of now).
   The turn's first save, before its request, writes the record without the removed entries: they are gone for good; a
