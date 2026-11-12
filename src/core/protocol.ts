@@ -279,8 +279,11 @@ export type WebviewMessage =
   | { type: "selectProvider"; provider: string }
   | { type: "selectModel"; model: string }
   | { type: "retryModels" }
-  /** `mentions`: paths picked in the menu; see `ChatController.send`. */
-  | { type: "send"; text: string; mentions: string[] }
+  /**
+   * `mentions`: paths picked in the menu; see `ChatController.send`. `replaces`: sent while the panel was replacing the
+   * last turn (Edit), the number of entries it showed; the host removes that turn first when it still may.
+   */
+  | { type: "send"; text: string; mentions: string[]; replaces?: number }
   /** Send while a reply is in flight: queue the message, with its picked mention paths, as `send` carries them. */
   | { type: "queueMessage"; text: string; mentions: string[] }
   /** Remove queued message `id`. */
@@ -397,11 +400,20 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | undefined {
       const model = text("model");
       return model ? { type: "setContextSize", model } : undefined;
     }
-    case "send":
+    case "send": {
+      const value = text("text");
+      const mentions = pathList(message.mentions);
+      const { replaces } = message;
+      if (value === undefined || mentions === undefined) return undefined;
+      if (replaces === undefined) return { type: "send", text: value, mentions };
+      return isRequestId(replaces) ? { type: "send", text: value, mentions, replaces } : undefined;
+    }
     case "queueMessage": {
       const value = text("text");
       const mentions = pathList(message.mentions);
-      return value === undefined || mentions === undefined ? undefined : { type: message.type, text: value, mentions };
+      return value === undefined || mentions === undefined
+        ? undefined
+        : { type: "queueMessage", text: value, mentions };
     }
     case "removeQueued":
     case "editQueued":

@@ -587,12 +587,25 @@ export class ChatController {
    * records the skill, which opens its folder to the read tools; a `SKILL.md` that cannot be read is reported the same
    * way as a mention. Once the turn has fully settled, and only when it ended `done`, the first queued message is sent
    * the same way (see `sendNextQueued`); the returned promise settles after the turns it drained.
+   *
+   * `replaces`: sent from the panel's replacing state (Edit), the number of entries it showed. The send then first
+   * removes the last user entry and every entry after it, in the same synchronous step as the turn start, so the turn's
+   * first save, before its request, writes the record without them, and a crash before it keeps the conversation
+   * whole. The removal checks what Retry checks (`lastTurnNow`: the count is the current one and the last turn offers
+   * Retry); when it fails, nothing is removed and the text goes back to the box. While a reply is in flight the message
+   * is queued as an ordinary one, since the replacing state ended when that reply started.
    */
-  async send(text: string, picked: readonly string[] = []): Promise<void> {
+  async send(text: string, picked: readonly string[] = [], replaces?: number): Promise<void> {
     const content = text.trim();
     if (!content) return;
     if (isReplying(this.state)) return this.queueMessage(content, picked);
-    if (!this.mayStartTurn()) return this.giveBack([{ text: content, mentions: [...picked] }]);
+    const giveBack = () => this.giveBack([{ text: content, mentions: [...picked] }]);
+    if (!this.mayStartTurn()) return giveBack();
+    if (replaces !== undefined) {
+      const actions = this.lastTurnNow(replaces);
+      if (!actions) return giveBack();
+      this.removeFrom(actions.user);
+    }
     return this.startTurn({ kind: "send", content, picked });
   }
 

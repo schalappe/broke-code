@@ -55,6 +55,24 @@ describe("parseWebviewMessage", () => {
     expect(parseWebviewMessage({ type: "send", text: "hi", mentions: picked })).toMatchObject({ mentions: picked });
   });
 
+  test("accepts a send replacing the last turn with the entries count shown, and drops any other count", () => {
+    const send = (replaces: unknown) => parseWebviewMessage({ type: "send", text: "hi", mentions: [], replaces });
+    expect(send(0)).toEqual({ type: "send", text: "hi", mentions: [], replaces: 0 });
+    expect(send(4)).toEqual({ type: "send", text: "hi", mentions: [], replaces: 4 });
+    expect(send(undefined)).toEqual({ type: "send", text: "hi", mentions: [] });
+    for (const replaces of ["4", -1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1, null, true]) {
+      expect(send(replaces)).toBeUndefined();
+    }
+  });
+
+  test("ignores replaces on a queued message, which never replaces", () => {
+    expect(parseWebviewMessage({ type: "queueMessage", text: "hi", mentions: [], replaces: 2 })).toEqual({
+      type: "queueMessage",
+      text: "hi",
+      mentions: [],
+    });
+  });
+
   test("rejects a send whose mentions are missing, not strings, empty, or too long", () => {
     const send = (mentions: unknown) => parseWebviewMessage({ type: "send", text: "hi", mentions });
     expect(send(undefined)).toBeUndefined();

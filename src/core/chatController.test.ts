@@ -4780,6 +4780,99 @@ describe("ChatController queue", () => {
     expect(state().queue).toEqual([]);
   });
 
+  describe("send replacing the last turn (Edit)", () => {
+    /** The record saved for the conversation shown in `files`, or `undefined` before its first save. */
+    const savedIn = (files: MemoryFiles, state: () => ChatState) => {
+      const text = files.files.get(`${state().conversationId}.json`);
+      return text === undefined ? undefined : (JSON.parse(text) as ConversationRecord);
+    };
+
+    test("sends the new message in place of the last one, its mentions read now, and saves without the old turn before the request", async () => {
+      const reads: string[] = [];
+      const reader: MentionReader = {
+        read: async (path) => {
+          reads.push(path);
+          return { path, kind: "file", status: "attached", lines: 1, content: "x\n", omitted: 0 };
+        },
+      };
+      scripts.set("queue", [{ content: "Old." }, { content: "New." }]);
+      const files = memoryFiles();
+      const { controller, state, release } = await gated({ mentions: reader, store: new ConversationStore(files) });
+      const first = controller.send("A");
+      await release();
+      await first;
+
+      const replaced = controller.send("look at @b.ts", [], 2);
+      expect(state().entries.map((entry) => entry.role)).toEqual(["user", "assistant"]);
+      expect(state().entries[0]).toMatchObject({ content: "look at @b.ts" });
+      await until(state, () => contentOf(savedIn(files, state)?.entries[0]) === "look at @b.ts");
+      expect(sent()).toHaveLength(1);
+      expect(savedIn(files, state)!.entries.map((entry) => entry.role)).toEqual(["user", "assistant"]);
+      await release();
+      await replaced;
+
+      expect(reads).toEqual(["b.ts"]);
+      expect(
+        sent()[1]!
+          .messages.slice(1)
+          .map((message) => message.role),
+      ).toEqual(["user"]);
+      expect(sentTexts()[1]).toStartWith("look at @b.ts\n\n@b.ts (file, 1 line)");
+      expect(state().entries.map(contentOf)).toEqual(["look at @b.ts", "New."]);
+      expect(state().entries[0]).toMatchObject({ mentions: [{ path: "b.ts", status: "attached" }] });
+      await until(state, () => contentOf(savedIn(files, state)?.entries.at(-1)) === "New.");
+      expect(JSON.stringify(savedIn(files, state))).not.toContain("Old.");
+      expect(savedIn(files, state)!.entries.map(contentOf)).toEqual(["look at @b.ts", "New."]);
+    });
+
+    test("a stale count, no user entry, or a completed /compact summary after it removes nothing and returns the text", async () => {
+      scripts.set("queue", [{ content: "Old." }]);
+      const files = memoryFiles();
+      const { controller, state, release, returned } = await gated({ store: new ConversationStore(files) });
+      await controller.send("B", ["b.ts"], 0);
+      expect(state().entries).toEqual([]);
+
+      const first = controller.send("A");
+      await release();
+      await first;
+      await controller.send("C", [], 3);
+      await controller.send("D", [], 1);
+      expect(state().entries.map(contentOf)).toEqual(["A", "Old."]);
+
+      const compacted: ConversationRecord = {
+        version: 2,
+        id: newConversationId(),
+        createdAt: 1,
+        updatedAt: 2,
+        entries: [
+          { role: "user", content: "go", mentions: [], modelText: "go" },
+          { role: "assistant", reasoning: "", content: "Ok.", status: "done" },
+          { role: "assistant", reasoning: "", content: "Summary.", status: "done", summary: true },
+        ],
+      };
+      files.files.set(`${compacted.id}.json`, JSON.stringify(compacted));
+      await controller.openConversation(compacted.id);
+      await controller.send("E", [], 3);
+      expect(state().entries.map(contentOf)).toEqual(["go", "Ok.", "Summary."]);
+
+      expect(sent()).toHaveLength(1);
+      expect(returned).toEqual([paragraph("B", ["b.ts"]), paragraph("C"), paragraph("D"), paragraph("E")]);
+    });
+
+    test("during a reply it is queued as an ordinary message and removes nothing", async () => {
+      scripts.set("queue", [{ content: "one" }, { content: "two" }]);
+      const { controller, state, release } = await gated();
+      const first = controller.send("A");
+      await controller.send("B", [], 2);
+      expect(state().queue.map((message) => message.text)).toEqual(["B"]);
+      await release();
+      await until(state, (s) => userTexts(s).length === 2);
+      await release();
+      await first;
+      expect(state().entries.map(contentOf)).toEqual(["A", "one", "B", "two"]);
+    });
+  });
+
   test("a failed turn sends nothing and keeps the queue", async () => {
     scripts.set("queue", ["fail"]);
     const { controller, state, release } = await gated();
@@ -5341,6 +5434,46 @@ describe("ChatController undo", () => {
     await controller.retry(8);
     expect(state().entries.map(contentOf).at(-1)).toBe("Once more.");
     expect(state().undo.reply).toBeUndefined();
+  });
+
+  test("a send replacing the held turn drops its data and outcome and reverts nothing", async () => {
+    writeFileSync(file("a.txt"), "a0\n");
+    writeFileSync(file("b.txt"), "b0\n");
+    const { controller, state, unsaved } = await undoable([
+      { content: writeCall("a.txt", "a1") },
+      { content: "First." },
+      { content: writeCall("b.txt", "b1") },
+      { content: "Second." },
+      { content: "Edited." },
+    ]);
+    await controller.send("first");
+    await controller.send("second");
+    unsaved.add(file("b.txt"));
+    await controller.undoChanges();
+    expect(state().undo).toMatchObject({ reply: 7, outcome: { reply: 7 } });
+
+    await controller.send("second, edited", [], 8);
+    expect(text("b.txt")).toBe("b1\n");
+    expect(state().entries.map(contentOf).slice(4)).toEqual(["second, edited", "Edited."]);
+    expect(state().undo).toEqual({ reply: undefined, ranCommand: false, running: false, outcome: undefined });
+  });
+
+  test("a send replacing the last turn keeps a turn held from before it", async () => {
+    writeFileSync(file("a.txt"), "a0\n");
+    const { controller, state } = await undoable([
+      { content: writeCall("a.txt", "a1") },
+      { content: "First." },
+      { content: "Nothing written." },
+      { content: "Edited." },
+    ]);
+    await controller.send("first");
+    await controller.send("second");
+    expect(state().undo.reply).toBe(3);
+    await controller.send("second, edited", [], 6);
+    expect(state().entries.map(contentOf).slice(4)).toEqual(["second, edited", "Edited."]);
+    expect(state().undo.reply).toBe(3);
+    await controller.undoChanges();
+    expect(text("a.txt")).toBe("a0\n");
   });
 
   test("Retry keeps a turn held from before the last user entry", async () => {

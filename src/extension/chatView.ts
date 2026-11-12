@@ -156,7 +156,7 @@ export class ChatView implements vscode.WebviewViewProvider {
       case "retryModels":
         return void controller.loadModels();
       case "send":
-        return void controller.send(message.text, message.mentions);
+        return void controller.send(message.text, message.mentions, message.replaces);
       case "queueMessage":
         return void controller.queueMessage(message.text, message.mentions);
       case "removeQueued":
