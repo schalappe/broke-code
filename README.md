@@ -242,10 +242,11 @@ older tool results left out (below), with a message asking you to start a new ch
 again; so is an empty reply, which counts as a malformed call.
 
 You can keep typing while a turn runs: **Send** (or Enter) then queues the message under the message box instead of
-sending it, up to 10 messages. When the turn ends with the model's answer, the first queued message goes out as if you
+sending it, up to 10 messages; a message the queue cannot take comes back to the message box. When the turn ends with the model's answer, the first queued message goes out as if you
 had just sent it: its mentions are read then, a `/<skill>` message loads its skill then, and the provider, model, and
 mode are those of that moment. The next one waits for that turn, and so on. Each queued message has **Edit**, which
-takes it out of the queue and puts it back in the message box, after what you are typing, and **Remove**. When a turn
+takes it out of the queue and puts it back in the message box, after what you are typing (unless it was sent
+meanwhile), and **Remove**. When a turn
 ends any other way (**Stop**, a failure, a limit) nothing more is sent: the panel says the queue is paused, and **Send
 now** on the first message sends it. A message you send yourself while the queue is paused goes first, and the queue
 resumes when its turn ends with an answer. **New chat**, `/new`, opening another conversation, and deleting the one

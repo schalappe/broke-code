@@ -28,6 +28,7 @@ import {
   type ChatEntry,
   type ChatState,
   type ContextUsage,
+  type DraftInsert,
   type HaltReason,
   isReplying,
   MAX_QUEUED_MESSAGES,
@@ -107,7 +108,9 @@ export type LimitsSource = { read(): TurnLimits };
  * reaches the next write of a turn in flight; absent or throwing means off. It also gives `ChatState.mode`, read at
  * `modeChanged` and after each `setMode`.
  * `writeAutoApproveWrites`: writes the user value of that setting; rejects when the write fails; absent, every write
- * fails. `now`: clock for record times, in milliseconds since the epoch.
+ * fails. `returnDraft`: puts a `paragraph` draft in the message box, delivered when the panel can take it: the queued
+ * texts the controller takes out without sending them, or refuses to queue, so nothing typed is lost; absent, each is
+ * logged as lost. `now`: clock for record times, in milliseconds since the epoch.
  */
 export type ChatPorts = {
   apiKeys: KeyStore;
@@ -121,6 +124,7 @@ export type ChatPorts = {
   limits?: LimitsSource;
   autoApproveWrites?: () => boolean;
   writeAutoApproveWrites?: (on: boolean) => Promise<void>;
+  returnDraft?: (draft: DraftInsert) => void;
   now?: () => number;
 };
 
@@ -207,6 +211,7 @@ export class ChatController {
   private readonly limitsSource: LimitsSource;
   private readonly autoApproveWrites: () => boolean;
   private readonly writeAutoApproveWrites: (on: boolean) => Promise<void>;
+  private readonly returnDraft: (draft: DraftInsert) => void;
   private readonly now: () => number;
   /** Limits the usage display reads, refreshed at each send and by `limitsChanged`. */
   private limits: TurnLimits;
@@ -237,6 +242,9 @@ export class ChatController {
       (async () => {
         throw new Error("no settings writer");
       });
+    this.returnDraft =
+      ports.returnDraft ??
+      ((draft) => console.error("broke-code: no message box to return queued text to; it is lost", draft.text));
     this.now = ports.now ?? Date.now;
     this.plan = this.workspaceState.get<unknown>(PLAN_KEY) === true;
     // [>]: Instruction files and skills are read only at a send, never just to refresh the display.
@@ -506,15 +514,31 @@ export class ChatController {
 
   /**
    * Queue `text` while a reply is in flight, with its `picked` paths, to be sent as if typed when a turn ends `done`.
-   * Refused, silently as `send` is: blank text, exactly a built-in command (`/new`, `/model`), which the webview runs
-   * itself, and a queue already holding `MAX_QUEUED_MESSAGES`, which the panel says. Not refused when no reply is in
-   * flight, since the webview's state may lag the host's: the message then waits, paused, for Send now.
+   * The webview clears the box before the host answers and its state may lag, so a message not queued goes back to the
+   * box (`returnDraft`), never dropped: exactly a built-in command (`/new`, `/model`), which the webview runs itself, and
+   * a message past `MAX_QUEUED_MESSAGES`. With no reply in flight (it ended before the request arrived), the message is
+   * sent at once as `send` would, when a turn may start and nothing is queued; otherwise it goes back to the box, so no
+   * message waits paused because of a late request. Blank text is dropped, as `send` drops it.
    */
-  queueMessage(text: string, picked: readonly string[]): void {
+  async queueMessage(text: string, picked: readonly string[]): Promise<void> {
     const content = text.trim();
-    if (!content || builtInCommand(content) || this.state.queue.length >= MAX_QUEUED_MESSAGES) return;
-    this.state.queue = [...this.state.queue, { id: ++this.queuedId, text: content, mentions: [...picked] }];
+    if (!content) return;
+    const message = { text: content, mentions: [...picked] };
+    if (!isReplying(this.state) && !builtInCommand(content) && this.mayStartTurn() && this.state.queue.length === 0) {
+      return this.send(content, picked);
+    }
+    const queues = isReplying(this.state) && !builtInCommand(content) && this.state.queue.length < MAX_QUEUED_MESSAGES;
+    if (!queues) return this.giveBack([message]);
+    this.state.queue = [...this.state.queue, { id: ++this.queuedId, ...message }];
     this.emit();
+  }
+
+  /** Edit: take queued message `id` out and return its text and picked paths to the box. Ignored when not queued. */
+  editQueued(id: number): void {
+    const message = this.state.queue.find((queued) => queued.id === id);
+    if (!message) return;
+    this.removeQueued(id);
+    this.giveBack([message]);
   }
 
   /** Remove queued message `id`. Ignored when no such message is queued. */
@@ -545,16 +569,32 @@ export class ChatController {
     return this.send(next.text, next.mentions);
   }
 
-  /** Empty the queue: navigation that changes the conversation shown, when asked, and deactivation. */
-  private clearQueue(): void {
-    if (this.state.queue.length === 0) return;
+  /**
+   * Navigation that changes the conversation shown, when asked: empty the queue and return its texts to the box, in
+   * order, one per paragraph. Emptied once, so a second request returns nothing again.
+   */
+  private returnQueue(): void {
+    const messages = this.state.queue;
+    if (messages.length === 0) return;
     this.state.queue = [];
     this.emit();
+    this.giveBack(messages);
   }
 
-  /** Deactivation: nothing queued is sent, and the reply in flight is stopped. */
+  /** `messages`' texts back in the message box as one `paragraph` draft, their picked paths each once. */
+  private giveBack(messages: readonly { text: string; mentions: readonly string[] }[]): void {
+    const text = messages.map((message) => message.text).join("\n\n");
+    const picked = [...new Set(messages.flatMap((message) => message.mentions))];
+    try {
+      this.returnDraft({ text, mode: "paragraph", picked });
+    } catch (error) {
+      console.error("broke-code: could not return queued text to the message box; it is lost", text, error);
+    }
+  }
+
+  /** Deactivation: nothing queued is sent or returned, since the panel goes too, and the reply in flight is stopped. */
   dispose(): void {
-    this.clearQueue();
+    this.state.queue = [];
     this.stop();
   }
 
@@ -880,7 +920,7 @@ export class ChatController {
    */
   newChat(): Promise<void> {
     this.stop();
-    this.clearQueue();
+    this.returnQueue();
     return this.navigate(async () => {
       await this.settleReply();
       this.show(this.freshConversation());
@@ -894,7 +934,7 @@ export class ChatController {
   openConversation(id: string): Promise<void> {
     if (id !== this.conversation.id) {
       this.stop();
-      this.clearQueue();
+      this.returnQueue();
     }
     return this.navigate(async () => {
       if (id === this.conversation.id) return;
@@ -919,7 +959,7 @@ export class ChatController {
   deleteConversation(id: string): Promise<void> {
     if (id === this.conversation.id) {
       this.stop();
-      this.clearQueue();
+      this.returnQueue();
     }
     return this.navigate(async () => {
       if (id === this.conversation.id) {

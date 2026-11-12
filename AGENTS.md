@@ -76,7 +76,8 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   `@diff` port, with the repository-relative literal pathspec and git's `stderr` as the cause), `@selection` (`selection.ts`: the raw `EditorSelection` the
   host's `SelectionReader` returns, `editorSelection`, that record from a structural text editor, and `readSelection`, the workspace check, the line range, and the caps), the quick fix "Fix with broke-code" (`quickFix.ts`: `fixDraft`, the
   diagnostics it is offered on and the draft it fills, and `parseDiagnostic`, the check of its command's argument), the editor drafts on their way to the webview
-  (`draftQueue.ts`: `DraftQueue`, queued once the chat shows, delivered in order and once, kept when a post fails), where a
+  (`draftQueue.ts`: `DraftQueue`, an editor draft queued once the chat shows, a returned queued text at once (`queue`),
+  delivered in order and once, kept when a post fails), where a
   message holds Markdown code
   (`markdownCode.ts`; also `remarkFenceClosed`, the remark plugin marking a fenced block whose closing fence the parser read,
   `hasTextAfter`, whether rendered text follows a block, and `codeBlockText`,
@@ -135,9 +136,8 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   the `pre` override of the answer's renderer) included. `SuggestionMenu.tsx` is the autocomplete list the `@` and
   `/` menus share, a row with an optional description; `composer.ts` holds the message box's decisions without React
   (the token at the caret, each menu's rows, what a key does, what picking a `/` row does (`slashPick`), `applyDraft`,
-  how an editor draft edits the message box's text, caret, and picked paths, `restoreQueued`, how queued messages go
-  back in it, and `queueReturnedBy`, which navigation request returns the queue). The queued messages render under the
-  message box (`QueuedMessages`).
+  how a host draft (an editor entry point's, or queued texts returned as a `paragraph`) edits the message box's text,
+  caret, and picked paths). The queued messages render under the message box (`QueuedMessages`).
   `Root.tsx` is the panel's root: it posts `ready`, renders each state, and queues the `insertDraft` drafts for the
   message box; `main.tsx` mounts it. `turns.ts` groups the entries for rendering without React (`foldTurns`: each entry once,
   an ended turn's fold and its step counts), and `text.ts` words the fold's row (`describeFold`).
@@ -475,28 +475,37 @@ on an error or warning puts a request to fix it there, with its file as a mentio
 - Queued messages (#70): while a reply is in flight, Send and Enter post `queueMessage { text, mentions }` (validated
   like `send`) instead of `send`, and the box clears; with no model, or a mode change pending, Send does nothing, as
   before. `ChatController.queueMessage` appends `{ id, text, mentions }` (`QueuedMessage`, the id the controller's, the
-  text trimmed) to `ChatState.queue`; it refuses blank text, exactly a built-in command (`builtInCommand`; the
-  webview leaves one as text in the box during a reply), and an 11th message (`MAX_QUEUED_MESSAGES`, 10, since the
-  whole state is posted at each delta; the panel then leaves the text in the box and says the queue is full). It does
-  not refuse a message when no reply is in flight, since the webview's state may lag: the message waits, paused.
-  `send` runs the turn (`runTurn`, which returns its last status) and, only once it has fully settled (after the
-  `finally` that clears `this.reply`, never inside `settle`, since navigation awaits `reply.settled`) and only when it
-  ended `done`, sends the first queued message (`sendNextQueued`): it peeks, checks `mayStartTurn` (provider and model
-  chosen, no reply in flight, no mode write pending; the one check `send` shares), then takes it off the queue and calls
-  `send` in the same step, so it is never shown in both places, and the message goes as if typed then (mentions read,
-  a `/<name>` skill loaded, provider, model, mode, and limits of that moment). The next waits for that turn. When the
-  check fails (the model gone after a failed listing), nothing is sent and it stays first. A turn ending `stopped`,
-  `failed`, or `halted` sends nothing. The queue is paused when it holds a message and no reply is in flight
-  (`isQueuePaused`, derived, never stored): the panel says so and the first message has "Send now", `sendQueued { id }`,
-  which acts only on the first message and only when Send would; its turn ending `done` resumes the queue. A message
-  sent normally while paused goes first, and its `done` resumes the queue too. `removeQueued { id }` removes one (an
-  unknown id changes nothing); Edit posts it and puts the text and picked paths back in the box (`restoreQueued`:
-  filling a blank box, else after a blank line), then focuses the box (the third focus move DESIGN.md allows). The rows sit under the message box, after the
-  mode selector, Send, and Stop in the tab order (DESIGN.md: nothing focusable between the approval controls and the
-  box), each with Edit and Remove; queuing moves no focus. The queue lives in `ChatState` only: never in the record,
-  kept while the panel is hidden, lost at a window reload. Deactivation calls `ChatController.dispose`, which empties
-  it and stops the reply, so nothing is sent. Steering (a message inside the running turn) is out of scope: it would
-  put a user message next to a tool result.
+  text trimmed) to `ChatState.queue` while a reply is in flight. The host decides, not the webview, whose box is
+  already cleared and whose state may lag (maintainer decision, 2026-11-12): a message it does not queue goes back to
+  the message box through the `returnDraft` port, never dropped: exactly a built-in command (`builtInCommand`; the
+  webview leaves one as text in the box during a reply), and a message past `MAX_QUEUED_MESSAGES` (10, since the whole
+  state is posted at each delta; the panel also says the queue is full and leaves the text in the box). A
+  `queueMessage` that arrives with no reply in flight is sent at once as `send` would when a turn may start and the
+  queue is empty, and otherwise goes back to the box, so no message waits paused because of a late request. Blank text
+  is dropped. `send` runs the turn (`runTurn`, which returns its last status) and, only once it has fully settled
+  (after the `finally` that clears `this.reply`, never inside `settle`, since navigation awaits `reply.settled`) and
+  only when it ended `done`, sends the first queued message (`sendNextQueued`): it peeks, checks `mayStartTurn`
+  (provider and model chosen, no reply in flight, no mode write pending; the one check `send` shares), then takes it
+  off the queue and calls `send` in the same step, so it is never shown in both places, and the message goes as if
+  typed then (mentions read, a `/<name>` skill loaded, provider, model, mode, and limits of that moment). The next
+  waits for that turn. When the check fails (the model gone after a failed listing), nothing is sent and it stays
+  first. A turn ending `stopped`, `failed`, or `halted` sends nothing. The queue is paused when it holds a message and
+  no reply is in flight (`isQueuePaused`, derived, never stored): the panel says so and the first message has "Send
+  now", `sendQueued { id }`, which acts only on the first message and only when Send would; its turn ending `done`
+  resumes the queue. A message sent normally while paused goes first, and its `done` resumes the queue too.
+  `removeQueued { id }` removes one; `editQueued { id }` (Edit) removes it and returns its text and picked paths to the
+  box; for either, an id no longer queued (sent meanwhile) does nothing, so a sent message never lands in the box too.
+  Edit focuses the message box at the click (the third focus move DESIGN.md allows). Returned texts are one
+  `insertDraft` of mode `paragraph` (`DraftInsert`) per request, the texts in queue order joined by a blank line, the
+  picked paths each once: `applyDraft` fills a blank box with it, else appends it after a blank line. The host queues
+  it in the `DraftQueue` without showing the view (`ChatView.returnDraft`, `DraftQueue.queue`), since the request came
+  from the panel, so a hidden panel gets it at its next `ready`; the webview applies it like an editor draft, but it
+  closes no History and moves no focus. A port that is absent or throws logs the text as lost. The rows sit under the
+  message box, after the mode selector, Send, and Stop in the tab order (DESIGN.md: nothing focusable between the
+  approval controls and the box), each with Edit and Remove; queuing moves no focus. The queue lives in `ChatState`
+  only: never in the record, kept while the panel is hidden, lost at a window reload. Deactivation calls
+  `ChatController.dispose`, which empties it without returning anything and stops the reply, so nothing is sent.
+  Steering (a message inside the running turn) is out of scope: it would put a user message next to a tool result.
 - Before each request of an agent turn, the first included, the controller estimates its size as the characters of the
   system prompt and of each history message's content (as `toHistory` builds it, reasoning excluded) divided by 4,
   rounded up. Above `floor(size * 7 / 8)` of the model's context size (`fillsContext`, never a copy of its arithmetic),
@@ -771,10 +780,10 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   saved, and late reply text or outcome is dropped. A row is dropped only once its delete has succeeded. Deleting the
   conversation shown shows a new one first. New chat, opening another conversation, and deleting the one shown also
   empty the queue at request time, not when they run, so a turn ending `done` meanwhile sends nothing; opening the
-  conversation shown, deleting another row, and pruning leave it. The webview puts the queued texts back in the message
-  box as it posts the request (`queueReturnedBy`, from the state it holds, no host message), one per paragraph, after
-  the draft when the box holds one. Accepted race: a message queued and not yet in the webview's state when the request
-  posts is dropped with the queue. `send` is not navigation: its saves go straight to the store. Accepted cost:
+  conversation shown, deleting another row, and pruning leave it. The controller returns the queued texts to the
+  message box as it empties the queue (one `paragraph` draft, one per paragraph, after the draft when the box holds
+  one), so a message queued just before the request is returned too, and a second request returns nothing again.
+  `send` is not navigation: its saves go straight to the store. Accepted cost:
   a request waits behind a slow disk operation already queued. Reopening restores the entries only; it does not switch
   the provider or model. History works without a provider: past conversations can be read, reopened, and deleted; only
   the composer needs one. Without a folder or workspace open, there is no storage directory: the conversation stays in

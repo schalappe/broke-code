@@ -5,7 +5,6 @@ import {
   type KeyboardEvent,
   type ReactNode,
   type Ref,
-  useCallback,
   useContext,
   useEffect,
   useLayoutEffect,
@@ -30,7 +29,6 @@ import {
   type PendingApproval,
   type QueuedMessage,
   type ReplyCall,
-  type WebviewMessage,
 } from "../core/protocol";
 import type { ProviderError } from "../core/providerError";
 import { isNothingToAttach, type ReservedMention, reservedMention } from "../core/reservedMentions";
@@ -38,6 +36,7 @@ import { BUILT_IN_COMMANDS, type BuiltInCommand, builtInCommand, type SlashComma
 import {
   applyDraft,
   composerKeyAction,
+  type Draft,
   type MentionRow,
   type MenuAnswer,
   type MenuToken,
@@ -46,9 +45,7 @@ import {
   menuView,
   openMenuToken,
   pickedInText,
-  queueReturnedBy,
   replaceToken,
-  restoreQueued,
   type SkillAnswer,
   type SlashRow,
   slashMenuView,
@@ -76,8 +73,7 @@ import { post } from "./vscodeApi";
 /**
  * `language`: BCP 47 tag of the VS Code display language, for dates. `drafts`: editor drafts not yet applied, which the
  * message box applies and `takeDrafts` removes; one closes History. Without a message box they are taken unapplied:
- * a draft is never held for a box that may never come. A navigation request that empties the queue returns its texts
- * to the message box (`queueReturnedBy`); they wait for the box when it is not shown, since they were typed.
+ * a draft is never held for a box that may never come. Queued texts the host returns (`paragraph` drafts) close nothing.
  */
 export function App({
   state,
@@ -94,18 +90,10 @@ export function App({
   const composerShown = configured || isReplying(state);
   const [historyOpen, setHistoryOpen] = useState(false);
   const historyButton = useRef<HTMLButtonElement>(null);
-  /** Queued messages returned by navigation and not yet back in the message box, in request order. */
-  const [returned, setReturned] = useState<(readonly QueuedMessage[])[]>([]);
-  const takeReturned = useCallback((count: number) => setReturned((pending) => pending.slice(count)), []);
-  const navigate = (request: WebviewMessage) => {
-    const messages = queueReturnedBy(request, state);
-    if (messages.length > 0) setReturned((pending) => [...pending, messages]);
-    post(request);
-  };
 
   useEffect(() => {
     if (drafts.length === 0) return;
-    setHistoryOpen(false);
+    if (drafts.some(fromEditor)) setHistoryOpen(false);
     if (!composerShown) takeDrafts(drafts.length);
   }, [drafts, composerShown, takeDrafts]);
   return (
@@ -117,7 +105,6 @@ export function App({
         historyOpen={historyOpen}
         toggleHistory={() => setHistoryOpen(!historyOpen)}
         historyButton={historyButton}
-        navigate={navigate}
       />
       {!configured && <EmptyState />}
       <Warnings state={state} />
@@ -135,7 +122,6 @@ export function App({
           state={state}
           language={language}
           close={() => setHistoryOpen(false)}
-          navigate={navigate}
           dismiss={() => {
             setHistoryOpen(false);
             historyButton.current?.focus();
@@ -159,16 +145,19 @@ export function App({
           historyOpen={historyOpen}
           drafts={drafts}
           takeDrafts={takeDrafts}
-          returned={returned}
-          takeReturned={takeReturned}
           startNewChat={() => {
             setHistoryOpen(false);
-            navigate({ type: "newChat" });
+            post({ type: "newChat" });
           }}
         />
       )}
     </main>
   );
+}
+
+/** A draft from an editor entry point, which closes History and focuses the box; queued texts returned do neither. */
+function fromEditor(draft: DraftInsert): boolean {
+  return draft.mode !== "paragraph";
 }
 
 /** No provider: add one in the editor's guided flow, or write the settings by hand. */
@@ -193,7 +182,7 @@ const HISTORY_ID = "history";
 /**
  * Provider and model pickers (with a provider configured), the context usage of the selected model, New chat, and the
  * History toggle. `language`: BCP 47 tag for the usage numbers. `historyButton`: the toggle, which takes the focus
- * back when Escape closes History. `navigate`: posts New chat, returning the queue to the message box.
+ * back when Escape closes History.
  */
 export function Header({
   state,
@@ -201,14 +190,12 @@ export function Header({
   historyOpen,
   toggleHistory,
   historyButton,
-  navigate = post,
 }: {
   state: ChatState;
   language: string;
   historyOpen: boolean;
   toggleHistory: () => void;
   historyButton?: Ref<HTMLButtonElement>;
-  navigate?: (request: WebviewMessage) => void;
 }) {
   return (
     <header className="header">
@@ -225,7 +212,7 @@ export function Header({
           disabled={state.entries.length === 0}
           onClick={() => {
             if (historyOpen) toggleHistory();
-            navigate({ type: "newChat" });
+            post({ type: "newChat" });
           }}
         >
           {l10n.t("New chat")}
@@ -371,20 +358,17 @@ function ErrorBlock({ error, retry }: { error: ProviderError; retry?: () => void
  * History list wired to the host: a pick closes it and asks to open that conversation, even the one shown, since a
  * pending open may be about to replace it; the controller skips an open of the conversation shown when it runs.
  * Delete deletes. `dismiss`: Escape in an empty filter field, which closes History and focuses its toggle.
- * `navigate`: posts the open and delete requests, returning the queue to the message box when they empty it.
  */
 export function HistoryPanel({
   state,
   language,
   close,
   dismiss,
-  navigate = post,
 }: {
   state: ChatState;
   language: string;
   close: () => void;
   dismiss: () => void;
-  navigate?: (request: WebviewMessage) => void;
 }) {
   return (
     <ConversationList
@@ -393,9 +377,9 @@ export function HistoryPanel({
       language={language}
       onOpen={(id) => {
         close();
-        navigate({ type: "openConversation", id });
+        post({ type: "openConversation", id });
       }}
-      onDelete={(id) => navigate({ type: "deleteConversation", id })}
+      onDelete={(id) => post({ type: "deleteConversation", id })}
       onDismiss={dismiss}
     />
   );
@@ -1032,9 +1016,8 @@ function Reasoning({ entry }: { entry: ChatEntry & { role: "assistant" } }) {
  * focus then stays where the user has it, so typing keeps going to the History filter. `drafts` from the editor are
  * applied in order (`applyDraft`), whatever the reply's state, then taken, and the message box takes the focus.
  * While a reply is in flight, Send and Enter queue the message instead (`queueMessage`), up to `MAX_QUEUED_MESSAGES`,
- * a built-in command excepted, which stays text in the box; the queue shows under the box (`QueuedMessages`).
- * `returned` queued messages, which navigation emptied, go back in the box (`restoreQueued`), then are taken; neither
- * moves the focus.
+ * a built-in command excepted, which stays text in the box; the queue shows under the box (`QueuedMessages`). Queued
+ * texts the host returns arrive as `paragraph` drafts, applied like the editor's but without moving the focus.
  */
 function Composer({
   state,
@@ -1042,16 +1025,12 @@ function Composer({
   startNewChat,
   drafts,
   takeDrafts,
-  returned,
-  takeReturned,
 }: {
   state: ChatState;
   historyOpen: boolean;
   startNewChat: () => void;
   drafts: readonly DraftInsert[];
   takeDrafts: (count: number) => void;
-  returned: readonly (readonly QueuedMessage[])[];
-  takeReturned: (count: number) => void;
 }) {
   const [text, setText] = useState("");
   const [caret, setCaret] = useState(0);
@@ -1138,15 +1117,22 @@ function Composer({
     return () => window.removeEventListener("message", onMessage);
   }, []);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: a draft applies to the box as it stands when it arrives.
-  useEffect(() => {
-    if (drafts.length === 0) return;
-    const next = drafts.reduce(applyDraft, { text, caret, picked });
+  /** Put `next` in the message box: its text, its picked paths, and its caret, placed once the box has rendered it. */
+  const setDraft = (next: Draft) => {
     setText(next.text);
     setCaret(next.caret);
     setPicked([...next.picked]);
     nextCaret.current = next.caret;
+  };
+
+  // [>]: An editor draft focuses the box, since the user asked for it from the editor; queued texts the host returns
+  // came from a request made in the panel, so the focus stays where the user has it.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a draft applies to the box as it stands when it arrives.
+  useEffect(() => {
+    if (drafts.length === 0) return;
+    setDraft(drafts.reduce(applyDraft, { text, caret, picked }));
     takeDrafts(drafts.length);
+    if (!drafts.some(fromEditor)) return;
     input.current?.focus();
     draftFocus.current = true;
   }, [drafts]);
@@ -1173,17 +1159,6 @@ function Composer({
     };
   }, []);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: returned texts apply to the box as it stands when they arrive.
-  useEffect(() => {
-    if (returned.length === 0) return;
-    const next = returned.reduce(restoreQueued, { text, caret, picked });
-    setText(next.text);
-    setCaret(next.caret);
-    setPicked([...next.picked]);
-    nextCaret.current = next.caret;
-    takeReturned(returned.length);
-  }, [returned]);
-
   useLayoutEffect(() => {
     if (nextCaret.current === undefined) return;
     input.current?.setSelectionRange(nextCaret.current, nextCaret.current);
@@ -1195,11 +1170,7 @@ function Composer({
   // [>]: Only a reply in flight queues; with no model or a mode change pending, Send does nothing either way.
   const canQueue = ready && replying && !state.modePending && state.queue.length < MAX_QUEUED_MESSAGES;
 
-  const clear = () => {
-    setText("");
-    setCaret(0);
-    setPicked([]);
-  };
+  const clear = () => setDraft({ text: "", caret: 0, picked: [] });
 
   const run = (command: BuiltInCommand) => {
     if (command === "new") startNewChat();
@@ -1215,12 +1186,9 @@ function Composer({
     const mention = item ? mentionPick(item) : undefined;
     const inserted = action ? action.text : mention?.text;
     if (!token || inserted === undefined) return;
-    const next = replaceToken(text, token, caret, inserted);
-    setText(next.text);
-    setCaret(next.caret);
-    nextCaret.current = next.caret;
     const path = mention?.picked;
-    if (path !== undefined) setPicked((paths) => (paths.includes(path) ? paths : [...paths, path]));
+    const paths = path === undefined || picked.includes(path) ? picked : [...picked, path];
+    setDraft({ ...replaceToken(text, token, caret, inserted), picked: paths });
   };
 
   const send = () => {
@@ -1234,14 +1202,10 @@ function Composer({
     clear();
   };
 
+  // [>]: The host takes the message out and returns its text, so a message sent meanwhile never lands in the box too.
+  // The user asked to edit it, and the row they clicked goes: the message box takes the focus now.
   const edit = (message: QueuedMessage) => {
-    post({ type: "removeQueued", id: message.id });
-    const next = restoreQueued({ text, caret, picked }, [message]);
-    setText(next.text);
-    setCaret(next.caret);
-    setPicked([...next.picked]);
-    nextCaret.current = next.caret;
-    // [>]: The user asked to edit it, and the row they clicked is gone: the message box takes the focus.
+    post({ type: "editQueued", id: message.id });
     input.current?.focus();
   };
 

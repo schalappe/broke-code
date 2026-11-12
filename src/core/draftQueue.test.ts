@@ -41,6 +41,19 @@ describe("DraftQueue", () => {
     expect(state.sent).toEqual(["a", "b"]);
   });
 
+  test("a returned draft is queued without showing the chat, delivered at once or at the next ready, in order", async () => {
+    const { state, queue } = fixture();
+    await queue.queue(draft("a"));
+    expect(state.sent).toEqual(["a"]);
+    state.deliverable = false;
+    await queue.queue(draft("b"));
+    await queue.queue(draft("c"));
+    expect(state.sent).toEqual(["a"]);
+    state.deliverable = true;
+    await queue.deliver();
+    expect(state.sent).toEqual(["a", "b", "c"]);
+  });
+
   test("overlapping inserts keep their call order, whichever show settles first", async () => {
     const { state, queue } = fixture();
     let release = () => {};

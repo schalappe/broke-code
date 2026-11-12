@@ -162,8 +162,8 @@ describe("parseWebviewMessage", () => {
     }
   });
 
-  test("accepts removing and sending now a queued message by its id, and drops any other id", () => {
-    for (const type of ["removeQueued", "sendQueued"] as const) {
+  test("accepts removing, editing, and sending now a queued message by its id, and drops any other id", () => {
+    for (const type of ["removeQueued", "editQueued", "sendQueued"] as const) {
       expect(parseWebviewMessage({ type, id: 3 })).toEqual({ type, id: 3 });
       for (const id of [undefined, "3", -1, 1.5, Number.NaN, null]) {
         expect(parseWebviewMessage({ type, id })).toBeUndefined();

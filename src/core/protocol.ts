@@ -200,12 +200,14 @@ export type ChatState = {
 };
 
 /**
- * Text an editor entry point puts in the message box, never sent: `caret` inserts it at the box's caret, spaced from
- * the text around it; `fillOrAppend` fills a box empty or holding only whitespace, else appends it after one line
- * break. `picked`: the paths its mentions name, added to the box's picked paths, so a path with spaces or trailing
- * punctuation is one mention.
+ * Text the host puts in the message box, never sent. From an editor entry point: `caret` inserts it at the box's
+ * caret, spaced from the text around it; `fillOrAppend` fills a box empty or holding only whitespace, else appends it
+ * after one line break; either closes History and focuses the box. From the queue: `paragraph`, the queued texts the
+ * controller took out without sending them (navigation, Edit) or refused to queue, fills a blank box, else follows its
+ * text after a blank line, and closes nothing and moves no focus. `picked`: the paths its mentions name, added to the
+ * box's picked paths, so a path with spaces or trailing punctuation is one mention.
  */
-export type DraftInsert = { text: string; mode: "caret" | "fillOrAppend"; picked: string[] };
+export type DraftInsert = { text: string; mode: "caret" | "fillOrAppend" | "paragraph"; picked: string[] };
 
 /** L10n bundle as `vscode.l10n.bundle`: absent in English. */
 export type L10nBundle = Record<string, string>;
@@ -238,8 +240,10 @@ export type WebviewMessage =
   | { type: "send"; text: string; mentions: string[] }
   /** Send while a reply is in flight: queue the message, with its picked mention paths, as `send` carries them. */
   | { type: "queueMessage"; text: string; mentions: string[] }
-  /** Remove queued message `id`; Edit also puts it back in the message box, which the webview does itself. */
+  /** Remove queued message `id`. */
   | { type: "removeQueued"; id: number }
+  /** Edit queued message `id`: the host removes it and returns its text to the message box as a `paragraph` draft. */
+  | { type: "editQueued"; id: number }
   /** "Send now" on queued message `id` while the queue is paused; acts only on the first, and only when Send would. */
   | { type: "sendQueued"; id: number }
   /** `id`: grows with each query, so the webview can drop stale answers. */
@@ -337,6 +341,7 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | undefined {
       return value === undefined || mentions === undefined ? undefined : { type: message.type, text: value, mentions };
     }
     case "removeQueued":
+    case "editQueued":
     case "sendQueued":
       return isRequestId(message.id) ? { type: message.type, id: message.id } : undefined;
     case "openConversation":

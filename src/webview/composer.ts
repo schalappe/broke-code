@@ -1,16 +1,10 @@
 /**
  * @module composer
  * Decisions of the message box, kept out of React so tests need no DOM: which token opens a menu (`@` mentions, `/`
- * commands), which menu rows to show, what a key does, which picked paths to send, and how an editor entry point or a
- * returned queued message edits the draft.
+ * commands), which menu rows to show, what a key does, which picked paths to send, and how a host draft (an editor
+ * entry point, or queued texts returned) edits the message box.
  */
-import {
-  type ChatState,
-  type DraftInsert,
-  MAX_QUERY_LENGTH,
-  type QueuedMessage,
-  type WebviewMessage,
-} from "../core/protocol";
+import { type DraftInsert, MAX_QUERY_LENGTH } from "../core/protocol";
 import { type MentionKind, pickedPath, RESERVED_MENTIONS, reservedMention } from "../core/reservedMentions";
 import {
   type BuiltInCommand,
@@ -178,13 +172,14 @@ export type Draft = { text: string; caret: number; picked: readonly string[] };
 /**
  * `draft` with `insert` applied (see `DraftInsert`). At the caret, a space goes before the text unless the text before
  * the caret is empty or ends with whitespace, and one after it unless whitespace already follows, which the caret then
- * passes: the caret always follows whitespace, so no menu opens on the inserted token. Filled or appended, the caret
- * goes to the end. `insert.picked` joins the draft's picked paths, each once.
+ * passes: the caret always follows whitespace, so no menu opens on the inserted token. Filled or appended (after one
+ * line break, or a blank line for a `paragraph`), the caret goes to the end. `insert.picked` joins the draft's picked paths, each once.
  */
 export function applyDraft(draft: Draft, insert: DraftInsert): Draft {
   const unique = [...new Set([...draft.picked, ...insert.picked])];
-  if (insert.mode === "fillOrAppend") {
-    const text = draft.text.trim() === "" ? insert.text : `${draft.text}\n${insert.text}`;
+  if (insert.mode !== "caret") {
+    const separator = insert.mode === "paragraph" ? "\n\n" : "\n";
+    const text = draft.text.trim() === "" ? insert.text : `${draft.text}${separator}${insert.text}`;
     return { text, caret: text.length, picked: unique };
   }
   const before = draft.text.slice(0, draft.caret);
@@ -192,31 +187,4 @@ export function applyDraft(draft: Draft, insert: DraftInsert): Draft {
   const lead = before === "" || /\s$/.test(before) ? "" : " ";
   const head = `${before}${lead}${insert.text}${/^\s/.test(after) ? after[0] : " "}`;
   return { text: head + (/^\s/.test(after) ? after.slice(1) : after), caret: head.length, picked: unique };
-}
-
-/**
- * `draft` with `messages` back in it, the queued texts one per paragraph: they fill a box empty or holding only
- * whitespace, else follow its text after a blank line, so nothing typed is lost. Their picked paths join the draft's.
- * Edit returns one message; New chat, opening another conversation, and deleting the one shown return the whole queue.
- */
-export function restoreQueued(draft: Draft, messages: readonly QueuedMessage[]): Draft {
-  if (messages.length === 0) return draft;
-  const text = messages.map((message) => message.text).join("\n\n");
-  const picked = messages.flatMap((message) => message.mentions);
-  // [>]: `fillOrAppend` appends after one line break; a leading one makes it a blank line.
-  const appended = draft.text.trim() === "" ? text : `\n${text}`;
-  return applyDraft(draft, { text: appended, mode: "fillOrAppend", picked });
-}
-
-/**
- * The queued messages `request` returns to the message box: the whole queue for the navigation the host empties it
- * at (New chat, opening another conversation, deleting the one shown), none for any other request. The host empties
- * its own copy when the request arrives; the webview returns the texts from the state it holds, with no host message.
- */
-export function queueReturnedBy(request: WebviewMessage, state: ChatState): readonly QueuedMessage[] {
-  const empties =
-    request.type === "newChat" ||
-    (request.type === "openConversation" && request.id !== state.conversationId) ||
-    (request.type === "deleteConversation" && request.id === state.conversationId);
-  return empties ? state.queue : [];
 }

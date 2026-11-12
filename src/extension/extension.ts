@@ -85,6 +85,8 @@ export function activate(context: vscode.ExtensionContext): void {
     limits: { read: readLimits },
     autoApproveWrites: readAutoApproveWrites,
     writeAutoApproveWrites,
+    // [>]: The view exists before any request can reach the controller: requests come from its webview.
+    returnDraft: (draft) => view?.returnDraft(draft),
   });
   const fileIndex = new WorkspaceFileIndex();
   view = new ChatView(context.extensionUri, controller, {
