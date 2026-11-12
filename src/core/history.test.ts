@@ -274,6 +274,10 @@ describe("history after an automatic summary", () => {
     const manual: ChatEntry[] = [user("first"), answer("Ok."), summary("S."), user("next")];
     expect(sentEntries(manual)).toEqual(manual.slice(2));
   });
+
+  test("an empty conversation sends no entry", () => {
+    expect(sentEntries([])).toEqual([]);
+  });
 });
 
 describe("summaryHistory", () => {

@@ -62,7 +62,9 @@ export function sentEntries(entries: readonly ChatEntry[]): ChatEntry[] {
  * a turn holds no `/compact` summary. `undefined` for any other entry.
  */
 function quotedMessage(entries: readonly ChatEntry[], index: number): (ChatEntry & { role: "user" }) | undefined {
-  if (!isAutomaticSummary(entries[index]!, entries[index + 1])) return undefined;
+  const summary = entries[index];
+  // [>]: `index` is past the end of an empty conversation, whose history starts at 0.
+  if (summary === undefined || !isAutomaticSummary(summary, entries[index + 1])) return undefined;
   for (let at = index - 1; at >= 0; at--) {
     const entry = entries[at]!;
     if (entry.role === "user") return entry;
