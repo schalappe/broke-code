@@ -29,10 +29,9 @@ import {
 } from "../core/protocol";
 import type { ProviderError } from "../core/providerError";
 import { isNothingToAttach, type ReservedMention, reservedMention } from "../core/reservedMentions";
-import { BUILT_IN_COMMANDS, type BuiltInCommand, type SlashCommand } from "../core/suggestions";
+import { BUILT_IN_COMMANDS, type BuiltInCommand, builtInCommand, type SlashCommand } from "../core/suggestions";
 import {
   applyDraft,
-  builtInCommand,
   composerKeyAction,
   type MentionRow,
   type MenuAnswer,

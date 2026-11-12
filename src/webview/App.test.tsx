@@ -39,6 +39,7 @@ const unsaved = {
   listFailed: undefined,
   storageProblem: undefined,
   context: { used: 0, size: 32768, known: true },
+  queue: [],
 };
 
 /** Panel markup for a conversation of one question and `reply`, English strings. */

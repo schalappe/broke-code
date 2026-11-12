@@ -3,7 +3,6 @@ import { type DraftInsert, MAX_QUERY_LENGTH } from "../core/protocol";
 import type { SlashCommand, Suggestion } from "../core/suggestions";
 import {
   applyDraft,
-  builtInCommand,
   composerKeyAction,
   type MenuAnswer,
   mentionPick,
@@ -230,19 +229,6 @@ describe("slashMenuView", () => {
     const failed = { items: [], failed: true };
     expect(slashMenuView(builtIns, failed, "")).toEqual({ items: builtIns, failed: true });
     expect(slashMenuView(builtIns, failed, "gr")).toEqual({ items: [], failed: true });
-  });
-});
-
-describe("builtInCommand", () => {
-  test("is the built-in command a message is exactly, trimmed", () => {
-    expect(builtInCommand("/new")).toBe("new");
-    expect(builtInCommand("  /model \n")).toBe("model");
-  });
-
-  test("is none for a command with words after it, another word, or another case", () => {
-    for (const text of ["/new words", "/model gpt", "/news", "/grilling", "new", "/New", "see /new"]) {
-      expect(builtInCommand(text)).toBeUndefined();
-    }
   });
 });
 

@@ -1,13 +1,12 @@
 /**
  * @module composer
  * Decisions of the message box, kept out of React so tests need no DOM: which token opens a menu (`@` mentions, `/`
- * commands), which menu rows to show, what a key does, which picked paths to send, which built-in command a message
- * runs, and how an editor entry point edits the draft.
+ * commands), which menu rows to show, what a key does, which picked paths to send, and how an editor entry point or a
+ * returned queued message edits the draft.
  */
 import { type DraftInsert, MAX_QUERY_LENGTH } from "../core/protocol";
 import { type MentionKind, pickedPath, RESERVED_MENTIONS, reservedMention } from "../core/reservedMentions";
 import {
-  BUILT_IN_COMMANDS,
   type BuiltInCommand,
   filterSlashCommands,
   filterSuggestions,
@@ -107,15 +106,6 @@ export function slashMenuView(
   const items = filterSlashCommands([...builtIns, ...(answer?.items ?? [])], query, MAX_SUGGESTIONS);
   if (answer) return { items, failed: answer.failed };
   return items.length > 0 ? { items, failed: false } : undefined;
-}
-
-/**
- * The built-in command `text` runs: its trimmed text is exactly `/<name>`. With words after it, it is an ordinary
- * message.
- */
-export function builtInCommand(text: string): BuiltInCommand | undefined {
-  const trimmed = text.trim();
-  return BUILT_IN_COMMANDS.find((name) => trimmed === `/${name}`);
 }
 
 /** What picking a `/` menu row does: `run` its built-in command, or `insert` text in place of the token. */

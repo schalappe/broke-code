@@ -142,6 +142,35 @@ describe("parseWebviewMessage", () => {
     expect(parseWebviewMessage({ type: "setMode", mode: "plan" })).toEqual({ type: "setMode", mode: "plan" });
   });
 
+  test("accepts a queued message with its picked mention paths, as a send", () => {
+    expect(parseWebviewMessage({ type: "queueMessage", text: "then @my file.ts", mentions: ["my file.ts"] })).toEqual({
+      type: "queueMessage",
+      text: "then @my file.ts",
+      mentions: ["my file.ts"],
+    });
+  });
+
+  test("drops a queued message with a bad shape", () => {
+    for (const raw of [
+      { type: "queueMessage", text: 5, mentions: [] },
+      { type: "queueMessage", mentions: [] },
+      { type: "queueMessage", text: "hi" },
+      { type: "queueMessage", text: "hi", mentions: [""] },
+      { type: "queueMessage", text: "hi", mentions: ["a".repeat(MAX_MENTION_PATH_LENGTH + 1)] },
+    ]) {
+      expect(parseWebviewMessage(raw)).toBeUndefined();
+    }
+  });
+
+  test("accepts removing and sending now a queued message by its id, and drops any other id", () => {
+    for (const type of ["removeQueued", "sendQueued"] as const) {
+      expect(parseWebviewMessage({ type, id: 3 })).toEqual({ type, id: 3 });
+      for (const id of [undefined, "3", -1, 1.5, Number.NaN, null]) {
+        expect(parseWebviewMessage({ type, id })).toBeUndefined();
+      }
+    }
+  });
+
   test("drops a mode pick of an unknown mode", () => {
     for (const mode of [undefined, "Plan", "Ask", "auto", "", true, 1, ["ask"]]) {
       expect(parseWebviewMessage({ type: "setMode", mode })).toBeUndefined();
@@ -165,6 +194,7 @@ describe("chatStateOf", () => {
     context: { used: 0, size: 32768, known: false },
     mode: "ask",
     modePending: false,
+    queue: [],
   };
 
   test("takes the chat state from init and state messages", () => {

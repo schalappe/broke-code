@@ -29,6 +29,7 @@ import {
   type ContextUsage,
   type HaltReason,
   isReplying,
+  MAX_QUEUED_MESSAGES,
   type Mode,
   type ReplyStatus,
   type StepApproval,
@@ -38,6 +39,7 @@ import type { ParsedProviders, Provider } from "./providers";
 import { reservedMention } from "./reservedMentions";
 import { SerialQueue } from "./serialQueue";
 import { findSlashSkill, loadSkillText, type SkillDiscovery } from "./skills";
+import { builtInCommand } from "./suggestions";
 import {
   composeSystemPrompt,
   type InstructionFile,
@@ -171,6 +173,8 @@ export class ChatController {
   private reply: { abort: AbortController; provider: Provider; settled: Promise<void> } | undefined;
   /** Bumped per listing request; stale listings dropped. */
   private listingId = 0;
+  /** Last id given to a queued message. */
+  private queuedId = 0;
   /** Bumped per approval request shown; a decision counts only for the request open. */
   private approvalId = 0;
   /** The approval request open, mirrored in `ChatState.approval`, and how to settle it. */
@@ -254,6 +258,7 @@ export class ChatController {
       // constructor reads no setting.
       mode: "ask",
       modePending: false,
+      queue: [],
     };
   }
 
@@ -479,11 +484,85 @@ export class ChatController {
    * way as a mention.
    */
   async send(text: string, picked: readonly string[] = []): Promise<void> {
+    const ended = await this.runTurn(text, picked);
+    // [!]: Only once the turn has fully settled (`this.reply` cleared, navigation released), never inside `settle`.
+    if (ended === "done") await this.sendNextQueued();
+  }
+
+  /**
+   * Whether a send may start an agent turn now: a provider and a model chosen, no reply in flight, and no mode pick
+   * being written, since the turn would start on a mode about to change. The one check `send` and the queue share.
+   */
+  private mayStartTurn(): boolean {
+    return (
+      this.currentProvider() !== undefined &&
+      this.state.model !== undefined &&
+      !isReplying(this.state) &&
+      !this.state.modePending
+    );
+  }
+
+  /**
+   * Queue `text` while a reply is in flight, with its `picked` paths, to be sent as if typed when a turn ends `done`.
+   * Refused, silently as `send` is: blank text, exactly a built-in command (`/new`, `/model`), which the webview runs
+   * itself, and a queue already holding `MAX_QUEUED_MESSAGES`, which the panel says. Not refused when no reply is in
+   * flight, since the webview's state may lag the host's: the message then waits, paused, for Send now.
+   */
+  queueMessage(text: string, picked: readonly string[]): void {
+    const content = text.trim();
+    if (!content || builtInCommand(content) || this.state.queue.length >= MAX_QUEUED_MESSAGES) return;
+    this.state.queue = [...this.state.queue, { id: ++this.queuedId, text: content, mentions: [...picked] }];
+    this.emit();
+  }
+
+  /** Remove queued message `id`. Ignored when no such message is queued. */
+  removeQueued(id: number): void {
+    if (!this.state.queue.some((message) => message.id === id)) return;
+    this.state.queue = this.state.queue.filter((message) => message.id !== id);
+    this.emit();
+  }
+
+  /**
+   * "Send now" on a paused queue: send queued message `id` when it is the first and a turn may start; its turn ending
+   * `done` resumes the queue. Ignored otherwise.
+   */
+  sendQueued(id: number): Promise<void> {
+    if (this.state.queue[0]?.id !== id) return Promise.resolve();
+    return this.sendNextQueued();
+  }
+
+  /**
+   * Send the first queued message, as if typed now: its mentions read now, and the provider, model, mode, and limits of
+   * now. When a turn may not start (the model gone after a failed listing, a mode pick written), nothing is sent and it
+   * stays first. Taken off the queue in the same step as `send` shows it, so it is never in both.
+   */
+  private sendNextQueued(): Promise<void> {
+    const next = this.state.queue[0];
+    if (!next || !this.mayStartTurn()) return Promise.resolve();
+    this.state.queue = this.state.queue.slice(1);
+    return this.send(next.text, next.mentions);
+  }
+
+  /** Empty the queue: navigation that changes the conversation shown, when asked, and deactivation. */
+  private clearQueue(): void {
+    if (this.state.queue.length === 0) return;
+    this.state.queue = [];
+    this.emit();
+  }
+
+  /** Deactivation: nothing queued is sent, and the reply in flight is stopped. */
+  dispose(): void {
+    this.clearQueue();
+    this.stop();
+  }
+
+  /** The agent turn of `send`; its last status, or `undefined` when it did not start. */
+  private async runTurn(text: string, picked: readonly string[]): Promise<ReplyStatus | undefined> {
+    const content = text.trim();
+    if (!this.mayStartTurn() || !content) return undefined;
     const provider = this.currentProvider();
     const model = this.state.model;
-    const content = text.trim();
-    // [!]: Never while a mode pick is written: the turn would start on a mode about to change.
-    if (!provider || !model || !content || isReplying(this.state) || this.state.modePending) return;
+    if (!provider || !model) return undefined;
     this.limits = this.limitsSource.read();
     const { maxToolSteps } = this.limits;
     // [!]: Plan is read once: the turn's tools and prompt hold until it ends. The auto-approve setting is not read
@@ -508,11 +587,12 @@ export class ChatController {
     this.reply = { abort, provider, settled };
     this.emit();
     /** Last status of the turn, on its last reply, and its last save handed to the store. */
-    const settle = (status: ReplyStatus, haltReason?: HaltReason) => {
+    const settle = (status: ReplyStatus, haltReason?: HaltReason): ReplyStatus => {
       reply.status = status;
       if (haltReason !== undefined) reply.haltReason = haltReason;
       this.emit();
       void this.save(conversation);
+      return status;
     };
 
     try {
@@ -637,7 +717,7 @@ export class ChatController {
       // locked on a reply that will not end.
       console.error("broke-code: the agent turn failed unexpectedly", error instanceof Error ? error.stack : error);
       reply.error = { kind: "internal", message: error instanceof Error ? error.message : String(error) };
-      settle("failed");
+      return settle("failed");
     } finally {
       // [>]: Also on an unexpected throw, so navigation waiting for this turn never hangs.
       if (this.reply?.abort === abort) this.reply = undefined;
@@ -798,6 +878,7 @@ export class ChatController {
    */
   newChat(): Promise<void> {
     this.stop();
+    this.clearQueue();
     return this.navigate(async () => {
       await this.settleReply();
       this.show(this.freshConversation());
@@ -809,7 +890,10 @@ export class ChatController {
    * request -> `notFound`, and its row is dropped; a read that fails -> `openFailed`.
    */
   openConversation(id: string): Promise<void> {
-    if (id !== this.conversation.id) this.stop();
+    if (id !== this.conversation.id) {
+      this.stop();
+      this.clearQueue();
+    }
     return this.navigate(async () => {
       if (id === this.conversation.id) return;
       await this.settleReply();
@@ -831,7 +915,10 @@ export class ChatController {
    * and a new one shown first. Another row -> the reply keeps running. A failed delete keeps the row and is reported.
    */
   deleteConversation(id: string): Promise<void> {
-    if (id === this.conversation.id) this.stop();
+    if (id === this.conversation.id) {
+      this.stop();
+      this.clearQueue();
+    }
     return this.navigate(async () => {
       if (id === this.conversation.id) {
         await this.settleReply();

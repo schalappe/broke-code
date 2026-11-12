@@ -151,10 +151,11 @@ export function activate(context: vscode.ExtensionContext): void {
     apiKeys.onDidChange((provider) => controller.keyChanged(provider)),
     fileIndex,
     registerCommitMessageCommand(commitSelection),
-    // [>]: Stop first, so an open approval request is cancelled before its diff closes with the others.
+    // [>]: Stop first, so an open approval request is cancelled before its diff closes with the others. Nothing queued
+    // is sent.
     {
       dispose: () => {
-        controller.stop();
+        controller.dispose();
         previews.dispose();
       },
     },
