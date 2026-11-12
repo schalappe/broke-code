@@ -15,6 +15,7 @@ import {
   formatMention,
   MAX_MENTION_LINES,
   type PathMention,
+  plural,
   type ReadMention,
   readMention,
   truncationNotice,
@@ -244,10 +245,6 @@ function lineNumber(name: string, value: string | undefined, fallback: number): 
   const number = Number(digits);
   if (/^\d+$/.test(digits) && Number.isSafeInteger(number) && number >= 1) return number;
   return `${name} "${excerpt(value)}" is not a whole number of 1 or more.`;
-}
-
-function plural(count: number, one: string, many: string): string {
-  return `${count} ${count === 1 ? one : many}`;
 }
 
 async function listFilesTool({ roots, skillRoots, seam }: ReadAccess, path: string | undefined): Promise<ToolResult> {

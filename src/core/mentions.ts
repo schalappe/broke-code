@@ -135,12 +135,15 @@ export function formatMention(mention: ReadMention): string {
   return [block, ...(status === "truncated" ? [truncationNotice(mention.omitted)] : []), ...failures].join("\n");
 }
 
-/** `header`, then `content` in a fence longer than any backtick run it holds, the content ending with a line break. */
+/**
+ * `header`, then `content` in a fence longer than any backtick run it holds. The closing fence follows the content's
+ * last line break as written (`\n`, `\r\n`, or `\r`); a `\n` is added only when the content ends without one.
+ */
 export function fencedBlock(header: string, content: string): string {
   // [!]: No spread into Math.max: a 1 MiB file can hold more backtick runs than a call takes arguments.
   const longestRun = (content.match(/`+/g) ?? []).reduce((longest, run) => Math.max(longest, run.length), 0);
   const fence = "`".repeat(Math.max(3, longestRun + 1));
-  const body = content.endsWith("\n") || content === "" ? content : `${content}\n`;
+  const body = content === "" || /[\r\n]$/.test(content) ? content : `${content}\n`;
   return `${header}\n${fence}\n${body}${fence}`;
 }
 
@@ -233,7 +236,8 @@ export function cutOverByteCap(
   return { text: cut.text, lines, omitted: wholeLines - lines };
 }
 
-function plural(count: number, one: string, many: string): string {
+/** `count` and its unit, singular for 1: `1 line`, `3 lines`. */
+export function plural(count: number, one: string, many: string): string {
   return `${count} ${count === 1 ? one : many}`;
 }
 

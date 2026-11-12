@@ -205,6 +205,28 @@ describe("read_file with a line range", () => {
     expect(result).toEqual({ status: "ok", text: "@crlf.txt (file, lines 2-3 of 4)\n```\nb\r\nc\r\n```" });
   });
 
+  test("keeps a lone \\r line break as written, the closing fence after it", async () => {
+    await writeFile(join(app.path, "cr.txt"), "a\rb\rc\r");
+    const ranged = await run("read_file", { path: "cr.txt", start_line: "2", end_line: "2" });
+    const whole = await run("read_file", { path: "cr.txt" }).finally(() => rm(join(app.path, "cr.txt")));
+    expect(ranged).toEqual({ status: "ok", text: "@cr.txt (file, line 2 of 3)\n```\nb\r```" });
+    expect(whole).toEqual({ status: "ok", text: "@cr.txt (file, 3 lines)\n```\na\rb\rc\r```" });
+  });
+
+  test("reports an unreadable file with a range with its error code, as without one", async () => {
+    const guarded: WorkspaceRoot = { name: "locked", path: await mkdirp(join(base, "locked-root")) };
+    await writeFile(join(guarded.path, "locked.txt"), "x\n");
+    await chmod(join(guarded.path, "locked.txt"), 0o000);
+    try {
+      expect(await run("read_file", { path: "locked.txt", start_line: "1", end_line: "1" }, [guarded])).toEqual({
+        status: "error",
+        text: "read_file: locked.txt: the path could not be read (EACCES).",
+      });
+    } finally {
+      await chmod(join(guarded.path, "locked.txt"), 0o600);
+    }
+  });
+
   test("refuses a value that is not a whole number of 1 or more, naming the argument, before reading", async () => {
     for (const [name, value] of [
       ["start_line", "2,001"],
