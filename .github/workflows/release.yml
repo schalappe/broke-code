@@ -37,7 +37,8 @@ jobs:
   publish:
     needs: version
     if: needs.version.outputs.version != ''
-    runs-on: ubuntu-latest
+    # macOS, as in CI: v1 supports macOS only, and the tests use macOS tools such as /usr/bin/sandbox-exec.
+    runs-on: macos-latest
     environment: release
     permissions:
       contents: write
@@ -53,8 +54,8 @@ jobs:
           bun-version: 1.4.4
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
-      # The search tool's tests run the real ripgrep; install it rather than rely on the runner image.
-      - run: sudo apt-get update && sudo apt-get install -y ripgrep
+      # The search tool's tests run the real ripgrep; the macOS runner does not ship it.
+      - run: brew install ripgrep
       - run: bun test
       - run: bun run package
       # The tag reserves the version for this commit before any upload. A failed run keeps it and is finished by
@@ -74,9 +75,7 @@ jobs:
           fi
       # --skip-duplicate lets a re-run pass the registry that already has the version.
       - name: Publish to Open VSX
-        env:
-          OVSX_PAT: ${{ secrets.OVSX_PAT }}
-        run: bunx --bun ovsx publish --packagePath "broke-code-$VERSION.vsix" --skip-duplicate
+        run: bunx --bun ovsx publish --trusted-publishing --packagePath "broke-code-$VERSION.vsix" --skip-duplicate
       - name: Publish to the Visual Studio Marketplace
         run: bunx --bun vsce publish --oidc --packagePath "broke-code-$VERSION.vsix" --skip-duplicate --no-dependencies
       # Three idempotent steps, so a re-run finishes a Release left as a draft or without its .vsix.

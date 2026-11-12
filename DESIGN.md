@@ -294,7 +294,8 @@ would not act. Above the rows, a notice line says "The queue is paused." when no
 - The turn's actions (`.turn-actions`): one row of secondary buttons after how the turn ended, wrapping when narrow:
   under the last turn's reply, Retry, then Continue when the turn was stopped or halted on the step limit or on
   malformed calls, both disabled when Send would not act; then, under the last reply of the turn whose writes are
-  held, "Undo changes", followed by the small dim hint "Commands this turn ran are not undone." when the turn ran one.
+  held, "Undo changes", followed by the small dim hint "Commands this turn ran are not listed or undone." when the
+  turn ran one.
   None shows while a reply is in flight, so nothing sits between an approval's controls and the message box. When
   Retry would leave written files or run commands behind, its first click asks: a line of its own above the buttons
   (`.retry-warning`, one size down, in the full foreground, since it asks before acting) says Retry does not revert
@@ -314,6 +315,13 @@ would not act. Above the rows, a notice line says "The queue is paused." when no
   those files stay changed until the next click, and an error block (`.undo-outcome.failed`: the error fill, edge, and
   text) when the undo failed unexpectedly, its cause in the editor font, then the files put back before it. The
   outcome comes before the button, so the button stays last.
+- Changed files: under the last reply of the turn whose writes are held, exactly when "Undo changes" shows, before the
+  undo's outcome and the actions row, always open, no fold (`.changed-files`). A small dim head, "Changed files", then
+  one row per file, in the order of its first write: each row a full-width button with no box (`button.changed-file`),
+  its path in the editor font (`.changed-path`), "created" or "edited" in dim text (`.changed-kind`), and the counts
+  `+2 −1` at the right in the editor font, dim, with tabular figures (`.changed-counts`), the change in signs and
+  numbers, never in color. A row takes the list's hover fill (`--bc-row-hover`, `--bc-edge-active` in high contrast)
+  and the focus ring inside its edge; a click opens the file's diff in the editor and moves no focus in the panel.
 - No longer sent: the entries before the summary the history starts at sit in one group (`.unsent`), each at 60%
   opacity (`--bc-unsent-opacity`), under one small dim line that says so in words ("Earlier messages are no longer
   sent to the model: the summary below replaces them."), so the state never rests on the dimming alone. A

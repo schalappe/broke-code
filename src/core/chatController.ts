@@ -2,12 +2,12 @@
  * @module chatController
  * Chat state owner: provider and model choice, model listing, agent turns (streamed replies, body tool calls, tool
  * steps, their approval requests, step limit, context budget), the queue of messages sent during a turn, context
- * usage, stop, "Undo changes" over the latest turn that wrote a file, and the workspace's saved
+ * usage, stop, "Undo changes" and "Changed files" over the latest turn that wrote a file, and the workspace's saved
  * conversations (new chat, reopen, delete). The conversation shown is saved when a message is sent, at most every 500 ms while a reply streams, when a
  * call starts, after each tool step, and when the turn ends, so a reload or crash loses at most the reply streaming.
  * vscode-free: host passes key store, workspace memento, mention reader, conversation store, tool runner, instruction
- * file reader, skill reader, limits source, the auto-approve setting's reader and writer, and the undo's workspace
- * roots and unsaved check through ports.
+ * file reader, skill reader, limits source, the auto-approve setting's reader and writer, the undo's workspace
+ * roots and unsaved check, and the changed files' diff editor through ports.
  */
 import type { ApprovalRequest, Decision, Preview } from "./approval";
 import { type ChatMessage, lateReasoning, listModels, type ProviderAccess, streamChat } from "./client";
@@ -25,9 +25,11 @@ import type { ConversationStore } from "./conversationStore";
 import { type HistoryBudget, historyStart, sentEntries, summaryHistory, toHistory } from "./history";
 import { CONTINUE_TEXT, type LastTurnActions, lastTurnActions } from "./lastTurn";
 import { contextOf, estimateTokens, fillsContext, parseLimits, type TurnLimits } from "./limits";
+import { type LineCounts, lineDiffCount } from "./lineDiff";
 import { composeUserMessage, findMentions, type MentionReader, type MentionResult, type ReadMention } from "./mentions";
 import { workspacePath } from "./problems";
 import {
+  type ChangedFile,
   type ChatEntry,
   type ChatState,
   type ContextUsage,
@@ -134,6 +136,22 @@ export type UndoHost = {
   hasUnsavedChanges(target: string): Promise<boolean>;
 };
 
+/**
+ * A held file's diff as "Changed files" opens it: `path`, the row's displayed path, for the title; `realPath`, the
+ * file, its right side; `original`, its text before the turn, its left side, `undefined` for a file the turn created.
+ */
+export type HeldFileDiff = { path: string; realPath: string; original: string | undefined };
+
+/**
+ * The editor's diff of a held file, for "Changed files". `open`: shows `file`'s diff, or its own error when the file no
+ * longer exists or the diff cannot open; must not reject. `close`: closes the diffs of the files at `realPaths`, which
+ * left the held turn; must not throw.
+ */
+export type ChangeDiffHost = {
+  open(file: HeldFileDiff): Promise<void>;
+  close(realPaths: readonly string[]): void;
+};
+
 /** The current turn limits, from the user settings. Must not throw. */
 export type LimitsSource = { read(): TurnLimits };
 
@@ -146,6 +164,7 @@ export type LimitsSource = { read(): TurnLimits };
  * fails. `returnDraft`: puts a `paragraph` draft in the message box, delivered when the panel can take it: the queued
  * texts the controller takes out without sending them, or refuses to queue, so nothing typed is lost; absent, each is
  * logged as lost. `undo`: what "Undo changes" needs; absent (the eval), no turn is held and the button never shows.
+ * `changeDiffs`: opens and closes the diffs of "Changed files"; absent, the rows still show and a click does nothing.
  * `now`: clock for record times, in milliseconds since the epoch.
  */
 export type ChatPorts = {
@@ -162,6 +181,7 @@ export type ChatPorts = {
   writeAutoApproveWrites?: (on: boolean) => Promise<void>;
   returnDraft?: (draft: DraftInsert) => void;
   undo?: UndoHost;
+  changeDiffs?: ChangeDiffHost;
   now?: () => number;
 };
 
@@ -201,7 +221,9 @@ type LastChoice = { provider: string; model?: string };
  * its real path, tied when the step is recorded to the file its write recorded (`written`: that file, for the call
  * running), never by reading the step's path again; a write recorded without a step (it landed after Stop) has none.
  * `reply`: its last reply, set once it has ended. `ranCommand`: the user ran one of its commands, which no undo
- * reverts.
+ * reverts. `rows`: "Changed files" as last named (see `nameRows`), one per file of `changes` then; `naming`: bumped
+ * per naming, so only the latest lands; `named`: the latest naming, which the turn awaits before it ends, so a settled
+ * turn shows its rows.
  */
 type Turn = {
   conversation: Conversation;
@@ -210,7 +232,13 @@ type Turn = {
   written: string | undefined;
   reply: ChatEntry | undefined;
   ranCommand: boolean;
+  rows: ChangedRow[];
+  naming: number;
+  named: Promise<void>;
 };
+
+/** A row of "Changed files" with the real path of its file, the key the held turn knows it by. */
+type ChangedRow = ChangedFile & { realPath: string };
 
 type ToolStep = ChatEntry & { role: "tool" };
 
@@ -288,6 +316,10 @@ export class ChatController {
   private undoing = false;
   /** What the last undo did, until the next send, the next undo, or a change of the conversation shown. */
   private undoOutcome: UndoState["outcome"];
+  /** The diffs "Changed files" asked to open, by turn and file, until their file leaves the held turn. */
+  private openDiffs: { turn: Turn; realPath: string }[] = [];
+  /** Line counts of each recorded write, computed once per write: a `RecordedFile` is a new object at each write. */
+  private readonly lineCounts = new WeakMap<RecordedFile, LineCounts>();
 
   private readonly apiKeys: KeyStore;
   private readonly workspaceState: ChoiceStore;
@@ -302,6 +334,7 @@ export class ChatController {
   private readonly writeAutoApproveWrites: (on: boolean) => Promise<void>;
   private readonly returnDraft: (draft: DraftInsert) => void;
   private readonly undoHost: UndoHost | undefined;
+  private readonly changeDiffs: ChangeDiffHost | undefined;
   private readonly now: () => number;
   /** Limits the usage display reads, refreshed at each send and by `limitsChanged`. */
   private limits: TurnLimits;
@@ -337,6 +370,7 @@ export class ChatController {
       ports.returnDraft ??
       ((draft) => console.error("broke-code: no message box to return unsent text to; it is lost", draft.text));
     this.undoHost = ports.undo;
+    this.changeDiffs = ports.changeDiffs;
     this.now = ports.now ?? Date.now;
     this.plan = this.workspaceState.get<unknown>(PLAN_KEY) === true;
     // [>]: Instruction files and skills are read only at a send, never just to refresh the display.
@@ -361,6 +395,7 @@ export class ChatController {
       modePending: false,
       queue: [],
       undo: { reply: undefined, ranCommand: false, running: false, outcome: undefined },
+      changedFiles: [],
     };
   }
 
@@ -798,11 +833,15 @@ export class ChatController {
       changes: new RecordedChanges((file) => {
         turn.written = file.realPath;
         this.holdTurn(turn);
+        if (this.heldTurn === turn) turn.named = this.nameRows(turn);
       }),
       steps: new Map(),
       written: undefined,
       reply: undefined,
       ranCommand: false,
+      rows: [],
+      naming: 0,
+      named: Promise.resolve(),
     };
     this.lastTurn = turn;
     this.undoOutcome = undefined;
@@ -970,6 +1009,7 @@ export class ChatController {
         void this.save(conversation);
       }
     });
+    await turn.named;
     turn.reply = ended.reply;
     if (this.heldTurn === turn) this.emit();
     return ended.status;
@@ -996,6 +1036,89 @@ export class ChatController {
       running: this.undoing,
       outcome: this.undoOutcome,
     };
+  }
+
+  /**
+   * Name `turn`'s files for "Changed files", as the file index writes them (relative to the workspace folder that holds
+   * each as it resolves now, else as the model wrote it), with their line counts, then publish them while the turn is
+   * held. Run at each recorded write of the held turn: naming needs the real roots, which are async, so the rows
+   * cannot be derived at each emit. A naming overtaken by a later one is dropped. Never rejects.
+   */
+  private async nameRows(turn: Turn): Promise<void> {
+    const naming = ++turn.naming;
+    let realRoots: WorkspaceRoot[] = [];
+    try {
+      realRoots = this.undoHost ? await realWorkspaceRoots(this.undoHost.roots()) : [];
+    } catch (error) {
+      // [>]: The rows still show, named as the model wrote them; the undo reports a broken host on its own.
+      console.error("broke-code: could not resolve the workspace folders to name the changed files", error);
+    }
+    if (naming !== turn.naming) return;
+    turn.rows = turn.changes.files.map((file) => ({
+      path: workspacePath(realRoots, file.realPath) ?? file.path,
+      realPath: file.realPath,
+      kind: file.original === undefined ? "created" : "edited",
+      ...this.countLines(file),
+    }));
+    if (this.heldTurn === turn) this.emit();
+  }
+
+  /** `file`'s line counts since before the turn, computed at the first call for this write and kept. */
+  private countLines(file: RecordedFile): LineCounts {
+    let counts = this.lineCounts.get(file);
+    if (counts === undefined) {
+      counts = lineDiffCount(file.original, file.written);
+      this.lineCounts.set(file, counts);
+    }
+    return counts;
+  }
+
+  /**
+   * "Changed files" now: the held turn's rows while "Undo changes" shows, less the files that left the held turn since
+   * they were named (an undo put them back).
+   */
+  private changedRows(): ChangedRow[] {
+    const held = this.heldTurn;
+    if (held === undefined || this.state.undo.reply === undefined) return [];
+    return held.rows.filter((row) => held.changes.has(row.realPath));
+  }
+
+  /**
+   * A row of "Changed files": open the diff of the first row shown under `path`, through the `changeDiffs` port, with
+   * its file's text before the turn. Ignored when no row shown has that path, or without the port. Settles once the
+   * port has; never rejects.
+   */
+  async openChangeDiff(path: string): Promise<void> {
+    const held = this.heldTurn;
+    const host = this.changeDiffs;
+    const row = this.changedRows().find((shown) => shown.path === path);
+    const file = row && held?.changes.files.find((recorded) => recorded.realPath === row.realPath);
+    if (!held || !host || !row || !file) return;
+    if (!this.openDiffs.some((open) => open.turn === held && open.realPath === file.realPath)) {
+      this.openDiffs.push({ turn: held, realPath: file.realPath });
+    }
+    try {
+      await host.open({ path: row.path, realPath: file.realPath, original: file.original });
+    } catch (error) {
+      console.error("broke-code: could not open the diff of a changed file", error);
+    }
+  }
+
+  /**
+   * Close the diffs whose file left the held turn: put back by an undo, or its turn no longer held (a later turn's first
+   * write, Retry or Edit removing it, New chat, open, delete). Run at each emit, the one place every such change passes.
+   */
+  private closeGoneDiffs(): void {
+    const held = this.heldTurn;
+    const stays = (open: { turn: Turn; realPath: string }) => open.turn === held && held.changes.has(open.realPath);
+    const gone = this.openDiffs.filter((open) => !stays(open));
+    if (gone.length === 0) return;
+    this.openDiffs = this.openDiffs.filter(stays);
+    try {
+      this.changeDiffs?.close(gone.map((open) => open.realPath));
+    } catch (error) {
+      console.error("broke-code: could not close the diffs of changed files", error);
+    }
   }
 
   /**
@@ -1637,6 +1760,8 @@ export class ChatController {
   private emit(): void {
     this.state.context = this.contextUsage(this.state.model);
     this.state.undo = this.undoState();
+    this.state.changedFiles = this.changedRows().map(({ realPath: _, ...row }) => row);
+    this.closeGoneDiffs();
     this.publish(this.state);
   }
 }

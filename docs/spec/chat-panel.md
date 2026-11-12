@@ -100,7 +100,7 @@ This file specifies what the chat panel does around a turn: folding, code block 
   reply that is not a summary (else the summary that took its only reply), whatever its status, and Continue too when
   the last entry is no summary and that reply ended `stopped`, or `halted` on `stepLimit` or `malformedCalls`
   (`contextFull` would halt again: it keeps pointing to `/compact` and New chat). The panel renders them before "Undo
-  changes" in one row, enabled when Send would act (`sendWouldAct`, the composer's one check). Each request carries
+  changes" in one row, after "Changed files" and the undo's outcome (see `docs/spec/harness.md`), enabled when Send would act (`sendWouldAct`, the composer's one check). Each request carries
   what the panel showed (`ShownEntries`: `retry { shown }`, `continueTurn { shown }`, `shown` being `{ conversationId,
   entries }`, the id validated like `openConversation`'s, the count like a request id); the controller
   (`lastTurnNow`) ignores it unless that is the conversation shown with its current count, `mayStartTurn` passes, and
@@ -115,7 +115,7 @@ This file specifies what the chat panel does around a turn: folding, code block 
   send (provider, model, Plan, limits, key, instruction files, skills and their warnings). The removal is synchronous
   with the turn start and saved by the turn's first save, before the request; a crash before it keeps the
   conversation whole. `removeFrom` drops the held turn, `lastTurn`, and the undo outcome when their reply is in the
-  removed range, so "Undo changes" for the removed attempt goes and a write of it that lands after its Stop is not
+  removed range, so "Undo changes" and "Changed files" for the removed attempt go, with their diff tabs, and a write of it that lands after its Stop is not
   held; a turn held from before the user entry stays held. `ChatController.continueTurn(shown, label)` removes
   nothing: it appends a user entry whose typed text is `label` (the host passes `l10n.t("Continue")`, since the
   controller imports nothing from `vscode`) and whose model text is `CONTINUE_TEXT` (`Continue from where you

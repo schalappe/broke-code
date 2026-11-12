@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, jest, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { act, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { ChatEntry, ChatState } from "../core/protocol";
+import type { ChangedFile, ChatEntry, ChatState } from "../core/protocol";
 import type { ProviderError } from "../core/providerError";
 import type { MentionRow } from "./composer";
 
@@ -41,6 +41,7 @@ const unsaved = {
   context: { used: 0, size: 32768, known: true },
   queue: [],
   undo: { reply: undefined, ranCommand: false, running: false, outcome: undefined },
+  changedFiles: [],
 };
 
 /** Panel markup for a conversation of one question and `reply`, English strings. */
@@ -2814,8 +2815,8 @@ describe("undo changes", () => {
     expect(html({ ...idle, reply: 3 }, [...turns.slice(0, 3), summary])).toContain(">Undo changes</button>");
   });
 
-  test("says commands are not undone when the turn ran one", () => {
-    expect(html({ ...idle, reply: 3, ranCommand: true })).toContain("Commands this turn ran are not undone.");
+  test("says commands are not listed or undone when the turn ran one", () => {
+    expect(html({ ...idle, reply: 3, ranCommand: true })).toContain("Commands this turn ran are not listed or undone.");
   });
 
   test("words the outcome three ways, naming each file under the reply it undid", () => {
@@ -2912,6 +2913,78 @@ describe("undo changes", () => {
       await press("Enter");
       expect(posted).toEqual([]);
     });
+  });
+});
+
+describe("changed files", () => {
+  const answer = "Writing.\n<write_file>\n<path>a.ts</path>\n<content>\nx\n</content>\n</write_file>";
+  /** A turn that wrote files and answered "Done.", then a turn answered "Other.". */
+  const turns: ChatEntry[] = [
+    { role: "user", content: "Write it", mentions: [] },
+    {
+      role: "assistant",
+      reasoning: "",
+      content: answer,
+      status: "done",
+      call: { name: "write_file", args: { path: "a.ts", content: "x" }, start: 9, end: answer.length },
+    },
+    { role: "tool", name: "write_file", args: { path: "a.ts", content: "x" }, status: "ok", text: "ok" },
+    { role: "assistant", reasoning: "", content: "Done.", status: "done" },
+    { role: "user", content: "Anything else?", mentions: [] },
+    { role: "assistant", reasoning: "", content: "Other.", status: "done" },
+  ];
+  const rows: ChangedFile[] = [
+    { path: "src/a.ts", kind: "edited", added: 2, removed: 1 },
+    { path: "b.ts", kind: "created", added: 2, removed: 0 },
+  ];
+  const idle = { reply: undefined, ranCommand: false, running: false, outcome: undefined };
+  const html = (undo: ChatState["undo"], changedFiles: ChangedFile[], entries: ChatEntry[] = turns) =>
+    renderToStaticMarkup(<App state={stateWith(true, { entries, undo, changedFiles })} language="en" />);
+
+  test("lists each file under the reply the state names, before the undo's outcome and the actions row", () => {
+    const outcome = { reply: 3, files: [{ path: "c.ts", status: "skipped" as const, reason: "changed" as const }] };
+    const shown = html({ ...idle, reply: 3, outcome }, rows);
+    expect(shown.split(">Changed files<").length - 1).toBe(1);
+    const at = shown.indexOf(">Changed files<");
+    expect(at).toBeGreaterThan(shown.indexOf("Done."));
+    expect(at).toBeLessThan(shown.indexOf('class="undo-outcome'));
+    expect(shown.indexOf('class="undo-outcome')).toBeLessThan(shown.indexOf(">Undo changes</button>"));
+    expect(shown.indexOf(">Undo changes</button>")).toBeLessThan(shown.indexOf("Other."));
+    expect(shown).toContain('<code class="changed-path">src/a.ts</code>');
+    expect(shown).toContain('<code class="changed-path">b.ts</code>');
+    expect(shown.indexOf("src/a.ts")).toBeLessThan(shown.indexOf(">b.ts<"));
+    expect(shown).toContain(">edited<");
+    expect(shown).toContain(">created<");
+    expect(shown).toContain(">+2 −1<");
+    expect(shown).toContain(">+2 −0<");
+  });
+
+  test("shows no list without rows, without a reply named, or while a reply is in flight", () => {
+    expect(html({ ...idle, reply: 3 }, [])).not.toContain("Changed files");
+    expect(html(idle, rows)).not.toContain("Changed files");
+    const streaming: ChatEntry[] = [
+      ...turns.slice(0, 5),
+      { role: "assistant", reasoning: "", content: "Oth", status: "streaming" },
+    ];
+    expect(html({ ...idle, reply: 3 }, rows, streaming)).not.toContain("Changed files");
+  });
+
+  test("one hint covers the list and the button when the turn ran a command", () => {
+    const shown = html({ ...idle, reply: 3, ranCommand: true }, rows);
+    expect(shown).toContain("Commands this turn ran are not listed or undone.");
+    expect(shown).not.toContain("are not undone.");
+  });
+
+  test("a row is a button that posts its path", async () => {
+    await withPanel(
+      stateWith(true, { entries: turns, undo: { ...idle, reply: 3 }, changedFiles: rows }),
+      async ({ host }) => {
+        const row = [...host.querySelectorAll<HTMLButtonElement>("button.changed-file")];
+        expect(row.map((element) => element.textContent)).toEqual(["src/a.tsedited+2 −1", "b.tscreated+2 −0"]);
+        await act(async () => row[1]?.click());
+        expect(posted).toEqual([{ type: "openChangeDiff", path: "b.ts" }]);
+      },
+    );
   });
 });
 

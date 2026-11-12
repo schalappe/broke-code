@@ -178,6 +178,8 @@ export class ChatView implements vscode.WebviewViewProvider {
         return void controller.newChat();
       case "undoChanges":
         return void controller.undoChanges();
+      case "openChangeDiff":
+        return void controller.openChangeDiff(message.path);
       case "retry":
         return void controller.retry(message.shown);
       case "continueTurn":

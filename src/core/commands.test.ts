@@ -217,8 +217,13 @@ describe("runCommand", () => {
   });
 
   test("a process that left the group while holding the output does not keep the result waiting", async () => {
+    // [>]: The shell exits only once perl has left the group, so a slow perl start never leaves it inside at the drain.
+    const marker = join(base, "setsid.done");
     const started = Date.now();
-    const result = await run("perl -MPOSIX -e 'setsid(); sleep 2' & echo started");
+    const result = await run(
+      `perl -MPOSIX -e 'setsid(); open(my $f, ">", "${marker}"); close($f); sleep 2' & ` +
+        `while [ ! -e '${marker}' ]; do sleep 0.01; done; echo started`,
+    );
     expect(Date.now() - started).toBeLessThan(1000);
     expect(result).toEqual({ status: "ok", text: "exit code 0\nstdout:\nstarted\nstderr: (empty)" });
   });

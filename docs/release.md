@@ -18,9 +18,10 @@ This file describes how a merge to `main` becomes a published version.
 - The git tag is the only source of the version. CI writes the version into the package at build time and
   never commits to `main`, so `package.json` keeps `0.0.0`.
 - Only `main` publishes, through the GitHub environment `release`, whose branch policy allows `main` only.
-  Open VSX uses the environment secret `OVSX_PAT`, passed to the publish step as an environment variable and
-  never on a command line. The Visual Studio Marketplace uses Trusted Publishing (`vsce publish --oidc`), with
-  no stored token.
+  Both registries use Trusted Publishing, with no stored token: `ovsx publish --trusted-publishing` and
+  `vsce publish --oidc` exchange the job's OIDC token for a short-lived publishing token. The Open VSX trusted
+  publisher for the `schalappe` namespace names repository `schalappe/broke-code`, workflow `release.yml`, and
+  environment `release`, so a token from any other workflow or environment is refused.
 
 ## Packaging under Bun
 

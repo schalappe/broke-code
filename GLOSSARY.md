@@ -67,6 +67,12 @@ row says so, the saved conversation keeps the mark, and the model reads that the
 summary replaces that step.
 _Avoid_: revert, rollback, checkpoint, restore point
 
+**Changed files**:
+The list over "Undo changes" of the files the held turn created or edited and still holds, each with its added and
+removed line counts since before the turn; a row opens the file's diff, its text before the turn against the file as
+it is now. It shows exactly when "Undo changes" does and lists no change a command made.
+_Avoid_: modified files, diff list, file changes
+
 **Mode**:
 What an agent turn may do, shown and picked in the message box: **Ask** waits for the user's approval of each write;
 **Auto-edit** approves writes without asking; **Plan** offers the read tools only, so the model answers with a plan and

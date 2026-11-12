@@ -200,6 +200,13 @@ export type UndoState = {
   outcome: { reply: number; files: UndoneFile[]; error?: string } | undefined;
 };
 
+/**
+ * One row of "Changed files": a file the turn `UndoState.reply` names created or edited and still holds, named as the
+ * file index writes it (else as the model wrote it), with the lines its writes added and removed since before the
+ * turn (see `lineDiffCount`). Never its text.
+ */
+export type ChangedFile = { path: string; kind: "created" | "edited"; added: number; removed: number };
+
 export type ChatState = {
   providers: string[];
   skipped: SkippedProvider[];
@@ -240,6 +247,11 @@ export type ChatState = {
    */
   queue: QueuedMessage[];
   undo: UndoState;
+  /**
+   * "Changed files" under the reply `undo.reply` names, in the order of each file's first write; empty whenever that
+   * reply is absent.
+   */
+  changedFiles: ChangedFile[];
 };
 
 /**
@@ -330,6 +342,8 @@ export type WebviewMessage =
   | { type: "setMode"; mode: Mode }
   /** "Undo changes": restore the files of the turn `ChatState.undo.reply` names. */
   | { type: "undoChanges" }
+  /** A row of "Changed files": open the diff of the first held file the row's displayed `path` names. */
+  | { type: "openChangeDiff"; path: string }
   /** Retry or Continue the last turn (see `lastTurnActions`) of what the panel showed. */
   | { type: "retry" | "continueTurn"; shown: ShownEntries };
 
@@ -453,6 +467,10 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | undefined {
     case "continueTurn": {
       const shown = shownEntries(message.shown);
       return shown ? { type: message.type, shown } : undefined;
+    }
+    case "openChangeDiff": {
+      const path = text("path");
+      return path && path.length <= MAX_MENTION_PATH_LENGTH ? { type: "openChangeDiff", path } : undefined;
     }
     case "setMode":
       return isMode(message.mode) ? { type: "setMode", mode: message.mode } : undefined;
