@@ -971,6 +971,12 @@ p.loading::before {
   padding-left: var(--bc-space-5);
 }
 
+/* A file's path in the outcome, in the editor font like the other paths; the status around it stays prose. */
+.undo-outcome .undo-path {
+  font-family: var(--bc-mono);
+  font-size: var(--bc-fs-mono);
+}
+
 .undo-outcome.skipped {
   padding: var(--bc-space-3) var(--bc-space-4);
   color: var(--bc-warning-text);

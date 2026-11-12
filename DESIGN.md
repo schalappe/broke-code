@@ -266,7 +266,8 @@ would not act. Above the rows, a notice line says "The queue is paused." when no
   "Undo changes" (`.undo`), followed on the same line, wrapping when narrow, by the small dim hint "Commands this turn
   ran are not undone." when the turn ran one. Never shown while a reply is in flight, so it never sits between an
   approval's controls and the message box. The last undo's outcome sits under the reply it undid (`.undo-outcome`), in
-  words, one line per file with its path, status, and reason: a notice ("Changes undone.") when every file is back, a
+  words, one line per file with its path, status, and reason, each path (and a temporary file left behind) in the
+  editor font (`.undo-path`) and the rest in the UI font: a notice ("Changes undone.") when every file is back, a
   warning block when some or all were skipped ("Some changes were not undone. …", "No change was undone. …"), since
   those files stay changed until the next click, and an error block (`.undo-outcome.failed`: the error fill, edge, and
   text) when the undo failed unexpectedly, its cause in the editor font, then the files put back before it. The

@@ -247,30 +247,46 @@ describe("describeToolStep", () => {
 });
 
 describe("describeUndoneFile", () => {
+  /** The parts as one string, each path in backticks, to read the sentence at a glance. */
+  const flat = (file: Parameters<typeof describeUndoneFile>[0]) =>
+    describeUndoneFile(file)
+      .map((part) => ("path" in part ? `\`${part.path}\`` : part.text))
+      .join("");
+
   test("names the file and what happened to it, with the reason it was skipped", () => {
-    expect(describeUndoneFile({ path: "a.ts", status: "restored" })).toBe("a.ts: restored");
-    expect(describeUndoneFile({ path: "a.ts", status: "removed" })).toBe("a.ts: removed, since this turn created it");
-    expect(describeUndoneFile({ path: "a.ts", status: "skipped", reason: "changed" })).toBe(
-      "a.ts: skipped, it changed since this turn wrote it",
+    expect(flat({ path: "a.ts", status: "restored" })).toBe("`a.ts`: restored");
+    expect(flat({ path: "a.ts", status: "removed" })).toBe("`a.ts`: removed, since this turn created it");
+    expect(flat({ path: "a.ts", status: "skipped", reason: "changed" })).toBe(
+      "`a.ts`: skipped, it changed since this turn wrote it",
     );
-    expect(describeUndoneFile({ path: "a.ts", status: "skipped", reason: "unsaved" })).toBe(
-      "a.ts: skipped, it has unsaved changes in an editor",
+    expect(flat({ path: "a.ts", status: "skipped", reason: "unsaved" })).toBe(
+      "`a.ts`: skipped, it has unsaved changes in an editor",
     );
-    expect(describeUndoneFile({ path: "a.ts", status: "skipped", reason: "symlink" })).toBe(
-      "a.ts: skipped, it is now a symbolic link",
+    expect(flat({ path: "a.ts", status: "skipped", reason: "symlink" })).toBe(
+      "`a.ts`: skipped, it is now a symbolic link",
     );
-    expect(describeUndoneFile({ path: "a.ts", status: "skipped", reason: "outsideWorkspace" })).toBe(
-      "a.ts: skipped, it is no longer inside the workspace folders",
+    expect(flat({ path: "a.ts", status: "skipped", reason: "outsideWorkspace" })).toBe(
+      "`a.ts`: skipped, it is no longer inside the workspace folders",
     );
-    expect(describeUndoneFile({ path: "a.ts", status: "skipped", reason: "failed", cause: "ENOSPC" })).toBe(
-      "a.ts: skipped, it could not be restored (ENOSPC)",
+    expect(flat({ path: "a.ts", status: "skipped", reason: "failed", cause: "ENOSPC" })).toBe(
+      "`a.ts`: skipped, it could not be restored (ENOSPC)",
     );
   });
 
-  test("adds the temporary file left behind", () => {
+  test("gives each path a part of its own, apart from the prose", () => {
+    expect(describeUndoneFile({ path: "src/a b.ts", status: "restored" })).toEqual([
+      { path: "src/a b.ts" },
+      { text: ": restored" },
+    ]);
+  });
+
+  test("adds the temporary file left behind, as a path of its own", () => {
     const leftover = { name: ".a.ts.broke-code-1.tmp", cause: "EPERM" };
-    expect(describeUndoneFile({ path: "a.ts", status: "restored", leftover })).toBe(
-      "a.ts: restored; its temporary file .a.ts.broke-code-1.tmp could not be removed (EPERM)",
-    );
+    expect(describeUndoneFile({ path: "a.ts", status: "restored", leftover })).toEqual([
+      { path: "a.ts" },
+      { text: ": restored; its temporary file " },
+      { path: ".a.ts.broke-code-1.tmp" },
+      { text: " could not be removed (EPERM)" },
+    ]);
   });
 });

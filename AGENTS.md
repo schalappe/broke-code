@@ -161,7 +161,7 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   `Root.tsx` is the panel's root: it posts `ready`, renders each state, and queues the `insertDraft` drafts for the
   message box; `main.tsx` mounts it. `turns.ts` groups the entries for rendering without React (`foldTurns`: each entry once,
   an ended turn's fold and its step counts, a summary a boundary of its own), and `text.ts` words the fold's row (`describeFold`), the step row
-  (`describeToolStep`, "undone" included), and the undo's outcome (`describeUndoOutcome`, `describeUndoneFile`,
+  (`describeToolStep`, "undone" included), and the undo's outcome (`describeUndoOutcome`, `describeUndoneFile`, each path a part of its own for the editor font,
   `describeUndoFailure`).
 - `src/l10n.test.ts`: checks that every `l10n.t` message has a French translation and that the
   `package.nls*.json` files match.

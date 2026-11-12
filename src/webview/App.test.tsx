@@ -2803,8 +2803,8 @@ describe("undo changes", () => {
       { path: "b.ts", status: "removed" },
     ]);
     expect(all).toContain("Changes undone.");
-    expect(all).toContain("a.ts: restored");
-    expect(all).toContain("b.ts: removed, since this turn created it");
+    expect(all).toContain('<code class="undo-path">a.ts</code>: restored');
+    expect(all).toContain('<code class="undo-path">b.ts</code>: removed, since this turn created it');
     expect(all.indexOf("Changes undone.")).toBeLessThan(all.indexOf("Other."));
 
     const some = outcome(
@@ -2815,7 +2815,7 @@ describe("undo changes", () => {
       3,
     );
     expect(some).toContain("Some changes were not undone. Undo changes again to retry the files skipped.");
-    expect(some).toContain("b.ts: skipped, it changed since this turn wrote it");
+    expect(some).toContain('<code class="undo-path">b.ts</code>: skipped, it changed since this turn wrote it');
     expect(some).not.toContain("Changes undone.");
 
     const none = outcome(
@@ -2826,8 +2826,8 @@ describe("undo changes", () => {
       3,
     );
     expect(none).toContain("No change was undone. Undo changes again to retry the files skipped.");
-    expect(none).toContain("a.ts: skipped, it has unsaved changes in an editor");
-    expect(none).toContain("b.ts: skipped, it could not be restored (EACCES)");
+    expect(none).toContain('<code class="undo-path">a.ts</code>: skipped, it has unsaved changes in an editor');
+    expect(none).toContain('<code class="undo-path">b.ts</code>: skipped, it could not be restored (EACCES)');
   });
 
   test("an undone step's row says undone, its line count unchanged", () => {
@@ -2859,7 +2859,7 @@ describe("undo changes", () => {
     expect(failed).toContain('<div class="undo-outcome failed" role="alert">');
     expect(failed).toContain("Undo changes failed unexpectedly. Undo changes again to retry the files not yet undone.");
     expect(failed).toContain("editor check broke");
-    expect(failed).toContain("a.ts: restored");
+    expect(failed).toContain('<code class="undo-path">a.ts</code>: restored');
     expect(failed).not.toContain("Changes undone.");
     expect(failed.indexOf("editor check broke")).toBeLessThan(failed.indexOf(">Undo changes</button>"));
   });

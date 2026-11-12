@@ -738,7 +738,18 @@ function UndoOutcome({ outcome: { files, error } }: { outcome: UndoOutcomeState 
       {files.length > 0 && (
         <ul>
           {files.map((file) => (
-            <li key={file.path}>{describeUndoneFile(file)}</li>
+            <li key={file.path}>
+              {describeUndoneFile(file).map((part, index) =>
+                "path" in part ? (
+                  // biome-ignore lint/suspicious/noArrayIndexKey: the parts of one fixed sentence, never reordered.
+                  <code key={index} className="undo-path">
+                    {part.path}
+                  </code>
+                ) : (
+                  part.text
+                ),
+              )}
+            </li>
           ))}
         </ul>
       )}

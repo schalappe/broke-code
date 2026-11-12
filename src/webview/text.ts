@@ -270,16 +270,32 @@ export function describeUndoFailure(error: string): ErrorText {
   };
 }
 
-/** One file of an undo: its path, then what happened to it, and the temporary file it left behind, if any. */
-export function describeUndoneFile(file: UndoneFile): string {
-  const text = l10n.t("{0}: {1}", file.path, undoneStatus(file));
-  if (file.leftover === undefined) return text;
-  return l10n.t(
-    "{0}; its temporary file {1} could not be removed ({2})",
-    text,
-    file.leftover.name,
-    file.leftover.cause,
-  );
+/** A piece of a sentence: prose in the UI font, or a path, which the panel sets in the editor font. */
+export type TextPart = { text: string } | { path: string };
+
+// [>]: Private-use characters stand for the paths inside a translated sentence, so a translator still orders it; the
+// sentence is then cut at them. No path, status, or cause holds one.
+const FILE_MARK = "\uE000";
+const LEFTOVER_MARK = "\uE001";
+
+/**
+ * One file of an undo: its path, then what happened to it, and the temporary file it left behind, if any; each path a
+ * part of its own.
+ */
+export function describeUndoneFile(file: UndoneFile): TextPart[] {
+  const row = l10n.t("{0}: {1}", FILE_MARK, undoneStatus(file));
+  const sentence =
+    file.leftover === undefined
+      ? row
+      : l10n.t("{0}; its temporary file {1} could not be removed ({2})", row, LEFTOVER_MARK, file.leftover.cause);
+  return sentence
+    .split(/([\uE000\uE001])/)
+    .filter((piece) => piece !== "")
+    .map((piece) => {
+      if (piece === FILE_MARK) return { path: file.path };
+      if (piece === LEFTOVER_MARK) return { path: file.leftover?.name ?? "" };
+      return { text: piece };
+    });
 }
 
 function undoneStatus(file: UndoneStatus): string {
