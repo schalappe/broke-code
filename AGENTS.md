@@ -352,8 +352,8 @@ on an error or warning puts a request to fix it there, with its file as a mentio
     mode stays the one the setting holds. A user setting: Auto-edit in one window applies to every window. One pick
     at a time: while its settings write is pending, `ChatState.modePending` is true, and the selector and Send are
     disabled (Enter and the built-in `/new` and `/model` too, through the composer's one "Send would act" check), as
-    while a reply is in flight; the controller ignores `setMode` and `send` meanwhile, so no turn starts on a mode
-    about to change. A Plan pick writes no setting and never pends. Navigation (New chat, open, delete) is unaffected.
+    while a reply is in flight; the controller ignores `setMode` meanwhile and returns a `send`'s text to the box (see
+    "Queued messages"), so no turn starts on a mode about to change. A Plan pick writes no setting and never pends. Navigation (New chat, open, delete) is unaffected.
     The selector is disabled while a reply is in flight or a mode change is being written, like the pickers, and sits after the message box in the DOM, so
     Shift+Tab from the message box still reaches an open request's controls first. The conversation record and the
     eval bench know nothing of the mode; the system prompt knows only Plan.
@@ -482,7 +482,10 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   state is posted at each delta; the panel also says the queue is full and leaves the text in the box). A
   `queueMessage` that arrives with no reply in flight is sent at once as `send` would when a turn may start and the
   queue is empty, and otherwise goes back to the box, so no message waits paused because of a late request. Blank text
-  is dropped. `send` runs the turn (`runTurn`, which returns its last status) and, only once it has fully settled
+  is dropped. A `send` that arrives while a reply is in flight goes through `queueMessage` the same way: the panel may
+  have posted it on a stale snapshot, such as the `done` of a turn whose end has already started the next queued
+  message. A `send` that cannot start a turn otherwise (a mode write pending, no provider or model) goes back to the
+  box. `send` runs the turn (`runTurn`, which returns its last status) and, only once it has fully settled
   (after the `finally` that clears `this.reply`, never inside `settle`, since navigation awaits `reply.settled`) and
   only when it ended `done`, sends the first queued message (`sendNextQueued`): it peeks, checks `mayStartTurn`
   (provider and model chosen, no reply in flight, no mode write pending; the one check `send` shares), then takes it

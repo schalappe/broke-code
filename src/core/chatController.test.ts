@@ -3701,10 +3701,12 @@ describe("ChatController mode", () => {
     const pendingWrites: (() => void)[] = [];
     const releaseWrite = () => pendingWrites.shift()?.();
     const states: ChatState[] = [];
+    const returned: DraftInsert[] = [];
     const controller = new ChatController({
       apiKeys: { get: async () => undefined },
       workspaceState,
       publish: (state) => states.push(structuredClone(state)),
+      returnDraft: (draft) => returned.push(draft),
       mentions: noMentions,
       store: new ConversationStore(undefined),
       ...noTools,
@@ -3720,7 +3722,7 @@ describe("ChatController mode", () => {
     controller.modeChanged();
     controller.setProviders({ providers: [ollama], skipped: [] });
     await until(state, (s) => s.model === "m");
-    return { controller, state, written, states, pendingWrites, releaseWrite };
+    return { controller, state, written, states, pendingWrites, releaseWrite, returned };
   }
 
   test("follows the user value of the setting: absent or false is Ask, true is Auto-edit", async () => {
@@ -3906,18 +3908,19 @@ describe("ChatController mode", () => {
       }
     });
 
-    test("a send while a mode write is pending is ignored, like a send while replying", async () => {
+    test("a send while a mode write is pending starts no turn and goes back to the box", async () => {
       const workspaceState = memoryStore();
       await workspaceState.update("brokeCode.plan", true);
-      const { controller, state, pendingWrites, releaseWrite } = await withSetting(
+      const { controller, state, pendingWrites, releaseWrite, returned } = await withSetting(
         {},
         { workspaceState, deferWrites: true },
       );
       const requestsBefore = (requests.get("a") ?? []).length;
       const picked = controller.setMode("autoEdit");
       await until(state, () => pendingWrites.length === 1);
-      await controller.send("Hi");
+      await controller.send(" Hi @a.ts ", ["a.ts"]);
       expect(state().entries).toEqual([]);
+      expect(returned).toEqual([{ text: "Hi @a.ts", mode: "paragraph", picked: ["a.ts"] }]);
       releaseWrite();
       expect(await picked).toEqual({ kind: "written" });
       expect(state().mode).toBe("autoEdit");
@@ -4119,6 +4122,25 @@ describe("ChatController queue", () => {
     await normal;
     expect(sentTexts()).toEqual(["N", "B"]);
     expect(userTexts(state())).toEqual(["A", "N", "B"]);
+  });
+
+  test("a send made on a stale done snapshot after the queue started the next turn is queued, not lost", async () => {
+    scripts.set("queue", [{ content: "one" }, { content: "two" }, { content: "three" }]);
+    const { controller, state, release, returned } = await gated();
+    const first = controller.send("A");
+    controller.queueMessage("B", []);
+    await release();
+    await until(state, (s) => userTexts(s).length === 2);
+    expect(isReplying(state())).toBe(true);
+
+    // [>]: The panel saw A's `done` with B still queued, so Send posted `send`, not `queueMessage`.
+    controller.send(" C @a b.ts ", ["a b.ts"]);
+    expect(state().queue).toEqual([{ id: expect.any(Number), text: "C @a b.ts", mentions: ["a b.ts"] }]);
+    await release();
+    await release();
+    await first;
+    expect(userTexts(state())).toEqual(["A", "B", "C @a b.ts"]);
+    expect(returned).toEqual([]);
   });
 
   test("a done turn with no model chosen sends nothing and keeps the queue first", async () => {

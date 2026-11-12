@@ -245,7 +245,7 @@ export class ChatController {
     // [>]: The extension always wires the port; only a controller built without it (tests, the eval) logs the loss.
     this.returnDraft =
       ports.returnDraft ??
-      ((draft) => console.error("broke-code: no message box to return queued text to; it is lost", draft.text));
+      ((draft) => console.error("broke-code: no message box to return unsent text to; it is lost", draft.text));
     this.now = ports.now ?? Date.now;
     this.plan = this.workspaceState.get<unknown>(PLAN_KEY) === true;
     // [>]: Instruction files and skills are read only at a send, never just to refresh the display.
@@ -486,7 +486,10 @@ export class ChatController {
    * before each request, the first included: the oldest tool results are left out of a request that would fill the
    * model's context (see `toHistory`), and one that fills it even so is never sent. The
    * turn reads the settings and Plan once, when it starts: in Plan it offers the read tools only, and a call to a tool
-   * Plan leaves out gets an `error` step saying so, counted toward the step limit like any step. Ignored while replying, while a mode pick is written, or without provider and model. `picked`:
+   * Plan leaves out gets an `error` step saying so, counted toward the step limit like any step. The webview clears the
+   * box before the host answers and its state may lag, so a message that cannot start a turn now is never dropped: while
+   * a reply is in flight it goes through `queueMessage` (a turn the queue started after a stale `done`), and otherwise
+   * (a mode pick written, no provider or model) it goes back to the box. Blank text is dropped. `picked`:
    * paths chosen in the menu, mentions while their `@<path>` is still in the text. A mention that cannot be read is
    * reported to the model and in the entry; the message still goes. A message starting with `/<name>` of a discovered
    * skill sends that skill's text with the arguments instead of the text as typed (see `loadSkillText`), and the entry
@@ -495,7 +498,11 @@ export class ChatController {
    * the same way (see `sendNextQueued`); the returned promise settles after the turns it drained.
    */
   async send(text: string, picked: readonly string[] = []): Promise<void> {
-    const ended = await this.runTurn(text, picked);
+    const content = text.trim();
+    if (!content) return;
+    if (isReplying(this.state)) return this.queueMessage(content, picked);
+    if (!this.mayStartTurn()) return this.giveBack([{ text: content, mentions: [...picked] }]);
+    const ended = await this.runTurn(content, picked);
     // [!]: Only once the turn has fully settled (`this.reply` cleared, navigation released), never inside `settle`.
     if (ended === "done") await this.sendNextQueued();
   }
@@ -589,7 +596,7 @@ export class ChatController {
     try {
       this.returnDraft({ text, mode: "paragraph", picked });
     } catch (error) {
-      console.error("broke-code: could not return queued text to the message box; it is lost", text, error);
+      console.error("broke-code: could not return unsent text to the message box; it is lost", text, error);
     }
   }
 
@@ -599,10 +606,8 @@ export class ChatController {
     this.stop();
   }
 
-  /** The agent turn of `send`; its last status, or `undefined` when it did not start. */
-  private async runTurn(text: string, picked: readonly string[]): Promise<ReplyStatus | undefined> {
-    const content = text.trim();
-    if (!this.mayStartTurn() || !content) return undefined;
+  /** The agent turn of `send`, once `mayStartTurn` passed; its last status, or `undefined` when it did not start. */
+  private async runTurn(content: string, picked: readonly string[]): Promise<ReplyStatus | undefined> {
     const provider = this.currentProvider();
     const model = this.state.model;
     if (!provider || !model) return undefined;
