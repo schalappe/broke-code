@@ -21,7 +21,8 @@ skills and lists them to the model, which loads one with `load_skill` and may th
 command at once. A message sent while a turn runs is queued under the message box and sent as if typed when a turn
 ends `done`, one turn each (at most 10). Typing `/` at the start of a message lists `/new`, `/model`, `/compact`, and the skills; the panel runs `/new`,
 `/model`, and `/compact` itself (`/compact` asks the model for a summary that later requests send in place of
-everything before it), and a message `/<name> args` loads that skill in the controller, with its arguments; any other `/word`
+everything before it; with the user setting `brokeCode.autoCompact` on, a turn that would stop on a full context asks
+for that summary itself and goes on), and a message `/<name> args` loads that skill in the controller, with its arguments; any other `/word`
 goes to the model as typed. Outside the chat, the command "broke-code: Generate commit message", a button in the
 Source Control title of a git repository, sends that repository's staged diff to the provider and model selected in the
 chat and writes the reply to the commit input box (ADR 0004). Each final code block of an answer has Copy and Insert at
@@ -88,11 +89,14 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   command a message runs, which the composer runs and the controller never queues, the slash command filter), the menu's file index (`fileIndex.ts`: one scan shared until a file
   changes, behind a scan port), the request history (`history.ts`: `toHistory`, the history a request sends, the
   oldest tool results left out when it would fill the context; `historyStart`, the last `done` summary it starts at,
-  which the webview reads for the "no longer sent" mark; `summaryHistory` and `SUMMARY_REQUEST`, the summary request's
+  which the webview reads for the "no longer sent" mark; `isAutomaticSummary`, a summary the turn ran itself, told by
+  the reply after it, and `sentEntries`, the entries the history sends, the message an automatic summary quotes
+  included; `summaryHistory` and `SUMMARY_REQUEST`, the summary request's
   history; and `resultLineCount`, the step row's line count), the body tool call parser (`toolCalls.ts`: `ToolSpec`, the first call-shaped block,
   malformed-call messages), the system prompt composer (`systemPrompt.ts`: role, the Plan paragraph, call format, rules, tools,
   skills, instruction files; `composeSummaryPrompt`, the summary request's own prompt; `offeredTools`, the tools a send
-  offers, and `PLAN_BLOCKED_TOOLS`), the turn limits (`limits.ts`: `brokeCode.maxToolSteps` and `brokeCode.contextSizes` parsing,
+  offers, and `PLAN_BLOCKED_TOOLS`), the turn limits (`limits.ts`: `brokeCode.maxToolSteps`, `brokeCode.contextSizes`, and `brokeCode.autoCompact` parsing,
+  `userLimits`, their user values only,
   the token estimate, the context-full threshold, the typed size check, and `brokeCode.commandTimeoutSeconds` parsing),
   the command tool (`commands.ts`: `RUN_COMMAND_TOOL`, `runCommandTool` checks the call and the folder and asks the
   approval, `runCommand` runs an approved command in its own process group with an injected shell and timeout, and
@@ -304,8 +308,8 @@ on an error or warning puts a request to fix it there, with its file as a mentio
     send's discovery (`ToolContext.skillRoots`, beside `ToolContext.skills`, the send's skills), so a load earlier in
     the turn counts at the next call, a reopened conversation keeps its loaded skills, and a skill gone since is no
     longer readable. The read roots come from the whole record, so a skill loaded before a summary (`/compact`) stays
-    readable after it; `ToolContext.sentSkillRoots`, the same mapping over the entries from the last `done` summary
-    on, decides `load_skill`'s "already loaded" (below).
+    readable after it; `ToolContext.sentSkillRoots`, the same mapping over the entries the history sends
+    (`sentEntries`: from the last `done` summary on, and the turn's message an automatic summary quotes), decides `load_skill`'s "already loaded" (below).
   - `read_file`, `list_files`, and `search` also accept an absolute path inside a loaded skill's real folder, the path
     its load result gives. The shared read boundary (`readWorkspaceEntry`, `locateWorkspacePath`) takes the folders
     as read-only roots. An absolute path written inside one is read as written, never rerouted through a multi-root
@@ -421,7 +425,9 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   an open approval always show; a row opened inside comes back closed once its turn folds, since its entries remount.
   Entries before the first user message, and a turn with no reply, never fold. A summary entry is a boundary of its
   own: always rendered, never inside a fold, and never a turn's final reply, so the turn before it folds by the usual
-  rule and keeps its own final reply. Rendering only: the state, the record,
+  rule and keeps its own final reply. An automatic summary (below) splits its turn the same way: the part before it
+  folds as an ended turn, and the part after it, from the summary to the turn's final reply, folds once the turn has
+  ended. Rendering only: the state, the record,
   and the history sent to the model are unchanged. The conversation follows its bottom while the user is within 24px of
   it; scrolled up, a turn that folds keeps its question row (its user message) in place on screen, because nothing
   above it changes and the browser's scroll anchoring is off (`overflow-anchor: none`), which would otherwise re-anchor
@@ -539,15 +545,15 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   results left out; while it is set, the panel shows "N older tool results are left out of the request to save
   context." in the place and look of the unknown-size notice, derived from the state, never saved or sent. Known cost,
   accepted: once at the threshold, most requests replace one more old step, which changes the prompt's prefix and
-  defeats a provider's prompt cache. A turn reads the step limit, the context sizes, and Plan once, when it starts; a
+  defeats a provider's prompt cache. A turn reads the step limit, the context sizes, `brokeCode.autoCompact`, and Plan once, when it starts; a
   settings change reaches the usage display at once (`limitsChanged`) and the turns from the next send. A mode change
   cannot land during a turn (the selector is disabled and `setMode` ignored while a reply is in flight), and the
   usage display follows it at the next send, which composes the prompt of the new mode. The display counts the
   system prompt the last send composed, in any conversation shown, since instruction files and skills are the
   workspace's; before the first send of the session, the one without instruction files or skills. It updates once a send has composed it, before the
   request goes.
-  Leaving results out is a deterministic cut, with no model call; v1 summarizes only on request (`/compact`, below),
-  never automatically.
+  Leaving results out is a deterministic cut, with no model call; a summary is asked for with `/compact` (below), or,
+  with `brokeCode.autoCompact` on, by the turn itself (below).
 - `/compact` (#90) asks the model for a summary of the conversation shown. `ChatController.compact` sends one request,
   registered as a reply like `send`'s, so Stop, saving, navigation, and "a reply is in flight" (Send queues, the
   pickers and the mode selector are disabled) treat it as any reply. It returns `ignored` when Send would not act,
@@ -578,6 +584,31 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   them.", derived from the entries, never stored. The record keeps version 2: `summary` is an optional field of the
   assistant entry (ADR 0003's rule); an older build shows the summary as an ordinary answer and resends the whole
   history, which is harmless. The `contextFull` halt of an agent turn names `/compact` beside New chat.
+- Automatic compaction (#91): `brokeCode.autoCompact` (boolean, default false, `application` scope, read from
+  `globalValue` like the providers through `userLimits`, once when a turn starts; `TurnLimits.autoCompact`, false when
+  the source passes none, as the eval bench does, so the bench never compacts). Off, or set only in a workspace
+  `settings.json`, nothing changes. On: before a request of an agent turn, when the estimate still fills the context
+  after the leave-out rule, the controller builds `/compact`'s summary request (`summaryMessages`: the summary system
+  prompt with the send's instruction files, then `summaryHistory`); when that request fills the context too, nothing is
+  sent and the waiting reply ends `halted` (`contextFull`), with no summary entry. Otherwise the summary entry
+  (`summary: true`) takes the waiting reply's place and streams in the same turn: the turn stays in flight (Stop
+  shows, `isReplying` holds), it is no tool step and counts nothing toward the step limit. Ended `done` with text, it
+  is followed at once, in the same update, by a new waiting reply, and the loop builds the request again. At most one
+  automatic summary per request: still over the threshold, the reply ends `halted` (`contextFull`), as before. A
+  summary that fails ends the turn `failed` with the provider's error on the summary entry; stopped, the turn ends
+  `stopped` with the summary as its last entry, and the history is unchanged; `done` but empty, the reply after it
+  ends `halted` (`contextFull`). The history sent from an automatic summary: the system prompt, then one user message,
+  `Summary of the conversation so far:`, a blank line, the summary, a blank line, and the turn's user message as
+  composed when it was sent (mentions and a `/<name>` skill text included), word for word, so the model keeps the
+  request it is working on (scouting decision, 2026-11-12); then the entries after the summary. A later request of the
+  same turn may compact again, quoting the same message. No record field tells an automatic summary from a manual
+  one: it is derived (`isAutomaticSummary`): the turn's next reply follows an automatic summary, while after
+  `/compact` only a user message or another summary can, since a reply only ever follows a user message or a tool
+  step; the quoted message is the nearest user message before it, since `/compact` never runs inside a turn. A failed
+  or stopped automatic summary has nothing after it and reads as a manual one, which changes nothing, since neither is
+  sent. Its separator says "Conversation summarized automatically" once sent ("Summarizing the conversation…" and
+  "Conversation not summarized" as for `/compact`). Known limit: the turn's message sits in the dimmed group before
+  the summary, although the request quotes it.
 - After the tools, the system prompt has a "Skills" section, one `- <name>: <description>` line per skill listed to
   the model, telling it to call `load_skill` first; without such a skill the section is absent, and so are the
   `load_skill` tool and its rule (reading a loaded skill's files by the absolute path the result gives, read-only
@@ -1071,8 +1102,7 @@ on an error or warning puts a request to fix it there, with its file as a mentio
 - Out of scope for v1, by maintainer decision: Windows and Linux, inline completion, multi-agent modes (the Ask, Auto-edit, and Plan
   modes are settings of one agent: how its writes are approved, or which tools it gets; not such modes), MCP,
   code indexing and embeddings, a browser tool, git checkpoints, native or hybrid tool calling, skill
-  directories other than `.agents`, `CLAUDE.md`, automatic
-  context summarization, `/clear`, `/help`, and publishing from `develop`.
+  directories other than `.agents`, `CLAUDE.md`, `/clear`, `/help`, and publishing from `develop`.
 - Do not copy code from swarm-lab (`joe-el-khoury/swarm-lab`). Its license forbids copying and forks. twinny
   is MIT, so credit it in the README when reusing its code or styles.
 

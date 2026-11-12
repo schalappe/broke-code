@@ -107,3 +107,8 @@ from that summary on (`ToolContext.sentSkillRoots`, beside `skillRoots`), and re
 only before it, a skill kept from the model that the user loaded with `/<name>` included (schalappe, 2026-11-12). The
 mark is an optional `summary: true` on the assistant entry, so the record stays version 2 under the rule above: an
 older build shows the summary as an ordinary answer and resends the whole history, which is harmless.
+
+An automatic summary (#91, `brokeCode.autoCompact`) also sends its turn's user message after it, so that message, a
+`/<name>` load included, counts as sent: the history sent is derived by `sentEntries`, the quoted message then the
+entries from the summary on. No field marks the summary automatic: the turn's next reply following it does
+(`isAutomaticSummary`), so the record stays version 2.

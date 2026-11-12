@@ -265,8 +265,8 @@ tool steps sent, every skill load, your messages, and the model's answers always
 result shorter than that line. The chat and the saved conversation keep every result whole; only the request changes.
 While the next request leaves results out, the panel says how many under the header, and the usage counts the request
 as it would be sent. When the request still does not fit, the turn stops without sending it, and the chat asks you to
-summarize the conversation with `/compact` or start a new chat with **New chat**. broke-code never summarizes the
-conversation by itself.
+summarize the conversation with `/compact` or start a new chat with **New chat**, unless automatic compaction is on
+(see [Summarizing with `/compact`](#summarizing-with-compact)).
 
 LLM services do not report a model's context size, so broke-code reads it from the `brokeCode.contextSizes` table
 in your **user** settings, by model name as the provider lists it. A model absent from the table uses 32,768 tokens,
@@ -297,6 +297,22 @@ ends it, and while it runs, the messages you send are queued. When the summary f
 the conversation does not fit the model's context even so, nothing changes: the next request sends the history as
 before. `/compact` on an empty conversation, or right after a summary, sends nothing and says so. You can summarize
 again later: the next summary starts from the last one.
+
+To have an agent turn summarize by itself instead of stopping on a full context, turn on `brokeCode.autoCompact` in
+your **user** settings (off by default, since it adds a request you did not ask for):
+
+```json
+"brokeCode.autoCompact": true
+```
+
+Then, when the next request of a turn would not fit even with older tool results left out, broke-code asks the model
+for the same summary, shown under a **Conversation summarized automatically** separator, and the turn goes on. Its
+next request sends the summary followed by your message of that turn, word for word, so the model still has your
+request in front of it. The summary is not a tool step and does not count toward the step limit; **Stop** ends it like
+any reply. A turn summarizes at most once per request: when the request still does not fit, when the summary request
+itself does not fit, or when the summary comes back empty, the turn stops as it would without the setting; a failed
+summary ends the turn with its error. A turn reads the setting when it starts, and a workspace `settings.json` cannot
+turn it on.
 
 ## Skills
 

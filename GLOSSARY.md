@@ -120,10 +120,17 @@ A word starting with `/` typed in the chat box: either a built-in action or the 
 _Avoid_: command, shortcut
 
 **Summary**:
-A reply the user asks for with `/compact`, in which the model summarizes the conversation so far. Once it ends with
-text, every later request sends the summary in place of everything before it; the earlier entries stay in the chat and
-the saved conversation, marked as no longer sent. A summary that fails, is stopped, or comes back empty changes nothing.
+A reply in which the model summarizes the conversation so far: the user asks for it with `/compact`, or, with
+automatic compaction on, an agent turn asks for it itself when its next request would not fit the context. Once it
+ends with text, every later request sends the summary in place of everything before it, an automatic one followed by
+the turn's user message; the earlier entries stay in the chat and the saved conversation, marked as no longer sent. A
+summary that fails, is stopped, or comes back empty changes nothing.
 _Avoid_: compaction (for the reply itself), recap, condensed history
+
+**Automatic compaction**:
+The opt-in user setting `brokeCode.autoCompact`: an agent turn that would stop on a full context asks for a summary
+instead, at most once per request, and goes on.
+_Avoid_: auto-summarization, auto-compact mode
 
 ## Source control
 
