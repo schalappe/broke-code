@@ -176,6 +176,8 @@ export class ChatView implements vscode.WebviewViewProvider {
         return;
       case "newChat":
         return void controller.newChat();
+      case "undoChanges":
+        return void controller.undoChanges();
       case "chooseModel":
         return void this.chooseModel();
       case "compact":

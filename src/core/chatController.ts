@@ -2,11 +2,12 @@
  * @module chatController
  * Chat state owner: provider and model choice, model listing, agent turns (streamed replies, body tool calls, tool
  * steps, their approval requests, step limit, context budget), the queue of messages sent during a turn, context
- * usage, stop, and the workspace's saved
+ * usage, stop, "Undo changes" over the latest turn that wrote a file, and the workspace's saved
  * conversations (new chat, reopen, delete). The conversation shown is saved when a message is sent, at most every 500 ms while a reply streams, when a
  * call starts, after each tool step, and when the turn ends, so a reload or crash loses at most the reply streaming.
  * vscode-free: host passes key store, workspace memento, mention reader, conversation store, tool runner, instruction
- * file reader, skill reader, limits source, and the auto-approve setting's reader and writer through ports.
+ * file reader, skill reader, limits source, the auto-approve setting's reader and writer, and the undo's workspace
+ * roots and unsaved check through ports.
  */
 import type { ApprovalRequest, Decision, Preview } from "./approval";
 import { type ChatMessage, listModels, type ProviderAccess, streamChat } from "./client";
@@ -24,6 +25,7 @@ import type { ConversationStore } from "./conversationStore";
 import { type HistoryBudget, historyStart, sentEntries, summaryHistory, toHistory } from "./history";
 import { contextOf, estimateTokens, fillsContext, parseLimits, type TurnLimits } from "./limits";
 import { composeUserMessage, findMentions, type MentionReader, type MentionResult, type ReadMention } from "./mentions";
+import { workspacePath } from "./problems";
 import {
   type ChatEntry,
   type ChatState,
@@ -36,8 +38,11 @@ import {
   type ReplyStatus,
   type StepApproval,
   type StorageProblem,
+  type UndoneFile,
+  type UndoState,
 } from "./protocol";
 import type { ParsedProviders, Provider } from "./providers";
+import { RecordedChanges, type RestoreOutcome } from "./recordedChanges";
 import { reservedMention } from "./reservedMentions";
 import { SerialQueue } from "./serialQueue";
 import { findSlashSkill, loadSkillText, type SkillDiscovery } from "./skills";
@@ -52,6 +57,7 @@ import {
 } from "./systemPrompt";
 import { forgedResultCut, type ParsedReply, parseToolCall, type ToolSpec } from "./toolCalls";
 import type { ToolCall, ToolResult } from "./tools";
+import { resolveWorkspaceRoots, type WorkspaceRoot } from "./workspaceFiles";
 
 /** API key lookup. `undefined` = no key; must not reject. */
 export type KeyStore = { get(provider: string): Promise<string | undefined> };
@@ -83,7 +89,9 @@ type ReplyRun = {
  * the skills loaded in the conversation, the ones the read tools may also read, derived at each call (see
  * `loadedSkillRoots`), so a load earlier in the turn counts. `sentSkillRoots`: those of them loaded in the history
  * sent, from the last summary on (see `historyStart`): `load_skill` answers "already loaded" for these only, since the
- * text of an earlier load is no longer sent.
+ * text of an earlier load is no longer sent. `changes`: the turn's record of written files, which the host's applier
+ * records into (`recordingApplier`) so "Undo changes" can restore them; an applier that ignores it (the eval's) makes
+ * the turn hold nothing.
  */
 export type ToolContext = {
   signal: AbortSignal;
@@ -91,6 +99,7 @@ export type ToolContext = {
   skills: readonly Skill[];
   skillRoots: readonly string[];
   sentSkillRoots: readonly string[];
+  changes: RecordedChanges;
 };
 
 /**
@@ -114,6 +123,15 @@ export type InstructionReader = { read(): Promise<InstructionFile[]> };
  */
 export type SkillReader = { read(): Promise<SkillDiscovery> };
 
+/**
+ * What "Undo changes" needs from the host: the workspace folders now, and whether an editor holds unsaved changes to a
+ * file, the write approval's check, which must not reject.
+ */
+export type UndoHost = {
+  roots(): WorkspaceRoot[];
+  hasUnsavedChanges(target: string): Promise<boolean>;
+};
+
 /** The current turn limits, from the user settings. Must not throw. */
 export type LimitsSource = { read(): TurnLimits };
 
@@ -125,7 +143,8 @@ export type LimitsSource = { read(): TurnLimits };
  * `writeAutoApproveWrites`: writes the user value of that setting; rejects when the write fails; absent, every write
  * fails. `returnDraft`: puts a `paragraph` draft in the message box, delivered when the panel can take it: the queued
  * texts the controller takes out without sending them, or refuses to queue, so nothing typed is lost; absent, each is
- * logged as lost. `now`: clock for record times, in milliseconds since the epoch.
+ * logged as lost. `undo`: what "Undo changes" needs; absent (the eval), no turn is held and the button never shows.
+ * `now`: clock for record times, in milliseconds since the epoch.
  */
 export type ChatPorts = {
   apiKeys: KeyStore;
@@ -140,6 +159,7 @@ export type ChatPorts = {
   autoApproveWrites?: () => boolean;
   writeAutoApproveWrites?: (on: boolean) => Promise<void>;
   returnDraft?: (draft: DraftInsert) => void;
+  undo?: UndoHost;
   now?: () => number;
 };
 
@@ -172,6 +192,18 @@ const CURRENT_CONVERSATION_KEY = "brokeCode.currentConversation";
 const SAVE_INTERVAL_MS = 500;
 
 type LastChoice = { provider: string; model?: string };
+
+/**
+ * An agent turn as "Undo changes" sees it. `conversation`: the one it was sent in. `changes`: the files its writes
+ * changed, with their text before the turn, in memory only. `reply`: its last reply, set once it has ended.
+ * `ranCommand`: the user ran one of its commands, which no undo reverts.
+ */
+type Turn = {
+  conversation: Conversation;
+  changes: RecordedChanges;
+  reply: ChatEntry | undefined;
+  ranCommand: boolean;
+};
 
 /**
  * One conversation in memory. `entries` is the array `ChatState.entries` holds while it is shown; a reply keeps
@@ -221,6 +253,21 @@ export class ChatController {
    * of `ChatState`, which is posted to the webview on every streamed delta.
    */
   private readonly modelText = new WeakMap<ChatEntry, string>();
+  /**
+   * The latest turn of the conversation shown, so a write that lands after Stop is held while no later turn has
+   * started; cleared when the conversation shown changes, so a write that lands after that is not.
+   */
+  private lastTurn: Turn | undefined;
+  /**
+   * The turn "Undo changes" restores: the latest of the conversation shown that wrote a file, replaced when a later
+   * turn writes its first one, dropped when the conversation shown changes or once every file is restored. Memory
+   * only: never saved, never published, lost at a window reload.
+   */
+  private heldTurn: Turn | undefined;
+  /** An undo was asked and has not ended: Send does not act, and no other undo starts. */
+  private undoing = false;
+  /** What the last undo did, until the next send, the next undo, or a change of the conversation shown. */
+  private undoOutcome: UndoState["outcome"];
 
   private readonly apiKeys: KeyStore;
   private readonly workspaceState: ChoiceStore;
@@ -234,6 +281,7 @@ export class ChatController {
   private readonly autoApproveWrites: () => boolean;
   private readonly writeAutoApproveWrites: (on: boolean) => Promise<void>;
   private readonly returnDraft: (draft: DraftInsert) => void;
+  private readonly undoHost: UndoHost | undefined;
   private readonly now: () => number;
   /** Limits the usage display reads, refreshed at each send and by `limitsChanged`. */
   private limits: TurnLimits;
@@ -268,6 +316,7 @@ export class ChatController {
     this.returnDraft =
       ports.returnDraft ??
       ((draft) => console.error("broke-code: no message box to return unsent text to; it is lost", draft.text));
+    this.undoHost = ports.undo;
     this.now = ports.now ?? Date.now;
     this.plan = this.workspaceState.get<unknown>(PLAN_KEY) === true;
     // [>]: Instruction files and skills are read only at a send, never just to refresh the display.
@@ -291,6 +340,7 @@ export class ChatController {
       mode: "ask",
       modePending: false,
       queue: [],
+      undo: { reply: undefined, ranCommand: false, running: false, outcome: undefined },
     };
   }
 
@@ -530,15 +580,17 @@ export class ChatController {
   }
 
   /**
-   * Whether a send may start an agent turn now: a provider and a model chosen, no reply in flight, and no mode pick
-   * being written, since the turn would start on a mode about to change. The one check `send` and the queue share.
+   * Whether a send may start an agent turn now: a provider and a model chosen, no reply in flight, no mode pick
+   * being written, since the turn would start on a mode about to change, and no undo running, since the turn would
+   * read files about to change. The one check `send`, `/compact`, and the queue share.
    */
   private mayStartTurn(): boolean {
     return (
       this.currentProvider() !== undefined &&
       this.state.model !== undefined &&
       !isReplying(this.state) &&
-      !this.state.modePending
+      !this.state.modePending &&
+      !this.undoing
     );
   }
 
@@ -644,12 +696,20 @@ export class ChatController {
     const conversation = this.conversation;
     conversation.provider = provider.name;
     conversation.model = model;
+    const turn: Turn = {
+      conversation,
+      changes: new RecordedChanges(() => this.holdTurn(turn)),
+      reply: undefined,
+      ranCommand: false,
+    };
+    this.lastTurn = turn;
+    this.undoOutcome = undefined;
     const user: ChatEntry & { role: "user" } = { role: "user", content, mentions: [] };
     const first = waitingReply();
     // [>]: Published before the reads, so the panel shows a reply in flight (Stop, composer locked) while they run;
     // published again once the mentions are known.
     conversation.entries.push(user, first);
-    return this.runReply(provider, conversation, first, "the agent turn", async (run) => {
+    const ended = await this.runReply(provider, conversation, first, "the agent turn", async (run) => {
       const { signal, settle } = run;
       // [>]: The message is on disk before the request goes, so a crash keeps it. A failed save is shown and the
       // reply still goes. Stop ends the wait at once, even if a read, the key lookup, or the save never settles.
@@ -749,11 +809,14 @@ export class ChatController {
             requestApproval: async (request) => {
               const answer = await this.askApproval(request, signal);
               approval = answer.approval ?? approval;
+              // [>]: Once Run is clicked the command runs, whether its step is recorded or dropped by Stop.
+              if (request.kind === "command" && answer.decision.kind === "accept") turn.ranCommand = true;
               return answer.decision;
             },
             skills: discovery.skills,
             skillRoots: loadedSkillRoots(conversation.entries, discovery.skills),
             sentSkillRoots: loadedSkillRoots(sentEntries(conversation.entries), discovery.skills),
+            changes: turn.changes,
           };
           const result = await unlessAborted(this.runTool({ name, args }, context), signal);
           if (!result) return settle("stopped");
@@ -795,6 +858,68 @@ export class ChatController {
         void this.save(conversation);
       }
     });
+    turn.reply = ended.reply;
+    if (this.heldTurn === turn) this.emit();
+    return ended.status;
+  }
+
+  /**
+   * `turn` recorded a write: hold it, in place of the turn held so far, while it is the latest turn of the conversation
+   * shown, which a write that lands after Stop may still be. Nothing is held without the undo's host port.
+   */
+  private holdTurn(turn: Turn): void {
+    if (this.undoHost === undefined || this.lastTurn !== turn || this.heldTurn === turn) return;
+    this.heldTurn = turn;
+    this.emit();
+  }
+
+  /** `ChatState.undo`, derived: the button's reply only while a held turn has files left and no reply is in flight. */
+  private undoState(): UndoState {
+    const held = this.heldTurn;
+    const index = held?.reply === undefined ? -1 : this.conversation.entries.indexOf(held.reply);
+    const shows = held !== undefined && index !== -1 && held.changes.files.length > 0 && !isReplying(this.state);
+    return {
+      reply: shows ? index : undefined,
+      ranCommand: shows && held.ranCommand,
+      running: this.undoing,
+      outcome: this.undoOutcome,
+    };
+  }
+
+  /**
+   * "Undo changes": restore each file of the held turn (see `RecordedChanges.restore`), with the editor's unsaved check,
+   * and show what happened to each in `ChatState.undo.outcome`. Restored and removed files leave the held turn; skipped
+   * ones stay for the next undo, and the button goes once none is left. Ignored while a reply is in flight, while an
+   * undo runs, and when the button does not show. Runs in the navigation queue, so New chat, open, and delete asked
+   * meanwhile wait for it; Send does not act until it ends (`mayStartTurn`). Settles once it has ended.
+   */
+  undoChanges(): Promise<void> {
+    const held = this.heldTurn;
+    const host = this.undoHost;
+    if (!held || !host || this.undoing || this.undoState().reply === undefined) return Promise.resolve();
+    this.undoing = true;
+    this.undoOutcome = undefined;
+    this.emit();
+    return this.navigate(async () => {
+      try {
+        // [>]: A navigation asked before the undo has changed the conversation shown, which dropped the turn.
+        if (this.heldTurn !== held || held.reply === undefined) return;
+        const roots = host.roots();
+        const outcomes = await held.changes.restore(roots, {
+          hasUnsavedChanges: (target) => host.hasUnsavedChanges(target),
+        });
+        const files = await undoneFiles(roots, outcomes);
+        if (this.heldTurn !== held) return;
+        this.undoOutcome = { reply: this.conversation.entries.indexOf(held.reply), files };
+        if (held.changes.files.length === 0) this.heldTurn = undefined;
+      } catch (error) {
+        // [>]: The restore and the port never reject by contract; a bug here must not leave Send locked.
+        console.error("broke-code: the undo failed unexpectedly", error);
+      } finally {
+        this.undoing = false;
+        this.emit();
+      }
+    }, false);
   }
 
   /**
@@ -878,7 +1003,7 @@ export class ChatController {
     const entries = [...conversation.entries];
     const reply: ChatEntry & { role: "assistant" } = { ...waitingReply(), summary: true };
     conversation.entries.push(reply);
-    return this.runReply(provider, conversation, reply, "the summary", async ({ signal, settle }) => {
+    const ended = await this.runReply(provider, conversation, reply, "the summary", async ({ signal, settle }) => {
       const prepared = await unlessAborted(
         Promise.all([this.accessOf(provider), this.readInstructions(), this.save(conversation)]),
         signal,
@@ -893,6 +1018,7 @@ export class ChatController {
       if (outcome.status === "failed") reply.error = outcome.error;
       return settle(outcome.status);
     });
+    return ended.status;
   }
 
   /**
@@ -909,7 +1035,7 @@ export class ChatController {
     reply: ChatEntry & { role: "assistant" },
     what: string,
     body: (run: ReplyRun) => Promise<ReplyStatus>,
-  ): Promise<ReplyStatus> {
+  ): Promise<{ status: ReplyStatus; reply: ChatEntry }> {
     const abort = new AbortController();
     let markSettled: () => void = () => {};
     const settled = new Promise<void>((resolve) => {
@@ -929,11 +1055,11 @@ export class ChatController {
     };
     this.emit();
     try {
-      return await body(run);
+      return { status: await body(run), reply: run.reply };
     } catch (error) {
       console.error(`broke-code: ${what} failed unexpectedly`, error instanceof Error ? error.stack : error);
       run.reply.error = { kind: "internal", message: error instanceof Error ? error.message : String(error) };
-      return run.settle("failed");
+      return { status: run.settle("failed"), reply: run.reply };
     } finally {
       if (this.reply?.abort === abort) this.reply = undefined;
       markSettled();
@@ -1231,6 +1357,10 @@ export class ChatController {
 
   /** Put `conversation` in front, as the one shown and reopened at the next window load. Navigation only. */
   private show(conversation: Conversation): void {
+    // [>]: The held changes belong to the conversation shown: another one never gets its button or outcome.
+    this.lastTurn = undefined;
+    this.heldTurn = undefined;
+    this.undoOutcome = undefined;
     this.conversation = conversation;
     this.state.conversationId = conversation.id;
     this.state.entries = conversation.entries;
@@ -1356,6 +1486,7 @@ export class ChatController {
 
   private emit(): void {
     this.state.context = this.contextUsage(this.state.model);
+    this.state.undo = this.undoState();
     this.publish(this.state);
   }
 }
@@ -1413,6 +1544,21 @@ function malformedToolName(answer: string, parsed: ParsedReply & { kind: "malfor
  */
 function planBlocked(answer: string, parsed: ParsedReply & { kind: "malformed" }): boolean {
   return PLAN_BLOCKED_TOOLS.includes(malformedToolName(answer, parsed));
+}
+
+/**
+ * Each restore outcome as the chat names it: the file as the file index writes it, relative to the workspace folder
+ * that holds it as it resolves now, else as the model wrote it at the first write.
+ */
+async function undoneFiles(roots: WorkspaceRoot[], outcomes: RestoreOutcome[]): Promise<UndoneFile[]> {
+  const realRoots = (await resolveWorkspaceRoots(roots)).resolved.map(({ root, realRoot }) => ({
+    name: root.name,
+    path: realRoot,
+  }));
+  return outcomes.map(({ realPath, path, ...outcome }) => ({
+    path: workspacePath(realRoots, realPath) ?? path,
+    ...outcome,
+  }));
 }
 
 /** What the chat shows and keeps of a read mention: no content. */

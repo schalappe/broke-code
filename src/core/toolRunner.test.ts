@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolContext } from "./chatController";
 import { type CommandEnv, RUN_COMMAND_TOOL } from "./commands";
+import { RecordedChanges } from "./recordedChanges";
 import { LOAD_SKILL_TOOL } from "./skills";
 import type { Skill } from "./systemPrompt";
 import { workspaceToolRunner } from "./toolRunner";
@@ -35,6 +36,7 @@ const context: ToolContext = {
   skills: [],
   skillRoots: [],
   sentSkillRoots: [],
+  changes: new RecordedChanges(),
 };
 
 /** A runner over `root` whose applier records each change and the context it was built for, and writes nothing. */

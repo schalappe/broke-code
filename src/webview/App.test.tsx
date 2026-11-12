@@ -40,6 +40,7 @@ const unsaved = {
   storageProblem: undefined,
   context: { used: 0, size: 32768, known: true },
   queue: [],
+  undo: { reply: undefined, ranCommand: false, running: false, outcome: undefined },
 };
 
 /** Panel markup for a conversation of one question and `reply`, English strings. */

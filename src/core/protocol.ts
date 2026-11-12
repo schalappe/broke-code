@@ -7,6 +7,7 @@ import { type ConversationSummary, isConversationId } from "./conversation";
 import type { MentionResult } from "./mentions";
 import type { ProviderError } from "./providerError";
 import type { SkippedProvider } from "./providers";
+import type { RestoreRefusal } from "./recordedChanges";
 import type { SlashCommand, Suggestion } from "./suggestions";
 
 export type ModelsState =
@@ -160,6 +161,33 @@ export type QueuedMessage = { id: number; text: string; mentions: string[] };
 /** Most messages the queue holds: the whole state is posted at each streamed delta. */
 export const MAX_QUEUED_MESSAGES = 10;
 
+/**
+ * What "Undo changes" did to one file of the held turn, named as the file index writes it. `restored`: it holds its
+ * text from before the turn again; `removed`: the turn created it, and it is gone; `skipped`: untouched, for `reason`
+ * (see `RestoreRefusal`), and still held, so the next undo retries it. `leftover`: the temporary file of the restoring
+ * write could not be removed and sits beside the file as `name`.
+ */
+export type UndoneFile = { path: string; leftover?: { name: string; cause: string } } & (
+  | { status: "restored" | "removed" }
+  | { status: "skipped"; reason: Exclude<RestoreRefusal, "failed"> }
+  | { status: "skipped"; reason: "failed"; cause: string }
+);
+
+/**
+ * "Undo changes" in the panel: the file changes of the latest turn of the conversation shown that wrote a file, held
+ * in the host's memory only; never their text here. `reply`: the index in `entries` of that turn's last reply, which
+ * carries the button; absent while nothing is held, or a reply is in flight. `ranCommand`: that turn ran a command,
+ * which no undo reverts. `running`: an undo runs; Send does not act and no other undo starts. `outcome`: what the last
+ * undo did, file by file, shown under the reply `reply` names; cleared by the next send, the next undo, and any change
+ * of the conversation shown.
+ */
+export type UndoState = {
+  reply: number | undefined;
+  ranCommand: boolean;
+  running: boolean;
+  outcome: { reply: number; files: UndoneFile[] } | undefined;
+};
+
 export type ChatState = {
   providers: string[];
   skipped: SkippedProvider[];
@@ -199,6 +227,7 @@ export type ChatState = {
    * deleting the one shown, when they are asked.
    */
   queue: QueuedMessage[];
+  undo: UndoState;
 };
 
 /**
@@ -276,7 +305,9 @@ export type WebviewMessage =
    * Pick a mode in the message box: Plan is kept in the workspace memento; Ask and Auto-edit write the user setting
    * `brokeCode.autoApproveWrites` when its value must change.
    */
-  | { type: "setMode"; mode: Mode };
+  | { type: "setMode"; mode: Mode }
+  /** "Undo changes": restore the files of the turn `ChatState.undo.reply` names. */
+  | { type: "undoChanges" };
 
 /** Chat state carried by `message`; `undefined` for a message that must leave the panel's state alone. */
 export function chatStateOf(message: HostMessage): ChatState | undefined {
@@ -324,6 +355,7 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | undefined {
     case "compact":
     case "openSettings":
     case "addProvider":
+    case "undoChanges":
       return { type: message.type };
     case "selectProvider":
     case "setApiKey": {
