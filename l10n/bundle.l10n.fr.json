@@ -217,5 +217,20 @@
   "Conversation summarized": "Discussion résumée",
   "Conversation summarized automatically": "Discussion résumée automatiquement",
   "Conversation not summarized": "Discussion non résumée",
-  "Nothing to summarize: the conversation is empty or was just summarized.": "Rien à résumer : la discussion est vide ou vient d'être résumée."
+  "Nothing to summarize: the conversation is empty or was just summarized.": "Rien à résumer : la discussion est vide ou vient d'être résumée.",
+  "Undo changes": "Annuler les modifications",
+  "Undoing changes…": "Annulation des modifications…",
+  "Commands this turn ran are not undone.": "Les commandes lancées pendant ce tour ne sont pas annulées.",
+  "Changes undone.": "Modifications annulées.",
+  "Some changes were not undone. Undo changes again to retry the files skipped.": "Certaines modifications n'ont pas été annulées. Cliquez à nouveau sur Annuler les modifications pour réessayer les fichiers ignorés.",
+  "No change was undone. Undo changes again to retry the files skipped.": "Aucune modification n'a été annulée. Cliquez à nouveau sur Annuler les modifications pour réessayer les fichiers ignorés.",
+  "{0}: {1}": "{0} : {1}",
+  "{0}; its temporary file {1} could not be removed ({2})": "{0} ; son fichier temporaire {1} n'a pas pu être supprimé ({2})",
+  "restored": "restauré",
+  "removed, since this turn created it": "supprimé, car ce tour l'avait créé",
+  "skipped, it changed since this turn wrote it": "ignoré, il a changé depuis que ce tour l'a écrit",
+  "skipped, it has unsaved changes in an editor": "ignoré, un éditeur contient des modifications non enregistrées",
+  "skipped, it is now a symbolic link": "ignoré, c'est désormais un lien symbolique",
+  "skipped, it is no longer inside the workspace folders": "ignoré, il n'est plus dans les dossiers de l'espace de travail",
+  "skipped, it could not be restored ({0})": "ignoré, il n'a pas pu être restauré ({0})"
 }

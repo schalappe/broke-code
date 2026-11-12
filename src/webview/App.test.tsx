@@ -2731,3 +2731,121 @@ describe("queued messages", () => {
     });
   });
 });
+
+describe("undo changes", () => {
+  const writeAnswer = "Writing.\n<write_file>\n<path>a.ts</path>\n<content>\nx\n</content>\n</write_file>";
+  /** A turn that wrote `a.ts` and answered "Done.", then a turn answered "Other.". */
+  const turns: ChatEntry[] = [
+    { role: "user", content: "Write it", mentions: [] },
+    {
+      role: "assistant",
+      reasoning: "",
+      content: writeAnswer,
+      status: "done",
+      call: { name: "write_file", args: { path: "a.ts", content: "x" }, start: 9, end: writeAnswer.length },
+    },
+    {
+      role: "tool",
+      name: "write_file",
+      args: { path: "a.ts", content: "x" },
+      status: "ok",
+      text: "ok",
+      approval: "auto",
+    },
+    { role: "assistant", reasoning: "", content: "Done.", status: "done" },
+    { role: "user", content: "Anything else?", mentions: [] },
+    { role: "assistant", reasoning: "", content: "Other.", status: "done" },
+  ];
+  const idle = { reply: undefined, ranCommand: false, running: false, outcome: undefined };
+  const html = (undo: ChatState["undo"], entries: ChatEntry[] = turns) =>
+    renderToStaticMarkup(<App state={stateWith(true, { entries, undo })} language="en" />);
+  const count = (text: string, part: string) => text.split(part).length - 1;
+
+  test("shows the button only under the reply the state names", () => {
+    expect(html(idle)).not.toContain("Undo changes");
+    const shown = html({ ...idle, reply: 3 });
+    expect(count(shown, ">Undo changes</button>")).toBe(1);
+    const at = shown.indexOf("Undo changes");
+    expect(at).toBeGreaterThan(shown.indexOf("Done."));
+    expect(at).toBeLessThan(shown.indexOf("Other."));
+    expect(shown).not.toContain("not undone");
+  });
+
+  test("never shows the button while a reply is in flight", () => {
+    const streaming: ChatEntry[] = [
+      ...turns.slice(0, 5),
+      { role: "assistant", reasoning: "", content: "Oth", status: "streaming" },
+    ];
+    expect(html({ ...idle, reply: 3 }, streaming)).not.toContain("Undo changes");
+  });
+
+  test("shows the button outside the fold of a turn of several steps, and under a summary that ended its turn", () => {
+    const step = turns[2]!;
+    const folded: ChatEntry[] = [...turns.slice(0, 3), turns[1]!, step, turns[3]!];
+    const shown = html({ ...idle, reply: 5 }, folded);
+    expect(shown).toContain('<details class="turn-fold"');
+    expect(shown.indexOf("Undo changes")).toBeGreaterThan(shown.indexOf("</details>"));
+
+    const summary: ChatEntry = { role: "assistant", reasoning: "", content: "", status: "stopped", summary: true };
+    expect(html({ ...idle, reply: 3 }, [...turns.slice(0, 3), summary])).toContain(">Undo changes</button>");
+  });
+
+  test("says commands are not undone when the turn ran one", () => {
+    expect(html({ ...idle, reply: 3, ranCommand: true })).toContain("Commands this turn ran are not undone.");
+  });
+
+  test("words the outcome three ways, naming each file under the reply it undid", () => {
+    const outcome = (files: NonNullable<ChatState["undo"]["outcome"]>["files"], reply?: number) =>
+      html({ ...idle, reply, outcome: { reply: 3, files } });
+
+    const all = outcome([
+      { path: "a.ts", status: "restored" },
+      { path: "b.ts", status: "removed" },
+    ]);
+    expect(all).toContain("Changes undone.");
+    expect(all).toContain("a.ts: restored");
+    expect(all).toContain("b.ts: removed, since this turn created it");
+    expect(all.indexOf("Changes undone.")).toBeLessThan(all.indexOf("Other."));
+
+    const some = outcome(
+      [
+        { path: "a.ts", status: "restored" },
+        { path: "b.ts", status: "skipped", reason: "changed" },
+      ],
+      3,
+    );
+    expect(some).toContain("Some changes were not undone. Undo changes again to retry the files skipped.");
+    expect(some).toContain("b.ts: skipped, it changed since this turn wrote it");
+    expect(some).not.toContain("Changes undone.");
+
+    const none = outcome(
+      [
+        { path: "a.ts", status: "skipped", reason: "unsaved" },
+        { path: "b.ts", status: "skipped", reason: "failed", cause: "EACCES" },
+      ],
+      3,
+    );
+    expect(none).toContain("No change was undone. Undo changes again to retry the files skipped.");
+    expect(none).toContain("a.ts: skipped, it has unsaved changes in an editor");
+    expect(none).toContain("b.ts: skipped, it could not be restored (EACCES)");
+  });
+
+  test("Undo changes posts its request", async () => {
+    await withPanel(stateWith(true, { entries: turns, undo: { ...idle, reply: 3 } }), async ({ click }) => {
+      await click("Undo changes");
+      expect(posted).toEqual([{ type: "undoChanges" }]);
+    });
+  });
+
+  test("while an undo runs, its button and Send are disabled, and Enter sends nothing", async () => {
+    const running = stateWith(true, { entries: turns, undo: { ...idle, reply: 3, running: true } });
+    await withPanel(running, async ({ host, type, press }) => {
+      const buttons = [...host.querySelectorAll("button")];
+      expect(buttons.find((element) => element.textContent === "Undoing changes…")?.disabled).toBe(true);
+      await type("Hi");
+      expect(buttons.find((element) => element.textContent === "Send")?.disabled).toBe(true);
+      await press("Enter");
+      expect(posted).toEqual([]);
+    });
+  });
+});

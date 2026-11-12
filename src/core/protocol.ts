@@ -167,11 +167,13 @@ export const MAX_QUEUED_MESSAGES = 10;
  * (see `RestoreRefusal`), and still held, so the next undo retries it. `leftover`: the temporary file of the restoring
  * write could not be removed and sits beside the file as `name`.
  */
-export type UndoneFile = { path: string; leftover?: { name: string; cause: string } } & (
+export type UndoneFile = { path: string; leftover?: { name: string; cause: string } } & UndoneStatus;
+
+/** What an undo did to one file; see `UndoneFile`. */
+export type UndoneStatus =
   | { status: "restored" | "removed" }
   | { status: "skipped"; reason: Exclude<RestoreRefusal, "failed"> }
-  | { status: "skipped"; reason: "failed"; cause: string }
-);
+  | { status: "skipped"; reason: "failed"; cause: string };
 
 /**
  * "Undo changes" in the panel: the file changes of the latest turn of the conversation shown that wrote a file, held

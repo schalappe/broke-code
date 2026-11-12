@@ -30,6 +30,8 @@ import {
   type PendingApproval,
   type QueuedMessage,
   type ReplyCall,
+  type UndoneFile,
+  type UndoState,
 } from "../core/protocol";
 import type { ProviderError } from "../core/providerError";
 import { isNothingToAttach, type ReservedMention, reservedMention } from "../core/reservedMentions";
@@ -64,6 +66,8 @@ import {
   describeSkippedProvider,
   describeStorageProblem,
   describeToolStep,
+  describeUndoneFile,
+  describeUndoOutcome,
   type ErrorText,
   formatConversationDate,
   mainArgument,
@@ -140,6 +144,7 @@ export function App({
           key={state.conversationId}
           entries={state.entries}
           approval={state.approval}
+          undo={state.undo}
           hidden={historyOpen}
         />
       )}
@@ -476,18 +481,26 @@ export function ConversationList({
   );
 }
 
-/** `approval`: the request open, shown on the last reply, the one in flight. `hidden`: History shows instead. */
+/**
+ * `approval`: the request open, shown on the last reply, the one in flight. `undo`: "Undo changes", shown under the
+ * reply it names, and the last undo's outcome under the reply it undid. `hidden`: History shows instead.
+ */
 function Conversation({
   entries,
   approval,
+  undo,
   hidden,
 }: {
   entries: ChatEntry[];
   approval?: PendingApproval;
+  undo: UndoState;
   hidden: boolean;
 }) {
   const end = useRef<HTMLDivElement>(null);
   const list = useRef<HTMLElement>(null);
+  // [>]: The host names no reply while one is in flight; a snapshot that lags behind never shows the button either.
+  const last = entries.at(-1);
+  const replying = last?.role === "assistant" && (last.status === "waiting" || last.status === "streaming");
   const [pinned, setPinned] = useState(true);
 
   // Follow stream only while user stays at bottom. Unpinned, nothing moves the view: see `overflow-anchor` in the CSS.
@@ -505,6 +518,8 @@ function Conversation({
       previous={entries[index - 1]}
       next={entries[index + 1]}
       approval={index === entries.length - 1 ? approval : undefined}
+      undo={index === undo.reply && !replying ? undo : undefined}
+      undone={index === undo.outcome?.reply ? undo.outcome.files : undefined}
     />
   );
 
@@ -571,18 +586,23 @@ function Conversation({
 
 /**
  * One entry of the conversation, with its neighbours: a tool step shows inside the reply before it. `approval`: the
- * request open, given to the last entry only.
+ * request open, given to the last entry only. `undo` and `undone`: "Undo changes" and the last undo's files, given to
+ * the reply they belong to.
  */
 function Entry({
   entry,
   previous,
   next,
   approval,
+  undo,
+  undone,
 }: {
   entry: ChatEntry;
   previous?: ChatEntry;
   next?: ChatEntry;
   approval?: PendingApproval;
+  undo?: UndoState;
+  undone?: UndoneFile[];
 }) {
   switch (entry.role) {
     case "user":
@@ -596,10 +616,16 @@ function Entry({
       return entry.summary ? (
         <>
           <p className="summary-separator">{describeSummary(entry, isAutomaticSummary(entry, next))}</p>
-          <Reply entry={entry} approval={approval} />
+          <Reply entry={entry} approval={approval} undo={undo} undone={undone} />
         </>
       ) : (
-        <Reply entry={entry} step={next?.role === "tool" ? next : undefined} approval={approval} />
+        <Reply
+          entry={entry}
+          step={next?.role === "tool" ? next : undefined}
+          approval={approval}
+          undo={undo}
+          undone={undone}
+        />
       );
     case "tool":
       // [>]: A step without a reply before it is still shown, never lost.
@@ -614,16 +640,21 @@ function Entry({
 /**
  * One reply of an agent turn: its reasoning, its answer as Markdown less its call block, the row of its tool step
  * (`step`: the entry after it), the decision its call waits on (`approval`, the request open, given while this is the
- * last reply), in one `decision` block with the call's row, and how the turn ended when it ended here.
+ * last reply), in one `decision` block with the call's row, how the turn ended when it ended here, then "Undo changes"
+ * (`undo`) when this is the last reply of the turn whose writes are held, and what the last undo did (`undone`).
  */
 function Reply({
   entry,
   step,
   approval,
+  undo,
+  undone,
 }: {
   entry: ChatEntry & { role: "assistant" };
   step?: ChatEntry & { role: "tool" };
   approval?: PendingApproval;
+  undo?: UndoState;
+  undone?: UndoneFile[];
 }) {
   const { call } = entry;
   const answer = call ? (entry.content.slice(0, call.start) + entry.content.slice(call.end)).trim() : entry.content;
@@ -668,6 +699,41 @@ function Reply({
         <p className="mark">{l10n.t("The model's reply held no summary.")}</p>
       )}
       {entry.error && <ErrorBlock error={entry.error} />}
+      {undone && <UndoOutcome files={undone} />}
+      {undo && <UndoChanges undo={undo} />}
+    </div>
+  );
+}
+
+/**
+ * "Undo changes" under the last reply of the turn whose writes are held, with a line saying commands are not undone
+ * when the turn ran one. Disabled, and worded so, while the undo runs.
+ */
+function UndoChanges({ undo }: { undo: UndoState }) {
+  return (
+    <div className="undo">
+      <button type="button" className="secondary" disabled={undo.running} onClick={() => post({ type: "undoChanges" })}>
+        {undo.running ? l10n.t("Undoing changes…") : l10n.t("Undo changes")}
+      </button>
+      {undo.ranCommand && <p className="undo-hint">{l10n.t("Commands this turn ran are not undone.")}</p>}
+    </div>
+  );
+}
+
+/**
+ * What the last undo did, file by file: a notice when every file is back, a warning block when some or all were
+ * skipped, since those stay changed until the next undo.
+ */
+function UndoOutcome({ files }: { files: UndoneFile[] }) {
+  const skipped = files.some((file) => file.status === "skipped");
+  return (
+    <div className={skipped ? "undo-outcome skipped" : "undo-outcome"} role="status">
+      <p>{describeUndoOutcome(files)}</p>
+      <ul>
+        {files.map((file) => (
+          <li key={file.path}>{describeUndoneFile(file)}</li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -1219,7 +1285,8 @@ function Composer({
   });
 
   // [!]: The one check of whether Send would act: Send, Enter, the built-in commands, and Send now all go through it.
-  const canSend = ready && !replying && !state.modePending;
+  // An undo running blocks it as a mode change does: the host refuses a turn until the files are back.
+  const canSend = ready && !replying && !state.modePending && !state.undo.running;
   // [>]: Only a reply in flight queues; with no model or a mode change pending, Send does nothing either way.
   const canQueue = ready && replying && !state.modePending && state.queue.length < MAX_QUEUED_MESSAGES;
 

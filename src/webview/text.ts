@@ -1,12 +1,21 @@
 /**
  * @module text
- * Localized panel text for provider errors (worded in the core, translated here), skipped providers and skills, mentions, tool steps, folded turns, halted agent turns, context
- * usage, and saved conversations.
+ * Localized panel text for provider errors (worded in the core, translated here), skipped providers and skills,
+ * mentions, tool steps, folded turns, halted agent turns, the outcome of "Undo changes", context usage, and saved
+ * conversations.
  */
 import * as l10n from "@vscode/l10n";
 import { resultLineCount } from "../core/history";
 import type { MentionResult } from "../core/mentions";
-import type { ChatEntry, ContextUsage, HaltReason, SkillWarning, StorageProblem } from "../core/protocol";
+import type {
+  ChatEntry,
+  ContextUsage,
+  HaltReason,
+  SkillWarning,
+  StorageProblem,
+  UndoneFile,
+  UndoneStatus,
+} from "../core/protocol";
 import {
   describeProviderError as describeProviderErrorWith,
   type ErrorText,
@@ -235,6 +244,49 @@ export function describeHalt(reason: HaltReason, summary = false): string {
       return l10n.t(
         "Stopped: the conversation fills the model's context. Summarize it with /compact, or start a new chat with New chat.",
       );
+  }
+}
+
+/**
+ * The line over an undo's files: every file back (`restored` or `removed`), some skipped, or none back. A skipped file
+ * stays held, so the button stays and retries it.
+ */
+export function describeUndoOutcome(files: readonly UndoneFile[]): string {
+  const skipped = files.filter((file) => file.status === "skipped").length;
+  if (skipped === 0) return l10n.t("Changes undone.");
+  if (skipped < files.length) {
+    return l10n.t("Some changes were not undone. Undo changes again to retry the files skipped.");
+  }
+  return l10n.t("No change was undone. Undo changes again to retry the files skipped.");
+}
+
+/** One file of an undo: its path, then what happened to it, and the temporary file it left behind, if any. */
+export function describeUndoneFile(file: UndoneFile): string {
+  const text = l10n.t("{0}: {1}", file.path, undoneStatus(file));
+  if (file.leftover === undefined) return text;
+  return l10n.t(
+    "{0}; its temporary file {1} could not be removed ({2})",
+    text,
+    file.leftover.name,
+    file.leftover.cause,
+  );
+}
+
+function undoneStatus(file: UndoneStatus): string {
+  if (file.status !== "skipped") {
+    return file.status === "restored" ? l10n.t("restored") : l10n.t("removed, since this turn created it");
+  }
+  switch (file.reason) {
+    case "changed":
+      return l10n.t("skipped, it changed since this turn wrote it");
+    case "unsaved":
+      return l10n.t("skipped, it has unsaved changes in an editor");
+    case "symlink":
+      return l10n.t("skipped, it is now a symbolic link");
+    case "outsideWorkspace":
+      return l10n.t("skipped, it is no longer inside the workspace folders");
+    case "failed":
+      return l10n.t("skipped, it could not be restored ({0})", file.cause);
   }
 }
 
