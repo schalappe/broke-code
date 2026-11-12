@@ -18,7 +18,8 @@ message box shows and writes (Ask or Auto-edit); each command waits for Run or R
 mode, Plan, kept per workspace, offers the read tools only, so the model answers with a plan and nothing is written
 or run (ADR 0005). Each send discovers the
 skills and lists them to the model, which loads one with `load_skill` and may then read its folder (ADR 0003). `bun run eval` measures that loop on local Ollama models, applying each change and running each
-command at once. Typing `/` at the start of a message lists `/new`, `/model`, and the skills; the panel runs `/new` and
+command at once. A message sent while a turn runs is queued under the message box and sent as if typed when a turn
+ends `done`, one turn each (at most 10). Typing `/` at the start of a message lists `/new`, `/model`, and the skills; the panel runs `/new` and
 `/model` itself, and a message `/<name> args` loads that skill in the controller, with its arguments; any other `/word`
 goes to the model as typed. Outside the chat, the command "broke-code: Generate commit message", a button in the
 Source Control title of a git repository, sends that repository's staged diff to the provider and model selected in the
@@ -48,7 +49,9 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   host's notifications), the generated commit message (`commitMessage.ts`: the request's system prompt, the diff cut to
   the context threshold, the reply's cleaning, and `CommitMessageGenerator`, the command over its git, provider
   request, and user interface ports), the chat controller (conversation state, the agent turn loop with its tool runner, instruction reader, and
-  skill reader ports, its limits source and step limits, the context budget check, streaming, Stop, saving, reopen, delete), the conversation record
+  skill reader ports, its limits source and step limits, the context budget check, streaming, Stop, saving, reopen, delete,
+  and the queue of messages sent while a reply is in flight, with `mayStartTurn`, the one check a send and the queue
+  share), the conversation record
   (`conversation.ts`: version 2, its validation on load, title, id, the summary file's shape, `filterConversations`, the
   History filter), its store
   (`conversationStore.ts`: a record and a summary file per conversation, the list from the summaries, reads, writes,
@@ -79,8 +82,8 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   `hasTextAfter`, whether rendered text follows a block, and `codeBlockText`,
   the text Copy and Insert at cursor take), Insert at cursor (`insertCode.ts`: `insertCode` over an editor port the
   host fills with `window.activeTextEditor`: no editor, edit refused, failed, or done), the menu logic (`suggestions.ts`: the `@` token at the caret, index entries,
-  filtering, the index exclusions; the `/` token at the start of the message, `BUILT_IN_COMMANDS`, the slash command
-  filter), the menu's file index (`fileIndex.ts`: one scan shared until a file
+  filtering, the index exclusions; the `/` token at the start of the message, `BUILT_IN_COMMANDS`, `builtInCommand`, the built-in
+  command a message runs, which the composer runs and the controller never queues, the slash command filter), the menu's file index (`fileIndex.ts`: one scan shared until a file
   changes, behind a scan port), the request history (`history.ts`: `toHistory`, the history a request sends, the
   oldest tool results left out when it would fill the context, and `resultLineCount`, the step row's line count), the body tool call parser (`toolCalls.ts`: `ToolSpec`, the first call-shaped block,
   malformed-call messages), the system prompt composer (`systemPrompt.ts`: role, the Plan paragraph, call format, rules, tools,
@@ -131,8 +134,10 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   from a `--vscode-*` variable; see `DESIGN.md`), tool step rows, the approval controls, the mode selector after the message box (`ModeSelect`), and the answer's code blocks with Copy and Insert at cursor (`CodeBlock`,
   the `pre` override of the answer's renderer) included. `SuggestionMenu.tsx` is the autocomplete list the `@` and
   `/` menus share, a row with an optional description; `composer.ts` holds the message box's decisions without React
-  (the token at the caret, each menu's rows, what a key does, what picking a `/` row does (`slashPick`), the built-in
-  command a message runs, and `applyDraft`, how an editor draft edits the message box's text, caret, and picked paths).
+  (the token at the caret, each menu's rows, what a key does, what picking a `/` row does (`slashPick`), `applyDraft`,
+  how an editor draft edits the message box's text, caret, and picked paths, `restoreQueued`, how queued messages go
+  back in it, and `queueReturnedBy`, which navigation request returns the queue). The queued messages render under the
+  message box (`QueuedMessages`).
   `Root.tsx` is the panel's root: it posts `ready`, renders each state, and queues the `insertDraft` drafts for the
   message box; `main.tsx` mounts it. `turns.ts` groups the entries for rendering without React (`foldTurns`: each entry once,
   an ended turn's fold and its step counts), and `text.ts` words the fold's row (`describeFold`).
@@ -467,6 +472,31 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   run: the step in flight is dropped, nothing later runs, and the record is saved as it stands. A failed reply ends
   the turn `failed`; so does an unexpected exception inside the turn (a bug), with an `internal` error giving its
   message, logged with its stack, so the composer never stays locked. Truncate tool results longer than about 2,000 lines and say so in the result.
+- Queued messages (#70): while a reply is in flight, Send and Enter post `queueMessage { text, mentions }` (validated
+  like `send`) instead of `send`, and the box clears; with no model, or a mode change pending, Send does nothing, as
+  before. `ChatController.queueMessage` appends `{ id, text, mentions }` (`QueuedMessage`, the id the controller's, the
+  text trimmed) to `ChatState.queue`; it refuses blank text, exactly a built-in command (`builtInCommand`; the
+  webview leaves one as text in the box during a reply), and an 11th message (`MAX_QUEUED_MESSAGES`, 10, since the
+  whole state is posted at each delta; the panel then leaves the text in the box and says the queue is full). It does
+  not refuse a message when no reply is in flight, since the webview's state may lag: the message waits, paused.
+  `send` runs the turn (`runTurn`, which returns its last status) and, only once it has fully settled (after the
+  `finally` that clears `this.reply`, never inside `settle`, since navigation awaits `reply.settled`) and only when it
+  ended `done`, sends the first queued message (`sendNextQueued`): it peeks, checks `mayStartTurn` (provider and model
+  chosen, no reply in flight, no mode write pending; the one check `send` shares), then takes it off the queue and calls
+  `send` in the same step, so it is never shown in both places, and the message goes as if typed then (mentions read,
+  a `/<name>` skill loaded, provider, model, mode, and limits of that moment). The next waits for that turn. When the
+  check fails (the model gone after a failed listing), nothing is sent and it stays first. A turn ending `stopped`,
+  `failed`, or `halted` sends nothing. The queue is paused when it holds a message and no reply is in flight
+  (`isQueuePaused`, derived, never stored): the panel says so and the first message has "Send now", `sendQueued { id }`,
+  which acts only on the first message and only when Send would; its turn ending `done` resumes the queue. A message
+  sent normally while paused goes first, and its `done` resumes the queue too. `removeQueued { id }` removes one (an
+  unknown id changes nothing); Edit posts it and puts the text and picked paths back in the box (`restoreQueued`:
+  filling a blank box, else after a blank line), then focuses the box (the third focus move DESIGN.md allows). The rows sit under the message box, after the
+  mode selector, Send, and Stop in the tab order (DESIGN.md: nothing focusable between the approval controls and the
+  box), each with Edit and Remove; queuing moves no focus. The queue lives in `ChatState` only: never in the record,
+  kept while the panel is hidden, lost at a window reload. Deactivation calls `ChatController.dispose`, which empties
+  it and stops the reply, so nothing is sent. Steering (a message inside the running turn) is out of scope: it would
+  put a user message next to a tool result.
 - Before each request of an agent turn, the first included, the controller estimates its size as the characters of the
   system prompt and of each history message's content (as `toHistory` builds it, reasoning excluded) divided by 4,
   rounded up. Above `floor(size * 7 / 8)` of the model's context size (`fillsContext`, never a copy of its arithmetic),
@@ -672,6 +702,7 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   nothing; a Quick Pick that fails is logged and shown as an error (`chooseModel`). (A webview cannot open the
   select's own list: Chromium refuses `showPicker()` in a cross-origin iframe.)
   Both clear the box and act only when Send would (a model chosen, no reply in flight); nothing reaches the model.
+  `/new` returns the queued messages to the box, as the New chat button does.
   `/new words` and `/model words` are ordinary messages.
 - The file index is built on the first menu query with `findFiles("**/*", "**/{node_modules,.git,dist,out,build}/**",
   5000)`: an explicit exclude adds to `files.exclude` (only `null` drops it). `.gitignore` is not read. Folders are
@@ -738,7 +769,12 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   both and neither hides or clears the other; it is cleared only by the next listing that succeeds. Stop ends a reply at
   once even when a step it waits on cannot be aborted (such as a CA file read on a FIFO): the reply is stopped and
   saved, and late reply text or outcome is dropped. A row is dropped only once its delete has succeeded. Deleting the
-  conversation shown shows a new one first. `send` is not navigation: its saves go straight to the store. Accepted cost:
+  conversation shown shows a new one first. New chat, opening another conversation, and deleting the one shown also
+  empty the queue at request time, not when they run, so a turn ending `done` meanwhile sends nothing; opening the
+  conversation shown, deleting another row, and pruning leave it. The webview puts the queued texts back in the message
+  box as it posts the request (`queueReturnedBy`, from the state it holds, no host message), one per paragraph, after
+  the draft when the box holds one. Accepted race: a message queued and not yet in the webview's state when the request
+  posts is dropped with the queue. `send` is not navigation: its saves go straight to the store. Accepted cost:
   a request waits behind a slow disk operation already queued. Reopening restores the entries only; it does not switch
   the provider or model. History works without a provider: past conversations can be read, reopened, and deleted; only
   the composer needs one. Without a folder or workspace open, there is no storage directory: the conversation stays in
@@ -747,7 +783,7 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   in place while the rows scroll. It keeps the rows whose title contains its text (`filterConversations`: the query
   trimmed, lowercase on both sides, a substring, no accent folding, order kept; a blank query keeps all), and says "No
   match" when none is left. It filters in the webview over the listed titles (cut to 60 characters): no host message,
-  no record read. Opening History focuses it (the one focus move DESIGN.md allows). Enter opens the first row listed,
+  no record read. Opening History focuses it (the first focus move DESIGN.md allows). Enter opens the first row listed,
   as a click on it does, and does nothing with no row or while an input method composes. Escape clears a non-empty
   field; in an empty one it closes History and focuses the History button. A reply that ends while History is open
   leaves the focus where it is, instead of moving it to the message box. Its text lives in the list mounted while
@@ -813,7 +849,8 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   folder that exists but cannot be listed is one warning too. The warnings sit in `ChatState.skillWarnings`, are
   replaced at each send, and show in the panel list of skipped providers. The extension logs each send's skills
   (`broke-code: skills listed to the model: ...`) to the extension host console.
-- The built-in slash commands are `/new` and `/model`, run by the webview and never sent (Harness, the `/` menu).
+- The built-in slash commands are `/new` and `/model`, run by the webview and never sent or queued (Harness, the `/`
+  menu): during a reply a message of exactly a built-in stays text in the box, and the controller refuses to queue one.
   Typing `/` lists them with every skill. A skill named `new` or `model` is listed too, after the built-ins, but a
   message of exactly its `/<name>` runs the built-in; picking the skill's row inserts `/<name> ` like any skill.
 

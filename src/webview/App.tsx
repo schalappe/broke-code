@@ -404,7 +404,7 @@ export function HistoryPanel({
 /**
  * Saved conversations of the workspace, in the order given (newest first), under a filter field when there is one.
  * A row's title reopens it; the one shown is marked `aria-current`. Mounted only while History is open, so the filter
- * starts empty at each opening and takes the focus then (the one focus move DESIGN.md allows); it keeps its text while
+ * starts empty at each opening and takes the focus then (a focus move DESIGN.md allows); it keeps its text while
  * the list changes. In the field, Enter opens the first row listed; Escape clears the text, or calls `onDismiss` when
  * there is none.
  */

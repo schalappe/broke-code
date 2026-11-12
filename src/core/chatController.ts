@@ -1,7 +1,8 @@
 /**
  * @module chatController
  * Chat state owner: provider and model choice, model listing, agent turns (streamed replies, body tool calls, tool
- * steps, their approval requests, step limit, context budget), context usage, stop, and the workspace's saved
+ * steps, their approval requests, step limit, context budget), the queue of messages sent during a turn, context
+ * usage, stop, and the workspace's saved
  * conversations (new chat, reopen, delete). The conversation shown is saved when a message is sent, at most every 500 ms while a reply streams, when a
  * call starts, after each tool step, and when the turn ends, so a reload or crash loses at most the reply streaming.
  * vscode-free: host passes key store, workspace memento, mention reader, conversation store, tool runner, instruction
@@ -481,7 +482,8 @@ export class ChatController {
    * reported to the model and in the entry; the message still goes. A message starting with `/<name>` of a discovered
    * skill sends that skill's text with the arguments instead of the text as typed (see `loadSkillText`), and the entry
    * records the skill, which opens its folder to the read tools; a `SKILL.md` that cannot be read is reported the same
-   * way as a mention.
+   * way as a mention. Once the turn has fully settled, and only when it ended `done`, the first queued message is sent
+   * the same way (see `sendNextQueued`); the returned promise settles after the turns it drained.
    */
   async send(text: string, picked: readonly string[] = []): Promise<void> {
     const ended = await this.runTurn(text, picked);

@@ -197,8 +197,10 @@ user's message). Borders and rules are 1px. No colored side stripe.
 ### Buttons
 
 - Primary (Send, Stop, Accept, Run, Set API key, Add provider in the empty state): the theme's button colors. At most one per region; in the
-  conversation, only the decision block has one.
-- Secondary (New chat, History, Delete, Reject, Retry, Add provider under the skipped providers): a hairline box on the panel (`--bc-line`), the foreground as
+  conversation, only the decision block has one. While a reply is in flight, Stop is the message box's primary button
+  and Send, which then queues, is secondary.
+- Secondary (New chat, History, Delete, Reject, Retry, Add provider under the skipped providers, a queued message's
+  Send now, Edit, and Remove): a hairline box on the panel (`--bc-line`), the foreground as
   text; `--bc-fill-strong` when hovered or pressed (`aria-expanded="true"`).
 - Link (Open provider settings, Set context size): the link color, underlined.
 - Code block action (Copy, Insert at cursor): a secondary button two pixels down (`--bc-fs-xs`), at least a row high
@@ -209,14 +211,22 @@ user's message). Borders and rules are 1px. No colored side stripe.
 ### Fields
 
 Inputs and selects use the theme's input and dropdown colors, a 1px border, radius 4px. The message box, the mode
-selector, and Send or Stop share one large rounded field (radius 10px): the text area on its own line, then the
-selector at the left and the button at the right. The field's border takes the focus color while the text area has
+selector, and Send (then Stop, while a reply is in flight) share one large rounded field (radius 10px): the text area
+on its own line, then the selector at the left and the buttons at the right. The field's border takes the focus color while the text area has
 focus.
 
 The mode selector is a native select one size down (`--bc-fs-sm`), "Ask", "Auto-edit", or "Plan", its tooltip saying
 what the mode does. It shows the mode the host holds (Plan from the workspace, the others from the setting): a pick
 shows only once the host has applied it, and a failed write leaves it as it was, with the error in a notification. Disabled (half opacity) while a reply is in flight, like the
 pickers, and while a mode change is being written, when Send is disabled too (Enter sends nothing).
+
+### Queued messages
+
+Under the message box, outside its field: one row per queued message, in order, on `--bc-fill` with `--bc-edge`,
+radius 6px, one size down. The text is cut to one line with an ellipsis (its tooltip holds it whole), then Edit and
+Remove at the right; while the queue is paused, the first row leads its actions with Send now, disabled when Send
+would not act. Above the rows, a notice line says "The queue is paused." when no reply is in flight, and another
+"The queue is full: 10 messages at most." at the cap. Nothing went wrong in either case, so no block.
 
 ### The conversation
 
@@ -267,7 +277,7 @@ Each kind of state has one look, distinct from the others at a glance:
 | --- | --- |
 | Loading (waiting for the reply, thinking, tool running, models loading) | Dim text that breathes; a line of its own leads with a dot. The pickers and the mode selector are disabled. While a mode change is being written, the mode selector and Send are disabled, with no other sign: the write takes a moment. |
 | Empty (no provider, new conversation, empty History, no History row left by the filter) | One dim line, centered in the room it has; a link under it when there is something to do. No provider: Add provider (primary) and the Open provider settings link side by side under it. |
-| Notice (unknown context size, older tool results left out of the next request) | One small dim line, with a link when there is something to do (Set context size). Nothing went wrong, so no block. |
+| Notice (unknown context size, older tool results left out of the next request, the queue paused or full) | One small dim line, with a link when there is something to do (Set context size). Nothing went wrong, so no block. |
 | Warning (skipped providers and skills) | A block on the theme's warning fill; under skipped providers, Add provider (secondary) below the block, only while a valid provider exists: without one, the empty state's Add provider is the panel's only one. |
 | Error (models unavailable, failed reply, storage and listing problems) | A block on the theme's error fill: the message, its technical detail in the editor font, then its actions. |
 | Failed step or chip | The error color on the status text; no block. |
@@ -296,17 +306,20 @@ opacity over `--bc-fast`. Under `prefers-reduced-motion: reduce`, and when VS Co
 - A folded turn's row is a native `<summary>`: Tab reaches it, Enter and Space open and close it, with no key handler
   of ours. Folding at turn end moves no focus.
 - Focus never moves on its own. When an approval request opens, the focused element stays focused, so a key pressed
-  at that moment cannot accept a write or run a command. A webview test pins this. Two written exceptions: opening
+  at that moment cannot accept a write or run a command. A webview test pins this. Three written exceptions: opening
   History moves the focus into its filter field, since the user asked for History and no approval control sits
   there. Escape in an empty filter field closes History and gives the focus back to the History button. And a draft
   from the editor ("Add selection to chat", the quick fix "Fix with broke-code") closes History and moves the focus
   into the message box, since the user asked for it from the editor and the message box sends nothing on its own. The
   workbench may focus the panel just after the draft did, leaving nothing focused inside it; until the user clicks or
-  presses a key in the panel, the message box takes that focus back.
+  presses a key in the panel, the message box takes that focus back. Last, Edit on a queued message moves the focus
+  into the message box, where its text now is, since the user asked to edit it and the row they clicked is gone.
+  Queuing a message moves no focus.
 - From the message box, Shift+Tab reaches Reject, then Accept or Run, then the reason field: the reason field comes
   first in the DOM, then Accept or Run, then Reject, and nothing focusable may be added between them and the message
-  box. The mode selector therefore comes after the message box: Tab from the message box reaches it, then Send or
-  Stop. A webview test pins this order.
+  box. The mode selector therefore comes after the message box: Tab from the message box reaches it, then Send, then
+  Stop while a reply is in flight, then the queued messages' controls, which sit under the box for the same reason. A
+  webview test pins this order, with and without a queue.
 - The `@` and `/` menus keep the focus in the message box (`aria-activedescendant`); the highlighted row is the
   visible focus there, so it must differ from its neighbours in every theme.
 - The message box takes the focus back when a reply ends, unless History is open: the focus then stays where the user
