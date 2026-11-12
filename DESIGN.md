@@ -203,7 +203,7 @@ user's message). Borders and rules are 1px. No colored side stripe.
   conversation, only the decision block has one. While a reply is in flight, Stop is the message box's primary button
   and Send, which then queues, is secondary.
 - Secondary (New chat, History, Delete, Reject, Retry, Add provider under the skipped providers, a queued message's
-  Send now, Edit, and Remove, Undo changes): a hairline box on the panel (`--bc-line`), the foreground as
+  Send now, Edit, and Remove, the turn's Retry, Retry anyway, Cancel, Continue, and Undo changes): a hairline box on the panel (`--bc-line`), the foreground as
   text; `--bc-fill-strong` when hovered or pressed (`aria-expanded="true"`).
 - Link (Open provider settings, Set context size): the link color, underlined.
 - Code block action (Copy, Insert at cursor): a secondary button two pixels down (`--bc-fs-xs`), at least a row high
@@ -262,10 +262,16 @@ would not act. Above the rows, a notice line says "The queue is paused." when no
   "Conversation summarized" ("Conversation summarized automatically" for one an agent turn ran itself), or
   "Conversation not summarized" when it failed, stopped, halted, or came back empty. A summary is never folded, and the
   turn before it folds by the usual rule.
-- Undo changes: under the last reply of the turn whose writes are held, after how the turn ended, a secondary button
-  "Undo changes" (`.undo`), followed on the same line, wrapping when narrow, by the small dim hint "Commands this turn
-  ran are not undone." when the turn ran one. Never shown while a reply is in flight, so it never sits between an
-  approval's controls and the message box. The last undo's outcome sits under the reply it undid (`.undo-outcome`), in
+- The turn's actions (`.turn-actions`): one row of secondary buttons after how the turn ended, wrapping when narrow:
+  under the last turn's reply, Retry, then Continue when the turn was stopped or halted on the step limit or on
+  malformed calls, both disabled when Send would not act; then, under the last reply of the turn whose writes are
+  held, "Undo changes", followed by the small dim hint "Commands this turn ran are not undone." when the turn ran one.
+  None shows while a reply is in flight, so nothing sits between an approval's controls and the message box. When
+  Retry would leave written files or run commands behind, its first click asks: a line of its own above the buttons
+  (`.retry-warning`, one size down, in the full foreground, since it asks before acting) says Retry does not revert
+  them and that Undo changes gets the files back, the same button reads "Retry anyway", and Cancel follows it. Not a
+  modal: the question sits where the user clicked.
+- Undo changes' outcome: the last undo's outcome sits under the reply it undid (`.undo-outcome`), in
   words, one line per file with its path, status, and reason, each path (and a temporary file left behind) in the
   editor font (`.undo-path`) and the rest in the UI font: a notice ("Changes undone.") when every file is back, a
   warning block when some or all were skipped ("Some changes were not undone. …", "No change was undone. …"), since
@@ -333,14 +339,16 @@ opacity over `--bc-fast`. Under `prefers-reduced-motion: reduce`, and when VS Co
 - A folded turn's row is a native `<summary>`: Tab reaches it, Enter and Space open and close it, with no key handler
   of ours. Folding at turn end moves no focus.
 - Focus never moves on its own. When an approval request opens, the focused element stays focused, so a key pressed
-  at that moment cannot accept a write or run a command. A webview test pins this. Three written exceptions: opening
+  at that moment cannot accept a write or run a command. A webview test pins this. Written exceptions: opening
   History moves the focus into its filter field, since the user asked for History and no approval control sits
   there. Escape in an empty filter field closes History and gives the focus back to the History button. And a draft
   from the editor ("Add selection to chat", the quick fix "Fix with broke-code") closes History and moves the focus
   into the message box, since the user asked for it from the editor and the message box sends nothing on its own. The
   workbench may focus the panel just after the draft did, leaving nothing focused inside it; until the user clicks or
-  presses a key in the panel, the message box takes that focus back. Last, Edit on a queued message moves the focus
+  presses a key in the panel, the message box takes that focus back. Edit on a queued message moves the focus
   into the message box, where its text comes back, since the user asked to edit it and the row they clicked goes.
+  Last, Cancel on Retry's confirmation gives the focus back to Retry, since the button it was on goes; the
+  confirmation itself renames the button the focus is on and moves nothing.
   Queuing a message moves no focus, and neither do the queued texts that come back to the box after New chat, an
   open, or a delete, or that the queue could not take: the request came from the panel, which already has the focus
   where the user put it, and History stays open. Such a text that arrives while the panel has no message box (no

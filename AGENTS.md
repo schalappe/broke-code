@@ -17,7 +17,9 @@ Accept or Reject in the chat, ADR 0002) unless the user setting auto-approves it
 message box shows and writes (Ask or Auto-edit); each command waits for Run or Reject, always. "Undo changes", under
 the last reply of the latest turn that wrote a file, puts each file that turn wrote back to its text before the turn,
 from memory, until the window reloads; the write steps of each file put back are marked undone in the record and in
-the history sent to the model. The selector's third
+the history sent to the model. Under the last reply, Retry runs the last message again in place of its first attempt
+(asking first when that attempt wrote files or ran commands, which it does not revert), and Continue, after Stop or a
+step-limit or malformed-calls halt, asks the model to carry on. The selector's third
 mode, Plan, kept per workspace, offers the read tools only, so the model answers with a plan and nothing is written
 or run (ADR 0005). Each send discovers the
 skills and lists them to the model, which loads one with `load_skill` and may then read its folder (ADR 0003). `bun run eval` measures that loop on local Ollama models, applying each change and running each
@@ -55,8 +57,8 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   the context threshold, the reply's cleaning, and `CommitMessageGenerator`, the command over its git, provider
   request, and user interface ports), the chat controller (conversation state, the agent turn loop with its tool runner, instruction reader, and
   skill reader ports, its limits source and step limits, the context budget check, streaming, Stop, saving, reopen, delete,
-  the queue of messages sent while a reply is in flight, with `mayStartTurn`, the one check a send, `/compact`, and the
-  queue share, and "Undo changes": each turn's `RecordedChanges` on `ToolContext.changes`, the held turn with its
+  the queue of messages sent while a reply is in flight, with `mayStartTurn`, the one check a send, `/compact`, the
+  queue, Retry, and Continue share, Retry and Continue (`retry`, `continueTurn`, over `startTurn` and `removeFrom`), and "Undo changes": each turn's `RecordedChanges` on `ToolContext.changes`, the held turn with its
   write steps by file, and `undoChanges` over the `UndoHost` port, which marks the steps of the files put back), the conversation record
   (`conversation.ts`: version 2, its validation on load, title, id, the summary file's shape, `filterConversations`, the
   History filter), its store
@@ -64,7 +66,7 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   and deletes in call order), and the store's file access (`conversationFiles.ts`:
   the file port, and its implementation over a local directory with `node:fs`: missing versus failed, regular files
   only, atomic writes, leftover temporary files), the dialog queue, the host-webview message
-  protocol and its validation, the model list (`modelList.ts`: `emptyModelsLabel`, why the list is empty, for the
+  protocol and its validation (and `sendWouldAct`, the panel's one "Send would act" check), the model list (`modelList.ts`: `emptyModelsLabel`, why the list is empty, for the
   header's select and the Quick Pick; `modelChoices`, the rows `/model` opens; `chooseModel`, the `/model` pick over a
   pick port the host fills with `showQuickPick`), workspace file access (`workspaceFiles.ts`: the inside-workspace check and its read-only
   roots (the loaded skills' folders outside the workspace, for reads only), capped reads, one-level listings, line truncation, the write boundary and atomic writes, `removeWorkspaceFile`, the remove with the write's checks, with `node:fs`), mentions (`mentions.ts`: token detection, picked and typed
@@ -125,7 +127,10 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   skills (`skills.ts`: discovery in `~/.agents/skills/` and each workspace folder's `.agents/skills/`, the frontmatter
   subset, validation, precedence, warnings, the line the extension logs at each send; `LOAD_SKILL_TOOL`, `loadSkill`
   for the model's call, `findSlashSkill`, the skill a `/<name> args` message loads, `loadSkillText`, the load result
-  whoever loads, the user's arguments substituted or appended, and `answerSkillQuery`, the `/` menu's answer). `markdownCode.ts`, `suggestions.ts`, `reservedMentions.ts`, `modelList.ts`, `conversation.ts`, and `history.ts` import nothing from
+  whoever loads, the user's arguments substituted or appended, and `answerSkillQuery`, the `/` menu's answer). the last turn's actions (`lastTurn.ts`: `lastTurnActions`, whether the last turn offers Retry and Continue and
+  under which reply; `unrevertedEffects`, the applied writes and run commands a removal from an index leaves on disk;
+  `CONTINUE_TEXT`). `markdownCode.ts`, `suggestions.ts`, `reservedMentions.ts`, `modelList.ts`, `conversation.ts`,
+  `history.ts`, and `lastTurn.ts` import nothing from
   `node:`, since the webview loads them. Unit tests sit next to them as `*.test.ts`, because `bun test` cannot load `vscode`. `tlsFixture.ts`
   generates test certificates with `/usr/bin/openssl` at test time; no private key is committed.
   `conversationFixture.ts` is the in-memory conversation file port for tests.
@@ -151,8 +156,9 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   built-in Git extension's API, the repository Quick Pick, the replace question, the progress notification, and the
   notifications).
 - `src/webview/`: the React chat panel and its CSS (`styles.css`: a token layer, then rules that consume it, every color
-  from a `--vscode-*` variable; see `DESIGN.md`), tool step rows, the approval controls, the mode selector after the message box (`ModeSelect`), "Undo changes" and the last undo's outcome under the reply
-  `ChatState.undo` names (`UndoChanges`, `UndoOutcome`), and the answer's code blocks with Copy and Insert at cursor (`CodeBlock`,
+  from a `--vscode-*` variable; see `DESIGN.md`), tool step rows, the approval controls, the mode selector after the message box (`ModeSelect`), the turn's actions row (`TurnActions`: Retry, its
+  confirmation and Cancel, and Continue under the last turn's reply, then "Undo changes" under the reply
+  `ChatState.undo` names) and the last undo's outcome (`UndoOutcome`), and the answer's code blocks with Copy and Insert at cursor (`CodeBlock`,
   the `pre` override of the answer's renderer) included. `SuggestionMenu.tsx` is the autocomplete list the `@` and
   `/` menus share, a row with an optional description; `composer.ts` holds the message box's decisions without React
   (the token at the caret, each menu's rows, what a key does, what picking a `/` row does (`slashPick`), `applyDraft`,
@@ -607,6 +613,41 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   only: never in the record, kept while the panel is hidden, lost at a window reload. Deactivation calls
   `ChatController.dispose`, which empties it without returning anything and stops the reply, so nothing is sent.
   Steering (a message inside the running turn) is out of scope: it would put a user message next to a tool result.
+- Retry and Continue (#111, parent #73): the last turn is the last user entry and every entry after it.
+  `lastTurnActions(entries)` (`lastTurn.ts`, loaded by the webview and the controller alike) says whether it offers
+  them and under which reply they show: nothing while a reply is in flight, without a user entry or an entry after it,
+  or when a completed `/compact` summary follows the user entry (`historyStart` past it at a summary that is not
+  automatic; maintainer decision: that summary is kept, so nothing is offered); otherwise Retry, under the turn's last
+  reply that is not a summary (else the summary that took its only reply), whatever its status, and Continue too when
+  the last entry is no summary and that reply ended `stopped`, or `halted` on `stepLimit` or `malformedCalls`
+  (`contextFull` would halt again: it keeps pointing to `/compact` and New chat). The panel renders them before "Undo
+  changes" in one row, enabled when Send would act (`sendWouldAct`, the composer's one check). Each request carries the
+  entries count the panel showed (`retry { entries }`, `continueTurn { entries }`, validated like a request id); the
+  controller ignores it unless that count is the current one, `mayStartTurn` passes, and `lastTurnActions` (with
+  Continue's condition for Continue) holds as the host sees it, so a click on a lagging panel removes nothing.
+  `ChatController.retry` removes every entry after the user entry (`removeFrom`: replies, tool steps, the turn's
+  automatic summary, and an unsent summary) and runs the turn again from that same entry object (`TurnStart`
+  `retry`), so its model text of then is resent: mentions and `SKILL.md` are not read again, a skill it loaded stays
+  loaded, and an entry never composed (Stop during its mention read) goes as typed. Everything else is read as for a
+  send (provider, model, Plan, limits, key, instruction files, skills and their warnings). The removal is synchronous
+  with the turn start and saved by the turn's first save, before the request; a crash before it keeps the
+  conversation whole. `removeFrom` drops the held turn, `lastTurn`, and the undo outcome when their reply is in the
+  removed range, so "Undo changes" for the removed attempt goes and a write of it that lands after its Stop is not
+  held; a turn held from before the user entry stays held. `ChatController.continueTurn(entries, label)` removes
+  nothing: it appends a user entry whose typed text is `label` (the host passes `l10n.t("Continue")`, since the
+  controller imports nothing from `vscode`) and whose model text is `CONTINUE_TEXT` (`Continue from where you
+  stopped.`), no mention, no skill, and runs it as a send (`TurnStart` `continue`: a new step budget). After a
+  `stepLimit` or `malformedCalls` halt the history then holds two `user` messages in a row, as a typed message there
+  does today (#110). Both go through `startTurn`, `send`'s turn start: Stop, saving, folding, and the queue (Send
+  queues meanwhile; ending `done` sends the first queued message, so a Retry resumes a paused queue) work as for any
+  turn. Files written and commands run by the removed steps are not reverted: when `unrevertedEffects(entries, user +
+  1)` counts a write step that applied and is not undone (`write_file` or `edit_file`, `ok`) or a `run_command` the
+  user ran (`accepted`), or "Undo changes" is offered for that turn (`ChatState.undo.reply` past the user entry), the
+  panel's first click on Retry posts nothing: a line says what is not reverted and that "Undo changes" gets the files
+  back first, the same button reads "Retry anyway" (the focus stays on it), and Cancel follows it; the second click
+  posts `retry`, and Cancel, or another entries count, drops the confirmation (scouting decision, 2026-11-12: in the
+  chat, no native modal). Accepted gap: a command whose step Stop dropped, in a turn that wrote nothing, is not
+  warned about. `ChatState` and the record are unchanged.
 - Before each request of an agent turn, the first included, the controller estimates its size as the characters of the
   system prompt and of each history message's content (as `toHistory` builds it, reasoning excluded) divided by 4,
   rounded up. Above `floor(size * 7 / 8)` of the model's context size (`fillsContext`, never a copy of its arithmetic),
