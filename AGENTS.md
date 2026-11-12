@@ -16,7 +16,8 @@ write tools and commands: a message starts an agent turn that runs `read_file`, 
 Accept or Reject in the chat, ADR 0002) unless the user setting auto-approves it, which the mode selector of the
 message box shows and writes (Ask or Auto-edit); each command waits for Run or Reject, always. "Undo changes", under
 the last reply of the latest turn that wrote a file, puts each file that turn wrote back to its text before the turn,
-from memory, until the window reloads. The selector's third
+from memory, until the window reloads; the write steps of each file put back are marked undone in the record and in
+the history sent to the model. The selector's third
 mode, Plan, kept per workspace, offers the read tools only, so the model answers with a plan and nothing is written
 or run (ADR 0005). Each send discovers the
 skills and lists them to the model, which loads one with `load_skill` and may then read its folder (ADR 0003). `bun run eval` measures that loop on local Ollama models, applying each change and running each
@@ -55,8 +56,8 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   request, and user interface ports), the chat controller (conversation state, the agent turn loop with its tool runner, instruction reader, and
   skill reader ports, its limits source and step limits, the context budget check, streaming, Stop, saving, reopen, delete,
   the queue of messages sent while a reply is in flight, with `mayStartTurn`, the one check a send, `/compact`, and the
-  queue share, and "Undo changes": each turn's `RecordedChanges` on `ToolContext.changes`, the held turn, and
-  `undoChanges` over the `UndoHost` port), the conversation record
+  queue share, and "Undo changes": each turn's `RecordedChanges` on `ToolContext.changes`, the held turn with its
+  write steps by file, and `undoChanges` over the `UndoHost` port, which marks the steps of the files put back), the conversation record
   (`conversation.ts`: version 2, its validation on load, title, id, the summary file's shape, `filterConversations`, the
   History filter), its store
   (`conversationStore.ts`: a record and a summary file per conversation, the list from the summaries, reads, writes,
@@ -111,7 +112,7 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   unsaved-editor check, the approval request, then the write; an applier's result carries `written`, the file's real
   path, only when that change was written), the recorded changes (`recordedChanges.ts`: `recordingApplier`, opt-in,
   records into `RecordedChanges` each change its applier reports `written`, one `RecordedFile` per file, calling its
-  `onRecord` after each;
+  `onRecord` with that file after each; `has`, whether a file is still in the set;
   `RecordedChanges.restore`, the per-file restore over the workspace roots and an unsaved-changes port, each file
   `restored`, `removed`, or `skipped` with its `RestoreRefusal`), the approval seam (`approval.ts`: the request a tool
   makes, the decision it gets, the rejection text, and the decisions of the editor side: which change diffs to close,
@@ -158,8 +159,9 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   caret, and picked paths). The queued messages render under the message box (`QueuedMessages`).
   `Root.tsx` is the panel's root: it posts `ready`, renders each state, and queues the `insertDraft` drafts for the
   message box; `main.tsx` mounts it. `turns.ts` groups the entries for rendering without React (`foldTurns`: each entry once,
-  an ended turn's fold and its step counts, a summary a boundary of its own), and `text.ts` words the fold's row (`describeFold`) and the undo's outcome
-  (`describeUndoOutcome`, `describeUndoneFile`).
+  an ended turn's fold and its step counts, a summary a boundary of its own), and `text.ts` words the fold's row (`describeFold`), the step row
+  (`describeToolStep`, "undone" included), and the undo's outcome (`describeUndoOutcome`, `describeUndoneFile`,
+  `describeUndoFailure`).
 - `src/l10n.test.ts`: checks that every `l10n.t` message has a French translation and that the
   `package.nls*.json` files match.
 - `l10n/bundle.l10n.fr.json`, `package.nls.json`, `package.nls.fr.json`: French strings for the host and
@@ -433,8 +435,21 @@ on an error or warning puts a request to fix it there, with its file as a mentio
     click, and once none is left the turn is no longer held and the button goes. While it runs, `mayStartTurn` refuses a
     turn (a `send` goes back to the box, `/compact` and the queue wait) and the composer's "Send would act" check is
     false. The outcome is cleared by the next send, the next undo, and a change of the conversation shown. An undo that
-    throws despite its contract is logged and unlocks Send. Restore per file, the button for every end status, and
-    skipped files retryable are maintainer decisions (#69).
+    throws despite its contract (a bug) is logged with its stack and shown as an error block under the reply, its
+    message as detail (`outcome.error`), with the files restored or removed before it (those that left the set, as
+    restored, or removed when the writes created them); the files left stay held, so the button stays and retries
+    them, and Send is unlocked. Restore per file, the button for every end status, and skipped files retryable are
+    maintainer decisions (#69).
+  - Undone steps (#94): each write step is tied, when it is recorded, to the file its write recorded (`onRecord`
+    reports the `RecordedFile`; the turn keeps the steps by real path), never by resolving its `path` argument again;
+    a write recorded without a step (it landed after Stop) ties none. After the restore, every step of a file that left
+    the held turn (restored or removed) gets `undone: true`; a skipped file's steps stay unmarked until a later undo
+    puts it back. Only the held turn's steps are marked: an earlier turn's writes to the same file are not. An
+    `alreadyWritten` result records nothing and is never marked. The record is then saved, after the restore and
+    before the outcome shows, so the mark never claims a change is gone before the file is back; a crash between the
+    restore and the save leaves the steps unmarked (accepted: the held turn is memory only, so nothing retries it),
+    and marking again is harmless. The step row says "undone" before its status, its line count unchanged (the line
+    the model gets is not part of the step's text), also inside a folded turn, whose row counts are unchanged.
 - `run_command(command, cwd?)` runs `<shell> -c <command>` in a hidden child process, no login shell, the shell being
   `vscode.env.shell`, else `$SHELL`, else `/bin/sh`. `cwd` resolves like a read tool's path and must be an existing
   folder inside the workspace; left out, the command runs in the first workspace folder. Without a workspace folder,
@@ -522,8 +537,9 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   opens with, a known tool or not, and `tool="unknown"` only when no tool name can be read, as for an empty reply. A
   reply without text is left out of the history, unless a tool step follows it: an empty reply goes back as an
   assistant message with `content: ""` before its step, so the roles keep alternating (Gemma's chat template requires
-  it). `toHistory` (`history.ts`) builds it, and leaves the oldest tool results out of a request that would fill the
-  context (below). After a summary (`/compact`, below), the history starts at it.
+  it). An undone write step (#94) goes back with one more line after its text, inside the same wrapper: `The user undid
+  this change afterwards.`, so the model does not answer from a change that no longer stands. `toHistory`
+  (`history.ts`) builds it, and leaves the oldest tool results out of a request that would fill the context (below). After a summary (`/compact`, below), the history starts at it.
 - While a reply streams, a `<tool_result` the model writes after a complete call (`forgedResultCut`) cancels the request,
   and the reply ends `done` at the end of that call (ADR 0001, 2026-11-10): models forge results of calls that never
   ran. An opening with no complete call before it stops nothing.
@@ -594,8 +610,9 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   (`resultLineCount`: a trailing line break dropped, then split; 0 for an empty text). It replaces the fewest steps
   that make the estimate fit. Never replaced: the system prompt, user messages (a `/<name>` skill message included),
   assistant answers, the last 3 tool steps sent (`KEPT_RECENT_STEPS`), whatever turn they belong to,
-  every `load_skill` step, whatever its status (a second load answers "already loaded" without the body), and a step
-  whose replacement line is not shorter than its text; a malformed-call step follows the same rule as the others. The
+  every `load_skill` step, whatever its status (a second load answers "already loaded" without the body), every undone
+  step (a left-out line would tell the model the change stands; the estimate and the usage display count its added
+  line), and a step whose replacement line is not shorter than its text; a malformed-call step follows the same rule as the others. The
   choice is a pure function of the entries, the system prompt, and the context size, linear in the entries, since the
   usage display runs it at each streamed delta. Only what is sent changes: the record and the chat keep every result
   whole, and the loaded skills are still derived from the entries. When the estimate is still over with every eligible
@@ -889,11 +906,11 @@ on an error or warning puts a request to fix it there, with its file as a mentio
 - The record is versioned (`version: 2`) and holds the displayed entries: user entries, each with the text the model
   received (`modelText`) and an optional `skill` (`{ name, status }`, any other shape making the record invalid),
   assistant entries, with an optional `call` locating the call block in the answer and, when
-  `halted`, its `haltReason`, and tool steps, with an optional `approval`. A reopened conversation therefore resends exactly what was sent and
+  `halted`, its `haltReason`, and tool steps, with an optional `approval` and an optional `undone` (`true` only). A reopened conversation therefore resends exactly what was sent and
   never reads its mentions again. Version 1 files are skipped like any unknown version: no release wrote them, so
   none is migrated. An optional field added to an entry keeps the version: an older build drops the unknown key and
   reads the rest (ADR 0003), such as a mention's `range` (`@selection`), `failedFolders` (a partial `@diff`, a
-  positive whole number), and an assistant entry's `summary` (`true` only), validated when present: any other shape makes the record invalid. A new value of an existing field keeps it too, such as the mention kinds `problems`,
+  positive whole number), an assistant entry's `summary` (`true` only), and a tool step's `undone` (`true` only), validated when present: any other shape makes the record invalid. A new value of an existing field keeps it too, such as the mention kinds `problems`,
   `diff`, and `selection` and the statuses `noProblems`, `noChanges`, `noRepository`, `gitUnavailable`, `noEditor`,
   and `emptySelection`, each validated: an older build skips such a record as invalid and keeps it on disk (accepted,
   ADR 0003, 2026-11-11). An unknown kind or status makes the record invalid. It holds no API key and nothing else of `ProviderAccess`; a failed reply's error keeps the provider's base

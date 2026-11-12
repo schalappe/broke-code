@@ -43,7 +43,8 @@ The chat's way back from the writes of an agent turn: under the last reply of th
 shown that wrote a file, it puts each file that turn wrote back to its text from before the turn, or deletes a file the
 turn created, file by file. A file changed since, or unsaved in an editor, is skipped untouched and retried at the next
 click. The text from before the turn is held in memory only, until a later turn writes a file, the conversation shown
-changes, or the window reloads. Commands are never undone.
+changes, or the window reloads. Commands are never undone. Each write step of a file put back is then **undone**: its
+row says so, the saved conversation keeps the mark, and the model reads that the user undid the change.
 _Avoid_: revert, rollback, checkpoint, restore point
 
 **Mode**:

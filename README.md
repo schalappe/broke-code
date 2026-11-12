@@ -265,7 +265,8 @@ stays, so you can fix that and click again to retry only the files skipped. The 
 writes a file (that turn's button replaces it), you start a new chat or open another conversation, or the window
 reloads: the text from before the turn is kept in memory only, never on disk. After that, git is the way back.
 Commands are not undone: when the turn ran one, the chat says so beside the button. While the undo runs, **Send** waits
-for it.
+for it. Each step that wrote a file put back then says **undone**, also after a reload, and the agent is told that you
+undid the change, so it reads the file again instead of answering from the change.
 
 ## Context size and step limit
 

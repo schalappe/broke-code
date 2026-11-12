@@ -97,3 +97,6 @@ at the scouting of #93, `workingCopyHistoryTracker.ts`). The chat therefore offe
   the turn wrote it, or unsaved in an editor, is skipped untouched and stays held, so the next click retries it. The
   button shows whatever the turn's end status. It runs in the navigation queue, so New chat, open, and delete wait for
   it, and while it runs no turn starts (the one Send check). Commands are not undone, and the chat says so.
+- The write steps of each file put back are marked `undone` in the record, an optional field (ADR 0003's rule), tied
+  to their file when recorded, never by resolving the path again; the history tells the model with one more line in
+  the step's result, and never leaves such a step out to save context (#94, scouting decision, 2026-11-12).

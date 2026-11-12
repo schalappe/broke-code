@@ -248,7 +248,9 @@ would not act. Above the rows, a notice line says "The queue is paused." when no
   itself under the header. A block still growing renders as a bare code block, without the header.
 - Reasoning: a small dim row with a chevron; opened, its text sits behind a 1px rule.
 - Tool step: one small dim line: chevron, tool name, main argument, status at the right. It opens to its result in a
-  code block. A command shows whole in a block under its line. A failed status is in the error color.
+  code block. A command shows whole in a block under its line. A failed status is in the error color. A write that
+  "Undo changes" put back says so first in its status, in words ("undone, ok, 1 line"), in the default look: nothing
+  failed, and the line count stays the result's.
 - A call without a result has a dot where the chevron would be: filled and breathing while it runs, hollow when it
   ended with no result.
 - Folded turn: an ended turn's steps and intermediate replies under one small dim row with the reasoning chevron,
@@ -266,7 +268,9 @@ would not act. Above the rows, a notice line says "The queue is paused." when no
   approval's controls and the message box. The last undo's outcome sits under the reply it undid (`.undo-outcome`), in
   words, one line per file with its path, status, and reason: a notice ("Changes undone.") when every file is back, a
   warning block when some or all were skipped ("Some changes were not undone. …", "No change was undone. …"), since
-  those files stay changed until the next click. The outcome comes before the button, so the button stays last.
+  those files stay changed until the next click, and an error block (`.undo-outcome.failed`: the error fill, edge, and
+  text) when the undo failed unexpectedly, its cause in the editor font, then the files put back before it. The
+  outcome comes before the button, so the button stays last.
 - No longer sent: the entries before the summary the history starts at sit in one group (`.unsent`), each at 60%
   opacity (`--bc-unsent-opacity`), under one small dim line that says so in words ("Earlier messages are no longer
   sent to the model: the summary below replaces them."), so the state never rests on the dimming alone. A
@@ -300,7 +304,7 @@ Each kind of state has one look, distinct from the others at a glance:
 | Empty (no provider, new conversation, empty History, no History row left by the filter) | One dim line, centered in the room it has; a link under it when there is something to do. No provider: Add provider (primary) and the Open provider settings link side by side under it. |
 | Notice (unknown context size, older tool results left out of the next request, the queue paused or full, an undo that put every file back) | One small dim line, with a link when there is something to do (Set context size). Nothing went wrong, so no block. |
 | Warning (skipped providers and skills, an undo that skipped files) | A block on the theme's warning fill; under skipped providers, Add provider (secondary) below the block, only while a valid provider exists: without one, the empty state's Add provider is the panel's only one. |
-| Error (models unavailable, failed reply, storage and listing problems) | A block on the theme's error fill: the message, its technical detail in the editor font, then its actions. |
+| Error (models unavailable, failed reply, storage and listing problems, an undo that failed unexpectedly) | A block on the theme's error fill: the message, its technical detail in the editor font, then its actions. |
 | Failed step or chip | The error color on the status text; no block. |
 | Waiting for a decision | The decision block. |
 | Turn ending (Stopped, halted) | A short rule, then small dim text. |
