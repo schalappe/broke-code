@@ -19,6 +19,7 @@ import { type LastTurnActions, lastTurnActions, unrevertedEffects } from "../cor
 import { codeBlockText, FENCE_CLOSED, hasTextAfter, remarkFenceClosed } from "../core/markdownCode";
 import { emptyModelsLabel } from "../core/modelList";
 import {
+  type ChangedFile,
   type ChatEntry,
   type ChatState,
   type DraftInsert,
@@ -169,6 +170,7 @@ export function App({
           entries={state.entries}
           approval={state.approval}
           undo={state.undo}
+          changedFiles={state.changedFiles}
           canAct={sendWouldAct(state)}
           hidden={historyOpen}
           replacing={replacingNow !== undefined}
@@ -514,7 +516,7 @@ export function ConversationList({
 
 /**
  * `approval`: the request open, shown on the last reply, the one in flight. `undo`: "Undo changes", shown under the
- * reply it names, and the last undo's outcome under the reply it undid. Retry and Continue show under the last turn's
+ * reply it names, with "Changed files" (`changedFiles`), and the last undo's outcome under the reply it undid. Retry and Continue show under the last turn's
  * reply (`lastTurnActions`), enabled when `canAct` (Send would act). `hidden`: History shows instead. Edit sits under
  * the last turn's user message when Retry is offered, enabled when `canAct`, and calls `edit`; while `replacing`, it
  * goes, and the last turn (that message and every entry after it) sits in one dimmed group under the line saying that
@@ -526,6 +528,7 @@ function Conversation({
   entries,
   approval,
   undo,
+  changedFiles,
   canAct,
   hidden,
   replacing,
@@ -536,6 +539,7 @@ function Conversation({
   entries: ChatEntry[];
   approval?: PendingApproval;
   undo: UndoState;
+  changedFiles: ChangedFile[];
   canAct: boolean;
   hidden: boolean;
   replacing: boolean;
@@ -589,6 +593,7 @@ function Conversation({
         next={entries[index + 1]}
         approval={index === entries.length - 1 ? approval : undefined}
         undo={index === undo.reply && !replying ? undo : undefined}
+        changedFiles={index === undo.reply && !replying && changedFiles.length > 0 ? changedFiles : undefined}
         undone={index === undo.outcome?.reply ? undo.outcome : undefined}
         turnActions={index === lastTurn?.reply ? turnActions : undefined}
       />
@@ -698,8 +703,8 @@ function Conversation({
 
 /**
  * One entry of the conversation, with its neighbours: a tool step shows inside the reply before it. `approval`: the
- * request open, given to the last entry only. `undo` and `undone`: "Undo changes" and the last undo's files, given to
- * the reply they belong to. `turnActions`: Retry and Continue, given to the last turn's reply. `earlier`: a user
+ * request open, given to the last entry only. `undo`, `changedFiles`, and `undone`: "Undo changes", "Changed files",
+ * and the last undo's files, given to the reply they belong to. `turnActions`: Retry and Continue, given to the last turn's reply. `earlier`: a user
  * message a later one follows, which keeps only the outline of the latest one's block.
  */
 function Entry({
@@ -709,6 +714,7 @@ function Entry({
   next,
   approval,
   undo,
+  changedFiles,
   undone,
   turnActions,
 }: {
@@ -718,6 +724,7 @@ function Entry({
   next?: ChatEntry;
   approval?: PendingApproval;
   undo?: UndoState;
+  changedFiles?: ChangedFile[];
   undone?: UndoOutcomeState;
   turnActions?: TurnActionsProps;
 }) {
@@ -733,7 +740,14 @@ function Entry({
       return entry.summary ? (
         <>
           <p className="summary-separator">{describeSummary(entry, isAutomaticSummary(entry, next))}</p>
-          <Reply entry={entry} approval={approval} undo={undo} undone={undone} turnActions={turnActions} />
+          <Reply
+            entry={entry}
+            approval={approval}
+            undo={undo}
+            changedFiles={changedFiles}
+            undone={undone}
+            turnActions={turnActions}
+          />
         </>
       ) : (
         <Reply
@@ -741,6 +755,7 @@ function Entry({
           step={next?.role === "tool" ? next : undefined}
           approval={approval}
           undo={undo}
+          changedFiles={changedFiles}
           undone={undone}
           turnActions={turnActions}
         />
@@ -758,8 +773,8 @@ function Entry({
 /**
  * One reply of an agent turn: its reasoning, its answer as Markdown less its call block, the row of its tool step
  * (`step`: the entry after it), the decision its call waits on (`approval`, the request open, given while this is the
- * last reply), in one `decision` block with the call's row, how the turn ended when it ended here, what the last undo
- * did (`undone`), then one row of the turn's actions: Retry and Continue (`turnActions`) when this is the last turn's
+ * last reply), in one `decision` block with the call's row, how the turn ended when it ended here, the files the held
+ * turn changed (`changedFiles`), what the last undo did (`undone`), then one row of the turn's actions: Retry and Continue (`turnActions`) when this is the last turn's
  * reply, and "Undo changes" (`undo`) when this is the last reply of the turn whose writes are held.
  */
 function Reply({
@@ -767,6 +782,7 @@ function Reply({
   step,
   approval,
   undo,
+  changedFiles,
   undone,
   turnActions,
 }: {
@@ -774,6 +790,7 @@ function Reply({
   step?: ChatEntry & { role: "tool" };
   approval?: PendingApproval;
   undo?: UndoState;
+  changedFiles?: ChangedFile[];
   undone?: UndoOutcomeState;
   turnActions?: TurnActionsProps;
 }) {
@@ -820,6 +837,7 @@ function Reply({
         <p className="mark">{l10n.t("The model's reply held no summary.")}</p>
       )}
       {entry.error && <ErrorBlock error={entry.error} />}
+      {changedFiles && <ChangedFiles files={changedFiles} />}
       {undone && <UndoOutcome outcome={undone} />}
       {(turnActions || undo) && <TurnActions turnActions={turnActions} undo={undo} />}
     </div>
@@ -849,8 +867,8 @@ function hasEffects(effects: { writes: number; commands: number }): boolean {
  * When Retry asks, its first click shows the line saying what it does not revert, renames the same button "Retry
  * anyway", so the focus stays on it, and adds Cancel after it; the second click retries. Cancel, and any change of the
  * turn's entries (one added or removed, a status, an `undone` mark), drop the confirmation; Cancel gives the focus back to Retry, since the button it was on goes. "Undo
- * changes" is disabled, and worded so, while the undo runs, and a line says commands are not undone when its turn ran
- * one.
+ * changes" is disabled, and worded so, while the undo runs, and a line says commands are neither listed in "Changed
+ * files" nor undone when its turn ran one.
  */
 function TurnActions({ turnActions, undo }: { turnActions?: TurnActionsProps; undo?: UndoState }) {
   const retryButton = useRef<HTMLButtonElement>(null);
@@ -910,8 +928,36 @@ function TurnActions({ turnActions, undo }: { turnActions?: TurnActionsProps; un
           {undo.running ? l10n.t("Undoing changes…") : l10n.t("Undo changes")}
         </button>
       )}
-      {undo?.ranCommand && <p className="undo-hint">{l10n.t("Commands this turn ran are not undone.")}</p>}
+      {undo?.ranCommand && <p className="undo-hint">{l10n.t("Commands this turn ran are not listed or undone.")}</p>}
     </div>
+  );
+}
+
+/**
+ * "Changed files": one row per file the held turn created or edited, its path in the editor font, then "created" or
+ * "edited" and its line counts. Each row is a button that opens the file's diff in the editor, which keeps the focus
+ * where it is.
+ */
+function ChangedFiles({ files }: { files: ChangedFile[] }) {
+  return (
+    <section className="changed-files">
+      <p className="changed-files-head">{l10n.t("Changed files")}</p>
+      <ul>
+        {files.map((file) => (
+          <li key={file.path}>
+            <button
+              type="button"
+              className="changed-file"
+              onClick={() => post({ type: "openChangeDiff", path: file.path })}
+            >
+              <code className="changed-path">{file.path}</code>
+              <span className="changed-kind">{file.kind === "created" ? l10n.t("created") : l10n.t("edited")}</span>
+              <span className="changed-counts">{`+${file.added} \u2212${file.removed}`}</span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
