@@ -11,9 +11,11 @@ import { access, stat } from "node:fs/promises";
 import { delimiter, isAbsolute, join, posix } from "node:path";
 import {
   accessFailureReason,
+  fencedBlock,
   formatMention,
   MAX_MENTION_LINES,
   type PathMention,
+  type ReadMention,
   readMention,
   truncationNotice,
 } from "./mentions";
@@ -21,9 +23,11 @@ import type { ToolSpec } from "./toolCalls";
 import {
   type AccessFailure,
   compareNames,
+  cutLineRange,
   isInside,
   locateWorkspacePath,
   type RaceSeam,
+  readWorkspaceEntry,
   resolveWorkspaceRoots,
   truncateLines,
   type WorkspaceRoot,
@@ -46,13 +50,25 @@ export const READ_TOOLS: ToolSpec[] = [
   {
     name: "read_file",
     description:
-      "Read a text file of the workspace. Returns its content in a fenced block under a header with its line count. Binary files and files over 1 MiB are refused. A file over 2,000 lines is cut to its first 2,000, with a note saying how many lines were left out. For a folder, use list_files.",
+      "Read a text file of the workspace. Returns its content in a fenced block under a header with its line count, or with the lines shown and the file's line count when only part of it shows. Binary files and files over 1 MiB are refused. At most 2,000 lines are shown: a longer read is cut, with a note giving the start_line to read on from. For a folder, use list_files.",
     args: [
       {
         name: "path",
         required: true,
         oneLine: true,
         description: "Path of the file, relative to the workspace folder.",
+      },
+      {
+        name: "start_line",
+        required: false,
+        oneLine: true,
+        description: "First line to show, a whole number counted from 1. Leave it out to start at the first line.",
+      },
+      {
+        name: "end_line",
+        required: false,
+        oneLine: true,
+        description: "Last line to show, included. Leave it out to read to the last line.",
       },
     ],
   },
@@ -152,7 +168,7 @@ async function runTool(
   ripgrepRuns: Promise<unknown>[],
 ): Promise<ToolResult> {
   try {
-    if (call.name === "read_file") return await readFileTool(access, call.args.path ?? "");
+    if (call.name === "read_file") return await readFileTool(access, call.args);
     if (call.name === "list_files") return await listFilesTool(access, call.args.path);
     return await searchTool(access, call.args.pattern ?? "", call.args.path, env, signal, ripgrepRuns);
   } catch (error) {
@@ -162,15 +178,76 @@ async function runTool(
   }
 }
 
-async function readFileTool({ roots, skillRoots, seam }: ReadAccess, path: string): Promise<ToolResult> {
-  const mention = await readMention(roots, path, seam, skillRoots);
-  const failure = failureOf(mention);
-  if (failure) return refused("read_file", path, failure, mention.cause);
-  if (mention.kind === "folder") {
+/**
+ * `read_file`: lines `start_line` to `end_line` of the file, at most 2,000. A read that shows the whole file is
+ * formatted as a mention; a part gets the `lines A-B of T` header, and a read the cap stopped short of the line asked
+ * for ends with the `start_line` to read on from.
+ */
+async function readFileTool(
+  { roots, skillRoots, seam }: ReadAccess,
+  args: Record<string, string>,
+): Promise<ToolResult> {
+  const path = args.path ?? "";
+  const range = lineRangeOf(args);
+  if (typeof range === "string") return { status: "error", text: `read_file: ${range}` };
+
+  const entry = await readWorkspaceEntry(roots, path, seam, skillRoots);
+  if (entry.status !== "ok") {
+    return refused("read_file", path, entry.status, entry.status === "unreadable" ? entry.cause : undefined);
+  }
+  if (entry.kind === "folder") {
     const text = `read_file: ${excerpt(path)}: the path is a folder. Use list_files to see its children.`;
     return { status: "error", text };
   }
-  return { status: "ok", text: formatMention({ ...mention, path: displayPath(path) }) };
+
+  const shown = displayPath(path);
+  const cut = cutLineRange(entry.text, range.start, range.end, MAX_MENTION_LINES);
+  // [>]: An empty file has no line 1, yet reading it from the start is the whole file.
+  if (range.start > Math.max(cut.total, 1)) {
+    const text = `read_file: ${excerpt(path)}: start_line ${range.start} is past the last line; the file has ${plural(cut.total, "line", "lines")}.`;
+    return { status: "error", text };
+  }
+  if (range.start === 1 && cut.last === cut.total) {
+    const whole: ReadMention = {
+      path: shown,
+      kind: "file",
+      status: "attached",
+      lines: cut.total,
+      content: entry.text,
+      omitted: 0,
+    };
+    return { status: "ok", text: formatMention(whole) };
+  }
+  const lines = range.start === cut.last ? `line ${cut.last}` : `lines ${range.start}-${cut.last}`;
+  const block = fencedBlock(`@${shown} (file, ${lines} of ${cut.total})`, cut.text);
+  const notice = `[truncated: ${cut.omitted} more lines not shown; read on with start_line ${cut.last + 1}]`;
+  return { status: "ok", text: cut.omitted > 0 ? `${block}\n${notice}` : block };
+}
+
+/**
+ * The 1-based, inclusive line range `read_file`'s arguments ask for, `end` infinite when `end_line` is left out, or
+ * why they ask for none: a value that is not a whole number of 1 or more, or `end_line` before `start_line`.
+ */
+function lineRangeOf(args: Record<string, string>): { start: number; end: number } | string {
+  const start = lineNumber("start_line", args.start_line, 1);
+  if (typeof start === "string") return start;
+  const end = lineNumber("end_line", args.end_line, Number.POSITIVE_INFINITY);
+  if (typeof end === "string") return end;
+  if (end < start) return `end_line ${end} is before start_line ${start}.`;
+  return { start, end };
+}
+
+/** `value` of argument `name` as a line number, `fallback` when left out, or why it is none. */
+function lineNumber(name: string, value: string | undefined, fallback: number): number | string {
+  if (value === undefined) return fallback;
+  const digits = value.trim();
+  const number = Number(digits);
+  if (/^\d+$/.test(digits) && Number.isSafeInteger(number) && number >= 1) return number;
+  return `${name} "${excerpt(value)}" is not a whole number of 1 or more.`;
+}
+
+function plural(count: number, one: string, many: string): string {
+  return `${count} ${count === 1 ? one : many}`;
 }
 
 async function listFilesTool({ roots, skillRoots, seam }: ReadAccess, path: string | undefined): Promise<ToolResult> {

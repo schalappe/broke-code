@@ -180,6 +180,17 @@ describe("agent turn", () => {
     expect(html).toContain("1 line");
   });
 
+  test("the main argument of a ranged read_file is its path, then the range as the model wrote it", () => {
+    const ranged = (range: Record<string, string>) =>
+      renderTurn([{ ...step, args: { path: "big.log", ...range }, text: "@big.log (file, line 1 of 9)\n```\nx\n```" }]);
+    expect(ranged({ start_line: "2001", end_line: "4000" })).toContain(
+      '<span class="step-arg">big.log 2001-4000</span>',
+    );
+    expect(ranged({ start_line: "2001" })).toContain('<span class="step-arg">big.log 2001-</span>');
+    expect(ranged({ end_line: "50" })).toContain('<span class="step-arg">big.log 1-50</span>');
+    expect(ranged({ start_line: "2001" })).toContain("ok, 4 lines");
+  });
+
   test("an error step says error and its size", () => {
     const html = renderTurn([callReply, { ...step, status: "error", text: "read_file: gone." }]);
     expect(html).toContain('class="step-status failed"');

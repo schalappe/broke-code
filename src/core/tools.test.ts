@@ -81,12 +81,11 @@ describe("read_file", () => {
     });
   });
 
-  test("cuts a 3,000-line file to its first 2,000 lines with the mention notice", async () => {
-    const result = await run("read_file", { path: "long.txt" });
-    expect(result.status).toBe("ok");
-    expect(result.text.startsWith("@long.txt (file, 2000 lines, truncated)\n```\nline 1\n")).toBe(true);
-    expect(result.text).toContain("\nline 2000\n```\n[truncated: 1000 more lines not shown]");
-    expect(result.text).not.toContain("line 2001");
+  test("cuts a 3,000-line file to its first 2,000 lines, then says where to read on", async () => {
+    expect(await run("read_file", { path: "long.txt" })).toEqual({
+      status: "ok",
+      text: `@long.txt (file, lines 1-2000 of 3000)\n\`\`\`\n${numberedLines(2000)}\`\`\`\n[truncated: 1000 more lines not shown; read on with start_line 2001]`,
+    });
   });
 
   test("cuts a 10,000-line file to its first 2,000 lines, then says 8,000 more were not shown", async () => {
@@ -95,7 +94,7 @@ describe("read_file", () => {
     const result = await run("read_file", { path: "huge.txt" }).finally(() => rm(join(app.path, "huge.txt")));
     expect(result.status).toBe("ok");
     expect(result.text).toBe(
-      `@huge.txt (file, 2000 lines, truncated)\n\`\`\`\n${numberedLines(2000)}\`\`\`\n[truncated: 8000 more lines not shown]`,
+      `@huge.txt (file, lines 1-2000 of 10000)\n\`\`\`\n${numberedLines(2000)}\`\`\`\n[truncated: 8000 more lines not shown; read on with start_line 2001]`,
     );
   });
 
@@ -134,6 +133,134 @@ describe("read_file", () => {
   test("reads from the folder named by the first segment in a multi-root workspace", async () => {
     const result = await run("read_file", { path: "lib/x.ts" }, [app, lib]);
     expect(result).toEqual({ status: "ok", text: "@lib/x.ts (file, 1 line)\n```\nlib needle\n```" });
+  });
+});
+
+describe("read_file with a line range", () => {
+  /** Lines `first` to `last` of `numberedLines`, each with its line break. */
+  function linesBetween(first: number, last: number): string {
+    return Array.from({ length: last - first + 1 }, (_, index) => `line ${first + index}\n`).join("");
+  }
+
+  test("shows the lines asked for under a lines A-B of T header, with no notice", async () => {
+    expect(await run("read_file", { path: "ten.txt", start_line: "3", end_line: "5" })).toEqual({
+      status: "ok",
+      text: `@ten.txt (file, lines 3-5 of 10)\n\`\`\`\n${linesBetween(3, 5)}\`\`\``,
+    });
+  });
+
+  test("names a single line shown as line A of T", async () => {
+    expect(await run("read_file", { path: "ten.txt", start_line: "7", end_line: "7" })).toEqual({
+      status: "ok",
+      text: "@ten.txt (file, line 7 of 10)\n```\nline 7\n```",
+    });
+  });
+
+  test("reads to the last line from start_line alone", async () => {
+    expect(await run("read_file", { path: "ten.txt", start_line: " 8 " })).toEqual({
+      status: "ok",
+      text: `@ten.txt (file, lines 8-10 of 10)\n\`\`\`\n${linesBetween(8, 10)}\`\`\``,
+    });
+  });
+
+  test("reads from the first line to end_line alone", async () => {
+    expect(await run("read_file", { path: "ten.txt", end_line: "4" })).toEqual({
+      status: "ok",
+      text: `@ten.txt (file, lines 1-4 of 10)\n\`\`\`\n${linesBetween(1, 4)}\`\`\``,
+    });
+  });
+
+  test("reads to the last line when end_line is past it", async () => {
+    expect(await run("read_file", { path: "ten.txt", start_line: "9", end_line: "500" })).toEqual({
+      status: "ok",
+      text: `@ten.txt (file, lines 9-10 of 10)\n\`\`\`\n${linesBetween(9, 10)}\`\`\``,
+    });
+  });
+
+  test("answers a range covering the whole file as a read without one", async () => {
+    const whole: ToolResult = { status: "ok", text: `@ten.txt (file, 10 lines)\n\`\`\`\n${numberedLines(10)}\`\`\`` };
+    expect(await run("read_file", { path: "ten.txt", start_line: "1", end_line: "10" })).toEqual(whole);
+    expect(await run("read_file", { path: "ten.txt", start_line: "1", end_line: "99" })).toEqual(whole);
+  });
+
+  test("cuts a range of more than 2,000 lines and says where to read on to the line asked for", async () => {
+    expect(await run("read_file", { path: "long.txt", start_line: "501", end_line: "2800" })).toEqual({
+      status: "ok",
+      text: `@long.txt (file, lines 501-2500 of 3000)\n\`\`\`\n${linesBetween(501, 2500)}\`\`\`\n[truncated: 300 more lines not shown; read on with start_line 2501]`,
+    });
+  });
+
+  test("reads the rest of a long file from start_line 2001, with no notice", async () => {
+    expect(await run("read_file", { path: "long.txt", start_line: "2001" })).toEqual({
+      status: "ok",
+      text: `@long.txt (file, lines 2001-3000 of 3000)\n\`\`\`\n${linesBetween(2001, 3000)}\`\`\``,
+    });
+  });
+
+  test("keeps \\r\\n line breaks as written inside a range", async () => {
+    await writeFile(join(app.path, "crlf.txt"), "a\r\nb\r\nc\r\nd");
+    const result = await run("read_file", { path: "crlf.txt", start_line: "2", end_line: "3" }).finally(() =>
+      rm(join(app.path, "crlf.txt")),
+    );
+    expect(result).toEqual({ status: "ok", text: "@crlf.txt (file, lines 2-3 of 4)\n```\nb\r\nc\r\n```" });
+  });
+
+  test("refuses a value that is not a whole number of 1 or more, naming the argument, before reading", async () => {
+    for (const [name, value] of [
+      ["start_line", "2,001"],
+      ["start_line", "2001.0"],
+      ["end_line", "-1"],
+      ["end_line", "0"],
+      ["start_line", ""],
+      ["end_line", "99999999999999999999"],
+    ]) {
+      expect(await run("read_file", { path: "nope.txt", [name!]: value! })).toEqual({
+        status: "error",
+        text: `read_file: ${name} "${value}" is not a whole number of 1 or more.`,
+      });
+    }
+  });
+
+  test("cuts a long value to an excerpt in the refusal", async () => {
+    const result = await run("read_file", { path: "ten.txt", start_line: `x${"9".repeat(500)}` });
+    expect(result.status).toBe("error");
+    expect(result.text).toContain("…");
+    expect(result.text.length).toBeLessThan(300);
+  });
+
+  test("refuses end_line before start_line, before reading", async () => {
+    expect(await run("read_file", { path: "nope.txt", start_line: "10", end_line: "5" })).toEqual({
+      status: "error",
+      text: "read_file: end_line 5 is before start_line 10.",
+    });
+  });
+
+  test("refuses start_line past the last line, giving the line count", async () => {
+    expect(await run("read_file", { path: "ten.txt", start_line: "11" })).toEqual({
+      status: "error",
+      text: "read_file: ten.txt: start_line 11 is past the last line; the file has 10 lines.",
+    });
+  });
+
+  test("reads an empty file from line 1 as without a range, and refuses a later start_line with 0 lines", async () => {
+    await writeFile(join(app.path, "empty.txt"), "");
+    const fromOne = await run("read_file", { path: "empty.txt", start_line: "1" });
+    const fromTwo = await run("read_file", { path: "empty.txt", start_line: "2" }).finally(() =>
+      rm(join(app.path, "empty.txt")),
+    );
+    expect(fromOne).toEqual({ status: "ok", text: "@empty.txt (file, 0 lines)\n```\n```" });
+    expect(fromTwo).toEqual({
+      status: "error",
+      text: "read_file: empty.txt: start_line 2 is past the last line; the file has 0 lines.",
+    });
+  });
+
+  test("answers a folder and a refused path with a range as without one", async () => {
+    for (const path of ["src", "nope.txt", "../outside.txt"]) {
+      expect(await run("read_file", { path, start_line: "2", end_line: "3" })).toEqual(
+        await run("read_file", { path }),
+      );
+    }
   });
 });
 
@@ -624,6 +751,14 @@ describe("a loaded skill's folder", () => {
     });
   });
 
+  test("read_file takes a line range on a file read by its absolute path", async () => {
+    const path = join(skillRoot, "SKILL.md");
+    expect(await runLoaded("read_file", { path, start_line: "2", end_line: "3" })).toEqual({
+      status: "ok",
+      text: `@${path} (file, lines 2-3 of 5)\n\`\`\`\nname: review\ndescription: d\n\`\`\``,
+    });
+  });
+
   test("list_files lists the folder and a subfolder once the skill is loaded", async () => {
     expect(await runLoaded("list_files", { path: skillRoot })).toEqual({
       status: "ok",
@@ -797,9 +932,16 @@ describe("runReadTool", () => {
     });
   });
 
-  test("lists the three read tools, path optional for list_files and search", () => {
+  test("lists the three read tools, path optional for list_files and search, the line range for read_file", () => {
     expect(READ_TOOLS.map((tool) => [tool.name, tool.args.map((arg) => [arg.name, arg.required])])).toEqual([
-      ["read_file", [["path", true]]],
+      [
+        "read_file",
+        [
+          ["path", true],
+          ["start_line", false],
+          ["end_line", false],
+        ],
+      ],
       ["list_files", [["path", false]]],
       [
         "search",

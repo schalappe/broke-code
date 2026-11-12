@@ -175,8 +175,16 @@ function describeTruncated(kind: MentionKind, count: number): string {
   }
 }
 
-/** The argument a step row shows: a search's pattern, else the path, else the first value given. */
-export function mainArgument(args: Record<string, string>): string | undefined {
+/**
+ * The argument a step row shows: a search's pattern, else the path, else the first value given. A `read_file` given a
+ * line range shows it after the path as the model wrote it (`big.log 2001-4000`), its missing end left blank
+ * (`big.log 2001-`) and its missing start shown as 1 (`big.log 1-50`), so two reads of one file differ.
+ */
+export function mainArgument(name: string, args: Record<string, string>): string | undefined {
+  const { start_line: start, end_line: end } = args;
+  if (name === "read_file" && args.path !== undefined && (start !== undefined || end !== undefined)) {
+    return `${args.path} ${start ?? 1}-${end ?? ""}`;
+  }
   return args.pattern ?? args.path ?? Object.values(args)[0];
 }
 

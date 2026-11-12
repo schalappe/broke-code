@@ -1163,7 +1163,7 @@ function StepHead({ name, args }: { name: string; args: Record<string, string> }
       </>
     );
   }
-  const argument = mainArgument(args);
+  const argument = mainArgument(name, args);
   return (
     <>
       <span className="step-tool">{name}</span>

@@ -148,17 +148,47 @@ async function isInsideFile(realRoots: string[], path: string, opened: Stats): P
   return named.dev === opened.dev && named.ino === opened.ino;
 }
 
+/** One line: its text and the break that ends it, or the last text when no break follows it. Never empty. */
+const LINE = /[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+$/g;
+
 /**
- * `text` cut to its first `max` lines, each line break (`\r\n`, `\r`, or `\n`) kept as written. `lines`: lines kept; a
- * final line break ends the last line, not a new one.
+ * The lines of `text`, each with its line break (`\r\n`, `\r`, or `\n`) as written. A final line break ends the last
+ * line, not a new one; an empty text has no line.
+ */
+function splitLines(text: string): string[] {
+  return text.match(LINE) ?? [];
+}
+
+/**
+ * `text` cut to its first `max` lines, split as `splitLines` splits them, the break after the last line kept dropped.
+ * `lines`: lines kept.
  */
 export function truncateLines(text: string, max: number): { text: string; lines: number; omitted: number } {
-  if (text === "") return { text, lines: 0, omitted: 0 };
-  // [>]: The capturing group keeps each break: lines at even indexes, the break after each at the odd one.
-  const parts = text.replace(/(?:\r\n|\r|\n)$/, "").split(/(\r\n|\r|\n)/);
-  const lines = (parts.length + 1) / 2;
-  if (lines <= max) return { text, lines, omitted: 0 };
-  return { text: parts.slice(0, 2 * max - 1).join(""), lines: max, omitted: lines - max };
+  const lines = splitLines(text);
+  if (lines.length <= max) return { text, lines: lines.length, omitted: 0 };
+  const kept = lines
+    .slice(0, max)
+    .join("")
+    .replace(/(?:\r\n|\r|\n)$/, "");
+  return { text: kept, lines: max, omitted: lines.length - max };
+}
+
+/**
+ * Lines `start` to `end` of `text` (1-based, inclusive), at most `max` of them, split as `splitLines` splits them and
+ * each kept with its break. An `end` past the last line reads to it. `last`: the last line shown, `start - 1` when none
+ * is; `total`: the lines of `text`; `omitted`: the lines up to `end` (or the last line) that `max` left out.
+ */
+export function cutLineRange(
+  text: string,
+  start: number,
+  end: number,
+  max: number,
+): { text: string; last: number; total: number; omitted: number } {
+  const lines = splitLines(text);
+  const total = lines.length;
+  const asked = Math.max(start - 1, Math.min(end, total));
+  const last = Math.min(asked, start - 1 + max);
+  return { text: lines.slice(start - 1, last).join(""), last, total, omitted: asked - last };
 }
 
 /** The first `max` UTF-8 bytes of `pieces` joined, cut between characters. */
