@@ -37,6 +37,39 @@ export function historyStart(entries: readonly ChatEntry[]): number {
   return 0;
 }
 
+/**
+ * Whether the summary `entry`, followed by `next`, is one an agent turn ran itself (`brokeCode.autoCompact`): the turn's
+ * next reply follows it. Derived, never stored: after `/compact` only a user message or another summary can follow,
+ * since a reply only ever follows a user message or a tool step. A failed or stopped automatic summary ends its turn
+ * with nothing after it and reads as a `/compact` one, which changes nothing: neither is sent.
+ */
+export function isAutomaticSummary(entry: ChatEntry, next: ChatEntry | undefined): boolean {
+  return entry.role === "assistant" && entry.summary === true && next?.role === "assistant" && next.summary !== true;
+}
+
+/**
+ * The entries whose text the history sends: the turn's user message an automatic summary quotes (see `sentMessages`),
+ * then the entries from `historyStart`.
+ */
+export function sentEntries(entries: readonly ChatEntry[]): ChatEntry[] {
+  const start = historyStart(entries);
+  const quoted = quotedMessage(entries, start);
+  return [...(quoted ? [quoted] : []), ...entries.slice(start)];
+}
+
+/**
+ * The user message of the turn the automatic summary at `index` belongs to: the nearest user message before it, since
+ * a turn holds no `/compact` summary. `undefined` for any other entry.
+ */
+function quotedMessage(entries: readonly ChatEntry[], index: number): (ChatEntry & { role: "user" }) | undefined {
+  if (!isAutomaticSummary(entries[index]!, entries[index + 1])) return undefined;
+  for (let at = index - 1; at >= 0; at--) {
+    const entry = entries[at]!;
+    if (entry.role === "user") return entry;
+  }
+  return undefined;
+}
+
 /** A summary entry the history starts at: it ended `done` with text. */
 function isSentSummary(entry: ChatEntry): boolean {
   return entry.role === "assistant" && entry.summary === true && entry.status === "done" && entry.content.trim() !== "";
@@ -49,8 +82,9 @@ function isSentSummary(entry: ChatEntry): boolean {
  * 0001). Reasoning is never sent. A reply without text is left out, unless a tool step follows it: an empty answer goes
  * back with its malformed step, so the roles keep alternating, which some chat templates (Gemma's) require. The summary
  * the history starts at goes as one user message, `Summary of the conversation so far:` then its text, joined by the
- * user message right after it, for the same reason; every other summary entry (failed, stopped, halted, or empty) is
- * never sent.
+ * user message right after it, for the same reason; an automatic one (`isAutomaticSummary`) is followed by its turn's
+ * user message instead, after a blank line, then by the turn's next reply. Every other summary entry (failed, stopped,
+ * halted, or empty) is never sent.
  *
  * When `budget.system` plus that history fills the context (`fillsContext`), the text of the oldest tool steps is
  * replaced, one step at a time, by `[result left out to save context: N lines]`, until the request fits. Never
@@ -125,7 +159,11 @@ function sentMessages(
       // [>]: Only the starting summary is sent; any other one (failed, stopped, halted, empty) changes nothing.
       if (index !== start || !isSentSummary(entry)) continue;
       summaryAt = messages.length;
-      messages.push({ role: "user", content: `${SUMMARY_LEAD}\n\n${entry.content}` });
+      // [!]: An automatic summary quotes its turn's message as composed when sent, so the model still holds the request
+      // it is working on, word for word, instead of reading the same files again and overflowing anew.
+      const quoted = quotedMessage(entries, index);
+      const text = `${SUMMARY_LEAD}\n\n${entry.content}`;
+      messages.push({ role: "user", content: quoted ? `${text}\n\n${userText(quoted)}` : text });
     } else if (entry.content !== "" || entries[index + 1]?.role === "tool") {
       messages.push({ role: "assistant", content: entry.content });
     }

@@ -13,7 +13,7 @@ import {
 } from "react";
 import Markdown, { type Components, type ExtraProps } from "react-markdown";
 import { type ConversationSummary, filterConversations } from "../core/conversation";
-import { historyStart } from "../core/history";
+import { historyStart, isAutomaticSummary } from "../core/history";
 import { codeBlockText, FENCE_CLOSED, hasTextAfter, remarkFenceClosed } from "../core/markdownCode";
 import { emptyModelsLabel } from "../core/modelList";
 import {
@@ -584,7 +584,7 @@ function Entry({
     case "assistant":
       return entry.summary ? (
         <>
-          <p className="summary-separator">{describeSummary(entry)}</p>
+          <p className="summary-separator">{describeSummary(entry, isAutomaticSummary(entry, next))}</p>
           <Reply entry={entry} approval={approval} />
         </>
       ) : (
@@ -1004,12 +1004,14 @@ export function SlashMenu({
   );
 }
 
-/** The separator above a summary: in flight, sent (done with text), or not summarized (any other end). */
-function describeSummary(entry: ChatEntry & { role: "assistant" }): string {
+/**
+ * The separator above a summary: in flight, sent (done with text), or not summarized (any other end). `automatic`: the
+ * turn ran it itself (`isAutomaticSummary`), worded so once sent.
+ */
+function describeSummary(entry: ChatEntry & { role: "assistant" }, automatic: boolean): string {
   if (entry.status === "waiting" || entry.status === "streaming") return l10n.t("Summarizing the conversation…");
-  return entry.status === "done" && entry.content.trim() !== ""
-    ? l10n.t("Conversation summarized")
-    : l10n.t("Conversation not summarized");
+  if (entry.status !== "done" || entry.content.trim() === "") return l10n.t("Conversation not summarized");
+  return automatic ? l10n.t("Conversation summarized automatically") : l10n.t("Conversation summarized");
 }
 
 /** The `/` menu's built-in rows, in `BUILT_IN_COMMANDS` order. */

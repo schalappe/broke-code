@@ -21,7 +21,7 @@ import {
   summarize,
 } from "./conversation";
 import type { ConversationStore } from "./conversationStore";
-import { type HistoryBudget, historyStart, summaryHistory, toHistory } from "./history";
+import { type HistoryBudget, historyStart, sentEntries, summaryHistory, toHistory } from "./history";
 import { contextOf, estimateTokens, fillsContext, parseLimits, type TurnLimits } from "./limits";
 import { composeUserMessage, findMentions, type MentionReader, type MentionResult, type ReadMention } from "./mentions";
 import {
@@ -623,7 +623,8 @@ export class ChatController {
     const model = this.state.model;
     if (!provider || !model) return undefined;
     this.limits = this.limitsSource.read();
-    const { maxToolSteps } = this.limits;
+    // [!]: Read once: `limitsChanged` during the turn reaches the usage display, never this turn.
+    const { maxToolSteps, autoCompact } = this.limits;
     // [!]: Plan is read once: the turn's tools and prompt hold until it ends. The auto-approve setting is not read
     // here: each write's request reads it (see `askApproval`).
     const mode: Mode | undefined = this.plan ? "plan" : undefined;
@@ -696,12 +697,38 @@ export class ChatController {
       this.emit();
       let steps = 0;
       let malformedInARow = 0;
+      /** This request was already compacted: at most one automatic summary per request. */
+      let compacted = false;
       for (;;) {
         const { messages } = this.requestMessages(conversation, { system, contextSize });
         // [>]: Never a provider error: no request goes. The reply that would have carried it ends halted.
         if (fillsContext(estimateTokens(messages), contextSize)) {
-          return settle("halted", "contextFull");
+          if (!autoCompact || compacted) return settle("halted", "contextFull");
+          const summary = this.summaryMessages(conversation.entries, instructions);
+          if (fillsContext(estimateTokens(summary), contextSize)) return settle("halted", "contextFull");
+          // [>]: The summary takes the place of the reply still waiting, which comes back after it once it ends done:
+          // the turn stays in flight across it, and a failed or stopped summary ends the turn as its last entry.
+          conversation.entries.pop();
+          const summaryEntry: ChatEntry & { role: "assistant" } = { ...waitingReply(), summary: true };
+          reply = summaryEntry;
+          conversation.entries.push(reply);
+          this.emit();
+          const ended = await this.stream(access, model, summary, [], conversation, reply, signal);
+          if (!ended) return settle("stopped");
+          if (ended.status === "failed") reply.error = ended.error;
+          if (ended.status !== "done") return settle(ended.status);
+          // [>]: The summary and the next reply land in one update, so a summary that ended done is never the last
+          // entry: that reply following it is what marks it automatic (`isAutomaticSummary`).
+          reply.status = "done";
+          reply = waitingReply();
+          conversation.entries.push(reply);
+          if (summaryEntry.content.trim() === "") return settle("halted", "contextFull");
+          this.emit();
+          void this.save(conversation);
+          compacted = true;
+          continue;
         }
+        compacted = false;
         const outcome = await this.stream(access, model, messages, tools, conversation, reply, signal);
         if (!outcome) return settle("stopped");
         if (outcome.status === "failed") reply.error = outcome.error;
@@ -731,10 +758,7 @@ export class ChatController {
             },
             skills: discovery.skills,
             skillRoots: loadedSkillRoots(conversation.entries, discovery.skills),
-            sentSkillRoots: loadedSkillRoots(
-              conversation.entries.slice(historyStart(conversation.entries)),
-              discovery.skills,
-            ),
+            sentSkillRoots: loadedSkillRoots(sentEntries(conversation.entries), discovery.skills),
           };
           const result = await unlessAborted(this.runTool({ name, args }, context), signal);
           if (!result) return settle("stopped");
@@ -866,7 +890,7 @@ export class ChatController {
     conversation.provider = provider.name;
     conversation.model = model;
     // [>]: The history is taken before the reply joins the entries; a summary entry not yet done is never sent anyway.
-    const history = summaryHistory(conversation.entries, (entry) => this.modelText.get(entry) ?? entry.content);
+    const entries = [...conversation.entries];
     const reply: ChatEntry & { role: "assistant" } = { ...waitingReply(), summary: true };
     conversation.entries.push(reply);
     const abort = new AbortController();
@@ -892,10 +916,7 @@ export class ChatController {
       );
       if (!prepared) return settle("stopped");
       const [access, instructions] = prepared;
-      const messages: ChatMessage[] = [
-        { role: "system", content: composeSummaryPrompt(instructions) },
-        ...history.messages,
-      ];
+      const messages = this.summaryMessages(entries, instructions);
       if (fillsContext(estimateTokens(messages), contextSize)) return settle("halted", "contextFull");
       // [!]: No tools: the answer is never parsed for a call, so a call-shaped block in it runs nothing.
       const outcome = await this.stream(access, model, messages, [], conversation, reply, signal);
@@ -910,6 +931,15 @@ export class ChatController {
       if (this.reply?.abort === abort) this.reply = undefined;
       markSettled();
     }
+  }
+
+  /**
+   * The summary request for `entries`, `/compact`'s and the automatic one's: the summary system prompt with the
+   * `instructions`, then `summaryHistory`. The caller checks its size.
+   */
+  private summaryMessages(entries: readonly ChatEntry[], instructions: readonly InstructionFile[]): ChatMessage[] {
+    const history = summaryHistory(entries, (entry) => this.modelText.get(entry) ?? entry.content);
+    return [{ role: "system", content: composeSummaryPrompt(instructions) }, ...history.messages];
   }
 
   /** Run `call`. A runner that rejects despite its contract gives an `error` result, logged. */

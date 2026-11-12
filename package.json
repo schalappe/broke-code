@@ -138,6 +138,12 @@
           "minimum": 1,
           "markdownDescription": "%config.maxToolSteps.description%"
         },
+        "brokeCode.autoCompact": {
+          "type": "boolean",
+          "scope": "application",
+          "default": false,
+          "markdownDescription": "%config.autoCompact.description%"
+        },
         "brokeCode.autoApproveWrites": {
           "type": "boolean",
           "scope": "application",

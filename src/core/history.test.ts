@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { historyStart, resultLineCount, summaryHistory, toHistory } from "./history";
+import { historyStart, isAutomaticSummary, resultLineCount, sentEntries, summaryHistory, toHistory } from "./history";
 import { estimateTokens, fillsContext } from "./limits";
 import type { ChatEntry, ReplyStatus, ToolStepStatus } from "./protocol";
 
@@ -228,6 +228,51 @@ describe("history after a summary", () => {
     expect(leftOut).toBe(1);
     expect(messages[2]?.content).toBe(wrapped("[result left out to save context: 100 lines]"));
     expect(messages[4]?.content).toBe(wrapped(lines(100)));
+  });
+});
+
+describe("history after an automatic summary", () => {
+  const composed = (entry: ChatEntry & { role: "user" }) => `${entry.content}\n\n@a.ts (file, 3 lines)`;
+  /** A turn that compacted before its third request: the summary is followed by the turn's next reply. */
+  const turn: ChatEntry[] = [
+    user("first"),
+    answer("Ok."),
+    user("go"),
+    answer("call 0"),
+    step(lines(3)),
+    summary("The goal is x."),
+    answer("call 1"),
+    step("small"),
+  ];
+
+  test("is told from a /compact summary by the reply that follows it", () => {
+    expect(isAutomaticSummary(turn[5]!, turn[6])).toBe(true);
+    expect(isAutomaticSummary(summary("S."), user("next"))).toBe(false);
+    expect(isAutomaticSummary(summary("S."), undefined)).toBe(false);
+    expect(isAutomaticSummary(summary("S."), summary("T."))).toBe(false);
+    expect(isAutomaticSummary(answer("A."), answer("B."))).toBe(false);
+  });
+
+  test("quotes the turn's message as composed when sent after the summary, then the entries after it", () => {
+    expect(toHistory(turn, composed, roomy).messages).toEqual([
+      { role: "user", content: "Summary of the conversation so far:\n\nThe goal is x.\n\ngo\n\n@a.ts (file, 3 lines)" },
+      { role: "assistant", content: "call 1" },
+      { role: "user", content: wrapped("small") },
+    ]);
+  });
+
+  test("a second automatic summary of the same turn quotes the same message", () => {
+    const again: ChatEntry[] = [...turn, summary("Still x."), answer("call 2")];
+    expect(toHistory(again, typed, roomy).messages).toEqual([
+      { role: "user", content: "Summary of the conversation so far:\n\nStill x.\n\ngo" },
+      { role: "assistant", content: "call 2" },
+    ]);
+  });
+
+  test("the entries sent hold the quoted message, then the entries from the summary on", () => {
+    expect(sentEntries(turn)).toEqual([turn[2]!, ...turn.slice(5)]);
+    const manual: ChatEntry[] = [user("first"), answer("Ok."), summary("S."), user("next")];
+    expect(sentEntries(manual)).toEqual(manual.slice(2));
   });
 });
 

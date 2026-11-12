@@ -171,9 +171,17 @@ async function until(state: () => ChatState, predicate: (state: ChatState) => bo
 /** The text of a user or assistant entry; `undefined` for a tool step or no entry. */
 const contentOf = (entry: ChatEntry | undefined) => (entry && entry.role !== "tool" ? entry.content : undefined);
 
-/** Limits source that always answers the same: `steps` and `sizes` unset by default, as with no setting. */
-function fixedLimits({ steps, sizes }: { steps?: number; sizes?: Record<string, number> }): LimitsSource {
-  const limits = parseLimits({ maxToolSteps: steps, contextSizes: sizes });
+/** Limits source that always answers the same: every setting unset by default, as with no setting. */
+function fixedLimits({
+  steps,
+  sizes,
+  autoCompact,
+}: {
+  steps?: number;
+  sizes?: Record<string, number>;
+  autoCompact?: boolean;
+}): LimitsSource {
+  const limits = parseLimits({ maxToolSteps: steps, contextSizes: sizes, autoCompact });
   return { read: () => limits };
 }
 
@@ -3716,6 +3724,200 @@ describe("ChatController agent turn", () => {
       await compacting;
       expect(state().queue).toEqual([]);
       expect(sent()[2]!.messages.at(-1)).toEqual({ role: "user", content: `${lead}S.\n\nnext` });
+    });
+  });
+
+  describe("automatic compaction", () => {
+    const summarySystem = { role: "system", content: composeSummaryPrompt([]) };
+    const lead = "Summary of the conversation so far:\n\n";
+    // [>]: Threshold 875 tokens (3,500 characters): the system prompt (about 2,200) and one 2,000-character result do
+    // not fit, and the last result is never left out; the summary request, every result left out, fits.
+    const bigRunner = () =>
+      fakeRunner(async (call) => ({ status: "ok", text: call.args.path === "big.ts" ? "y".repeat(2000) : "small" }));
+    const on = (steps?: number) => fixedLimits({ sizes: { m: 1000 }, autoCompact: true, steps });
+
+    test("a request over the threshold sends one summary request, then the turn's request quoting the message", async () => {
+      const { controller, state, sent } = await scripted(
+        [{ content: readCall("big.ts") }, { content: "The goal is x." }, { content: "Done." }],
+        bigRunner().runner,
+        undefined,
+        on(),
+      );
+      await controller.send("go");
+
+      expect(sent()).toHaveLength(3);
+      expect(sent()[1]!.messages[0]).toEqual(summarySystem);
+      expect(sent()[1]!.messages.at(-1)!.content.endsWith(SUMMARY_REQUEST)).toBe(true);
+      expect(sent()[2]!.messages).toEqual([SYSTEM, { role: "user", content: `${lead}The goal is x.\n\ngo` }]);
+      expect(state().entries).toMatchObject([
+        { role: "user", content: "go" },
+        { role: "assistant", status: "done", call: { name: "read_file" } },
+        { role: "tool", status: "ok" },
+        { role: "assistant", status: "done", summary: true, content: "The goal is x." },
+        { role: "assistant", status: "done", content: "Done." },
+      ]);
+      expect(isReplying(state())).toBe(false);
+    });
+
+    test("the summary adds nothing to the step count", async () => {
+      const { controller, state, sent } = await scripted(
+        [
+          { content: readCall("big.ts") },
+          { content: "S." },
+          { content: readCall("a.ts") },
+          { content: readCall("b.ts") },
+          { content: "never sent" },
+        ],
+        bigRunner().runner,
+        undefined,
+        on(3),
+      );
+      await controller.send("go");
+      expect(sent()).toHaveLength(4);
+      expect(state().entries.filter((entry) => entry.role === "tool")).toHaveLength(3);
+      expect(state().entries.at(-2)).toMatchObject({ status: "halted", haltReason: "stepLimit" });
+    });
+
+    test("still over the threshold after the summary, the reply ends contextFull with no second summary", async () => {
+      const { controller, state, sent } = await scripted(
+        [{ content: readCall("big.ts") }, { content: "s".repeat(4000) }, { content: "never sent" }],
+        bigRunner().runner,
+        undefined,
+        on(),
+      );
+      await controller.send("go");
+      expect(sent()).toHaveLength(2);
+      expect(state().entries.slice(3)).toMatchObject([
+        { summary: true, status: "done" },
+        { role: "assistant", content: "", status: "halted", haltReason: "contextFull" },
+      ]);
+    });
+
+    test("a summary request that does not fit ends contextFull with no request and no summary entry", async () => {
+      const { controller, state, sent } = await scripted([{ content: "never sent" }], undefined, undefined, on());
+      await controller.send("x".repeat(4000));
+      expect(sent()).toHaveLength(0);
+      expect(state().entries).toEqual([
+        { role: "user", content: "x".repeat(4000), mentions: [] },
+        { role: "assistant", reasoning: "", content: "", status: "halted", haltReason: "contextFull" },
+      ]);
+    });
+
+    test("a failed summary ends the turn failed with the provider's error", async () => {
+      const { controller, state, sent } = await scripted(
+        [{ content: readCall("big.ts") }, "fail"],
+        bigRunner().runner,
+        undefined,
+        on(),
+      );
+      await controller.send("go");
+      expect(sent()).toHaveLength(2);
+      expect(state().entries).toHaveLength(4);
+      expect(state().entries.at(-1)).toMatchObject({
+        summary: true,
+        status: "failed",
+        error: { kind: "rejected", status: 500 },
+      });
+      expect(isReplying(state())).toBe(false);
+    });
+
+    test("an empty summary ends the turn contextFull", async () => {
+      const { controller, state, sent } = await scripted(
+        [{ content: readCall("big.ts") }, { content: "" }, { content: "never sent" }],
+        bigRunner().runner,
+        undefined,
+        on(),
+      );
+      await controller.send("go");
+      expect(sent()).toHaveLength(2);
+      expect(state().entries.slice(3)).toMatchObject([
+        { summary: true, status: "done", content: "" },
+        { role: "assistant", status: "halted", haltReason: "contextFull" },
+      ]);
+    });
+
+    test("Stop during the summary ends the turn stopped and leaves the history unchanged", async () => {
+      const { controller, state, sent } = await scripted(
+        [{ content: readCall("big.ts") }, "hang", { content: "S2." }, { content: "B." }],
+        bigRunner().runner,
+        undefined,
+        on(),
+      );
+      const turn = controller.send("go");
+      await until(state, (s) => s.entries.at(-1)?.role === "assistant" && contentOf(s.entries.at(-1)) === "Partial ");
+      expect(state().entries.at(-1)).toMatchObject({ summary: true, status: "streaming" });
+      expect(isReplying(state())).toBe(true);
+      controller.stop();
+      await turn;
+      expect(state().entries).toHaveLength(4);
+      expect(state().entries.at(-1)).toMatchObject({ summary: true, status: "stopped" });
+
+      // [>]: The next turn overflows again: its summary request still starts at the first message, and its request
+      // quotes its own message.
+      await controller.send("more");
+      expect(sent()[2]!.messages[1]).toEqual({ role: "user", content: "go" });
+      expect(sent()[3]!.messages).toEqual([SYSTEM, { role: "user", content: `${lead}S2.\n\nmore` }]);
+      expect(state().entries.at(-1)).toMatchObject({ content: "B.", status: "done" });
+    });
+
+    test("with the setting off, a turn never sends a summary request and halts as before", async () => {
+      const { controller, state, sent } = await scripted(
+        [{ content: readCall("big.ts") }, { content: "never sent" }],
+        bigRunner().runner,
+        undefined,
+        fixedLimits({ sizes: { m: 1000 }, autoCompact: false }),
+      );
+      await controller.send("go");
+      expect(sent()).toHaveLength(1);
+      expect(state().entries.at(-1)).toMatchObject({ status: "halted", haltReason: "contextFull" });
+      expect(state().entries.some((entry) => entry.role === "assistant" && entry.summary)).toBe(false);
+    });
+
+    test("a turn reads the setting once, when it starts", async () => {
+      let release: () => void = () => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const { runner } = fakeRunner(async () => {
+        await gate;
+        return { status: "ok", text: "y".repeat(2000) };
+      });
+      let limits = parseLimits({ maxToolSteps: undefined, contextSizes: { m: 1000 }, autoCompact: false });
+      const { controller, state, sent } = await scripted(
+        [{ content: readCall("big.ts") }, { content: "S." }, { content: "Done." }],
+        runner,
+        undefined,
+        { read: () => limits },
+      );
+      const turn = controller.send("go");
+      await until(state, (s) => s.entries.at(-1)?.role === "assistant" && "call" in s.entries.at(-1)!);
+      limits = parseLimits({ maxToolSteps: undefined, contextSizes: { m: 1000 }, autoCompact: true });
+      controller.limitsChanged();
+      release();
+      await turn;
+      expect(sent()).toHaveLength(1);
+      expect(state().entries.at(-1)).toMatchObject({ status: "halted", haltReason: "contextFull" });
+    });
+
+    test("a reopened conversation knows the summary was automatic and rebuilds the same request", async () => {
+      const { controller, state, sent, saved } = await scripted(
+        [{ content: readCall("big.ts") }, { content: "S." }, { content: "Done." }, { content: "Next." }],
+        bigRunner().runner,
+        undefined,
+        on(),
+      );
+      await controller.send("go");
+      await settledSave(saved, 5);
+      const id = state().conversationId;
+      await controller.newChat();
+      await controller.openConversation(id);
+      await controller.send("more");
+      expect(sent()[3]!.messages).toEqual([
+        SYSTEM,
+        { role: "user", content: `${lead}S.\n\ngo` },
+        { role: "assistant", content: "Done." },
+        { role: "user", content: "more" },
+      ]);
     });
   });
 

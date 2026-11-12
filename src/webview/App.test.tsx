@@ -292,6 +292,17 @@ describe("summary", () => {
     );
     expect(panel([...hi, summary("done", "")])).toContain("The model&#x27;s reply held no summary.");
   });
+
+  test("a summary the turn ran itself, its next reply after it, says it was automatic", () => {
+    const next: ChatEntry = { role: "assistant", reasoning: "", content: "Done.", status: "done" };
+    const html = panel([...hi, summary("done"), next]);
+    expect(html).toContain('<p class="summary-separator">Conversation summarized automatically</p>');
+    expect(html.indexOf("Done.")).toBeGreaterThan(html.indexOf("The goal is x."));
+    const halted: ChatEntry = { ...next, content: "", status: "halted", haltReason: "contextFull" };
+    expect(panel([...hi, summary("done", ""), halted])).toContain(
+      '<p class="summary-separator">Conversation not summarized</p>',
+    );
+  });
 });
 
 describe("folded turn", () => {

@@ -7,25 +7,18 @@ import * as vscode from "vscode";
 import {
   parseCommandTimeout,
   parseContextSizeInput,
-  parseLimits,
   type TurnLimits,
+  userLimits,
   withContextSize,
 } from "../core/limits";
 
 /** Settings whose change updates the limits. */
-export const LIMIT_SETTINGS = ["brokeCode.maxToolSteps", "brokeCode.contextSizes"] as const;
+export const LIMIT_SETTINGS = ["brokeCode.maxToolSteps", "brokeCode.contextSizes", "brokeCode.autoCompact"] as const;
 
-/**
- * `brokeCode.maxToolSteps` and `brokeCode.contextSizes` from the user settings. [!]: User settings only, like the
- * providers: the manifest's `application` scope already makes VS Code ignore a workspace value; reading `globalValue`
- * keeps that explicit here.
- */
+/** `brokeCode.maxToolSteps`, `brokeCode.contextSizes`, and `brokeCode.autoCompact` from the user settings only. */
 export function readLimits(): TurnLimits {
   const config = vscode.workspace.getConfiguration("brokeCode");
-  return parseLimits({
-    maxToolSteps: config.inspect<unknown>("maxToolSteps")?.globalValue,
-    contextSizes: config.inspect<unknown>("contextSizes")?.globalValue,
-  });
+  return userLimits((name) => config.inspect<unknown>(name));
 }
 
 /**
