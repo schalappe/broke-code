@@ -74,9 +74,7 @@ jobs:
           fi
       # --skip-duplicate lets a re-run pass the registry that already has the version.
       - name: Publish to Open VSX
-        env:
-          OVSX_PAT: ${{ secrets.OVSX_PAT }}
-        run: bunx --bun ovsx publish --packagePath "broke-code-$VERSION.vsix" --skip-duplicate
+        run: bunx --bun ovsx publish --trusted-publishing --packagePath "broke-code-$VERSION.vsix" --skip-duplicate
       - name: Publish to the Visual Studio Marketplace
         run: bunx --bun vsce publish --oidc --packagePath "broke-code-$VERSION.vsix" --skip-duplicate --no-dependencies
       # Three idempotent steps, so a re-run finishes a Release left as a draft or without its .vsix.
