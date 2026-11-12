@@ -270,6 +270,19 @@ After a context-full stop, Continue is not offered: summarize with `/compact` or
 `/compact` has summarized the conversation after your last message. Like a message you type, a turn started by Retry
 or Continue that ends with an answer sends the first queued message.
 
+### Edit your last message
+
+Under your last message, when Retry is offered, the chat shows **Edit**. Clicking it changes nothing yet: the
+message's text goes into the message box (after what you were typing, if anything, following a blank line), with its
+file and folder mentions, and the box takes the focus. The last turn, your message and every reply after it, dims
+under a line saying that sending replaces them, with **Cancel**; the line also says when that turn wrote files or ran
+commands, which are not reverted (click **Undo changes** first to get the files back). Change the text and **Send**:
+the old message and its replies are removed for good, and the new one is sent as a message you type, its mentions and
+`/<skill>` read now. **Cancel** keeps the text in the box and removes nothing; so does starting a new chat, opening
+another conversation, a reply starting (Retry, Continue, or a queued message sent), hiding the panel, or reloading the
+window, which also clears the box. Edit is not offered once `/compact` has summarized the conversation after your last
+message.
+
 ### Undo the changes of a turn
 
 A change the agent writes goes straight to disk, outside the editor: neither the editor's **Undo** nor Local History
@@ -279,7 +292,7 @@ its text from before the turn; a file the turn created is deleted. The chat then
 skipped with the reason. A file is skipped, and left exactly as it is, when it changed since the turn wrote it (an edit
 of yours, for instance), when an editor holds unsaved changes to it, or when it can no longer be written; the button
 stays, so you can fix that and click again to retry only the files skipped. The button stays until a later turn
-writes a file (that turn's button replaces it), **Retry** removes that turn, you start a new chat or open another
+writes a file (that turn's button replaces it), **Retry** or a send after **Edit** removes that turn, you start a new chat or open another
 conversation, or the window reloads: the text from before the turn is kept in memory only, never on disk. After that, git is the way back.
 Commands are not undone: when the turn ran one, the chat says so beside the button. While the undo runs, **Send** waits
 for it. Each step that wrote a file put back then says **undone**, also after a reload, and the agent is told that you

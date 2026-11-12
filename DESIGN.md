@@ -79,7 +79,7 @@ It must print nothing.
 | `--bc-rule` | 16% of the foreground | Hairlines. |
 | `--bc-fill` | 6% of the foreground | A surface a shade off the panel: the user's message, a code block, the decision block. |
 | `--bc-fill-strong` | 11% of the foreground | One step stronger: inline code, chips, a hovered or pressed secondary button. |
-| `--bc-unsent-opacity` | 0.6 (1 in high contrast) | The entries no longer sent to the model after a summary. |
+| `--bc-unsent-opacity` | 0.6 (1 in high contrast) | The entries no longer sent to the model after a summary, and the turn Edit replaces. |
 
 ### Role tokens
 
@@ -130,8 +130,9 @@ high-contrast theme defines `--vscode-contrastBorder` and `--vscode-contrastActi
   button, the decision block, a rule) becomes the contrast border in high contrast.
 - In high contrast an error and a warning block share the same border and no fill, so their text takes the status
   color (`--bc-error-text`, `--bc-warning-text`); elsewhere the fill says it and the text stays the foreground.
-- In high contrast the entries no longer sent after a summary are not dimmed (`--bc-unsent-opacity` is 1): faded text
-  would fall under the theme's contrast, and the dim line above them says it in words.
+- In high contrast the entries no longer sent after a summary, and the turn Edit replaces, are not dimmed
+  (`--bc-unsent-opacity` is 1): faded text would fall under the theme's contrast, and the line above them says it in
+  words.
 
 Two controls are buttons in the markup and not to the eye, so they get no box, in high contrast either (maintainer
 decision): a link button (`button.link`), which is underlined at rest in every theme, and a History row's title
@@ -203,7 +204,7 @@ user's message). Borders and rules are 1px. No colored side stripe.
   conversation, only the decision block has one. While a reply is in flight, Stop is the message box's primary button
   and Send, which then queues, is secondary.
 - Secondary (New chat, History, Delete, Reject, Retry, Add provider under the skipped providers, a queued message's
-  Send now, Edit, and Remove, the turn's Retry, Retry anyway, Cancel, Continue, and Undo changes): a hairline box on the panel (`--bc-line`), the foreground as
+  Send now, Edit, and Remove, the turn's Retry, Retry anyway, Cancel, Continue, and Undo changes, the last message's Edit and the Cancel of its mark): a hairline box on the panel (`--bc-line`), the foreground as
   text; `--bc-fill-strong` when hovered or pressed (`aria-expanded="true"`).
 - Link (Open provider settings, Set context size): the link color, underlined.
 - Code block action (Copy, Insert at cursor): a secondary button two pixels down (`--bc-fs-xs`), at least a row high
@@ -271,6 +272,13 @@ would not act. Above the rows, a notice line says "The queue is paused." when no
   (`.retry-warning`, one size down, in the full foreground, since it asks before acting) says Retry does not revert
   them and that Undo changes gets the files back, the same button reads "Retry anyway", and Cancel follows it. Not a
   modal: the question sits where the user clicked.
+- Edit: under the last user message, at its right and 4px below it (`.user-actions`), a secondary button, shown
+  where Retry is and disabled when Send would not act. A click fills the message box and marks the last turn: that
+  message and everything after it sit in one group (`.replacing`) under a line of their own (`.replacing-head`): the
+  words "Sending replaces this message and its replies.", one size down in the full foreground, since they say what
+  Send will do, plus Retry's warning about the files and commands not reverted when it applies, then Cancel at the
+  right, wrapping when narrow. The entries are dimmed like those no longer sent (`--bc-unsent-opacity`), the line and
+  Cancel are not, and Edit goes while the mark shows. Not a modal: Send is the consent.
 - Undo changes' outcome: the last undo's outcome sits under the reply it undid (`.undo-outcome`), in
   words, one line per file with its path, status, and reason, each path (and a temporary file left behind) in the
   editor font (`.undo-path`) and the rest in the UI font: a notice ("Changes undone.") when every file is back, a
@@ -316,6 +324,7 @@ Each kind of state has one look, distinct from the others at a glance:
 | Waiting for a decision | The decision block. |
 | Turn ending (Stopped, halted) | A short rule, then small dim text. |
 | Folded turn (an ended turn of two steps or more) | One small dim row with a chevron, "N steps", then the failed and rejected counts in words. |
+| Replacing (Edit on the last message) | The last turn dimmed as a group under one line in the full foreground saying that sending replaces it, with Cancel; not dimmed in high contrast. |
 | Summarized (a summary, and the entries it replaces) | A separator of dim words between two rules above the summary; the entries before it dimmed as a group under one dim line saying they are no longer sent (not dimmed in high contrast); the turn's message an automatic summary quotes undimmed, with a dim line saying it is still sent. |
 
 ### Motion
@@ -347,8 +356,10 @@ opacity over `--bc-fast`. Under `prefers-reduced-motion: reduce`, and when VS Co
   workbench may focus the panel just after the draft did, leaving nothing focused inside it; until the user clicks or
   presses a key in the panel, the message box takes that focus back. Edit on a queued message moves the focus
   into the message box, where its text comes back, since the user asked to edit it and the row they clicked goes.
-  Last, Cancel on Retry's confirmation gives the focus back to Retry, since the button it was on goes; the
-  confirmation itself renames the button the focus is on and moves nothing.
+  Edit on the last message moves the focus into the message box, where its text lands, since the user asked to edit
+  there; the mention menu stays closed when the caret lands on a mention. Cancel on Retry's confirmation gives the
+  focus back to Retry, since the button it was on goes; the confirmation itself renames the button the focus is on and
+  moves nothing. Last, Cancel on Edit's mark gives the focus back to Edit, for the same reason.
   Queuing a message moves no focus, and neither do the queued texts that come back to the box after New chat, an
   open, or a delete, or that the queue could not take: the request came from the panel, which already has the focus
   where the user put it, and History stays open. Such a text that arrives while the panel has no message box (no
