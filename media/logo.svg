@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256"><title>broke-code</title>
+<defs><clipPath id="l"><path d="M0 0H181.3L74.7 256H0z"/></clipPath><clipPath id="r"><path d="M256 0H181.3L74.7 256H256z"/></clipPath></defs>
+<rect width="256" height="256" rx="56" fill="#15171c"/>
+<g fill="none" stroke="#f3efe4" stroke-width="20" stroke-linecap="round" stroke-linejoin="round"><path d="M70 80 28 128l42 48"/><path d="M186 80l42 48-42 48"/></g>
+<g transform="translate(-8 5)"><g clip-path="url(#l)"><circle cx="128" cy="128" r="42" fill="#f2a93b"/><circle cx="128" cy="128" r="29" fill="none" stroke="#c47f1c" stroke-width="5"/></g></g>
+<g transform="translate(8 -5)"><g clip-path="url(#r)"><circle cx="128" cy="128" r="42" fill="#f2a93b"/><circle cx="128" cy="128" r="29" fill="none" stroke="#c47f1c" stroke-width="5"/></g></g>
+</svg>
