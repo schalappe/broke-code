@@ -178,6 +178,11 @@ export class ChatView implements vscode.WebviewViewProvider {
         return void controller.newChat();
       case "undoChanges":
         return void controller.undoChanges();
+      case "retry":
+        return void controller.retry(message.entries);
+      case "continueTurn":
+        // [>]: The entry shows the button's label as typed; the model gets the fixed English text.
+        return void controller.continueTurn(message.entries, vscode.l10n.t("Continue"));
       case "chooseModel":
         return void this.chooseModel();
       case "compact":

@@ -319,7 +319,12 @@ export type WebviewMessage =
    */
   | { type: "setMode"; mode: Mode }
   /** "Undo changes": restore the files of the turn `ChatState.undo.reply` names. */
-  | { type: "undoChanges" };
+  | { type: "undoChanges" }
+  /**
+   * Retry or Continue the last turn (see `lastTurnActions`). `entries`: the number of entries the panel showed, so a
+   * click on a lagging panel acts on nothing but the turn it showed.
+   */
+  | { type: "retry" | "continueTurn"; entries: number };
 
 /** Chat state carried by `message`; `undefined` for a message that must leave the panel's state alone. */
 export function chatStateOf(message: HostMessage): ChatState | undefined {
@@ -418,6 +423,9 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | undefined {
       const value = text("text");
       return value === undefined || value.length > REPLY_MAX_LENGTH ? undefined : { type: "insertCode", text: value };
     }
+    case "retry":
+    case "continueTurn":
+      return isRequestId(message.entries) ? { type: message.type, entries: message.entries } : undefined;
     case "setMode":
       return isMode(message.mode) ? { type: "setMode", mode: message.mode } : undefined;
     default:

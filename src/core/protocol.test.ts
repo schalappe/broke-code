@@ -173,6 +173,16 @@ describe("parseWebviewMessage", () => {
     }
   });
 
+  test("accepts Retry and Continue with the entries count shown, and drops any other count", () => {
+    for (const type of ["retry", "continueTurn"] as const) {
+      expect(parseWebviewMessage({ type, entries: 0 })).toEqual({ type, entries: 0 });
+      expect(parseWebviewMessage({ type, entries: 4, extra: true })).toEqual({ type, entries: 4 });
+      for (const entries of [undefined, "4", -1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1, null]) {
+        expect(parseWebviewMessage({ type, entries })).toBeUndefined();
+      }
+    }
+  });
+
   test("drops a mode pick of an unknown mode", () => {
     for (const mode of [undefined, "Plan", "Ask", "auto", "", true, 1, ["ask"]]) {
       expect(parseWebviewMessage({ type: "setMode", mode })).toBeUndefined();

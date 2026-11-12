@@ -23,6 +23,7 @@ import {
 } from "./conversation";
 import type { ConversationStore } from "./conversationStore";
 import { type HistoryBudget, historyStart, sentEntries, summaryHistory, toHistory } from "./history";
+import { CONTINUE_TEXT, type LastTurnActions, lastTurnActions } from "./lastTurn";
 import { contextOf, estimateTokens, fillsContext, parseLimits, type TurnLimits } from "./limits";
 import { composeUserMessage, findMentions, type MentionReader, type MentionResult, type ReadMention } from "./mentions";
 import { workspacePath } from "./problems";
@@ -211,6 +212,17 @@ type Turn = {
 };
 
 type ToolStep = ChatEntry & { role: "tool" };
+
+type UserEntry = ChatEntry & { role: "user" };
+
+/**
+ * How an agent turn starts. `send`: a new message, its mentions read and its `/<name>` skill loaded now. `continue`: a
+ * new user entry whose model text is already set. `retry`: the last user entry, already the last entry, resent with
+ * the model text of its first send, so nothing it mentions or loads is read again.
+ */
+type TurnStart =
+  | { kind: "send"; content: string; picked: readonly string[] }
+  | { kind: "continue" | "retry"; user: UserEntry };
 
 /**
  * One conversation in memory. `entries` is the array `ChatState.entries` holds while it is shown; a reply keeps
@@ -581,8 +593,67 @@ export class ChatController {
     if (!content) return;
     if (isReplying(this.state)) return this.queueMessage(content, picked);
     if (!this.mayStartTurn()) return this.giveBack([{ text: content, mentions: [...picked] }]);
-    const ended = await this.runTurn(content, picked);
-    // [!]: Only once the turn has fully settled (`this.reply` cleared, navigation released), never inside `settle`.
+    return this.startTurn({ kind: "send", content, picked });
+  }
+
+  /**
+   * Retry: remove every entry after the last user entry and run the turn again from it, with the text the model
+   * received then (its mentions and skill are not read again; a skill it loaded stays loaded) and the provider, model,
+   * mode, limits, instruction files, and skills of now. The removal is saved by the turn's first save, before its
+   * request; a crash before it keeps the conversation whole. `entries`: the number of entries the panel showed.
+   * Ignored unless it is the current number, a turn may start, and the last turn offers Retry (`lastTurnActions`), so a
+   * click on a lagging panel removes nothing. Removed writes and commands are not reverted: the panel asks first.
+   */
+  retry(entries: number): Promise<void> {
+    const actions = this.lastTurnNow(entries);
+    if (!actions) return Promise.resolve();
+    const user = this.conversation.entries[actions.user] as UserEntry;
+    this.removeFrom(actions.user + 1);
+    return this.startTurn({ kind: "retry", user });
+  }
+
+  /**
+   * Continue: append a user entry whose text as typed is `label` (the button's, in the display language) and whose
+   * model text is `CONTINUE_TEXT`, then run it as a send: a new step budget and the settings of now. `entries`: as for
+   * `retry`; also ignored unless the last turn offers Continue (stopped, or halted on the step limit or on malformed
+   * calls).
+   */
+  continueTurn(entries: number, label: string): Promise<void> {
+    if (!this.lastTurnNow(entries)?.continues) return Promise.resolve();
+    const user: UserEntry = { role: "user", content: label, mentions: [] };
+    this.modelText.set(user, CONTINUE_TEXT);
+    return this.startTurn({ kind: "continue", user });
+  }
+
+  /** What the last turn offers now, for a request made while the panel showed `entries` entries. */
+  private lastTurnNow(entries: number): LastTurnActions | undefined {
+    if (entries !== this.conversation.entries.length || !this.mayStartTurn()) return undefined;
+    return lastTurnActions(this.conversation.entries);
+  }
+
+  /**
+   * Remove the entries from `index` on, for good once the next save runs. The data "Undo changes" holds goes with its
+   * turn when that turn's reply is among them, and so does the last undo's outcome; a turn held from before `index`
+   * stays held. A write of a removed turn that lands later is not held, since that turn is no longer the latest.
+   */
+  private removeFrom(index: number): void {
+    const entries = this.conversation.entries;
+    const removed = (turn: Turn | undefined) => {
+      const at = turn?.reply === undefined ? -1 : entries.indexOf(turn.reply);
+      return turn !== undefined && (at === -1 || at >= index);
+    };
+    if (removed(this.heldTurn)) this.heldTurn = undefined;
+    if (removed(this.lastTurn)) this.lastTurn = undefined;
+    if (this.undoOutcome !== undefined && this.undoOutcome.reply >= index) this.undoOutcome = undefined;
+    entries.splice(index);
+  }
+
+  /**
+   * Run the turn `start` describes, once `mayStartTurn` passed, then, once it has fully settled (`this.reply` cleared,
+   * navigation released), never inside `settle`, and only when it ended `done`, send the first queued message.
+   */
+  private async startTurn(start: TurnStart): Promise<void> {
+    const ended = await this.runTurn(start);
     if (ended === "done") await this.sendNextQueued();
   }
 
@@ -687,8 +758,8 @@ export class ChatController {
     this.stop();
   }
 
-  /** The agent turn of `send`, once `mayStartTurn` passed; its last status, or `undefined` when it did not start. */
-  private async runTurn(content: string, picked: readonly string[]): Promise<ReplyStatus | undefined> {
+  /** The agent turn `start` describes, once `mayStartTurn` passed; its last status, `undefined` when it did not start. */
+  private async runTurn(start: TurnStart): Promise<ReplyStatus | undefined> {
     const provider = this.currentProvider();
     const model = this.state.model;
     if (!provider || !model) return undefined;
@@ -716,18 +787,19 @@ export class ChatController {
     };
     this.lastTurn = turn;
     this.undoOutcome = undefined;
-    const user: ChatEntry & { role: "user" } = { role: "user", content, mentions: [] };
+    const user: UserEntry = start.kind === "send" ? { role: "user", content: start.content, mentions: [] } : start.user;
     const first = waitingReply();
     // [>]: Published before the reads, so the panel shows a reply in flight (Stop, composer locked) while they run;
-    // published again once the mentions are known.
-    conversation.entries.push(user, first);
+    // published again once the mentions are known. A retried entry is already the last one.
+    if (start.kind !== "retry") conversation.entries.push(user);
+    conversation.entries.push(first);
     const ended = await this.runReply(provider, conversation, first, "the agent turn", async (run) => {
       const { signal, settle } = run;
       // [>]: The message is on disk before the request goes, so a crash keeps it. A failed save is shown and the
       // reply still goes. Stop ends the wait at once, even if a read, the key lookup, or the save never settles.
       const prepared = await unlessAborted(
         Promise.all([
-          this.readMentions(content, picked),
+          start.kind === "send" ? this.readMentions(start.content, start.picked) : undefined,
           this.accessOf(provider),
           this.readInstructions(),
           this.readSkills(),
@@ -738,23 +810,25 @@ export class ChatController {
       if (!prepared) return settle("stopped");
       const [mentions, access, instructions, discovery] = prepared;
       this.state.skillWarnings = discovery.warnings;
-      // [>]: A `/<name>` that names no discovered skill (`/new` included) goes as typed. The token is never a mention,
-      // since a mention starts with `@`, so the mentions read above are the arguments'.
-      const slash = findSlashSkill(content, discovery.skills);
-      const loaded = slash ? await unlessAborted(loadSkillText(slash.skill, slash.args), signal) : undefined;
-      if (slash && !loaded) return settle("stopped");
-      user.mentions = mentions.map(toResult);
-      if (slash && loaded) {
-        user.skill = { name: slash.skill.name, status: loaded.status === "ok" ? "loaded" : "failed" };
-      }
-      this.modelText.set(user, composeUserMessage(loaded?.text ?? content, mentions));
-      if (mentions.length > 0 || slash) {
-        this.emit();
-        const saved = await unlessAborted(
-          this.save(conversation).then(() => true),
-          signal,
-        );
-        if (!saved) return settle("stopped");
+      if (start.kind === "send" && mentions) {
+        // [>]: A `/<name>` that names no discovered skill (`/new` included) goes as typed. The token is never a
+        // mention, since a mention starts with `@`, so the mentions read above are the arguments'.
+        const slash = findSlashSkill(start.content, discovery.skills);
+        const loaded = slash ? await unlessAborted(loadSkillText(slash.skill, slash.args), signal) : undefined;
+        if (slash && !loaded) return settle("stopped");
+        user.mentions = mentions.map(toResult);
+        if (slash && loaded) {
+          user.skill = { name: slash.skill.name, status: loaded.status === "ok" ? "loaded" : "failed" };
+        }
+        this.modelText.set(user, composeUserMessage(loaded?.text ?? start.content, mentions));
+        if (mentions.length > 0 || slash) {
+          this.emit();
+          const saved = await unlessAborted(
+            this.save(conversation).then(() => true),
+            signal,
+          );
+          if (!saved) return settle("stopped");
+        }
       }
 
       const tools = offeredTools(this.tools.tools, discovery.skills, mode);
