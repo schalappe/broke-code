@@ -83,9 +83,9 @@ describe("composeSystemPrompt", () => {
     expect(composeSystemPrompt(TOOLS, [], [])).not.toContain(rule);
   });
 
-  test("states that a command runs in the workspace folder with the user's shell and waits for the user, only when run_command is listed", () => {
+  test("states that a command runs in the workspace folder with the user's shell, waits for the user, and covers a whole tree in one step, only when run_command is listed", () => {
     const rule =
-      "- run_command runs the command with the user's shell, in the workspace folder unless cwd names another, and only once the user approves it: wait for its result.";
+      "- run_command runs the command with the user's shell, in the workspace folder unless cwd names another, and only once the user approves it: wait for its result. For work over a whole folder tree, such as counting or finding files in every subfolder, one command takes one step where list_files takes one per folder.";
     expect(composeSystemPrompt(TOOLS, [], []).split("# Tools")[0]).toContain(rule);
     expect(composeSystemPrompt([TOOLS[0]!], [], [])).not.toContain(rule);
   });
