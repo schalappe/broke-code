@@ -5,6 +5,7 @@
   "version": "0.0.0",
   "publisher": "schalappe",
   "license": "MIT",
+  "icon": "media/logo.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/schalappe/broke-code"
@@ -18,7 +19,9 @@
   ],
   "main": "./dist/extension.js",
   "l10n": "./l10n",
-  "activationEvents": [],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "contributes": {
     "viewsContainers": {
       "activitybar": [
@@ -43,8 +46,51 @@
         "command": "broke-code.setApiKey",
         "title": "%command.setApiKey.title%",
         "category": "broke-code"
+      },
+      {
+        "command": "broke-code.addProvider",
+        "title": "%command.addProvider.title%",
+        "category": "broke-code"
+      },
+      {
+        "command": "broke-code.generateCommitMessage",
+        "title": "%command.generateCommitMessage.title%",
+        "category": "broke-code",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "broke-code.addSelectionToChat",
+        "title": "%command.addSelectionToChat.title%",
+        "category": "broke-code"
+      },
+      {
+        "command": "broke-code.fixDiagnostic",
+        "title": "%command.fixDiagnostic.title%",
+        "category": "broke-code"
       }
     ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "broke-code.fixDiagnostic",
+          "when": "false"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "broke-code.addSelectionToChat",
+          "when": "editorHasSelection",
+          "group": "broke-code"
+        }
+      ],
+      "scm/title": [
+        {
+          "command": "broke-code.generateCommitMessage",
+          "when": "scmProvider == git",
+          "group": "navigation"
+        }
+      ]
+    },
     "configuration": {
       "title": "broke-code",
       "properties": {
@@ -93,6 +139,12 @@
           "minimum": 1,
           "markdownDescription": "%config.maxToolSteps.description%"
         },
+        "brokeCode.autoCompact": {
+          "type": "boolean",
+          "scope": "application",
+          "default": false,
+          "markdownDescription": "%config.autoCompact.description%"
+        },
         "brokeCode.autoApproveWrites": {
           "type": "boolean",
           "scope": "application",
@@ -128,11 +180,15 @@
     "@biomejs/biome": "2.6.6",
     "@happy-dom/global-registrator": "21.0.4",
     "@types/bun": "1.4.4",
+    "@types/mdast": "4.0.4",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "@types/vscode": "1.101.0",
     "@vscode/vsce": "4.1.0",
+    "mdast-util-from-markdown": "2.1.0",
     "ovsx": "1.3.0",
-    "typescript": "7.0.2"
+    "remark-parse": "11.0.0",
+    "typescript": "7.0.2",
+    "unified": "11.0.5"
   }
 }

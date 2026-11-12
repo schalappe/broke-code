@@ -28,7 +28,7 @@ keeps no new status, only how the step was approved (`accepted`, `rejected`, or 
 ## Accept writes with the core's atomic applier
 
 On Accept the change is written by the same applier as everywhere else: a temporary file, a last check that the file
-still holds the planned text, then a `rename(2)` over it (see AGENTS.md, "A write is atomic"). A file that changed on
+still holds the planned text, then a `rename(2)` over it (see `docs/spec/harness.md`, "A write is atomic"). A file that changed on
 disk since the plan is refused, and the model is told to read it again. Before the write, and before the request, a
 file open in an editor with unsaved changes is refused, also when auto-approve is on: the model gets an `error`
 result saying so. An editor without unsaved changes reloads the new text from disk by itself.
@@ -40,6 +40,10 @@ One user setting, `brokeCode.autoApproveWrites` (default off), accepts writes at
 weaken approval. The controller reads it at each write's request, so turning it off reaches the next write of a turn
 in flight. The controller is the one place it applies, and only to requests of kind `write`: nothing auto-approves a
 command, which always waits for a click.
+
+2026-11-11 (#79): the panel writes the setting too. The mode selector of the message box shows **Ask** (off) or
+**Auto-edit** (on), writes the user value on a pick, and follows the setting, not the click; the reading rules above
+are unchanged.
 
 ## Cancellation
 
@@ -71,3 +75,51 @@ call, which reloads as `stopped` by the existing rule, with nothing written.
 - An open request does not survive a window reload, and the proposed side cannot be edited before Accept.
 - Residual race, accepted: text typed into an editor between the last unsaved check and the rename is not lost, but
   that editor then holds unsaved text over a file that changed on disk, which VS Code reports when it saves.
+
+## Addendum (2026-11-12): the way back from an approved write
+
+An approved or auto-approved write goes to disk outside the editor, so neither the editor's Undo nor Local History
+sees it: VS Code's working copy history records a save made from an editor and has no file-watcher listener (verified
+at the scouting of #93, `workingCopyHistoryTracker.ts`). The chat therefore offers "Undo changes" (#69, #92, #93).
+
+- The approval seam carries the record. Each tool run gets the turn's `RecordedChanges` on its run context
+  (`ToolContext.changes`), set per call beside `requestApproval`; the extension wraps its `fileApplier` in
+  `recordingApplier` inside `approvalApplier`, so only a change that reached the disk is recorded, never a rejected,
+  cancelled, or refused one. The eval bench's applier ignores it and records nothing.
+- Memory only, one turn: the latest turn of the conversation shown that wrote a file, held from its first recorded
+  write, replaced when a later turn writes its first file, dropped when the conversation shown changes and at a window
+  reload (maintainer decision, 2026-11-11). Not on the steps or in the panel state: the record is rewritten whole at
+  each save and the state is posted at each delta, so megabytes of file text would ride on both.
+- Stop does not wait for a write already running. Such a write is still held while its turn is the latest of the
+  conversation shown, since that is when an undo is most needed (scouting decision, 2026-11-12); one landing after the
+  conversation changed is not.
+- The undo restores file by file with the write's own checks and the same unsaved-editor refusal: a file changed since
+  the turn wrote it, or unsaved in an editor, is skipped untouched and stays held, so the next click retries it. The
+  button shows whatever the turn's end status. It runs in the navigation queue, so New chat, open, and delete wait for
+  it, and while it runs no turn starts (the one Send check). Commands are not undone, and the chat says so.
+- The write steps of each file put back are marked `undone` in the record, an optional field (ADR 0003's rule), tied
+  to their file when recorded, never by resolving the path again; the history tells the model with one more line in
+  the step's result, and never leaves such a step out to save context (#94, scouting decision, 2026-11-12). A step a
+  summary replaces is no longer sent: the summary's message then names it on a line of its own after the summary's
+  text, so an undo after `/compact` or an automatic summary still reaches the model (maintainer decision,
+  2026-11-12).
+
+## Addendum (2026-11-12): the diff of a changed file
+
+"Changed files" (#99) lists the held turn's files above "Undo changes" and is the second use of the diff editor. A row
+opens its file's diff beside the chat, the focus kept in the panel: the held text before the turn on the left, served
+from memory by a content provider of its own scheme (`BEFORE_TURN_SCHEME`), read-only, empty for a created file; the
+real file on the right, not a snapshot, so the diff shows what the file holds now, unsaved editor changes included,
+and a hand edit since the turn shows what an undo would skip (scouting decision). A file gone from disk opens no diff:
+an error notification says so, since the diff editor would show it as an empty file (scouting decision).
+
+- The tab lives as long as its row: it closes when its file leaves the held turn (put back by an undo, or the turn no
+  longer held: a later turn's first write, Retry or Edit removing it, New chat, open, delete) and at deactivation, the
+  approval diff's rule, so a reloaded window never restores one with an empty left side (maintainer decision,
+  2026-11-12). The controller checks at each state update which opened diffs lost their file and tells the host's port
+  to close them.
+- The right side is a `file:` URI shared with every editor of that file, so these tabs are found by their left side's
+  scheme and URI (`closeTurnDiffs`), never by their right side as the approval's are.
+- The counts come from a minimal line diff written in the core with a fixed work bound (`LINE_DIFF_WORK_LIMIT`), no
+  diff library (scouting decision): past the bound, the lines left after the common first and last lines count as all
+  removed and all added.

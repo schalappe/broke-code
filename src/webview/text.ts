@@ -1,106 +1,35 @@
 /**
  * @module text
- * Localized panel text for provider errors, skipped providers and skills, mentions, tool steps, halted agent turns, context
- * usage, and saved conversations.
+ * Localized panel text for provider errors (worded in the core, translated here), skipped providers and skills,
+ * mentions, tool steps, folded turns, halted agent turns, the outcome of "Undo changes", context usage, and saved
+ * conversations.
  */
 import * as l10n from "@vscode/l10n";
+import { resultLineCount } from "../core/history";
 import type { MentionResult } from "../core/mentions";
-import type { ChatEntry, ContextUsage, HaltReason, SkillWarning, StorageProblem } from "../core/protocol";
-import type { ProviderError } from "../core/providerError";
+import type {
+  ChatEntry,
+  ContextUsage,
+  HaltReason,
+  SkillWarning,
+  StorageProblem,
+  UndoneFile,
+  UndoneStatus,
+} from "../core/protocol";
+import {
+  describeProviderError as describeProviderErrorWith,
+  type ErrorText,
+  type ProviderError,
+} from "../core/providerError";
 import type { SkippedProvider } from "../core/providers";
+import type { MentionKind } from "../core/reservedMentions";
+import type { FoldCounts } from "./turns";
 
-/** `message`: localized sentence naming provider. `detail`: raw technical text from provider or runtime. */
-export type ErrorText = { message: string; detail?: string };
+export type { ErrorText };
 
+/** Provider error wording with the panel's translator; see `describeProviderError` in the core. */
 export function describeProviderError(error: ProviderError): ErrorText {
-  switch (error.kind) {
-    case "internal":
-      return { message: l10n.t("An unexpected internal error ended the reply."), detail: error.message };
-    case "unreachable":
-      return { message: l10n.t("Cannot reach {0} at {1}.", error.provider, error.baseUrl), detail: error.cause };
-    case "certificate":
-      return {
-        message: l10n.t(
-          "{0} presented a certificate that is not trusted ({1}). If it uses a corporate or self-signed certificate, set its CA file in the provider settings.",
-          error.provider,
-          error.code,
-        ),
-        detail: error.baseUrl,
-      };
-    case "caFileInvalid":
-      return { message: caFileMessage(error), ...(error.cause ? { detail: error.cause } : {}) };
-    case "redirected":
-      return {
-        message: l10n.t(
-          "{0} answered with a redirect (HTTP {1}), which broke-code does not follow. Set its base URL to the final address.",
-          error.provider,
-          error.status,
-        ),
-        ...(error.location ? { detail: error.location } : {}),
-      };
-    case "invalidKey":
-      return { message: l10n.t("{0} refused the API key (HTTP {1}).", error.provider, error.status) };
-    case "rejected":
-      return {
-        message: l10n.t("{0} rejected the request (HTTP {1}).", error.provider, error.status),
-        ...rejectedDetail(error),
-      };
-    case "cutOff":
-      return { message: cutOffMessage(error), ...(error.cause ? { detail: error.cause } : {}) };
-    case "invalidResponse":
-      if (error.encoding !== undefined) {
-        return {
-          message: l10n.t(
-            "{0} answered with a compression that broke-code cannot read (Content-Encoding: {1}).",
-            error.provider,
-            error.encoding,
-          ),
-        };
-      }
-      return {
-        message: l10n.t(
-          "{0} did not answer with a model list. Check that its base URL is the API root, such as http://localhost:11434/v1.",
-          error.provider,
-        ),
-        ...(error.detail ? { detail: error.detail } : {}),
-      };
-  }
-}
-
-function rejectedDetail(error: ProviderError & { kind: "rejected" }): { detail?: string } {
-  if (error.bodyReadError !== undefined)
-    return { detail: l10n.t("The response body could not be read: {0}", error.bodyReadError) };
-  return error.detail ? { detail: error.detail } : {};
-}
-
-function caFileMessage(error: ProviderError & { kind: "caFileInvalid" }): string {
-  switch (error.reason) {
-    case "relative":
-      return l10n.t("The CA file of {0} must be an absolute path or start with ~/: {1}", error.provider, error.path);
-    case "unreadable":
-      return l10n.t("The CA file of {0} could not be read: {1}", error.provider, error.path);
-    case "notPem":
-      return l10n.t("The CA file of {0} is not a PEM certificate: {1}", error.provider, error.path);
-  }
-}
-
-function cutOffMessage(error: ProviderError & { kind: "cutOff" }): string {
-  switch (error.reason) {
-    case "ended":
-      return l10n.t("The reply from {0} was cut off: the stream ended before the reply was complete.", error.provider);
-    case "malformed":
-      return l10n.t("The reply from {0} was cut off: the stream sent an unreadable chunk.", error.provider);
-    case "dropped":
-      return l10n.t("The reply from {0} was cut off: the connection dropped.", error.provider);
-    case "listDropped":
-      return l10n.t("The model list from {0} was cut off: the connection dropped.", error.provider);
-    case "tooLarge":
-      return l10n.t("The reply from {0} was cut off: it exceeded the size limit.", error.provider);
-    case "listTooLarge":
-      return l10n.t("The model list from {0} was cut off: it exceeded the size limit.", error.provider);
-    case "providerError":
-      return l10n.t("The reply from {0} was cut off: the provider reported an error.", error.provider);
-  }
+  return describeProviderErrorWith(error, l10n);
 }
 
 export function describeSkippedProvider(skipped: SkippedProvider): string {
@@ -169,13 +98,11 @@ export function describeSkillWarning({ path, problem }: SkillWarning): string {
 /** Short status of a mention: what was attached, or why nothing was. */
 export function describeMention(mention: MentionResult): string {
   const count = mention.lines ?? 0;
-  const file = mention.kind === "file";
   switch (mention.status) {
     case "attached":
-      if (file) return count === 1 ? l10n.t("1 line") : l10n.t("{0} lines", count);
-      return count === 1 ? l10n.t("1 entry") : l10n.t("{0} entries", count);
+      return withFailedFolders(mention, withRange(mention, describeCount(mention.kind, count)));
     case "truncated":
-      return file ? l10n.t("truncated to {0} lines", count) : l10n.t("truncated to {0} entries", count);
+      return withFailedFolders(mention, withRange(mention, describeTruncated(mention.kind, count)));
     case "missing":
       return l10n.t("not found");
     case "outsideWorkspace":
@@ -186,6 +113,65 @@ export function describeMention(mention: MentionResult): string {
       return l10n.t("over 1 MiB, not attached");
     case "unreadable":
       return l10n.t("could not be read");
+    case "noProblems":
+      return l10n.t("no errors or warnings");
+    case "noChanges":
+      return l10n.t("no changes");
+    case "noRepository":
+      return l10n.t("not a git repository");
+    case "gitUnavailable":
+      return l10n.t("git not available");
+    case "noEditor":
+      return l10n.t("no active text editor");
+    case "emptySelection":
+      return l10n.t("empty selection");
+  }
+}
+
+/** `count` led by the mention's range when it has one: `src/app.ts 10-12, 3 lines`, `src/app.ts 10, 1 line`. */
+function withRange({ range }: MentionResult, count: string): string {
+  if (!range) return count;
+  const lines = range.start === range.end ? `${range.start}` : `${range.start}-${range.end}`;
+  return l10n.t("{0} {1}, {2}", range.path, lines, count);
+}
+
+/** `text` followed by the folders whose part could not be read, when some failed: `9 lines, 1 folder failed`. */
+function withFailedFolders({ failedFolders }: MentionResult, text: string): string {
+  if (!failedFolders) return text;
+  const failed = failedFolders === 1 ? l10n.t("1 folder failed") : l10n.t("{0} folders failed", failedFolders);
+  return l10n.t("{0}, {1}", text, failed);
+}
+
+/** The unit a mention's count is in, per kind: one grouping for the count and the truncation wordings. */
+const COUNT_UNIT: Record<MentionKind, "line" | "entry" | "problem"> = {
+  file: "line",
+  diff: "line",
+  selection: "line",
+  folder: "entry",
+  problems: "problem",
+};
+
+/** What a mention of `kind` attached, `count` in the unit of its kind. */
+function describeCount(kind: MentionKind, count: number): string {
+  switch (COUNT_UNIT[kind]) {
+    case "line":
+      return count === 1 ? l10n.t("1 line") : l10n.t("{0} lines", count);
+    case "entry":
+      return count === 1 ? l10n.t("1 entry") : l10n.t("{0} entries", count);
+    case "problem":
+      return count === 1 ? l10n.t("1 problem") : l10n.t("{0} problems", count);
+  }
+}
+
+/** What a cut mention of `kind` kept, `count` in the unit of its kind. */
+function describeTruncated(kind: MentionKind, count: number): string {
+  switch (COUNT_UNIT[kind]) {
+    case "line":
+      return l10n.t("truncated to {0} lines", count);
+    case "entry":
+      return l10n.t("truncated to {0} entries", count);
+    case "problem":
+      return l10n.t("truncated to {0} problems", count);
   }
 }
 
@@ -197,17 +183,19 @@ export function mainArgument(args: Record<string, string>): string | undefined {
 /**
  * Short status of a finished tool step: `ok` or `error` and the result's size in lines, or the first line of a
  * malformed call's message, which says what is wrong. A call the user rejected says so, its reason in the expanded
- * result; one auto-approved says so before its status. Model-facing messages are English, never localized.
+ * result; one auto-approved says so before its status; a write "Undo changes" undid says so first, its line count the
+ * result's as shown. Model-facing messages are English, never localized.
  */
 export function describeToolStep(step: ChatEntry & { role: "tool" }): string {
   if (step.status === "malformed") return step.text.split("\n")[0] ?? "";
   if (step.approval === "rejected") return l10n.t("rejected");
-  const count = step.text === "" ? 0 : step.text.replace(/\n$/, "").split("\n").length;
+  const count = resultLineCount(step.text);
   const size = count === 1 ? l10n.t("1 line") : l10n.t("{0} lines", count);
   const ending = step.name === "run_command" ? describeCommandEnding(step.text) : undefined;
   if (ending !== undefined) return l10n.t("{0}, {1}", ending, size);
   const status = step.status === "ok" ? l10n.t("ok, {0}", size) : l10n.t("error, {0}", size);
-  return step.approval === "auto" ? l10n.t("auto-approved, {0}", status) : status;
+  const approved = step.approval === "auto" ? l10n.t("auto-approved, {0}", status) : status;
+  return step.undone ? l10n.t("undone, {0}", approved) : approved;
 }
 
 /**
@@ -225,15 +213,106 @@ function describeCommandEnding(text: string): string | undefined {
   return undefined;
 }
 
-/** Why an agent turn halted, shown after its last step, or on the reply whose request was not sent. */
-export function describeHalt(reason: HaltReason): string {
+/** The row of a folded turn: its steps, then the failed and the rejected ones when there are any, in words. */
+export function describeFold(counts: FoldCounts): string {
+  let text = l10n.t("{0} steps", counts.steps);
+  if (counts.failed > 0) {
+    const failed = counts.failed === 1 ? l10n.t("1 failed") : l10n.t("{0} failed", counts.failed);
+    text = l10n.t("{0}, {1}", text, failed);
+  }
+  if (counts.rejected > 0) {
+    const rejected = counts.rejected === 1 ? l10n.t("1 rejected") : l10n.t("{0} rejected", counts.rejected);
+    text = l10n.t("{0}, {1}", text, rejected);
+  }
+  return text;
+}
+
+/**
+ * Why an agent turn halted, shown after its last step, or on the reply whose request was not sent. `summary`: the
+ * reply is a summary (`/compact`), whose request only a full context halts.
+ */
+export function describeHalt(reason: HaltReason, summary = false): string {
+  if (summary && reason === "contextFull") {
+    return l10n.t(
+      "Not summarized: the conversation does not fit the model's context, even with its tool results left out. Start a new chat with New chat.",
+    );
+  }
   switch (reason) {
     case "malformedCalls":
       return l10n.t("Stopped: the model sent three malformed tool calls in a row.");
     case "stepLimit":
       return l10n.t("Stopped: the agent turn reached its tool step limit.");
     case "contextFull":
-      return l10n.t("Stopped: the conversation fills the model's context. Start a new chat with New chat.");
+      return l10n.t(
+        "Stopped: the conversation fills the model's context. Summarize it with /compact, or start a new chat with New chat.",
+      );
+  }
+}
+
+/**
+ * The line over an undo's files: every file back (`restored` or `removed`), some skipped, or none back. A skipped file
+ * stays held, so the button stays and retries it.
+ */
+export function describeUndoOutcome(files: readonly UndoneFile[]): string {
+  const skipped = files.filter((file) => file.status === "skipped").length;
+  if (skipped === 0) return l10n.t("Changes undone.");
+  if (skipped < files.length) {
+    return l10n.t("Some changes were not undone. Undo changes again to retry the files skipped.");
+  }
+  return l10n.t("No change was undone. Undo changes again to retry the files skipped.");
+}
+
+/** An undo that failed unexpectedly (a bug): how to retry, and the error as detail. */
+export function describeUndoFailure(error: string): ErrorText {
+  return {
+    message: l10n.t("Undo changes failed unexpectedly. Undo changes again to retry the files not yet undone."),
+    detail: error,
+  };
+}
+
+/** A piece of a sentence: prose in the UI font, or a path, which the panel sets in the editor font. */
+export type TextPart = { text: string } | { path: string };
+
+// [>]: Private-use characters stand for the paths inside a translated sentence, so a translator still orders it; the
+// sentence is then cut at them. No path, status, or cause holds one.
+const FILE_MARK = "\uE000";
+const LEFTOVER_MARK = "\uE001";
+
+/**
+ * One file of an undo: its path, then what happened to it, and the temporary file it left behind, if any; each path a
+ * part of its own.
+ */
+export function describeUndoneFile(file: UndoneFile): TextPart[] {
+  const row = l10n.t("{0}: {1}", FILE_MARK, undoneStatus(file));
+  const sentence =
+    file.leftover === undefined
+      ? row
+      : l10n.t("{0}; its temporary file {1} could not be removed ({2})", row, LEFTOVER_MARK, file.leftover.cause);
+  return sentence
+    .split(/([\uE000\uE001])/)
+    .filter((piece) => piece !== "")
+    .map((piece) => {
+      if (piece === FILE_MARK) return { path: file.path };
+      if (piece === LEFTOVER_MARK) return { path: file.leftover?.name ?? "" };
+      return { text: piece };
+    });
+}
+
+function undoneStatus(file: UndoneStatus): string {
+  if (file.status !== "skipped") {
+    return file.status === "restored" ? l10n.t("restored") : l10n.t("removed, since this turn created it");
+  }
+  switch (file.reason) {
+    case "changed":
+      return l10n.t("skipped, it changed since this turn wrote it");
+    case "unsaved":
+      return l10n.t("skipped, it has unsaved changes in an editor");
+    case "symlink":
+      return l10n.t("skipped, it is now a symbolic link");
+    case "outsideWorkspace":
+      return l10n.t("skipped, it is no longer inside the workspace folders");
+    case "failed":
+      return l10n.t("skipped, it could not be restored ({0})", file.cause);
   }
 }
 

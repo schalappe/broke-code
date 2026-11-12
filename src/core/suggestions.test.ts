@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  builtInCommand,
   filterSlashCommands,
   filterSuggestions,
   findMentionToken,
@@ -46,6 +47,15 @@ describe("findMentionToken", () => {
     expect(findMentionToken(escaped, escaped.indexOf("@a") + 2)).toEqual({ start: 10, query: "a" });
     const paragraphs = "x `\n\n@a\n\ny `";
     expect(findMentionToken(paragraphs, 7)).toEqual({ start: 5, query: "a" });
+  });
+
+  test("opens the menu after a fenced block between two lone backticks, and not inside the block", () => {
+    for (const fence of ["~~~", "```"]) {
+      const after = `\`literal\n${fence}\nx\n${fence}\n@a \``;
+      expect(findMentionToken(after, after.indexOf("@a") + 2)).toEqual({ start: after.indexOf("@a"), query: "a" });
+      const inside = `\`literal\n${fence}\n@a\n${fence}\n \``;
+      expect(findMentionToken(inside, inside.indexOf("@a") + 2)).toBeUndefined();
+    }
   });
 
   test("opens no menu where either reading, with or without picked paths, puts the token in code", () => {
@@ -196,6 +206,20 @@ describe("index exclusions", () => {
   test("a path that only resembles an excluded folder is kept", () => {
     for (const path of ["src/build.ts", "distribution/a.ts", "out.txt", ".gitignore", "src/core/sse.ts"]) {
       expect(isExcludedFromIndex(path)).toBe(false);
+    }
+  });
+});
+
+describe("builtInCommand", () => {
+  test("is the built-in command a message is exactly, trimmed", () => {
+    expect(builtInCommand("/new")).toBe("new");
+    expect(builtInCommand("  /model \n")).toBe("model");
+    expect(builtInCommand("/compact")).toBe("compact");
+  });
+
+  test("is none for a command with words after it, another word, or another case", () => {
+    for (const text of ["/new words", "/model gpt", "/compact now", "/news", "/grilling", "new", "/New", "see /new"]) {
+      expect(builtInCommand(text)).toBeUndefined();
     }
   });
 });

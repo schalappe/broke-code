@@ -13,7 +13,7 @@ import {
   accessFailureReason,
   formatMention,
   MAX_MENTION_LINES,
-  type ReadMention,
+  type PathMention,
   readMention,
   truncationNotice,
 } from "./mentions";
@@ -196,7 +196,7 @@ export function displayPath(path: string): string {
 }
 
 /** The folder names of a multi-root workspace, as the listing of its top: what a path may start with. */
-function rootListing(roots: WorkspaceRoot[]): ReadMention {
+function rootListing(roots: WorkspaceRoot[]): PathMention {
   const names = roots.map((root) => root.name).sort(compareNames);
   const cut = truncateLines(names.map((name) => `${name}/`).join("\n"), MAX_MENTION_LINES);
   const status = cut.omitted > 0 ? "truncated" : "attached";
@@ -204,7 +204,7 @@ function rootListing(roots: WorkspaceRoot[]): ReadMention {
 }
 
 /** Why nothing of `mention` could be read, or `undefined` when its content is there. */
-function failureOf(mention: ReadMention): AccessFailure | undefined {
+function failureOf(mention: PathMention): AccessFailure | undefined {
   return mention.status === "attached" || mention.status === "truncated" ? undefined : mention.status;
 }
 

@@ -4,7 +4,7 @@
  * history row saved beside the record, so a valid summary spares the list parsing the record. Files read from disk are
  * untrusted: `parseConversation` and `parseSummary` check every field and keep only known ones.
  */
-import type { MentionResult } from "./mentions";
+import type { LineRange, MentionResult, MentionStatus } from "./mentions";
 import type {
   ChatEntry,
   HaltReason,
@@ -15,6 +15,7 @@ import type {
   UserSkill,
 } from "./protocol";
 import type { ProviderError } from "./providerError";
+import { type MentionKind, NOTHING_TO_ATTACH, RESERVED_FAILURES, RESERVED_MENTIONS } from "./reservedMentions";
 
 /**
  * A user entry as saved: `modelText` is the text the model received, typed text (or the text of the skill it loads)
@@ -27,7 +28,8 @@ export type StoredEntry = StoredUserEntry | Exclude<ChatEntry, { role: "user" }>
  * The record version this build writes and reads. Version 2 added tool steps, a reply's `call`, and halted replies.
  * Version 1 files are skipped like any other version: no release ever wrote them, so none is migrated. An optional
  * field added to an entry, such as a user entry's `skill`, keeps the version: an older build drops the unknown key and
- * reads the rest.
+ * reads the rest. A new value of an existing field, such as the `problems` mention kind, keeps it too, at a cost: an
+ * older build skips such a record as invalid and keeps it on disk.
  */
 export const CONVERSATION_VERSION = 2;
 
@@ -118,6 +120,17 @@ export function summarize(record: ConversationRecord): ConversationSummary {
   return { id: record.id, title: conversationTitle(record.entries), updatedAt: record.updatedAt };
 }
 
+/**
+ * The History filter: rows whose title contains `query`, trimmed, ignoring case, in the order given; every row for a
+ * blank query. Compared as the `@` and `/` menus do: lowercase on both sides, no accent folding. Only the title is
+ * searched, so a title cut to 60 characters matches on that part only.
+ */
+export function filterConversations(conversations: ConversationSummary[], query: string): ConversationSummary[] {
+  const needle = query.trim().toLowerCase();
+  if (needle === "") return conversations;
+  return conversations.filter((conversation) => conversation.title.toLowerCase().includes(needle));
+}
+
 /** Summary file of `record`: its row under `version`, the version of the record it describes. */
 export function serializeSummary(record: ConversationRecord): string {
   return JSON.stringify({ version: record.version, ...summarize(record) });
@@ -153,9 +166,9 @@ const REPLY_STATUSES: readonly ReplyStatus[] = ["waiting", "streaming", "done", 
 const HALT_REASONS: readonly HaltReason[] = ["malformedCalls", "stepLimit", "contextFull"];
 const TOOL_STEP_STATUSES: readonly ToolStepStatus[] = ["ok", "error", "malformed"];
 const STEP_APPROVALS: readonly StepApproval[] = ["accepted", "rejected", "auto"];
-const MENTION_KINDS: readonly string[] = ["file", "folder"];
+const MENTION_KINDS: readonly MentionKind[] = ["file", "folder", ...RESERVED_MENTIONS];
 const USER_SKILL_STATUSES: readonly string[] = ["loaded", "failed"];
-const MENTION_STATUSES: readonly string[] = [
+const MENTION_STATUSES: readonly MentionStatus[] = [
   "attached",
   "truncated",
   "missing",
@@ -163,6 +176,8 @@ const MENTION_STATUSES: readonly string[] = [
   "binary",
   "tooLarge",
   "unreadable",
+  ...NOTHING_TO_ATTACH,
+  ...RESERVED_FAILURES,
 ];
 
 function parseEntry(raw: unknown): StoredEntry | undefined {
@@ -191,6 +206,7 @@ function parseEntry(raw: unknown): StoredEntry | undefined {
     const halted = raw.status === "halted";
     if (halted !== HALT_REASONS.includes(raw.haltReason as HaltReason)) return undefined;
     if (!halted && raw.haltReason !== undefined) return undefined;
+    if (raw.summary !== undefined && raw.summary !== true) return undefined;
     // [>]: Cut by a reload or crash, a call that was running included: its step never came, so the turn stopped there.
     const inFlight = raw.status === "waiting" || raw.status === "streaming";
     const status: ReplyStatus = inFlight ? "stopped" : (raw.status as ReplyStatus);
@@ -202,12 +218,14 @@ function parseEntry(raw: unknown): StoredEntry | undefined {
       ...(error ? { error } : {}),
       ...(call ? { call } : {}),
       ...(halted ? { haltReason: raw.haltReason as HaltReason } : {}),
+      ...(raw.summary === true ? { summary: true } : {}),
     };
   }
   if (raw.role === "tool") {
     if (!isString(raw.name) || !isString(raw.text) || !isStringRecord(raw.args)) return undefined;
     if (!TOOL_STEP_STATUSES.includes(raw.status as ToolStepStatus)) return undefined;
     if (raw.approval !== undefined && !STEP_APPROVALS.includes(raw.approval as StepApproval)) return undefined;
+    if (raw.undone !== undefined && raw.undone !== true) return undefined;
     const status = raw.status as ToolStepStatus;
     const approval = raw.approval as StepApproval | undefined;
     return {
@@ -217,6 +235,7 @@ function parseEntry(raw: unknown): StoredEntry | undefined {
       status,
       text: raw.text,
       ...(approval !== undefined ? { approval } : {}),
+      ...(raw.undone === true ? { undone: true } : {}),
     };
   }
   return undefined;
@@ -242,10 +261,33 @@ function parseUserSkill(raw: unknown): UserSkill | undefined {
 
 function parseMention(raw: unknown): MentionResult | undefined {
   if (!isObject(raw) || !isString(raw.path)) return undefined;
-  if (!MENTION_KINDS.includes(raw.kind as string) || !MENTION_STATUSES.includes(raw.status as string)) return undefined;
+  if (!MENTION_KINDS.includes(raw.kind as MentionKind) || !MENTION_STATUSES.includes(raw.status as MentionStatus))
+    return undefined;
   if (!isOptional(raw.lines, (lines) => Number.isSafeInteger(lines) && (lines as number) >= 0)) return undefined;
-  const { path, kind, status, lines } = raw as MentionResult;
-  return { path, kind, status, ...(lines !== undefined ? { lines } : {}) };
+  if (!isOptional(raw.range, isLineRange)) return undefined;
+  if (!isOptional(raw.failedFolders, (count) => Number.isSafeInteger(count) && (count as number) >= 1))
+    return undefined;
+  const { path, kind, status, lines, range, failedFolders } = raw as MentionResult;
+  return {
+    path,
+    kind,
+    status,
+    ...(lines !== undefined ? { lines } : {}),
+    ...(range !== undefined ? { range: { path: range.path, start: range.start, end: range.end } } : {}),
+    ...(failedFolders !== undefined ? { failedFolders } : {}),
+  };
+}
+
+/** A path and 1-based lines, the first not after the last. */
+function isLineRange(raw: unknown): raw is LineRange {
+  if (!isObject(raw) || !isString(raw.path)) return false;
+  const { start, end } = raw;
+  return (
+    Number.isSafeInteger(start) &&
+    Number.isSafeInteger(end) &&
+    (start as number) >= 1 &&
+    (start as number) <= (end as number)
+  );
 }
 
 /** Field types of each provider error kind; `?` marks an optional field, an array lists the allowed values. */

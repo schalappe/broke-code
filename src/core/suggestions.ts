@@ -41,8 +41,17 @@ export function findSlashToken(text: string, caret: number): SlashToken | undefi
 }
 
 /** The slash commands the webview runs itself, in the order the menu lists them, before the skills. */
-export const BUILT_IN_COMMANDS = ["new", "model"] as const;
+export const BUILT_IN_COMMANDS = ["new", "model", "compact"] as const;
 export type BuiltInCommand = (typeof BUILT_IN_COMMANDS)[number];
+
+/**
+ * The built-in command `text` runs: its trimmed text is exactly `/<name>`. With words after it, it is an ordinary
+ * message.
+ */
+export function builtInCommand(text: string): BuiltInCommand | undefined {
+  const trimmed = text.trim();
+  return BUILT_IN_COMMANDS.find((name) => trimmed === `/${name}`);
+}
 
 /** A row of the `/` menu: a built-in command or a discovered skill, its name without the `/`. */
 export type SlashCommand = { name: string; description: string };

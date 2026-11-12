@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { parseProviders } from "./providers";
+import { appendProvider, parseProviders, readCandidate } from "./providers";
 
 describe("parseProviders", () => {
   test("keeps valid providers in order and drops a trailing slash from the base URL", () => {
@@ -99,5 +99,54 @@ describe("parseProviders", () => {
       { name: "Empty", baseUrl: "https://b.example/v1" },
       { name: "Number", baseUrl: "https://c.example/v1" },
     ]);
+  });
+});
+
+describe("readCandidate", () => {
+  const current = [
+    { name: "Internal", baseUrl: "https://llm.example.com/v1" },
+    { name: "Broken", baseUrl: "not a url" },
+  ];
+
+  test("reads an entry the parser keeps as the provider it yields, its base URL without trailing slashes", () => {
+    expect(readCandidate(current, { name: " Local ", baseUrl: " http://localhost:8080/v1// " })).toEqual({
+      provider: { name: "Local", baseUrl: "http://localhost:8080/v1" },
+    });
+  });
+
+  test("gives the parser's reason when it skips the entry", () => {
+    expect(readCandidate(current, { name: "  ", baseUrl: "http://x/v1" })).toEqual({ reason: "missingName" });
+    expect(readCandidate(current, { name: "Internal", baseUrl: "http://x/v1" })).toEqual({ reason: "duplicateName" });
+    expect(readCandidate(current, { name: "New", baseUrl: "localhost:11434" })).toEqual({ reason: "invalidUrl" });
+  });
+
+  test("accepts a name used only by a skipped entry, and reads a non-array value as no entry", () => {
+    expect(readCandidate(current, { name: "Broken", baseUrl: "http://x/v1" })).toEqual({
+      provider: { name: "Broken", baseUrl: "http://x/v1" },
+    });
+    expect(readCandidate({ name: "Internal" }, { name: "Internal", baseUrl: "http://x/v1" })).toEqual({
+      provider: { name: "Internal", baseUrl: "http://x/v1" },
+    });
+  });
+});
+
+describe("appendProvider", () => {
+  test("keeps every existing entry as it is, skipped ones and caFile included, and appends the new one", () => {
+    const current = [
+      { name: "A", baseUrl: "https://a/v1", caFile: "~/ca.pem" },
+      { baseUrl: "https://nameless/v1" },
+      "garbage",
+    ];
+    const next = appendProvider(current, { name: "B", baseUrl: "http://b/v1" });
+    expect(next).toEqual([...current, { name: "B", baseUrl: "http://b/v1" }]);
+    expect(current).toHaveLength(3);
+  });
+
+  test("replaces a value that is not an array with the one-entry array", () => {
+    for (const current of [undefined, null, { name: "A" }, "x"]) {
+      expect(appendProvider(current, { name: "B", baseUrl: "http://b/v1" })).toEqual([
+        { name: "B", baseUrl: "http://b/v1" },
+      ]);
+    }
   });
 });

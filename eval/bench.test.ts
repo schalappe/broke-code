@@ -2,12 +2,27 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BENCH_MODELS, dumpLine, modelsProblem, parseBenchArgs, trimIncompleteLine } from "./bench";
+import {
+  BENCH_MODELS,
+  describeSandboxFailure,
+  dumpLine,
+  modelsProblem,
+  OLLAMA_URL,
+  parseBenchArgs,
+  sandboxProblem,
+  trimIncompleteLine,
+} from "./bench";
 import { CREATE_SCENARIO, SCENARIOS } from "./scenarios";
 
 describe("parseBenchArgs", () => {
   test("defaults to both models, every scenario, and 10 runs", () => {
-    expect(parseBenchArgs([])).toEqual({ models: BENCH_MODELS, scenarios: SCENARIOS, runs: 10, dump: undefined });
+    expect(parseBenchArgs([])).toEqual({
+      models: BENCH_MODELS,
+      scenarios: SCENARIOS,
+      runs: 10,
+      dump: undefined,
+      baseUrl: OLLAMA_URL,
+    });
     expect(BENCH_MODELS).toEqual(["qwen3.8:27b", "gemma4:26b-a4b-it-qat"]);
   });
 
@@ -17,7 +32,17 @@ describe("parseBenchArgs", () => {
       scenarios: SCENARIOS,
       runs: 3,
       dump: "/tmp/runs.jsonl",
+      baseUrl: OLLAMA_URL,
     });
+  });
+
+  test("takes another server's base URL, trailing slashes dropped, and refuses anything else", () => {
+    expect(parseBenchArgs(["--base-url", "https://pod-8000.proxy.runpod.net/v1/"]).baseUrl).toBe(
+      "https://pod-8000.proxy.runpod.net/v1",
+    );
+    for (const url of ["pod:8000/v1", "ftp://pod/v1", "https://", ""]) {
+      expect(() => parseBenchArgs(["--base-url", url])).toThrow("--base-url");
+    }
   });
 
   test("plays a model named twice once, in first-seen order, so its runs are never scored together", () => {
@@ -49,24 +74,77 @@ describe("parseBenchArgs", () => {
 describe("modelsProblem", () => {
   const url = "http://localhost:11434/v1";
 
-  test("names Ollama's URL and the error when the models cannot be listed", () => {
+  test("names the server's URL and the error when the models cannot be listed", () => {
     const listing = {
       ok: false as const,
       error: { kind: "unreachable" as const, provider: "Ollama", baseUrl: url, cause: "connect ECONNREFUSED" },
     };
     const problem = modelsProblem(listing, ["a"], url);
-    expect(problem).toContain(`Ollama at ${url}`);
+    expect(problem).toContain(`The server at ${url}`);
     expect(problem).toContain("unreachable");
     expect(problem).toContain("connect ECONNREFUSED");
   });
 
-  test("names each requested model Ollama does not list", () => {
+  test("names each requested model the server does not list, with Ollama's pull hint only for the local Ollama", () => {
     const problem = modelsProblem({ ok: true, models: ["a", "c"] }, ["a", "b", "d"], url);
-    expect(problem).toBe(`Not served by Ollama at ${url}: b, d. Pull with \`ollama pull <name>\`.`);
+    expect(problem).toBe(`Not served at ${url}: b, d. Pull with \`ollama pull <name>\`.`);
+    const remote = "https://pod-8000.proxy.runpod.net/v1";
+    expect(modelsProblem({ ok: true, models: [] }, ["b"], remote)).toBe(`Not served at ${remote}: b.`);
   });
 
   test("finds no problem when Ollama lists every requested model", () => {
     expect(modelsProblem({ ok: true, models: ["b", "a"] }, ["a", "b"], url)).toBeUndefined();
+  });
+});
+
+describe("sandboxProblem", () => {
+  test("finds no problem where sandbox-exec applies the bench's profile", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "broke-code-sandbox-"));
+    try {
+      expect(await sandboxProblem(dir)).toBeUndefined();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("names sandbox-exec, says no run started, and keeps the probe's result as the cause", () => {
+    const result = "exit code 71\nstdout: (empty)\nstderr:\nsandbox-exec: sandbox_apply: Operation not permitted";
+    expect(describeSandboxFailure(result)).toBe(
+      `Bench commands run under /usr/bin/sandbox-exec, which could not run one here, so no run started:\n${result}`,
+    );
+  });
+
+  test("bun run eval exits 1 before asking the server anything when the sandbox cannot be applied", async () => {
+    let requests = 0;
+    const server = Bun.serve({
+      port: 0,
+      fetch: () => {
+        requests += 1;
+        return Response.json({ data: [] });
+      },
+    });
+    try {
+      // [>]: A sandbox cannot be applied inside another one (exit 71), so running the bench in one makes its probe fail.
+      const bench = Bun.spawn(
+        [
+          "/usr/bin/sandbox-exec",
+          "-p",
+          "(version 1)(allow default)",
+          process.execPath,
+          join(import.meta.dir, "bench.ts"),
+          "--base-url",
+          `http://127.0.0.1:${server.port}/v1`,
+        ],
+        { stdout: "pipe", stderr: "pipe" },
+      );
+      const [code, stderr] = await Promise.all([bench.exited, new Response(bench.stderr).text()]);
+      expect(code).toBe(1);
+      expect(stderr).toContain("Bench commands run under /usr/bin/sandbox-exec");
+      expect(stderr).toContain("sandbox_apply");
+      expect(requests).toBe(0);
+    } finally {
+      server.stop(true);
+    }
   });
 });
 

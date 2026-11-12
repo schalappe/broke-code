@@ -1,12 +1,16 @@
 /**
  * @module limits
- * Turn limits from the user settings (`brokeCode.maxToolSteps`, `brokeCode.contextSizes`), the command timeout
+ * Turn limits from the user settings (`brokeCode.maxToolSteps`, `brokeCode.contextSizes`, `brokeCode.autoCompact`), the command timeout
  * (`brokeCode.commandTimeoutSeconds`), and the context budget: the estimate of a request's size in tokens and the
  * context-full threshold. No `node:` or `vscode` import.
  */
+import type { InspectedSetting } from "./approval";
 
-/** The limits an agent turn runs under: its tool step limit and the context size of each model in the table. */
-export type TurnLimits = { maxToolSteps: number; contextSizes: ReadonlyMap<string, number> };
+/**
+ * The limits an agent turn runs under: its tool step limit, the context size of each model in the table, and whether a
+ * request that would fill the context is first compacted (`autoCompact`) instead of halting the turn.
+ */
+export type TurnLimits = { maxToolSteps: number; contextSizes: ReadonlyMap<string, number>; autoCompact: boolean };
 
 /** A model's context size in tokens; `known` is false when the model is absent from the table and 32,768 is used. */
 export type ContextSize = { size: number; known: boolean };
@@ -19,9 +23,10 @@ export const DEFAULT_CONTEXT_SIZE = 32_768;
 /**
  * Parse the raw setting values. Never throws. A step limit that is not an integer of at least 1 gives 50; a table that
  * is not a plain object is empty, and each entry that is not a positive integer is left out (VS Code already flags a
- * schema mismatch in settings.json).
+ * schema mismatch in settings.json). Automatic compaction is on only for `true`; a source that passes no `autoCompact`
+ * (the eval bench) never compacts.
  */
-export function parseLimits(raw: { maxToolSteps: unknown; contextSizes: unknown }): TurnLimits {
+export function parseLimits(raw: { maxToolSteps: unknown; contextSizes: unknown; autoCompact?: unknown }): TurnLimits {
   const steps = raw.maxToolSteps;
   const maxToolSteps = isPositiveInteger(steps) ? steps : DEFAULT_MAX_TOOL_STEPS;
   const contextSizes = new Map<string, number>();
@@ -31,7 +36,23 @@ export function parseLimits(raw: { maxToolSteps: unknown; contextSizes: unknown 
       if (isPositiveInteger(size)) contextSizes.set(model, size);
     }
   }
-  return { maxToolSteps, contextSizes };
+  return { maxToolSteps, contextSizes, autoCompact: raw.autoCompact === true };
+}
+
+/** The settings `userLimits` reads, by their name under `brokeCode`. */
+export type LimitSetting = "maxToolSteps" | "contextSizes" | "autoCompact";
+
+/**
+ * The turn limits from what `inspect` gives for each setting. [!]: User settings only, like the providers: the
+ * manifest's `application` scope already makes VS Code ignore a workspace value; reading `globalValue` keeps that
+ * explicit here, so a repository can neither raise the limits nor turn automatic compaction on.
+ */
+export function userLimits(inspect: (name: LimitSetting) => InspectedSetting | undefined): TurnLimits {
+  return parseLimits({
+    maxToolSteps: inspect("maxToolSteps")?.globalValue,
+    contextSizes: inspect("contextSizes")?.globalValue,
+    autoCompact: inspect("autoCompact")?.globalValue,
+  });
 }
 
 /** Seconds a command runs before it is stopped, while `brokeCode.commandTimeoutSeconds` is unset or invalid. */
@@ -58,7 +79,11 @@ export function contextOf(limits: TurnLimits, model: string | undefined): Contex
  * rounded up. A decision, not a tokenizer: no provider reports usage without `stream_options`.
  */
 export function estimateTokens(messages: readonly { content: string }[]): number {
-  const characters = messages.reduce((total, message) => total + message.content.length, 0);
+  return tokensOfCharacters(messages.reduce((total, message) => total + message.content.length, 0));
+}
+
+/** The estimate of `estimateTokens` for messages holding `characters` in all, for a caller that keeps a running sum. */
+export function tokensOfCharacters(characters: number): number {
   return Math.ceil(characters / 4);
 }
 

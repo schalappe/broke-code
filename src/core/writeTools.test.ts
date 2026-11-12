@@ -9,6 +9,7 @@ import {
   open,
   readdir,
   readFile,
+  realpath,
   rm,
   stat,
   symlink,
@@ -17,14 +18,25 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ApprovalRequest, Decision } from "./approval";
-import type { ToolResult } from "./tools";
 import type { WorkspaceRoot } from "./workspaceFiles";
-import { approvalApplier, fileApplier, type PlannedChange, runWriteTool, type WriteApprovalHost } from "./writeTools";
+import {
+  type AppliedResult,
+  approvalApplier,
+  fileApplier,
+  type PlannedChange,
+  runWriteTool,
+  type WriteApprovalHost,
+} from "./writeTools";
 
 // [>]: `tmpdir()` sits under /var, a symlink to /private/var on macOS: every root here has a real path that differs
 // from its path, as a workspace opened through a symlink would.
 let base: string;
 let app: WorkspaceRoot;
+
+/** The `written` a result reports for a file under the workspace folder: its real path, symlinks resolved. */
+async function writtenAt(...parts: string[]) {
+  return { realPath: join(await realpath(app.path), ...parts) };
+}
 let lib: WorkspaceRoot;
 
 beforeAll(async () => {
@@ -45,7 +57,7 @@ afterAll(async () => {
   await rm(base, { recursive: true, force: true });
 });
 
-function run(name: string, args: Record<string, string>, roots = [app]): Promise<ToolResult> {
+function run(name: string, args: Record<string, string>, roots = [app]): Promise<AppliedResult> {
   return runWriteTool({ name, args }, roots, fileApplier(roots), new AbortController().signal);
 }
 
@@ -84,6 +96,7 @@ describe("write_file", () => {
     expect(await run("write_file", { path: "whole.txt", content: "new" })).toEqual({
       status: "ok",
       text: "write_file: replaced whole.txt.",
+      written: await writtenAt("whole.txt"),
     });
     expect(await readFile(join(app.path, "whole.txt"), "utf8")).toBe("new\n");
     await run("write_file", { path: "whole.txt", content: "" });
@@ -178,6 +191,7 @@ describe("edit_file", () => {
     expect(await run("edit_file", { path: "lf.ts", old: "const b = 2;", new: "const b = 20;" })).toEqual({
       status: "ok",
       text: "edit_file: replaced the passage in lf.ts.",
+      written: await writtenAt("lf.ts"),
     });
     expect(await readFile(join(app.path, "lf.ts"), "utf8")).toBe("const a = 1;\nconst b = 20;\nconst c = 3;\n");
 
@@ -290,7 +304,11 @@ describe("fileApplier", () => {
     const content = `${"a".repeat(8 * 1024)}\u0000b`;
     const change = await plan("write_file", { path: "late-nul.txt", content });
     const apply = fileApplier([app]);
-    expect(await apply(change)).toEqual({ status: "ok", text: "write_file: created late-nul.txt." });
+    expect(await apply(change)).toEqual({
+      status: "ok",
+      text: "write_file: created late-nul.txt.",
+      written: await writtenAt("late-nul.txt"),
+    });
     expect(await apply(change)).toEqual({ status: "ok", text: "write_file: late-nul.txt already holds this change." });
     expect(await readFile(join(app.path, "late-nul.txt"), "utf8")).toBe(`${content}\n`);
   });
@@ -485,7 +503,11 @@ describe("approvalApplier", () => {
     );
     expect(requests).toMatchObject([{ kind: "write", tool: "edit_file", summary: "asked.txt" }]);
     expect(previewed).toMatchObject([{ tool: "edit_file", before: "old\n", after: "new\n" }]);
-    expect(result).toEqual({ status: "ok", text: "edit_file: replaced the passage in asked.txt." });
+    expect(result).toEqual({
+      status: "ok",
+      text: "edit_file: replaced the passage in asked.txt.",
+      written: await writtenAt("asked.txt"),
+    });
     expect(await readFile(join(app.path, "asked.txt"), "utf8")).toBe("new\n");
   });
 

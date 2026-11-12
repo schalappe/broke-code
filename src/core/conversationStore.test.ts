@@ -194,6 +194,15 @@ describe("ConversationStore", () => {
     expect([...files.files.keys()].sort()).toEqual([`${saved.id}.json`, "notes.tmp"].sort());
   });
 
+  test("a first listing passes a long run of hyphens after .json. at once and keeps that file", async () => {
+    const name = `a.json.${"-".repeat(247)}x`;
+    const files = memoryFiles({ [name]: "x" });
+    const start = performance.now();
+    await new ConversationStore(files).list();
+    expect(performance.now() - start).toBeLessThan(1000);
+    expect([...files.files.keys()]).toEqual([name]);
+  });
+
   test("a listing waits for an earlier write, and its cleanup never touches that write's temporary file", async () => {
     const files = memoryFiles();
     const removed: string[] = [];

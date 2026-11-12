@@ -3,6 +3,7 @@ import {
   type ConversationRecord,
   conversationsOverLimit,
   conversationTitle,
+  filterConversations,
   isConversationId,
   newConversationId,
   parseConversation,
@@ -64,6 +65,117 @@ describe("conversation record", () => {
     expect(parseConversation(serializeConversation(turn))).toEqual({ ok: true, record: turn });
   });
 
+  test("reads back @problems mentions: attached with their count, and noProblems", () => {
+    const withProblems = record({
+      entries: [
+        {
+          role: "user",
+          content: "fix @problems",
+          mentions: [{ path: "problems", kind: "problems", status: "attached", lines: 2 }],
+          modelText: "fix @problems",
+        },
+        {
+          role: "user",
+          content: "again @problems",
+          mentions: [{ path: "problems", kind: "problems", status: "noProblems" }],
+          modelText: "again @problems",
+        },
+      ],
+    });
+    expect(parseConversation(serializeConversation(withProblems))).toEqual({ ok: true, record: withProblems });
+  });
+
+  test("reads back @diff mentions: attached with their line count, noChanges, noRepository, and gitUnavailable", () => {
+    const statuses = ["noChanges", "noRepository", "gitUnavailable"] as const;
+    const withDiff = record({
+      entries: [
+        {
+          role: "user",
+          content: "review @diff",
+          mentions: [{ path: "diff", kind: "diff", status: "attached", lines: 9 }],
+          modelText: "review @diff",
+        },
+        ...statuses.map((status) => ({
+          role: "user" as const,
+          content: "again @diff",
+          mentions: [{ path: "diff", kind: "diff" as const, status }],
+          modelText: "again @diff",
+        })),
+      ],
+    });
+    expect(parseConversation(serializeConversation(withDiff))).toEqual({ ok: true, record: withDiff });
+  });
+
+  test("reads back @selection mentions: attached with their range, noEditor, and emptySelection", () => {
+    const withSelection = record({
+      entries: [
+        {
+          role: "user",
+          content: "explain @selection",
+          mentions: [
+            {
+              path: "selection",
+              kind: "selection",
+              status: "attached",
+              lines: 3,
+              range: { path: "src/app.ts", start: 10, end: 12 },
+            },
+          ],
+          modelText: "explain @selection",
+        },
+        {
+          role: "user",
+          content: "again @selection",
+          mentions: [
+            { path: "selection", kind: "selection", status: "noEditor" },
+            { path: "selection", kind: "selection", status: "emptySelection" },
+            { path: "selection", kind: "selection", status: "outsideWorkspace" },
+          ],
+          modelText: "again @selection",
+        },
+      ],
+    });
+    expect(parseConversation(serializeConversation(withSelection))).toEqual({ ok: true, record: withSelection });
+  });
+
+  test("refuses a mention whose range has another shape", () => {
+    const mention = { path: "selection", kind: "selection", status: "attached", lines: 1 };
+    for (const range of [
+      null,
+      "src/app.ts 1-2",
+      { start: 1, end: 2 },
+      { path: "a.ts", start: 0, end: 2 },
+      { path: "a.ts", start: 3, end: 2 },
+      { path: "a.ts", start: 1.5, end: 2 },
+      { path: "a.ts", start: 1 },
+    ]) {
+      const entries = [{ role: "user", content: "x", mentions: [{ ...mention, range }], modelText: "x" }];
+      expect(parse({ ...record(), entries })).toEqual({ ok: false, reason: "invalid entry 0" });
+    }
+  });
+
+  test("reads back a partial @diff's failed folder count", () => {
+    const partial = record({
+      entries: [
+        {
+          role: "user",
+          content: "review @diff",
+          mentions: [{ path: "diff", kind: "diff", status: "attached", lines: 9, failedFolders: 1 }],
+          modelText: "review @diff",
+        },
+      ],
+    });
+    expect(parseConversation(serializeConversation(partial))).toEqual({ ok: true, record: partial });
+  });
+
+  test("refuses a failed folder count that is not a positive whole number", () => {
+    const mention = { path: "diff", kind: "diff", status: "attached", lines: 9 };
+    for (const failedFolders of [null, "1", 0, -1, 1.5]) {
+      const entries = [{ role: "user", content: "x", mentions: [{ ...mention, failedFolders }], modelText: "x" }];
+      expect(parse({ ...record(), entries })).toEqual({ ok: false, reason: "invalid entry 0" });
+    }
+  });
+
   test("reads back how each write step was approved: accepted, rejected, or auto", () => {
     const step = { role: "tool", name: "write_file", args: { path: "a.ts", content: "x" }, text: "t" } as const;
     const turn = record({
@@ -75,6 +187,38 @@ describe("conversation record", () => {
       ],
     });
     expect(parseConversation(serializeConversation(turn))).toEqual({ ok: true, record: turn });
+  });
+
+  test("reads back an undone write step, and refuses an undone mark of another shape", () => {
+    const step = { role: "tool", name: "edit_file", args: { path: "a.ts" }, status: "ok", text: "t" } as const;
+    const undone = record({
+      entries: [
+        { role: "user", content: "edit", mentions: [], modelText: "edit" },
+        { ...step, approval: "accepted", undone: true },
+      ],
+    });
+    expect(parseConversation(serializeConversation(undone))).toEqual({ ok: true, record: undone });
+    for (const mark of [false, null, "true", 1]) {
+      expect(parse({ ...record(), entries: [{ ...step, undone: mark }] })).toEqual({
+        ok: false,
+        reason: "invalid entry 0",
+      });
+    }
+  });
+
+  test("reads back a summary entry, and refuses a summary mark of another shape", () => {
+    const summarized = record({
+      entries: [
+        { role: "user", content: "x", mentions: [], modelText: "x" },
+        { role: "assistant", reasoning: "", content: "Answer", status: "done" },
+        { role: "assistant", reasoning: "", content: "The goal is x.", status: "done", summary: true },
+      ],
+    });
+    expect(parseConversation(serializeConversation(summarized))).toEqual({ ok: true, record: summarized });
+    for (const summary of [false, null, "true", 1]) {
+      const entries = [{ role: "assistant", reasoning: "", content: "s", status: "done", summary }];
+      expect(parse({ ...record(), entries })).toEqual({ ok: false, reason: "invalid entry 0" });
+    }
   });
 
   test("reads back a reply halted on a full context before its request, with no content", () => {
@@ -326,5 +470,37 @@ describe("conversations over the limit", () => {
   test("never lists a kept conversation, even when it is the oldest", () => {
     expect(conversationsOverLimit(summaries(51), ["c0"])).toEqual(["c1"]);
     expect(conversationsOverLimit(summaries(52), ["c50", "c0", "absent"])).toEqual(["c1", "c2"]);
+  });
+});
+
+describe("history filter", () => {
+  const rows = [
+    { id: "a", title: "Fix the Parser", updatedAt: 3 },
+    { id: "b", title: "Résumé of the release", updatedAt: 2 },
+    { id: "c", title: "parse the logs", updatedAt: 1 },
+  ];
+  const ids = (query: string) => filterConversations(rows, query).map((row) => row.id);
+
+  test("keeps the titles containing the query, ignoring case, in the order given", () => {
+    expect(ids("PARSE")).toEqual(["a", "c"]);
+    expect(ids("the l")).toEqual(["c"]);
+  });
+
+  test("ignores the query's surrounding whitespace", () => {
+    expect(ids("  parser\t")).toEqual(["a"]);
+  });
+
+  test("an empty or whitespace-only query keeps every row", () => {
+    expect(ids("")).toEqual(["a", "b", "c"]);
+    expect(ids("   ")).toEqual(["a", "b", "c"]);
+  });
+
+  test("folds no accent", () => {
+    expect(ids("resume")).toEqual([]);
+    expect(ids("résumé")).toEqual(["b"]);
+  });
+
+  test("no title containing the query keeps no row", () => {
+    expect(ids("deploy")).toEqual([]);
   });
 });

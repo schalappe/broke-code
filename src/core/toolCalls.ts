@@ -20,12 +20,14 @@ export type ToolSpec = {
  * `none`: the answer holds text but no call, so it is the final answer. `call`: the tool name and raw argument values.
  * `malformed`: a message for the model, also for an empty answer (whitespace only), which is no final answer.
  * `start`/`end`: where the block sits in the answer, `end` past its closing tag, or the answer's length when the
- * outer tag never closes; both 0 for an empty answer.
+ * outer tag never closes; both 0 for an empty answer. A call written inside a wrapper (`CALL_WRAPPERS`) spans the
+ * wrapper. `forged`: the answer holds a tool result the model wrote before any call; `start` is where it opens, and
+ * nothing from there on may reach the history.
  */
 export type ParsedReply =
   | { kind: "none" }
   | { kind: "call"; name: string; args: Record<string, string>; start: number; end: number }
-  | { kind: "malformed"; message: string; start: number; end: number };
+  | { kind: "malformed"; message: string; start: number; end: number; forged?: true };
 
 const OPENING_TAG = /<([a-z][a-z0-9_]*)>/g;
 const CLOSING_TAG = /<\/([a-z][a-z0-9_]*)>/g;
@@ -38,25 +40,62 @@ const EMPTY_REPLY = "Your reply was empty. Call a tool, or write your answer to 
 export const GENERIC_CALL_SHAPE = "<tool_name>\n<argument_name>value</argument_name>\n</tool_name>";
 
 /**
+ * Tags a model trained on native tool calling puts around a call (Gemma on vLLM, ADR 0001, 2026-11-12). A wrapper
+ * whose content starts with a known tool's call is read as that call; its closing tag is optional.
+ */
+export const CALL_WRAPPERS: readonly string[] = ["tool_call", "tool_code"];
+
+/** How a tool result opens in the history. Only the extension writes one: a model that does invents the result. */
+export const TOOL_RESULT_OPENING = "<tool_result";
+
+const FORGED_RESULT = `Your reply holds a tool result you wrote yourself (${TOOL_RESULT_OPENING} …>). Only the extension writes tool results, after it runs your call: write the call alone, then stop and wait for its result.\nA call looks like this:\n${GENERIC_CALL_SHAPE}`;
+
+/**
  * The first call-shaped block of `answer`, read against `tools`. A block is call-shaped when its opening tag
  * `<name>` (snake_case, no attributes) starts a line, after nothing but spaces or tabs, outside Markdown code, and a
  * `</name>` follows it; an opening tag that never closes is call-shaped only when it names a known tool. A known
  * tool's block ends at the `</name>` that follows its last argument value (see `readArgs`), so a value may hold
  * `</name>` itself; an unknown tool's block, or a malformed one, ends at the first `</name>` after the problem found.
- * Anything after the first block is ignored.
+ * A wrapper (`CALL_WRAPPERS`) whose content starts, after whitespace, with a known tool's opening tag is that call,
+ * ending past the wrapper's closing tag when only whitespace comes before it. A tool result the model wrote (a
+ * `<tool_result` starting a line outside code, never itself a block) before the first block, or with no block at all,
+ * makes the answer `malformed` and `forged`: the model invented a result, and an answer built on it is no final
+ * answer. Anything after the first block is ignored.
  */
 export function parseToolCall(answer: string, tools: readonly ToolSpec[]): ParsedReply {
   // [>]: Models sometimes reason, then stop with no text; ending the turn there would leave the task undone.
   if (answer.trim() === "") return { kind: "malformed", message: EMPTY_REPLY, start: 0, end: 0 };
   const masked = maskCode(answer);
   const closes = closingTags(answer);
+  const forged = forgedResultAt(answer, masked);
+  const forgedReply: ParsedReply = {
+    kind: "malformed",
+    message: FORGED_RESULT,
+    start: forged,
+    end: answer.length,
+    forged: true,
+  };
   for (const match of answer.matchAll(OPENING_TAG)) {
     const start = match.index;
+    // [>]: `>=`: an attribute-free `<tool_result>` matches as a tag at the forged index itself; it is a result, not a
+    // call-shaped block, so it must never come back as an unknown tool with the invented text kept.
+    if (forged !== -1 && start >= forged) return forgedReply;
     if (!startsLine(answer, start)) continue;
     if (masked[start] === MASK) continue;
     const name = match[1]!;
-    const tool = tools.find((tool) => tool.name === name);
     const bodyStart = start + match[0].length;
+    if (CALL_WRAPPERS.includes(name)) {
+      const innerStart = skipWhitespace(answer, bodyStart);
+      const inner = tools.find((tool) => tool.name === argOpeningAt(answer, innerStart));
+      if (inner) {
+        const block = readCall(answer, inner, start, innerStart + `<${inner.name}>`.length);
+        if (block.kind !== "call") return block;
+        const after = skipWhitespace(answer, block.end);
+        const wrapperClose = `</${name}>`;
+        return answer.startsWith(wrapperClose, after) ? { ...block, end: after + wrapperClose.length } : block;
+      }
+    }
+    const tool = tools.find((tool) => tool.name === name);
     const close = firstClose(closes, name, bodyStart);
     if (close === -1) {
       if (!tool) continue;
@@ -71,45 +110,74 @@ export function parseToolCall(answer: string, tools: readonly ToolSpec[]): Parse
         end: close + `</${name}>`.length,
       };
     }
-    const read = readArgs(answer, tool, bodyStart);
-    if ("problem" in read) {
-      const end = answer.indexOf(`</${name}>`, read.at);
-      return malformed(read.problem, tool, start, end === -1 ? answer.length : end + `</${name}>`.length);
-    }
-    const missing = tool.args
-      .filter((arg) => arg.required && !Object.hasOwn(read.args, arg.name))
-      .map((arg) => `<${arg.name}>`);
-    if (missing.length > 0) {
-      const problem = `<${name}> is missing the required argument${missing.length > 1 ? "s" : ""} ${missing.join(", ")}.`;
-      return malformed(problem, tool, start, read.end);
-    }
-    return { kind: "call", name, args: read.args, start, end: read.end };
+    return readCall(answer, tool, start, bodyStart);
   }
-  return { kind: "none" };
+  return forged === -1 ? { kind: "none" } : forgedReply;
 }
 
-/** How a tool result opens in the history. Only the extension writes one: a model that does invents the result. */
-export const TOOL_RESULT_OPENING = "<tool_result";
+/** The call to `tool` whose block opens at `start` and whose body starts at `bodyStart`, or why it is malformed. */
+function readCall(answer: string, tool: ToolSpec, start: number, bodyStart: number): ParsedReply {
+  const name = tool.name;
+  const read = readArgs(answer, tool, bodyStart);
+  if ("problem" in read) {
+    const end = answer.indexOf(`</${name}>`, read.at);
+    return malformed(read.problem, tool, start, end === -1 ? answer.length : end + `</${name}>`.length);
+  }
+  const missing = tool.args
+    .filter((arg) => arg.required && !Object.hasOwn(read.args, arg.name))
+    .map((arg) => `<${arg.name}>`);
+  if (missing.length > 0) {
+    const problem = `<${name}> is missing the required argument${missing.length > 1 ? "s" : ""} ${missing.join(", ")}.`;
+    return malformed(problem, tool, start, read.end);
+  }
+  return { kind: "call", name, args: read.args, start, end: read.end };
+}
 
 /**
- * Whether a reply streaming `answer` should stop, scanning the result openings from `from` on: `cut` is the end of the
- * call that precedes an opening the model wrote itself, past which nothing is read; `scanned` is where the next scan
- * starts, so a stream scans its text once. An opening with no complete call before it (inside a `write_file` value, or
- * before any call) does not stop the reply.
+ * Where the first tool result opening the model wrote stands in `answer`: `<tool_result` then a space or `>`,
+ * starting a line, outside Markdown code (`masked`); -1 when none.
  */
-export function forgedResultCut(
-  answer: string,
-  tools: readonly ToolSpec[],
-  from: number,
-): { cut?: number; scanned: number } {
-  let index = answer.indexOf(TOOL_RESULT_OPENING, from);
-  while (index !== -1) {
+function forgedResultAt(answer: string, masked: string): number {
+  for (
+    let index = answer.indexOf(TOOL_RESULT_OPENING);
+    index !== -1;
+    index = answer.indexOf(TOOL_RESULT_OPENING, index + 1)
+  ) {
+    const next = answer[index + TOOL_RESULT_OPENING.length];
+    if ((next === " " || next === ">") && startsLine(answer, index) && masked[index] !== MASK) return index;
+  }
+  return -1;
+}
+
+/**
+ * Whether a reply streaming `answer` should stop, scanning from `from` on: `cut` is the end of the complete call that
+ * precedes a tool result opening the model wrote itself (anywhere), or the opening tag of another call (a known tool
+ * or a wrapper, starting a line); past it nothing is read, since one call runs per reply. `scanned` is where the next
+ * scan starts, so a stream scans its text once. An opening with no complete call before it (inside a `write_file`
+ * value still streaming, or before any call) does not stop the reply.
+ */
+export function replyCut(answer: string, tools: readonly ToolSpec[], from: number): { cut?: number; scanned: number } {
+  const callNames = new Set([...tools.map((tool) => tool.name), ...CALL_WRAPPERS]);
+  const openings: number[] = [];
+  for (
+    let index = answer.indexOf(TOOL_RESULT_OPENING, from);
+    index !== -1;
+    index = answer.indexOf(TOOL_RESULT_OPENING, index + 1)
+  ) {
+    openings.push(index);
+  }
+  const tags = new RegExp(OPENING_TAG.source, "g");
+  tags.lastIndex = from;
+  for (let match = tags.exec(answer); match !== null; match = tags.exec(answer)) {
+    if (callNames.has(match[1]!) && startsLine(answer, match.index)) openings.push(match.index);
+  }
+  for (const index of openings.sort((a, b) => a - b)) {
     const parsed = parseToolCall(answer.slice(0, index), tools);
     if (parsed.kind === "call") return { cut: parsed.end, scanned: index };
-    index = answer.indexOf(TOOL_RESULT_OPENING, index + 1);
   }
   // [>]: An opening split across deltas starts within the last few characters; scan them again.
-  return { scanned: Math.max(from, answer.length - TOOL_RESULT_OPENING.length + 1) };
+  const longest = Math.max(TOOL_RESULT_OPENING.length, ...[...callNames].map((name) => name.length + 2));
+  return { scanned: Math.max(from, answer.length - longest + 1) };
 }
 
 /**

@@ -6,6 +6,7 @@ import {
   parseCommandTimeout,
   parseContextSizeInput,
   parseLimits,
+  userLimits,
   withContextSize,
 } from "./limits";
 
@@ -61,9 +62,41 @@ describe("parseLimits", () => {
     expect(contextOf(limits, "__proto__")).toEqual({ size: 32768, known: false });
   });
 
+  test("turns automatic compaction on only for the value true", () => {
+    expect(parseLimits({ maxToolSteps: undefined, contextSizes: undefined, autoCompact: true }).autoCompact).toBe(true);
+    for (const raw of [false, undefined, "true", 1, null, {}]) {
+      expect(parseLimits({ maxToolSteps: undefined, contextSizes: undefined, autoCompact: raw }).autoCompact).toBe(
+        false,
+      );
+    }
+    // [>]: A source that passes no value, as the eval bench does, never compacts.
+    expect(parseLimits({ maxToolSteps: undefined, contextSizes: undefined }).autoCompact).toBe(false);
+  });
+
   test("gives no model a known size", () => {
     const limits = parseLimits({ maxToolSteps: undefined, contextSizes: { m: 8192 } });
     expect(contextOf(limits, undefined)).toEqual({ size: 32768, known: false });
+  });
+});
+
+describe("userLimits", () => {
+  test("reads each limit from its user value", () => {
+    const limits = userLimits((name) => ({
+      globalValue: { maxToolSteps: 7, contextSizes: { m: 4000 }, autoCompact: true }[name],
+    }));
+    expect(limits.maxToolSteps).toBe(7);
+    expect(contextOf(limits, "m")).toEqual({ size: 4000, known: true });
+    expect(limits.autoCompact).toBe(true);
+  });
+
+  test("ignores a value set only in a workspace or folder settings.json", () => {
+    const limits = userLimits((name) => ({
+      workspaceValue: { maxToolSteps: 7, contextSizes: { m: 4000 }, autoCompact: true }[name],
+      workspaceFolderValue: { maxToolSteps: 7, contextSizes: { m: 4000 }, autoCompact: true }[name],
+    }));
+    expect(limits.maxToolSteps).toBe(50);
+    expect(contextOf(limits, "m")).toEqual({ size: 32768, known: false });
+    expect(limits.autoCompact).toBe(false);
   });
 });
 

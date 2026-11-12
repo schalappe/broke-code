@@ -16,7 +16,7 @@ import { type ChangeApplier, runWriteTool, WRITE_TOOLS } from "./writeTools";
  * Runs each call over `roots()`, read at each call since folders can be added or removed while the window is open. A
  * write tool hands its planned change to `applier(roots, context)`, built for that run, and never reaches a loaded
  * skill's folder outside the workspace; a read tool runs with `env` and may also read the run's `skillRoots`;
- * `load_skill` loads from the run's `skills`. `run_command` is offered only with `commandEnv`, read at each call so a
+ * `load_skill` loads from the run's `skills`, a skill of `sentSkillRoots` answering "already loaded". `run_command` is offered only with `commandEnv`, read at each call so a
  * changed setting or shell reaches the next command; it asks the run's `requestApproval` before anything runs.
  */
 export function workspaceToolRunner(
@@ -30,7 +30,7 @@ export function workspaceToolRunner(
     run: async (call, context) => {
       if (call.name === LOAD_SKILL_TOOL.name) {
         if (context.signal.aborted) return stopped(call.name);
-        return loadSkill(call.args.name ?? "", context.skills, context.skillRoots);
+        return loadSkill(call.args.name ?? "", context.skills, context.sentSkillRoots);
       }
       const current = roots();
       if (commandEnv && call.name === RUN_COMMAND_TOOL.name) {

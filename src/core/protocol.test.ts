@@ -5,14 +5,43 @@ import {
   MAX_MENTION_PATH_LENGTH,
   MAX_QUERY_LENGTH,
   parseWebviewMessage,
+  REPLY_MAX_LENGTH,
 } from "./protocol";
 
 describe("parseWebviewMessage", () => {
+  const ID = "0f8fad5b-d9cb-469f-a165-70867728950e";
+  /** What a Retry, Continue, or replacing send must not carry: a bad entries count or a bad conversation id. */
+  const badShown = [
+    ...[undefined, "4", -1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1, null].map((entries) => ({
+      conversationId: ID,
+      entries,
+    })),
+    ...[undefined, "", "../x", ID.toUpperCase(), 3].map((conversationId) => ({ conversationId, entries: 4 })),
+  ];
+
   test("accepts the messages without fields and those with a string field", () => {
     expect(parseWebviewMessage({ type: "stop" })).toEqual({ type: "stop" });
+    expect(parseWebviewMessage({ type: "addProvider", name: "ignored" })).toEqual({ type: "addProvider" });
     expect(parseWebviewMessage({ type: "chooseModel", model: "ignored" })).toEqual({ type: "chooseModel" });
+    expect(parseWebviewMessage({ type: "compact", text: "ignored" })).toEqual({ type: "compact" });
+    expect(parseWebviewMessage({ type: "undoChanges", reply: 3 })).toEqual({ type: "undoChanges" });
     expect(parseWebviewMessage({ type: "selectModel", model: "m" })).toEqual({ type: "selectModel", model: "m" });
     expect(parseWebviewMessage({ type: "setApiKey", provider: "P" })).toEqual({ type: "setApiKey", provider: "P" });
+  });
+
+  test("accepts a changed file's diff request for a non-empty path within the mention path limit", () => {
+    expect(parseWebviewMessage({ type: "openChangeDiff", path: "src/a.ts", extra: 1 })).toEqual({
+      type: "openChangeDiff",
+      path: "src/a.ts",
+    });
+    const longest = "a".repeat(MAX_MENTION_PATH_LENGTH);
+    expect(parseWebviewMessage({ type: "openChangeDiff", path: longest })).toEqual({
+      type: "openChangeDiff",
+      path: longest,
+    });
+    for (const path of [undefined, "", 3, null, ["a"], `${longest}a`]) {
+      expect(parseWebviewMessage({ type: "openChangeDiff", path })).toBeUndefined();
+    }
   });
 
   test("accepts a context size request for a named model only", () => {
@@ -49,6 +78,29 @@ describe("parseWebviewMessage", () => {
   test("accepts any number of picked mentions, since the text bounds which ones count", () => {
     const picked = Array.from({ length: 101 }, (_, index) => `my file ${index}.ts`);
     expect(parseWebviewMessage({ type: "send", text: "hi", mentions: picked })).toMatchObject({ mentions: picked });
+  });
+
+  test("accepts a send replacing the last turn with the conversation and entries count shown, and drops any other", () => {
+    const send = (replaces: unknown) => parseWebviewMessage({ type: "send", text: "hi", mentions: [], replaces });
+    for (const entries of [0, 4]) {
+      const replaces = { conversationId: ID, entries };
+      expect(send(replaces)).toEqual({ type: "send", text: "hi", mentions: [], replaces });
+    }
+    expect(send({ conversationId: ID, entries: 4, extra: true })).toMatchObject({
+      replaces: { conversationId: ID, entries: 4 },
+    });
+    expect(send(undefined)).toEqual({ type: "send", text: "hi", mentions: [] });
+    for (const replaces of [4, null, true, ...badShown]) {
+      expect(send(replaces)).toBeUndefined();
+    }
+  });
+
+  test("ignores replaces on a queued message, which never replaces", () => {
+    expect(parseWebviewMessage({ type: "queueMessage", text: "hi", mentions: [], replaces: 2 })).toEqual({
+      type: "queueMessage",
+      text: "hi",
+      mentions: [],
+    });
   });
 
   test("rejects a send whose mentions are missing, not strings, empty, or too long", () => {
@@ -121,6 +173,72 @@ describe("parseWebviewMessage", () => {
       expect(parseWebviewMessage({ type: "reject", id: 3, reason })).toBeUndefined();
     }
   });
+  test("accepts an insert of a code block's text up to the reply length cap, the empty text included", () => {
+    expect(parseWebviewMessage({ type: "insertCode", text: "a\nb" })).toEqual({ type: "insertCode", text: "a\nb" });
+    expect(parseWebviewMessage({ type: "insertCode", text: "" })).toEqual({ type: "insertCode", text: "" });
+    const atCap = "a".repeat(REPLY_MAX_LENGTH);
+    expect(parseWebviewMessage({ type: "insertCode", text: atCap })).toEqual({ type: "insertCode", text: atCap });
+  });
+
+  test("drops an insert without text, with text that is not a string, or with text over the cap", () => {
+    expect(parseWebviewMessage({ type: "insertCode" })).toBeUndefined();
+    expect(parseWebviewMessage({ type: "insertCode", text: 3 })).toBeUndefined();
+    expect(parseWebviewMessage({ type: "insertCode", text: ["a"] })).toBeUndefined();
+    expect(parseWebviewMessage({ type: "insertCode", text: "a".repeat(REPLY_MAX_LENGTH + 1) })).toBeUndefined();
+  });
+  test("accepts a mode pick of Ask, Auto-edit, or Plan", () => {
+    expect(parseWebviewMessage({ type: "setMode", mode: "ask" })).toEqual({ type: "setMode", mode: "ask" });
+    expect(parseWebviewMessage({ type: "setMode", mode: "autoEdit" })).toEqual({ type: "setMode", mode: "autoEdit" });
+    expect(parseWebviewMessage({ type: "setMode", mode: "plan" })).toEqual({ type: "setMode", mode: "plan" });
+  });
+
+  test("accepts a queued message with its picked mention paths, as a send", () => {
+    expect(parseWebviewMessage({ type: "queueMessage", text: "then @my file.ts", mentions: ["my file.ts"] })).toEqual({
+      type: "queueMessage",
+      text: "then @my file.ts",
+      mentions: ["my file.ts"],
+    });
+  });
+
+  test("drops a queued message with a bad shape", () => {
+    for (const raw of [
+      { type: "queueMessage", text: 5, mentions: [] },
+      { type: "queueMessage", mentions: [] },
+      { type: "queueMessage", text: "hi" },
+      { type: "queueMessage", text: "hi", mentions: [""] },
+      { type: "queueMessage", text: "hi", mentions: ["a".repeat(MAX_MENTION_PATH_LENGTH + 1)] },
+    ]) {
+      expect(parseWebviewMessage(raw)).toBeUndefined();
+    }
+  });
+
+  test("accepts removing, editing, and sending now a queued message by its id, and drops any other id", () => {
+    for (const type of ["removeQueued", "editQueued", "sendQueued"] as const) {
+      expect(parseWebviewMessage({ type, id: 3 })).toEqual({ type, id: 3 });
+      for (const id of [undefined, "3", -1, 1.5, Number.NaN, null]) {
+        expect(parseWebviewMessage({ type, id })).toBeUndefined();
+      }
+    }
+  });
+
+  test("accepts Retry and Continue with the conversation and entries count shown, and drops any other", () => {
+    for (const type of ["retry", "continueTurn"] as const) {
+      for (const entries of [0, 4]) {
+        const shown = { conversationId: ID, entries };
+        expect(parseWebviewMessage({ type, shown, extra: true })).toEqual({ type, shown });
+      }
+      for (const shown of [undefined, 4, null, ...badShown]) {
+        expect(parseWebviewMessage({ type, shown })).toBeUndefined();
+      }
+      expect(parseWebviewMessage({ type, entries: 4 })).toBeUndefined();
+    }
+  });
+
+  test("drops a mode pick of an unknown mode", () => {
+    for (const mode of [undefined, "Plan", "Ask", "auto", "", true, 1, ["ask"]]) {
+      expect(parseWebviewMessage({ type: "setMode", mode })).toBeUndefined();
+    }
+  });
 });
 
 describe("chatStateOf", () => {
@@ -137,6 +255,11 @@ describe("chatStateOf", () => {
     listFailed: undefined,
     storageProblem: undefined,
     context: { used: 0, size: 32768, known: false },
+    mode: "ask",
+    modePending: false,
+    queue: [],
+    undo: { reply: undefined, ranCommand: false, running: false, outcome: undefined },
+    changedFiles: [],
   };
 
   test("takes the chat state from init and state messages", () => {
@@ -147,5 +270,9 @@ describe("chatStateOf", () => {
   test("leaves the chat state alone for file and skill suggestions", () => {
     expect(chatStateOf({ type: "fileSuggestions", id: 1, items: [], capped: false, failed: false })).toBeUndefined();
     expect(chatStateOf({ type: "skillSuggestions", id: 1, items: [], failed: false })).toBeUndefined();
+  });
+
+  test("leaves the chat state alone for a draft", () => {
+    expect(chatStateOf({ type: "insertDraft", text: "@selection", mode: "caret", picked: [] })).toBeUndefined();
   });
 });

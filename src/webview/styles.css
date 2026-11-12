@@ -1,4 +1,147 @@
-/* Minimal chat layout on VS Code theme variables. Visual pass: #15. */
+/*
+ * The chat panel's stylesheet, in twinny's minimal manner. DESIGN.md at the repository root states the rules.
+ *
+ * One token layer comes first; every rule below consumes it. Each color derives from the VS Code theme variables
+ * (`--vscode-*`), directly or through `color-mix()`; the only literal color is `transparent`.
+ *
+ * Surfaces are set apart by a fill a shade off the panel. A high-contrast theme flattens such fills, and it alone
+ * defines `--vscode-contrastBorder` and `--vscode-contrastActiveBorder`, so the edge tokens are transparent
+ * everywhere else and draw a border there: a block, a button, or a selected row never disappears.
+ */
+
+:root {
+  /* Two faces: the UI font for what people read, the editor font for what is code. */
+  --bc-font: var(--vscode-font-family);
+  --bc-mono: var(--vscode-editor-font-family, monospace);
+
+  --bc-fs: var(--vscode-font-size, 13px);
+  --bc-fs-sm: calc(var(--bc-fs) - 1px);
+  --bc-fs-xs: calc(var(--bc-fs) - 2px);
+  /* The editor font runs large beside the UI font; code is set a step down. */
+  --bc-fs-mono: var(--bc-fs-sm);
+  --bc-lh: 1.5;
+
+  --bc-space-1: 2px;
+  --bc-space-2: 4px;
+  --bc-space-3: 8px;
+  --bc-space-4: 12px;
+  --bc-space-5: 24px;
+  /* Sizes that are not spacing: a one-line row, and a mark drawn in CSS (a dot, a chevron). */
+  --bc-row: 22px;
+  --bc-mark: 6px;
+  /* The thread of an agent turn: the indent of what sits on it, a node, and the solid node of the call that waits. */
+  --bc-thread-indent: 20px;
+  --bc-node: 7px;
+  --bc-node-solid: 9px;
+
+  /* Corners: controls, blocks, and the two large blocks (the message box, a user's message). */
+  --bc-radius-sm: 4px;
+  --bc-radius: 6px;
+  --bc-radius-lg: 10px;
+
+  --bc-bg: var(--vscode-sideBar-background);
+  --bc-fg: var(--vscode-foreground);
+  /* Secondary text, and the marks drawn in it. 72% keeps 4.5:1 on the light and dark default themes. */
+  --bc-fg-dim: color-mix(in srgb, var(--vscode-foreground) 72%, transparent);
+  --bc-rule: color-mix(in srgb, var(--vscode-foreground) 16%, transparent);
+  --bc-fill: color-mix(in srgb, var(--vscode-foreground) 6%, transparent);
+  --bc-fill-strong: color-mix(in srgb, var(--vscode-foreground) 11%, transparent);
+  /* The entries no longer sent to the model, faded as a group; a dim line says it in words. */
+  --bc-unsent-opacity: 0.6;
+
+  /* The high-contrast rule: the boundary of a filled surface, and of the selected or hovered one. */
+  --bc-edge: var(--vscode-contrastBorder, transparent);
+  --bc-edge-active: var(--vscode-contrastActiveBorder, transparent);
+  /* A drawn line keeps its hairline, and becomes the contrast border in high contrast. */
+  --bc-line: var(--vscode-contrastBorder, var(--bc-rule));
+
+  /* A drawn line of the selected or hovered control, and of a pressed secondary button. */
+  --bc-line-active: var(--vscode-contrastActiveBorder, var(--bc-rule));
+
+  --bc-focus: var(--vscode-focusBorder);
+  --bc-link: var(--vscode-textLink-foreground);
+  --bc-link-active: var(--vscode-textLink-activeForeground, var(--bc-link));
+  --bc-code-fg: var(--vscode-textPreformat-foreground, var(--bc-fg));
+  --bc-error: var(--vscode-errorForeground);
+  --bc-warning: var(--vscode-editorWarning-foreground);
+
+  /* Each control and surface below takes the color the theme gives that exact job. */
+  --bc-field-fg: var(--vscode-input-foreground);
+  --bc-field-bg: var(--vscode-input-background);
+  --bc-field-border: var(--vscode-input-border, var(--bc-line));
+  --bc-field-placeholder: var(--vscode-input-placeholderForeground, var(--bc-fg-dim));
+  --bc-caret: var(--vscode-editorCursor-foreground, var(--bc-fg));
+  --bc-select-fg: var(--vscode-dropdown-foreground);
+  --bc-select-bg: var(--vscode-dropdown-background);
+  --bc-select-border: var(--vscode-dropdown-border, var(--bc-line));
+
+  --bc-button-fg: var(--vscode-button-foreground);
+  --bc-button-bg: var(--vscode-button-background);
+  --bc-button-bg-hover: var(--vscode-button-hoverBackground);
+  --bc-button-border: var(--vscode-button-border, var(--bc-edge));
+  --bc-button-border-hover: var(--vscode-contrastActiveBorder, var(--bc-button-border));
+
+  /* The latest user message sits on the button colors; an earlier one keeps their outline, and a chip is a tint. */
+  --bc-accent-line: var(--vscode-button-background, var(--bc-edge));
+  --bc-accent-chip: color-mix(in srgb, var(--vscode-button-foreground) 18%, transparent);
+  /* A tool's name on the thread. */
+  --bc-tool: var(--vscode-textLink-foreground);
+  /* The decision block is drawn in negative, the panel's color on the foreground: its tints of the panel. */
+  --bc-inverse-well: color-mix(in srgb, var(--vscode-sideBar-background) 14%, transparent);
+  --bc-inverse-hover: color-mix(in srgb, var(--vscode-sideBar-background) 16%, transparent);
+  --bc-inverse-line: color-mix(in srgb, var(--vscode-sideBar-background) 45%, transparent);
+  --bc-inverse-button-hover: color-mix(in srgb, var(--vscode-sideBar-background) 86%, var(--vscode-foreground));
+
+  --bc-warning-fill: var(--vscode-inputValidation-warningBackground);
+  --bc-warning-edge: var(--vscode-contrastBorder, var(--vscode-inputValidation-warningBorder, transparent));
+  --bc-error-fill: var(--vscode-inputValidation-errorBackground);
+  --bc-error-edge: var(--vscode-contrastBorder, var(--vscode-inputValidation-errorBorder, transparent));
+  --bc-error-edge-soft: var(
+    --vscode-contrastBorder,
+    color-mix(in srgb, var(--vscode-errorForeground) 55%, transparent)
+  );
+
+  /* Rows of a list: hovered, the current one of History, the highlighted one of a menu. */
+  --bc-row-hover: var(--vscode-list-hoverBackground, var(--bc-fill));
+  --bc-row-current: var(--vscode-list-inactiveSelectionBackground, var(--bc-fill-strong));
+  --bc-row-selected: var(--vscode-list-activeSelectionBackground, var(--bc-fill-strong));
+  --bc-menu-fg: var(--vscode-quickInput-foreground, var(--bc-fg));
+  --bc-row-selected-fg: var(--vscode-list-activeSelectionForeground, var(--bc-menu-fg));
+  --bc-menu-bg: var(--vscode-quickInput-background, var(--vscode-editorWidget-background));
+  --bc-menu-border: var(--vscode-contrastBorder, var(--vscode-widget-border, var(--bc-rule)));
+  --bc-shadow: var(--vscode-widget-shadow, transparent);
+  /* The text of an error or a warning block: the block's fill carries the kind, except in high contrast. */
+  --bc-error-text: var(--bc-fg);
+  --bc-warning-text: var(--bc-fg);
+
+  /* Motion: the breathing of a loading text, and the time a small change takes. Both are switched off below. */
+  --bc-breathe: pulse;
+  --bc-fast: 0.12s;
+  --bc-ease: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Motion is small, and off when the system or the editor asks for less. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --bc-breathe: none;
+    --bc-fast: 0s;
+  }
+}
+
+body.vscode-reduce-motion {
+  --bc-breathe: none;
+  --bc-fast: 0s;
+}
+
+/* High contrast keeps secondary text close to the foreground, and moves an alert's kind from its fill to its text. */
+body.vscode-high-contrast,
+body.vscode-high-contrast-light {
+  --bc-fg-dim: color-mix(in srgb, var(--bc-fg) 88%, transparent);
+  --bc-error-text: var(--bc-error);
+  --bc-warning-text: var(--bc-warning);
+  /* Faded text would fall under the theme's contrast; the line over the unsent entries says it in words. */
+  --bc-unsent-opacity: 1;
+}
 
 html,
 body,
@@ -9,10 +152,11 @@ body,
 body {
   margin: 0;
   padding: 0;
-  color: var(--vscode-foreground);
-  background: var(--vscode-sideBar-background);
-  font-family: var(--vscode-font-family);
-  font-size: var(--vscode-font-size);
+  color: var(--bc-fg);
+  background: var(--bc-bg);
+  font-family: var(--bc-font);
+  font-size: var(--bc-fs);
+  line-height: var(--bc-lh);
 }
 
 .panel {
@@ -20,73 +164,58 @@ body {
   flex-direction: column;
   height: 100%;
   box-sizing: border-box;
-  padding: 8px;
-  gap: 8px;
+  padding: var(--bc-space-3) var(--bc-space-4) var(--bc-space-4);
+  gap: var(--bc-space-3);
 }
 
-/* The buttons wrap below the pickers once the pickers would fall under 16em, so model names stay readable. */
-.header {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  align-items: center;
-}
-
-.pickers {
-  display: flex;
-  flex: 1 1 16em;
-  gap: 6px;
-  min-width: 0;
-}
-
-.actions {
-  display: flex;
-  flex: none;
-  gap: 6px;
-}
+/* ---------- Controls ---------- */
 
 select,
 textarea,
 input {
-  color: var(--vscode-input-foreground);
-  background: var(--vscode-input-background);
-  border: 1px solid var(--vscode-input-border, transparent);
-  border-radius: 2px;
+  box-sizing: border-box;
+  color: var(--bc-field-fg);
+  background: var(--bc-field-bg);
+  border: 1px solid var(--bc-field-border);
+  border-radius: var(--bc-radius-sm);
   font: inherit;
+  caret-color: var(--bc-caret);
+}
+
+input {
+  padding: var(--bc-space-2) var(--bc-space-3);
 }
 
 select {
-  padding: 2px 4px;
-  color: var(--vscode-dropdown-foreground);
-  background: var(--vscode-dropdown-background);
-  border-color: var(--vscode-dropdown-border, transparent);
+  padding: var(--bc-space-2);
+  color: var(--bc-select-fg);
+  background: var(--bc-select-bg);
+  border-color: var(--bc-select-border);
 }
 
-.pickers select {
-  flex: 1 1 0;
-  min-width: 0;
+select:disabled {
+  opacity: 0.6;
 }
 
-select:focus,
-textarea:focus,
-input:focus,
-button:focus-visible {
-  outline: 1px solid var(--vscode-focusBorder);
-  outline-offset: -1px;
+::placeholder {
+  color: var(--bc-field-placeholder);
 }
 
 button {
-  padding: 4px 10px;
-  color: var(--vscode-button-foreground);
-  background: var(--vscode-button-background);
-  border: none;
-  border-radius: 2px;
+  padding: var(--bc-space-2) var(--bc-space-4);
+  color: var(--bc-button-fg);
+  background: var(--bc-button-bg);
+  border: 1px solid var(--bc-button-border);
+  border-radius: var(--bc-radius-sm);
   font: inherit;
   cursor: pointer;
+  transition:
+    background-color var(--bc-fast) var(--bc-ease),
+    border-color var(--bc-fast) var(--bc-ease);
 }
 
 button:hover:not(:disabled) {
-  background: var(--vscode-button-hoverBackground);
+  background: var(--bc-button-bg-hover);
 }
 
 button:disabled {
@@ -94,43 +223,247 @@ button:disabled {
   cursor: default;
 }
 
+/* A secondary action is a hairline box on the panel itself. */
 button.secondary {
-  color: var(--vscode-button-secondaryForeground);
-  background: var(--vscode-button-secondaryBackground);
+  color: var(--bc-fg);
+  background: transparent;
+  border-color: var(--bc-line);
 }
 
 button.secondary:hover:not(:disabled) {
-  background: var(--vscode-button-secondaryHoverBackground);
+  background: var(--bc-fill-strong);
+}
+
+button.secondary[aria-expanded="true"] {
+  background: var(--bc-fill-strong);
+  border-color: var(--bc-line-active);
+}
+
+button:hover:not(:disabled, .link, .history-open) {
+  border-color: var(--bc-button-border-hover);
+}
+
+button.secondary:hover:not(:disabled) {
+  border-color: var(--bc-line-active);
 }
 
 button.link {
   padding: 0;
-  color: var(--vscode-textLink-foreground);
+  color: var(--bc-link);
   background: none;
+  border: none;
+  border-radius: var(--bc-radius-sm);
+  line-height: inherit;
   text-decoration: underline;
+  text-underline-offset: var(--bc-space-1);
 }
 
 button.link:hover:not(:disabled) {
-  color: var(--vscode-textLink-activeForeground);
+  color: var(--bc-link-active);
   background: none;
 }
 
+/*
+ * One focus ring, the theme's own. It sits inside a field and a row, which fill their line, and outside a button,
+ * where a ring drawn on the button's fill would not show.
+ */
+select:focus-visible,
+input:focus-visible,
+summary:focus-visible,
+button.history-open:focus-visible {
+  outline: 1px solid var(--bc-focus);
+  outline-offset: -1px;
+}
+
+button:focus-visible {
+  outline: 1px solid var(--bc-focus);
+  outline-offset: 2px;
+}
+
+/* ---------- Header ---------- */
+
+/* A running head over one rule. The usage and the buttons wrap below the pickers once the pickers would fall under
+   16em, so model names stay readable. */
+.header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--bc-space-2) var(--bc-space-3);
+  align-items: center;
+  padding-bottom: var(--bc-space-3);
+  border-bottom: 1px solid var(--bc-line);
+}
+
+.pickers {
+  display: flex;
+  flex: 1 1 16em;
+  gap: var(--bc-space-2);
+  min-width: 0;
+}
+
+/* The pickers and the header's buttons are quiet text until hovered or focused; high contrast keeps their edge. */
+.pickers select {
+  flex: 1 1 0;
+  min-width: 0;
+  padding-left: 0;
+  color: var(--bc-fg-dim);
+  background: transparent;
+  border-color: var(--bc-edge);
+  font-size: var(--bc-fs-sm);
+}
+
+.pickers select:hover:not(:disabled),
+.pickers select:focus-visible {
+  color: var(--bc-select-fg);
+  border-color: var(--bc-select-border);
+}
+
+.usage {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--bc-fg-dim);
+  font-size: var(--bc-fs-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.actions {
+  display: flex;
+  flex: none;
+  gap: var(--bc-space-2);
+}
+
+.header .actions {
+  margin-left: auto;
+}
+
+.header button,
+.history button.secondary {
+  padding: var(--bc-space-1) var(--bc-space-3);
+  font-size: var(--bc-fs-sm);
+}
+
+.header button.secondary {
+  padding-inline: var(--bc-space-2);
+  color: var(--bc-fg-dim);
+  border-color: var(--bc-edge);
+}
+
+.header button.secondary:hover:not(:disabled),
+.header button.secondary[aria-expanded="true"] {
+  color: var(--bc-fg);
+}
+
+/* ---------- Notices, warnings, errors ---------- */
+
+/* A notice is one quiet line: it informs, and nothing went wrong. */
+.notice {
+  margin: 0;
+  color: var(--bc-fg-dim);
+  font-size: var(--bc-fs-sm);
+}
+
+.warnings,
+.error {
+  padding: var(--bc-space-3) var(--bc-space-4);
+  border: 1px solid var(--bc-edge);
+  border-radius: var(--bc-radius);
+  overflow-wrap: anywhere;
+}
+
+.warnings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bc-space-2);
+  margin: 0;
+  padding-left: var(--bc-space-5);
+  color: var(--bc-warning-text);
+  background: var(--bc-warning-fill);
+  border-color: var(--bc-warning-edge);
+  font-size: var(--bc-fs-sm);
+}
+
+.error {
+  background: var(--bc-error-fill);
+  border-color: var(--bc-error-edge);
+}
+
+.error p {
+  margin: 0;
+  color: var(--bc-error-text);
+}
+
+.error .detail {
+  margin: var(--bc-space-2) 0 0;
+  color: var(--bc-fg-dim);
+  font-family: var(--bc-mono);
+  font-size: var(--bc-fs-mono);
+  white-space: pre-wrap;
+}
+
+.error .actions:not(:empty) {
+  margin-top: var(--bc-space-3);
+}
+
+/* ---------- Empty states ---------- */
+
+/* Nothing here yet: one dim line, centered in the room it has. */
 .empty,
 .conversation.start {
-  color: var(--vscode-descriptionForeground);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--bc-space-2);
+  color: var(--bc-fg-dim);
+  text-align: center;
 }
 
-/* History list: fills the conversation's place while open. */
+.empty {
+  padding: var(--bc-space-5) 0;
+}
+
+.empty p,
+.start p {
+  margin: 0;
+}
+
+/* Add provider and the settings link share one line, centered on each other. */
+.empty .actions {
+  align-items: center;
+}
+
+/* ---------- History ---------- */
+
+/* Fills the conversation's place while open. The rows scroll under the filter field, which stays in place. */
 .history {
   flex: 1 1 auto;
-  overflow-y: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--bc-space-2);
 }
 
-.history.empty {
-  color: var(--vscode-descriptionForeground);
+.history-filter {
+  flex: none;
+  width: 100%;
+}
+
+.history-none {
+  margin: 0;
+  padding: var(--bc-space-5) 0;
+  color: var(--bc-fg-dim);
+  text-align: center;
 }
 
 .history ul {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--bc-space-1);
   margin: 0;
   padding: 0;
   list-style: none;
@@ -138,19 +471,30 @@ button.link:hover:not(:disabled) {
 
 .history li {
   display: flex;
-  gap: 6px;
+  gap: var(--bc-space-3);
   align-items: center;
-  padding: 2px 0 2px 6px;
-  border-left: 2px solid transparent;
+  padding: var(--bc-space-1) var(--bc-space-3);
+  border-radius: var(--bc-radius);
+  outline: 1px solid transparent;
+  outline-offset: -1px;
 }
 
+/*
+ * A row's title is a button without a box, since the row is what the eye reads; so is a link. In high contrast the
+ * row takes the active edge when hovered (dashed) and when its title has the keyboard focus (solid).
+ */
 .history li:hover {
-  background: var(--vscode-list-hoverBackground);
+  background: var(--bc-row-hover);
+  outline: 1px dashed var(--bc-edge-active);
+}
+
+.history li:has(.history-open:focus-visible) {
+  outline: 1px solid var(--bc-edge-active);
 }
 
 .history li.current {
-  border-left-color: var(--vscode-focusBorder);
-  background: var(--vscode-list-inactiveSelectionBackground);
+  background: var(--bc-row-current);
+  outline: 1px solid var(--bc-edge-active);
 }
 
 button.history-open {
@@ -159,10 +503,10 @@ button.history-open {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 2px;
-  padding: 2px 0;
+  padding: var(--bc-space-1) 0;
   color: inherit;
   background: none;
+  border: none;
   text-align: left;
 }
 
@@ -182,38 +526,27 @@ button.history-open:hover:not(:disabled) {
 }
 
 .history-date {
-  color: var(--vscode-descriptionForeground);
-  font-size: 0.9em;
-}
-
-.usage {
-  flex: none;
-  color: var(--vscode-descriptionForeground);
-  font-size: 0.9em;
+  color: var(--bc-fg-dim);
+  font-size: var(--bc-fs-xs);
   font-variant-numeric: tabular-nums;
-  white-space: nowrap;
 }
 
-.notice {
-  margin: 0;
-  padding: 6px 8px;
-  border-left: 2px solid var(--vscode-editorWarning-foreground);
-  background: var(--vscode-inputValidation-warningBackground);
-}
+/* ---------- Conversation ---------- */
 
-.warnings {
-  margin: 0;
-  padding: 6px 8px 6px 24px;
-  border-left: 2px solid var(--vscode-editorWarning-foreground);
-  background: var(--vscode-inputValidation-warningBackground);
-}
-
+/* Whitespace separates the turns. The side padding keeps a row's focus ring inside the scroll box.
+   No native scroll anchoring: this is what keeps a question row in place when its turn folds while the user is scrolled
+   up. Nothing above that row changes (earlier turns are already folded, entries only append), so with anchoring off the
+   view stays put. On, the browser would re-anchor on whatever stays visible, such as the final reply, or a step that
+   vanished into the fold, and move the view. */
 .conversation {
   flex: 1 1 auto;
   overflow-y: auto;
+  overflow-anchor: none;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--bc-space-4);
+  margin: 0 calc(-1 * var(--bc-space-2));
+  padding: var(--bc-space-1) var(--bc-space-2);
 }
 
 /* `display: flex` above would otherwise win over the `hidden` attribute. */
@@ -222,72 +555,130 @@ button.history-open:hover:not(:disabled) {
 }
 
 .message {
-  line-height: 1.5;
   overflow-wrap: anywhere;
 }
 
-.message.user {
-  align-self: flex-end;
-  max-width: 90%;
-  padding: 6px 10px;
-  white-space: pre-wrap;
-  border-radius: 6px;
-  background: var(--vscode-input-background);
+/*
+ * The entries before the summary the history starts at: still shown, no longer sent. Dimmed as a group under one line
+ * that says so in words, so the state never rests on the dimming alone (high contrast drops the dimming). The turn's
+ * message an automatic summary quotes is still sent: full opacity, with its own dim line.
+ */
+.unsent {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bc-space-4);
 }
 
-.mentions {
+.unsent > :not(.unsent-note, .still-sent) {
+  opacity: var(--bc-unsent-opacity);
+}
+
+.still-sent {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bc-space-2);
+}
+
+/* The user's message it wraps is its first child, so the turn's whitespace moves to the wrapper. */
+.still-sent:not(:first-child) {
+  margin-top: var(--bc-space-3);
+}
+
+.unsent-note,
+.still-sent-note {
+  margin: 0;
+  color: var(--bc-fg-dim);
+  font-size: var(--bc-fs-sm);
+}
+
+/* Edit under the last user message, at its right, 4px under it rather than the 12px between entries. */
+.user-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: calc(var(--bc-space-2) - var(--bc-space-4));
+}
+
+/*
+ * The last turn while Edit replaces it: dimmed like the entries no longer sent (not in high contrast, through the same
+ * token), under a line in the full foreground, since it says what Send will do, with Cancel beside it.
+ */
+.replacing {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bc-space-4);
+}
+
+.replacing > :not(.replacing-head) {
+  opacity: var(--bc-unsent-opacity);
+}
+
+.replacing-head {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
-  margin: 6px 0 0;
-  padding: 0;
-  list-style: none;
-  white-space: normal;
-  font-size: 0.9em;
-}
-
-.chip {
-  display: inline-flex;
   align-items: center;
-  gap: 6px;
-  max-width: 100%;
-  padding: 1px 6px;
-  border: 1px solid var(--vscode-widget-border, transparent);
-  border-radius: 3px;
-  color: var(--vscode-badge-foreground);
-  background: var(--vscode-badge-background);
+  gap: var(--bc-space-2) var(--bc-space-3);
 }
 
-.chip-path {
-  min-width: 0;
-  overflow-wrap: anywhere;
+.replacing-note {
+  flex: 1 1 16em;
+  margin: 0;
+  color: var(--bc-fg);
+  font-size: var(--bc-fs-sm);
 }
 
-.chip-status {
-  opacity: 0.8;
+/* A summary's separator: small dim words between two drawn rules, across the conversation. */
+.summary-separator {
+  display: flex;
+  align-items: center;
+  gap: var(--bc-space-3);
+  margin: 0;
+  color: var(--bc-fg-dim);
+  font-size: var(--bc-fs-sm);
 }
 
-.chip.failed {
-  color: var(--vscode-errorForeground);
-  background: var(--vscode-inputValidation-errorBackground);
-  border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground));
+.summary-separator::before,
+.summary-separator::after {
+  content: "";
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--bc-line);
 }
 
-/* Kind marker: a page for a file, a tabbed box for a folder. */
-.kind {
-  flex: none;
-  box-sizing: border-box;
-  width: 0.7em;
-  height: 0.85em;
-  border: 1px solid currentColor;
-  border-radius: 1px;
-  opacity: 0.8;
+/* The latest user message is a block in the theme's button colors; an earlier one keeps only their outline. The
+   reply runs flush on the panel itself. */
+.message.user {
+  padding: var(--bc-space-3) var(--bc-space-4);
+  white-space: pre-wrap;
+  color: var(--bc-button-fg);
+  background: var(--bc-button-bg);
+  border: 1px solid var(--bc-button-border);
+  border-radius: var(--bc-radius-lg);
 }
 
-.kind.folder {
-  width: 0.9em;
-  height: 0.7em;
-  border-top-width: 3px;
+.message.user.earlier {
+  color: var(--bc-fg);
+  background: transparent;
+  border-color: var(--bc-accent-line);
+}
+
+.message.user:not(:first-child) {
+  margin-top: var(--bc-space-3);
+}
+
+.answer > :first-child {
+  margin-top: 0;
+}
+
+.answer > :last-child {
+  margin-bottom: 0;
+}
+
+/*
+ * The replies and tool steps of one turn sit close, a folded turn's row and its final reply too; the turn's whitespace
+ * comes from the user's message.
+ */
+:is(.message.assistant, .turn-fold) + .message.assistant {
+  margin-top: calc(-1 * var(--bc-space-3));
 }
 
 .message.assistant > :first-child {
@@ -298,94 +689,707 @@ button.history-open:hover:not(:disabled) {
   margin-bottom: 0;
 }
 
-.message pre {
-  padding: 8px;
+.answer + * {
+  margin-top: var(--bc-space-3);
+}
+
+/* Markdown of a reply's answer. */
+.answer p,
+.answer ul,
+.answer ol,
+.answer blockquote,
+.answer table {
+  margin: 0 0 0.75em;
+}
+
+.answer h1,
+.answer h2,
+.answer h3,
+.answer h4,
+.answer h5,
+.answer h6 {
+  margin: 1.3em 0 0.4em;
+  font-size: var(--bc-fs);
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.answer h1 {
+  font-size: calc(var(--bc-fs) + 3px);
+}
+
+.answer h2 {
+  font-size: calc(var(--bc-fs) + 2px);
+}
+
+.answer h3 {
+  font-size: calc(var(--bc-fs) + 1px);
+}
+
+.answer ul,
+.answer ol {
+  padding-left: 1.5em;
+}
+
+.answer li {
+  margin: 0.2em 0;
+}
+
+.answer li::marker {
+  color: var(--bc-fg-dim);
+}
+
+.answer blockquote {
+  padding: 0 0 0 var(--bc-space-4);
+  color: var(--bc-fg-dim);
+  background: none;
+  border: none;
+  border-left: 1px solid var(--bc-line);
+}
+
+.answer hr {
+  height: 0;
+  margin: 1em 0;
+  border: none;
+  border-top: 1px solid var(--bc-line);
+}
+
+/* A wide table scrolls inside itself, never the panel. */
+.answer table {
+  display: block;
+  max-width: 100%;
   overflow-x: auto;
-  background: var(--vscode-textCodeBlock-background);
-  border-radius: 4px;
+  border-collapse: collapse;
+  font-size: var(--bc-fs-sm);
 }
 
-.message code {
-  font-family: var(--vscode-editor-font-family);
-  font-size: var(--vscode-editor-font-size);
+.answer th,
+.answer td {
+  padding: var(--bc-space-2) var(--bc-space-3);
+  border: 1px solid var(--bc-line);
+  text-align: left;
 }
 
-.message a {
-  color: var(--vscode-textLink-foreground);
+.answer img {
+  max-width: 100%;
 }
 
-.loading,
-.mark {
-  color: var(--vscode-descriptionForeground);
-  font-style: italic;
+.answer a {
+  color: var(--bc-link);
+  text-decoration: underline;
+  text-underline-offset: var(--bc-space-1);
 }
 
+.answer a:hover {
+  color: var(--bc-link-active);
+}
+
+.answer a:focus-visible {
+  outline: 1px solid var(--bc-focus);
+  outline-offset: 1px;
+  border-radius: var(--bc-radius-sm);
+}
+
+/* What is code is set in the editor font: inline code on a faint ground, a block on a filled one. */
+.answer code {
+  padding: 0 var(--bc-space-2);
+  color: var(--bc-code-fg);
+  background: var(--bc-fill-strong);
+  border-radius: var(--bc-radius-sm);
+  font-family: var(--bc-mono);
+  font-size: var(--bc-fs-mono);
+}
+
+.answer pre,
+.step-result {
+  margin: 0 0 0.75em;
+  padding: var(--bc-space-3) var(--bc-space-4);
+  overflow-x: auto;
+  background: var(--bc-fill);
+  border: 1px solid var(--bc-edge);
+  border-radius: var(--bc-radius);
+  line-height: 1.45;
+}
+
+/*
+ * A final code block of the answer: its frame holds a header with Copy and Insert at cursor, then the code, which
+ * still scrolls inside itself. The header keeps its room, so revealing it moves nothing; its buttons show while the
+ * pointer is over the block or the focus is inside it, and stay in the tab order when hidden. One class only, so
+ * `.answer > :last-child` still drops the last block's margin.
+ */
+.code-block {
+  margin: 0 0 0.75em;
+  background: var(--bc-fill);
+  border: 1px solid var(--bc-edge);
+  border-radius: var(--bc-radius);
+}
+
+.code-block > pre {
+  margin: 0;
+  padding-top: 0;
+  background: none;
+  border: none;
+}
+
+.code-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--bc-space-2);
+  padding: var(--bc-space-2) var(--bc-space-2) 0;
+  opacity: 0;
+  transition: opacity var(--bc-fast) var(--bc-ease);
+}
+
+.code-block:hover .code-actions,
+.code-block:focus-within .code-actions {
+  opacity: 1;
+}
+
+/* Without a pointer that hovers, nothing would reveal them. */
+@media (hover: none) {
+  .code-actions {
+    opacity: 1;
+  }
+}
+
+/* A quiet secondary action: never the primary button, which the conversation keeps for the decision block. */
+button.code-action {
+  padding: 0 var(--bc-space-3);
+  min-height: var(--bc-row);
+  color: var(--bc-fg);
+  background: transparent;
+  border-color: var(--bc-line);
+  font-size: var(--bc-fs-xs);
+}
+
+button.code-action:hover:not(:disabled) {
+  background: var(--bc-fill-strong);
+  border-color: var(--bc-line-active);
+}
+
+.step-result code,
+.answer pre code {
+  padding: 0;
+  font-family: var(--bc-mono);
+  font-size: var(--bc-fs-mono);
+  color: var(--bc-fg);
+  background: none;
+  border-radius: 0;
+}
+
+/* ---------- Mentions ---------- */
+
+.mentions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--bc-space-2);
+  margin: var(--bc-space-3) 0 0;
+  padding: 0;
+  list-style: none;
+  white-space: normal;
+  font-size: var(--bc-fs-xs);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--bc-space-2);
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 0 var(--bc-space-2);
+  background: var(--bc-fill-strong);
+  border: 1px solid var(--bc-edge);
+  border-radius: var(--bc-radius-sm);
+}
+
+.chip-path {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--bc-mono);
+}
+
+.chip-status {
+  flex: none;
+  color: var(--bc-fg-dim);
+}
+
+/* A failed chip keeps its ground and says so in the error color, on its edge too. */
+.chip.failed,
+.chip.failed .chip-status {
+  color: var(--bc-error);
+}
+
+.chip.failed {
+  border-color: var(--bc-error-edge-soft);
+}
+
+/* A chip that found nothing to attach, without failing: no fill and dim text, quiet rather than failed. Its edge
+   stays, so high contrast still draws it. */
+.chip.neutral {
+  background: none;
+  color: var(--bc-fg-dim);
+}
+
+/* Kind marker: a page for a file, a tabbed box for a folder, a ring for the problems, a box with a change bar on its
+   left for the diff, a pair of brackets for the selection. */
+.kind {
+  flex: none;
+  box-sizing: border-box;
+  width: 0.7em;
+  height: 0.85em;
+  border: 1px solid var(--bc-fg-dim);
+  border-radius: 1px;
+}
+
+.kind.folder {
+  width: 0.9em;
+  height: 0.7em;
+  border-top-width: 3px;
+}
+
+.kind.problems {
+  width: 0.8em;
+  height: 0.8em;
+  border-radius: 50%;
+}
+
+.kind.diff {
+  width: 0.8em;
+  height: 0.8em;
+  border-left-width: 3px;
+}
+
+.kind.selection {
+  width: 0.8em;
+  height: 0.8em;
+  border-top: none;
+  border-bottom: none;
+}
+
+.chip.failed .kind {
+  border-color: var(--bc-error);
+}
+
+/* On the latest message's ground a chip is a tint of its text. A failed or neutral chip takes the panel's ground
+   back, where its own color reads. */
+.message.user:not(.earlier) .chip {
+  background: var(--bc-accent-chip);
+}
+
+.message.user:not(.earlier) .chip-status {
+  color: inherit;
+}
+
+.message.user:not(.earlier) .kind {
+  border-color: currentColor;
+}
+
+.message.user:not(.earlier) .chip.failed {
+  color: var(--bc-error);
+  background: var(--bc-bg);
+}
+
+.message.user:not(.earlier) .chip.neutral {
+  color: var(--bc-fg-dim);
+  background: var(--bc-bg);
+}
+
+/* ---------- Loading and turn endings ---------- */
+
+/* Loading: dim text that breathes; a line of its own leads with a dot. */
 .loading {
-  animation: pulse 1.4s ease-in-out infinite;
+  color: var(--bc-fg-dim);
+  animation: var(--bc-breathe) 1.6s ease-in-out infinite;
+}
+
+p.loading {
+  display: flex;
+  align-items: center;
+  gap: var(--bc-space-3);
+  margin: 0;
+}
+
+p.loading::before {
+  content: "";
+  flex: none;
+  width: var(--bc-mark);
+  height: var(--bc-mark);
+  background: var(--bc-fg-dim);
+  border-radius: 50%;
 }
 
 @keyframes pulse {
   50% {
-    opacity: 0.4;
+    opacity: 0.45;
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .loading {
-    animation: none;
-  }
+/* How a turn ended: a short rule, then small dim text. */
+.mark {
+  display: flex;
+  align-items: baseline;
+  gap: var(--bc-space-3);
+  margin: var(--bc-space-3) 0 0;
+  color: var(--bc-fg-dim);
+  font-size: var(--bc-fs-sm);
 }
 
-.reasoning {
-  margin: 0 0 8px;
-  color: var(--vscode-descriptionForeground);
+.mark::before {
+  content: "";
+  flex: none;
+  align-self: flex-start;
+  margin-top: 0.75em;
+  width: var(--bc-space-4);
+  height: 1px;
+  background: var(--bc-fg-dim);
 }
 
-.reasoning summary {
-  cursor: pointer;
-  font-style: italic;
+/*
+ * The turn's actions under a reply: Retry, Continue, and "Undo changes", secondary buttons on one line that wraps, the
+ * hint that commands are neither listed nor undone after them.
+ */
+.turn-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--bc-space-2) var(--bc-space-3);
+  margin: var(--bc-space-3) 0 0;
 }
 
-.reasoning summary:focus-visible {
-  outline: 1px solid var(--vscode-focusBorder);
+/* Retry's confirmation: a line of its own above the buttons, in the full foreground, since it asks before acting. */
+.retry-warning {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--bc-fg);
+  font-size: var(--bc-fs-sm);
+}
+
+.undo-hint {
+  margin: 0;
+  color: var(--bc-fg-dim);
+  font-size: var(--bc-fs-sm);
+}
+
+/*
+ * "Changed files": a small dim head, then one quiet row per file, each a button that opens the file's diff: its path
+ * in the editor font, what the turn did to it, and its line counts at the right. Rows take a fill only when hovered.
+ */
+.changed-files {
+  margin: var(--bc-space-3) 0 0;
+  font-size: var(--bc-fs-sm);
+}
+
+.changed-files-head {
+  margin: 0 0 var(--bc-space-1);
+  color: var(--bc-fg-dim);
+}
+
+.changed-files ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+button.changed-file {
+  display: flex;
+  align-items: baseline;
+  gap: var(--bc-space-3);
+  box-sizing: border-box;
+  width: 100%;
+  padding: var(--bc-space-1) var(--bc-space-2);
+  color: var(--bc-fg);
+  background: transparent;
+  border: 1px solid transparent;
+  text-align: left;
+}
+
+button.changed-file:hover:not(:disabled) {
+  background: var(--bc-row-hover);
+  border-color: var(--bc-edge-active);
+}
+
+button.changed-file:focus-visible {
   outline-offset: -1px;
 }
 
-.reasoning-text {
-  margin-top: 4px;
-  padding-left: 8px;
-  border-left: 2px solid var(--vscode-widget-border, var(--vscode-descriptionForeground));
+.changed-path {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-family: var(--bc-mono);
+  font-size: var(--bc-fs-mono);
+  overflow-wrap: anywhere;
+}
+
+.changed-kind {
+  flex: none;
+  color: var(--bc-fg-dim);
+}
+
+.changed-counts {
+  flex: none;
+  margin-left: auto;
+  color: var(--bc-fg-dim);
+  font-family: var(--bc-mono);
+  font-size: var(--bc-fs-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* What the last undo did, file by file: a notice when every file is back, a warning block when some were skipped. */
+.undo-outcome {
+  margin: var(--bc-space-3) 0 0;
+  color: var(--bc-fg-dim);
+  font-size: var(--bc-fs-sm);
+  overflow-wrap: anywhere;
+}
+
+.undo-outcome p {
+  margin: 0;
+}
+
+.undo-outcome ul {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bc-space-1);
+  margin: var(--bc-space-2) 0 0;
+  padding-left: var(--bc-space-5);
+}
+
+/* A file's path in the outcome, in the editor font like the other paths; the status around it stays prose. */
+.undo-outcome .undo-path {
+  font-family: var(--bc-mono);
+  font-size: var(--bc-fs-mono);
+}
+
+.undo-outcome.skipped {
+  padding: var(--bc-space-3) var(--bc-space-4);
+  color: var(--bc-warning-text);
+  background: var(--bc-warning-fill);
+  border: 1px solid var(--bc-warning-edge);
+  border-radius: var(--bc-radius);
+}
+
+/* An undo that failed unexpectedly: the error block's look, its cause in the editor font. */
+.undo-outcome.failed {
+  padding: var(--bc-space-3) var(--bc-space-4);
+  color: var(--bc-error-text);
+  background: var(--bc-error-fill);
+  border: 1px solid var(--bc-error-edge);
+  border-radius: var(--bc-radius);
+}
+
+.undo-outcome .detail {
+  margin: var(--bc-space-2) 0 0;
+  color: var(--bc-fg-dim);
+  font-family: var(--bc-mono);
+  font-size: var(--bc-fs-mono);
   white-space: pre-wrap;
 }
 
-/* Tool step: one compact row per body tool call, its result shown once expanded. */
+/* ---------- Reasoning ---------- */
+
+.reasoning {
+  margin: 0 0 var(--bc-space-3);
+  color: var(--bc-fg-dim);
+  font-size: var(--bc-fs-sm);
+}
+
+.reasoning summary,
+summary.step-row,
+.turn-fold > summary {
+  border-radius: var(--bc-radius-sm);
+  cursor: pointer;
+  list-style: none;
+}
+
+.reasoning summary::-webkit-details-marker,
+summary.step-row::-webkit-details-marker,
+.turn-fold > summary::-webkit-details-marker {
+  display: none;
+}
+
+.reasoning summary {
+  display: flex;
+  align-items: center;
+  gap: var(--bc-space-3);
+  min-height: var(--bc-row);
+}
+
+/* The mark of a row that opens: a chevron drawn from two borders at the end of the row, turned down once open. */
+.reasoning summary::after,
+summary.step-row::after,
+.turn-fold > summary::after {
+  content: "";
+  flex: none;
+  align-self: center;
+  box-sizing: border-box;
+  width: var(--bc-mark);
+  height: var(--bc-mark);
+  margin: 0 var(--bc-space-1);
+  border-right: 1px solid var(--bc-fg-dim);
+  border-bottom: 1px solid var(--bc-fg-dim);
+  transform: rotate(-45deg);
+  transition: transform var(--bc-fast) var(--bc-ease);
+}
+
+.reasoning[open] > summary::after,
+.step[open] > summary.step-row::after,
+.turn-fold[open] > summary::after {
+  transform: translateY(calc(-1 * var(--bc-space-1))) rotate(45deg);
+}
+
+.reasoning summary:hover,
+summary.step-row:hover,
+.turn-fold > summary:hover {
+  color: var(--bc-fg);
+}
+
+.reasoning-text {
+  margin: var(--bc-space-2) 0 0 var(--bc-space-2);
+  padding-left: var(--bc-space-3);
+  border-left: 1px solid var(--bc-line);
+  white-space: pre-wrap;
+}
+
+/* ---------- Folded turn ---------- */
+
+/*
+ * An ended turn's steps under one small dim row with the reasoning row's chevron (see "Reasoning"). Opened, they lie in
+ * their own column, spaced as in the conversation, so an expanded turn reads as it did before it folded. Child
+ * combinators only: the reasoning and step rows inside have chevrons of their own.
+ */
+.turn-fold > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--bc-space-3);
+  min-height: var(--bc-row);
+  color: var(--bc-fg-dim);
+  font-size: var(--bc-fs-sm);
+}
+
+.turn-fold-entries {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bc-space-4);
+  margin-top: var(--bc-space-2);
+}
+
+/* ---------- Thread ---------- */
+
+/*
+ * An agent turn's work is drawn as a thread: a reply that holds a tool step, and a folded turn, sit beside one drawn
+ * line, each row that opens a node on it. A reply without a step, the turn's answer, leaves the thread and runs flush.
+ */
+.message.assistant:has(.step),
+.turn-fold {
+  position: relative;
+  padding-left: var(--bc-thread-indent);
+}
+
+.message.assistant:has(.step)::before,
+.turn-fold::before {
+  content: "";
+  position: absolute;
+  left: calc((var(--bc-node) - 1px) / 2);
+  top: 0;
+  bottom: calc(-1 * var(--bc-space-2));
+  width: 1px;
+  background: var(--bc-line);
+}
+
+/* Opened, the fold's entries bring their own line: the fold's stops under its row, and they move back onto it. */
+.turn-fold[open]::before {
+  bottom: auto;
+  height: var(--bc-row);
+}
+
+.turn-fold-entries {
+  margin-left: calc(-1 * var(--bc-thread-indent));
+}
+
+/* What the agent says before a call is narration: small and dim, beside the thread. */
+.message.assistant:has(.step) .answer {
+  color: var(--bc-fg-dim);
+  font-size: var(--bc-fs-sm);
+}
+
+.message.assistant:has(.step) .answer + * {
+  margin-top: var(--bc-space-1);
+}
+
+/* A folded turn's node is a double ring: several steps in one. */
+.turn-fold > summary::before {
+  box-shadow:
+    0 0 0 2px var(--bc-bg),
+    0 0 0 3px var(--bc-fg-dim);
+}
+
+/* A node: a ring on the line, level with its row's first line. The panel's color inside it hides the line. */
+.step-row,
+.turn-fold > summary,
+.message.assistant:has(.step) .reasoning summary {
+  position: relative;
+}
+
+.step-row::before,
+.turn-fold > summary::before,
+.message.assistant:has(.step) .reasoning summary::before {
+  content: "";
+  position: absolute;
+  left: calc(-1 * var(--bc-thread-indent));
+  top: calc((var(--bc-row) - var(--bc-node)) / 2);
+  box-sizing: border-box;
+  width: var(--bc-node);
+  height: var(--bc-node);
+  background: var(--bc-bg);
+  border: 1px solid var(--bc-fg-dim);
+  border-radius: 50%;
+}
+
+/* The decision block's own solid node stands for its row's (see "Approval"). */
+.decision .step-row::before {
+  display: none;
+}
+
+/* Reasoning is a dotted node, a failed step a ring in the error color; its status says so in words. */
+.message.assistant:has(.step) .reasoning summary::before {
+  border-style: dotted;
+}
+
+.step:has(> .step-row > .step-status.failed) > .step-row::before {
+  border-color: var(--bc-error);
+}
+
+/* ---------- Tool steps ---------- */
+
+/* One quiet, small line per body tool call; it opens to its result. */
 .step {
-  margin: 4px 0;
-  border: 1px solid var(--vscode-widget-border, var(--vscode-input-background));
-  border-radius: 4px;
-  font-size: 0.9em;
+  margin: var(--bc-space-2) 0;
+  color: var(--bc-fg-dim);
+  font-size: var(--bc-fs-sm);
 }
 
 .step-row {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: var(--bc-space-3);
   min-width: 0;
-  padding: 3px 8px;
+  min-height: var(--bc-row);
 }
 
-summary.step-row {
-  cursor: pointer;
+/* A call without a result has no chevron; its node is filled while the call runs. */
+div.step-row:has(.step-status[role="status"])::before {
+  background: var(--bc-fg-dim);
 }
 
-summary.step-row:focus-visible {
-  outline: 1px solid var(--vscode-focusBorder);
-  outline-offset: -1px;
+div.step-row:has(.step-status.loading)::before {
+  animation: var(--bc-breathe) 1.6s ease-in-out infinite;
 }
 
 .step-tool {
   flex: none;
-  font-family: var(--vscode-editor-font-family);
+  color: var(--bc-tool);
+  font-family: var(--bc-mono);
+  font-size: var(--bc-fs-mono);
   font-weight: 600;
 }
 
@@ -394,28 +1398,38 @@ summary.step-row:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: var(--vscode-editor-font-family);
+  font-family: var(--bc-mono);
+  font-size: var(--bc-fs-mono);
 }
 
 /* A command's row wraps: the command takes a line of its own under the tool name and status, whole, line breaks kept. */
 .step-row.command {
   flex-wrap: wrap;
+  row-gap: var(--bc-space-1);
 }
 
 .step-command {
   order: 1;
+  font-family: var(--bc-mono);
+  font-size: var(--bc-fs-mono);
   flex: 1 0 100%;
+  box-sizing: border-box;
   max-height: 12em;
+  margin-bottom: var(--bc-space-1);
+  padding: var(--bc-space-2) var(--bc-space-3);
   overflow: auto;
+  color: var(--bc-fg);
+  background: var(--bc-fill);
+  border: 1px solid var(--bc-edge);
+  border-radius: var(--bc-radius-sm);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font-family: var(--vscode-editor-font-family);
 }
 
 .step-status {
   flex: none;
   margin-left: auto;
-  color: var(--vscode-descriptionForeground);
+  font-size: var(--bc-fs-xs);
 }
 
 .step-status.failed {
@@ -424,82 +1438,232 @@ summary.step-row:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--vscode-errorForeground);
+  color: var(--bc-error);
 }
 
-/* Approval: the reason field and Accept / Reject under the step row of a call waiting for the user. */
+.step .step-result {
+  max-height: 20em;
+  margin: var(--bc-space-1) 0 var(--bc-space-3);
+  overflow: auto;
+  white-space: pre;
+}
+
+/* ---------- Approval ---------- */
+
+/*
+ * The call that waits for the user and its controls share one block drawn in negative, the panel's color on the
+ * foreground: the one element of the conversation that asks for attention. The thread ends on its solid node.
+ */
+.decision {
+  position: relative;
+  margin: var(--bc-space-3) 0;
+  padding: var(--bc-space-2) var(--bc-space-4) var(--bc-space-4);
+  color: var(--bc-bg);
+  background: var(--bc-fg);
+  border: 1px solid var(--bc-fg);
+  border-radius: var(--bc-radius);
+}
+
+/* Two pixels past the indent: the block's border, and half of what the solid node is wider than a ring. */
+.decision::before {
+  content: "";
+  position: absolute;
+  left: calc(-1 * var(--bc-thread-indent) - 2px);
+  top: calc(var(--bc-space-2) + (var(--bc-row) - var(--bc-node-solid)) / 2);
+  width: var(--bc-node-solid);
+  height: var(--bc-node-solid);
+  background: var(--bc-fg);
+  border-radius: 50%;
+  box-shadow: 0 0 0 3px var(--bc-bg);
+}
+
+.decision .step {
+  margin: 0;
+  color: inherit;
+}
+
+/* What the user decides on shows whole: the row wraps and its path is never cut. */
+.decision .step-row {
+  flex-wrap: wrap;
+  row-gap: 0;
+  color: inherit;
+}
+
+.decision .step-tool {
+  color: inherit;
+}
+
+.decision .step-command {
+  color: inherit;
+  background: var(--bc-inverse-well);
+  border-color: transparent;
+}
+
+.decision .step-arg {
+  overflow: visible;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.decision .step-status {
+  font-weight: 600;
+}
+
+/* The reason field, then Accept or Run and Reject: Shift+Tab from the message box meets them in reverse. */
 .approval {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin: 4px 0;
+  flex-direction: column;
+  gap: var(--bc-space-3);
+  min-width: 0;
+  margin: var(--bc-space-3) 0 0;
   padding: 0;
   border: none;
 }
 
 .approval-reason {
-  flex: 1 1 12em;
+  width: 100%;
   min-width: 0;
-  padding: 2px 4px;
 }
 
-.message .step-result {
-  max-height: 20em;
-  margin: 0;
-  overflow: auto;
-  border-radius: 0 0 4px 4px;
-  white-space: pre;
+/* On the negative block the primary button is the panel's own ground, which holds in every theme, high contrast
+   included, where the theme's button has no fill. */
+.decision .actions button:not(.secondary) {
+  color: var(--bc-fg);
+  background: var(--bc-bg);
+  border-color: var(--bc-bg);
+  font-weight: 600;
 }
 
-.error {
-  padding: 6px 8px;
-  border-left: 2px solid var(--vscode-errorForeground);
-  background: var(--vscode-inputValidation-errorBackground);
+.decision .actions button:not(.secondary):hover:not(:disabled) {
+  background: var(--bc-inverse-button-hover);
 }
 
-.error p {
-  margin: 0;
+.decision button.secondary {
+  color: var(--bc-bg);
+  border-color: var(--bc-inverse-line);
 }
 
-.error .detail {
-  margin: 4px 0 0;
-  white-space: pre-wrap;
-  font-family: var(--vscode-editor-font-family);
-  font-size: 0.9em;
-  color: var(--vscode-descriptionForeground);
+.decision button.secondary:hover:not(:disabled) {
+  background: var(--bc-inverse-hover);
+  border-color: var(--bc-bg);
 }
 
-.error .actions:not(:empty) {
-  display: flex;
-  gap: 6px;
-  margin-top: 6px;
+.decision button:focus-visible {
+  outline-color: var(--bc-bg);
 }
 
+/* ---------- Composer ---------- */
+
+/* The message box, the mode selector, and Send or Stop share one large rounded field: the box on its own line, then
+   the selector at the left and the button at the right, in DOM order. */
 .composer {
   position: relative;
   display: flex;
-  gap: 6px;
-  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: var(--bc-space-2);
+  align-items: center;
+  padding: var(--bc-space-3);
+  background: var(--bc-field-bg);
+  border: 1px solid var(--bc-field-border);
+  border-radius: var(--bc-radius-lg);
 }
 
-/* Mention and slash menus: overlay the conversation right above the composer, so the composer never moves. */
+.composer:has(textarea:focus) {
+  border-color: var(--bc-focus);
+}
+
+.composer textarea {
+  flex: 1 1 100%;
+  min-width: 0;
+  min-height: 2.5em;
+  padding: var(--bc-space-1) var(--bc-space-2);
+  background: transparent;
+  border: none;
+  outline: none;
+  resize: vertical;
+}
+
+.composer > button {
+  flex: none;
+}
+
+/* The buttons sit at the right: Send alone, or Send then Stop while a reply is in flight. */
+.composer > button:first-of-type {
+  margin-left: auto;
+}
+
+.composer > select.mode {
+  flex: none;
+  max-width: 100%;
+  padding: var(--bc-space-1) var(--bc-space-2);
+  font-size: var(--bc-fs-sm);
+}
+
+/* ---------- Queued messages ---------- */
+
+/* Under the message box, after it in the tab order: a quiet line when paused or full, then one filled row per message,
+   its text cut to one line, its actions at the right. */
+.queue {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bc-space-2);
+}
+
+.queue ol {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bc-space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.queue li {
+  display: flex;
+  align-items: center;
+  gap: var(--bc-space-3);
+  min-height: var(--bc-row);
+  padding: var(--bc-space-1) var(--bc-space-3);
+  background: var(--bc-fill);
+  border: 1px solid var(--bc-edge);
+  border-radius: var(--bc-radius);
+  font-size: var(--bc-fs-sm);
+}
+
+.queued-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queue li button {
+  padding: var(--bc-space-1) var(--bc-space-3);
+  font-size: var(--bc-fs-sm);
+}
+
+/* ---------- Mention and slash menus ---------- */
+
+/* Overlay the conversation right above the composer, so the composer never moves. */
 .menu {
   position: absolute;
-  left: 0;
-  right: 0;
+  left: -1px;
+  right: -1px;
   bottom: 100%;
-  margin-bottom: 4px;
+  margin-bottom: var(--bc-space-2);
   max-height: 50vh;
   overflow-y: auto;
-  color: var(--vscode-quickInput-foreground, var(--vscode-foreground));
-  background: var(--vscode-quickInput-background, var(--vscode-editorWidget-background));
-  border: 1px solid var(--vscode-widget-border, var(--vscode-focusBorder));
-  border-radius: 3px;
-  box-shadow: 0 2px 8px var(--vscode-widget-shadow, transparent);
+  color: var(--bc-menu-fg);
+  background: var(--bc-menu-bg);
+  border: 1px solid var(--bc-menu-border);
+  border-radius: var(--bc-radius);
+  box-shadow: 0 var(--bc-space-2) var(--bc-space-4) var(--bc-shadow);
+  font-size: var(--bc-fs-sm);
 }
 
 .menu-list {
-  padding: 2px 0;
+  padding: var(--bc-space-2);
 }
 
 .menu-list:empty {
@@ -509,18 +1673,24 @@ summary.step-row:focus-visible {
 .menu [role="option"] {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 2px 8px;
+  gap: var(--bc-space-3);
+  padding: var(--bc-space-1) var(--bc-space-3);
+  border-radius: var(--bc-radius-sm);
+  outline: 1px solid transparent;
+  outline-offset: -1px;
   cursor: pointer;
 }
 
 .menu [role="option"]:hover {
-  background: var(--vscode-list-hoverBackground);
+  background: var(--bc-row-hover);
+  outline: 1px dashed var(--bc-edge-active);
 }
 
+/* The highlighted row: the theme's selection, or the panel's stronger fill, and an edge in high contrast. */
 .menu [role="option"].highlighted {
-  color: var(--vscode-list-activeSelectionForeground);
-  background: var(--vscode-list-activeSelectionBackground);
+  color: var(--bc-row-selected-fg);
+  background: var(--bc-row-selected);
+  outline: 1px solid var(--bc-edge-active);
 }
 
 .menu-label {
@@ -528,6 +1698,8 @@ summary.step-row:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-family: var(--bc-mono);
+  font-size: var(--bc-fs-mono);
 }
 
 /* A slash command's name keeps its width; its description takes the rest of the row, cut at its end. */
@@ -540,22 +1712,17 @@ summary.step-row:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--vscode-descriptionForeground);
+  color: var(--bc-fg-dim);
 }
 
-.menu [role="option"].highlighted .menu-description {
+.menu [role="option"].highlighted .menu-description,
+.menu [role="option"].highlighted .kind {
   color: inherit;
+  border-color: currentColor;
 }
 
 .menu-notice {
   margin: 0;
-  padding: 2px 8px;
-  color: var(--vscode-descriptionForeground);
-  font-style: italic;
-}
-
-.composer textarea {
-  flex: 1 1 auto;
-  resize: vertical;
-  padding: 4px 6px;
+  padding: var(--bc-space-2) var(--bc-space-4);
+  color: var(--bc-fg-dim);
 }

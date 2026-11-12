@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { RUN_COMMAND_TOOL } from "./commands";
+import { LOAD_SKILL_TOOL } from "./skills";
 import type { Skill } from "./systemPrompt";
-import { composeSystemPrompt } from "./systemPrompt";
+import { composeSummaryPrompt, composeSystemPrompt, offeredTools } from "./systemPrompt";
 import type { ToolSpec } from "./toolCalls";
+import { READ_TOOLS } from "./tools";
+import { WRITE_TOOLS } from "./writeTools";
 
 const TOOLS: ToolSpec[] = [
   {
@@ -79,9 +83,9 @@ describe("composeSystemPrompt", () => {
     expect(composeSystemPrompt(TOOLS, [], [])).not.toContain(rule);
   });
 
-  test("states that a command runs in the workspace folder with the user's shell and waits for the user, only when run_command is listed", () => {
+  test("states that a command runs in the workspace folder with the user's shell, waits for the user, and covers a whole tree in one step, only when run_command is listed", () => {
     const rule =
-      "- run_command runs the command with the user's shell, in the workspace folder unless cwd names another, and only once the user approves it: wait for its result.";
+      "- run_command runs the command with the user's shell, in the workspace folder unless cwd names another, and only once the user approves it: wait for its result. For work over a whole folder tree, such as counting or finding files in every subfolder, one command takes one step where list_files takes one per folder.";
     expect(composeSystemPrompt(TOOLS, [], []).split("# Tools")[0]).toContain(rule);
     expect(composeSystemPrompt([TOOLS[0]!], [], [])).not.toContain(rule);
   });
@@ -148,5 +152,59 @@ describe("composeSystemPrompt", () => {
       expect(prompt).toBe(composeSystemPrompt(TOOLS, [], []));
       expect(prompt).not.toContain("# Skills");
     });
+  });
+
+  describe("Plan mode", () => {
+    const ALL = [...READ_TOOLS, ...WRITE_TOOLS, RUN_COMMAND_TOOL, LOAD_SKILL_TOOL];
+    const listed: Skill = { name: "review", description: "Review a diff.", root: "/s/review", listedToModel: true };
+    const hidden: Skill = { ...listed, listedToModel: false };
+    const plan = (skills: Skill[]) => composeSystemPrompt(offeredTools(ALL, skills, "plan"), [], skills, "plan");
+    const PLAN_PARAGRAPH =
+      "# Plan mode\n\nYou are in Plan mode. Read what you need with the tools below. Then answer with a plan of the changes: file by file, in order. Change no file and run no command.";
+
+    test("offers the read tools only, and load_skill only while a skill is listed to the model", () => {
+      const names = (skills: Skill[]) => offeredTools(ALL, skills, "plan").map((tool) => tool.name);
+      expect(names([listed])).toEqual(["read_file", "list_files", "search", "load_skill"]);
+      expect(names([hidden])).toEqual(["read_file", "list_files", "search"]);
+    });
+
+    test("lists no write or command tool and none of their rules, and holds the Plan paragraph before the tools", () => {
+      const prompt = plan([listed]);
+      for (const name of ["write_file", "edit_file", "run_command"]) expect(prompt).not.toContain(name);
+      expect(prompt).toContain(PLAN_PARAGRAPH);
+      expect(prompt.indexOf(PLAN_PARAGRAPH)).toBeLessThan(prompt.indexOf("# Tools"));
+      expect(prompt).toContain("## load_skill");
+      expect(prompt).toContain("- Read a loaded skill's files");
+      expect(plan([hidden])).not.toContain("load_skill");
+    });
+
+    test("states a read-only role", () => {
+      const prompt = plan([]);
+      expect(prompt.startsWith("You are a coding agent working in the user's workspace. You read files")).toBe(true);
+      expect(prompt).not.toContain("change files");
+    });
+
+    test("without a mode, or in Ask or Auto-edit, the tools and the prompt are today's", () => {
+      for (const skills of [[listed], [hidden]]) {
+        const today = composeSystemPrompt(offeredTools(ALL, skills), [], skills);
+        for (const mode of ["ask", "autoEdit"] as const) {
+          expect(offeredTools(ALL, skills, mode)).toEqual(offeredTools(ALL, skills));
+          expect(composeSystemPrompt(offeredTools(ALL, skills, mode), [], skills, mode)).toBe(today);
+        }
+      }
+      expect(offeredTools(ALL, [listed])).toEqual(ALL);
+      expect(offeredTools(ALL, [hidden])).toEqual(ALL.slice(0, -1));
+    });
+  });
+});
+
+describe("composeSummaryPrompt", () => {
+  test("says the model summarizes a conversation with a coding agent, then the instruction files; no tool format", () => {
+    const prompt = composeSummaryPrompt([{ label: "AGENTS.md", text: "Use bun." }]);
+    expect(prompt).toBe(
+      "You summarize a conversation between a user and a coding agent working in the user's workspace.\n\n# Instructions from AGENTS.md\n\nUse bun.",
+    );
+    expect(composeSummaryPrompt([])).not.toContain("# Tools");
+    expect(composeSummaryPrompt([])).not.toContain("tool call");
   });
 });

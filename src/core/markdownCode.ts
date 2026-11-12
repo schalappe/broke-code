@@ -1,8 +1,13 @@
 /**
  * @module markdownCode
- * Where a message holds Markdown code, which never holds mentions or body tool calls. No `node:` or `vscode` import,
- * since the webview bundle loads it.
+ * Where a message holds Markdown code, which never holds mentions or body tool calls, and when an answer's code block
+ * is final. No `node:` or `vscode` import, since the webview bundle loads it.
  */
+import type { Root } from "mdast";
+import type { CompileContext } from "mdast-util-from-markdown";
+// [>]: Type only: it declares `fromMarkdownExtensions` on the processor data, which react-markdown parses with.
+import type {} from "remark-parse";
+import type { Plugin } from "unified";
 
 /** Stands in for code characters; not whitespace, so a token cannot start right after masked code. */
 export const MASK = "\0";
@@ -55,34 +60,42 @@ function standsAlone(text: string, index: number, length: number): boolean {
 
 /** `text` with fenced blocks and inline code spans masked with `MASK`, lengths and newlines kept. */
 export function maskCode(text: string): string {
-  return maskCodeSpans(maskFences(text));
+  const { masked, blockStarts } = maskFences(text);
+  return maskCodeSpans(masked, blockStarts);
 }
 
-function maskFences(text: string): string {
+/** `text` with each fenced block masked whole. `blockStarts`: where each block's opening line starts, in order. */
+function maskFences(text: string): { masked: string; blockStarts: number[] } {
   let fence: { char: string; length: number } | undefined;
-  return text
+  const blockStarts: number[] = [];
+  let lineStart = 0;
+  const masked = text
     .split("\n")
     .map((line) => {
+      const start = lineStart;
+      lineStart += line.length + 1;
       const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
       if (!fence) {
         if (!marker) return line;
         fence = { char: marker[0]!, length: marker.length };
+        blockStarts.push(start);
       } else if (marker?.[0] === fence.char && marker.length >= fence.length && line.trim() === marker) {
         fence = undefined;
       }
       return MASK.repeat(line.length);
     })
     .join("\n");
+  return { masked, blockStarts };
 }
 
 /**
- * A run of N backticks opens a span closed by the next run of exactly N in the same paragraph (no blank line
- * between); an unmatched run is literal. A backslash escapes the first backtick of an opening run, but not a closing
+ * A run of N backticks opens a span closed by the next run of exactly N in the same paragraph (no blank line or
+ * fenced block between, as a fenced block ends the paragraph in CommonMark); an unmatched run is literal. A backslash escapes the first backtick of an opening run, but not a closing
  * one, as in CommonMark. [>]: Each lookup moves forward only, so a message full of spans stays linear.
  */
-function maskCodeSpans(text: string): string {
+function maskCodeSpans(text: string, blockStarts: readonly number[]): string {
   const runs = [...text.matchAll(/`+/g)].map((run) => ({ index: run.index, length: run[0].length }));
-  const paragraphs = paragraphOf(text, runs);
+  const paragraphs = paragraphOf(text, runs, blockStarts);
   const runsByLength = new Map<number, { runs: number[]; next: number }>();
   runs.forEach((run, index) => {
     const entry = runsByLength.get(run.length) ?? { runs: [], next: 0 };
@@ -106,12 +119,16 @@ function maskCodeSpans(text: string): string {
   return masked + text.slice(copied);
 }
 
-/** For each run, how many blank lines stand before it: runs with the same count share a paragraph. */
-function paragraphOf(text: string, runs: readonly { index: number }[]): number[] {
+/**
+ * For each run, how many paragraph breaks (blank lines and fenced blocks) stand before it: runs with the same count
+ * share a paragraph. A fenced block counts at its start, since its masked text holds no run.
+ */
+function paragraphOf(text: string, runs: readonly { index: number }[], blockStarts: readonly number[]): number[] {
   const blankLines = [...text.matchAll(/\n[ \t\r]*\n/g)].map((match) => match.index);
+  const breaks = [...blankLines, ...blockStarts].sort((a, b) => a - b);
   let before = 0;
   return runs.map((run) => {
-    while (before < blankLines.length && blankLines[before]! < run.index) before++;
+    while (before < breaks.length && breaks[before]! < run.index) before++;
     return before;
   });
 }
@@ -128,4 +145,40 @@ function backslashesBefore(text: string, index: number): number {
   let count = 0;
   while (text.charAt(index - 1 - count) === "\\") count++;
   return count;
+}
+
+/** The `code` element property `remarkFenceClosed` sets on a fenced block whose closing fence the parser read. */
+export const FENCE_CLOSED = "dataFenceClosed";
+
+/**
+ * Remark plugin: marks each fenced code block whose closing fence was written, with `FENCE_CLOSED` on its `code`
+ * element. An open fence renders like a closed one, so this is the parser's own reading, containers and indents
+ * included. [>]: `codeFencedFence` has no enter handler of its own; at the opening fence `flowCodeInside` is unset, at
+ * the closing one it is set, and the block is the nearest `code` node on the stack (a buffer sits above it).
+ */
+export const remarkFenceClosed: Plugin<[], Root> = function remarkFenceClosed() {
+  const data = this.data();
+  data.fromMarkdownExtensions ??= [];
+  data.fromMarkdownExtensions.push({ enter: { codeFencedFence: markClosingFence } });
+};
+
+function markClosingFence(this: CompileContext): void {
+  if (!this.data.flowCodeInside) return;
+  const node = this.stack.findLast((entry) => entry.type === "code");
+  if (!node) return;
+  node.data ??= {};
+  node.data.hProperties = { ...node.data.hProperties, [FENCE_CLOSED]: true };
+}
+
+/**
+ * True when text other than whitespace and blockquote markers follows `end` in `source`: the parser closed the block
+ * ending there, indented or fenced, since a stream may end on a container prefix (`> `) that renders nothing.
+ */
+export function hasTextAfter(source: string, end: number): boolean {
+  return /[^\s>]/.test(source.slice(end));
+}
+
+/** A code block's text as the user takes it: its rendered code less the final line break. */
+export function codeBlockText(code: string): string {
+  return code.endsWith("\n") ? code.slice(0, -1) : code;
 }

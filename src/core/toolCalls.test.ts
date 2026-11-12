@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { forgedResultCut, GENERIC_CALL_SHAPE, type ParsedReply, parseToolCall, type ToolSpec } from "./toolCalls";
+import { GENERIC_CALL_SHAPE, type ParsedReply, parseToolCall, replyCut, type ToolSpec } from "./toolCalls";
 
 const TOOLS: ToolSpec[] = [
   {
@@ -57,6 +57,12 @@ describe("parseToolCall", () => {
     expect(parseToolCall("Write ``\n<read_file><path>a</path></read_file>\n`` to read.", TOOLS)).toEqual({
       kind: "none",
     });
+  });
+
+  test("parses a call after a fenced block between two lone backticks, which form no span", () => {
+    const call = "<read_file>\n<path>a.txt</path>\n</read_file>";
+    const answer = `A \` here.\n~~~\nx\n~~~\n${call}\nand \` there.`;
+    expect(parseToolCall(answer, TOOLS)).toMatchObject({ kind: "call", name: "read_file", args: { path: "a.txt" } });
   });
 
   test("returns the first of two calls and ignores the second, with no error", () => {
@@ -441,12 +447,12 @@ test.each(["toolCalls.ts", "systemPrompt.ts"])("%s imports nothing from vscode o
   expect(specifiers.filter((specifier) => specifier === "vscode" || specifier!.startsWith("node:"))).toEqual([]);
 });
 
-describe("forgedResultCut", () => {
+describe("replyCut", () => {
   const call = "<read_file>\n<path>a.txt</path>\n</read_file>";
   const result = '<tool_result tool="read_file" status="ok">';
 
   test("cuts at the end of the call a tool result written by the model follows", () => {
-    expect(forgedResultCut(`${call}\n${result}\nfine\n`, TOOLS, 0)).toEqual({
+    expect(replyCut(`${call}\n${result}\nfine\n`, TOOLS, 0)).toEqual({
       cut: call.length,
       scanned: call.length + 1,
     });
@@ -454,17 +460,114 @@ describe("forgedResultCut", () => {
 
   test("does not cut on a result opening before any call, and moves the scan past it", () => {
     const answer = `${result}\nfine\n</tool_result>\nI will read it.`;
-    expect(forgedResultCut(answer, TOOLS, 0)).toEqual({ scanned: answer.length - "<tool_result".length + 1 });
+    expect(replyCut(answer, TOOLS, 0)).toEqual({ scanned: answer.length - "<tool_result".length + 1 });
   });
 
   test("does not cut on a result opening inside a write_file value still streaming", () => {
     const answer = `<write_file>\n<path>doc.md</path>\n<content>\nResults look like ${result}`;
-    expect(forgedResultCut(answer, TOOLS, 0).cut).toBeUndefined();
+    expect(replyCut(answer, TOOLS, 0).cut).toBeUndefined();
   });
 
   test("finds an opening split across deltas by scanning its first characters again", () => {
-    const first = forgedResultCut(`${call}\n<tool_`, TOOLS, 0);
+    const first = replyCut(`${call}\n<tool_`, TOOLS, 0);
     expect(first.cut).toBeUndefined();
-    expect(forgedResultCut(`${call}\n${result}`, TOOLS, first.scanned).cut).toBe(call.length);
+    expect(replyCut(`${call}\n${result}`, TOOLS, first.scanned).cut).toBe(call.length);
+  });
+
+  test("cuts at the end of a call another call follows, so a repeating model stops at once", () => {
+    expect(replyCut(`${call}\n${call}\n${call}`, TOOLS, 0).cut).toBe(call.length);
+  });
+
+  test("cuts after a wrapped call another wrapper follows", () => {
+    const wrapped = `<tool_call>\n${call}\n</tool_call>`;
+    expect(replyCut(`${wrapped}\n<tool_call>\n${call}`, TOOLS, 0).cut).toBe(wrapped.length);
+  });
+
+  test("does not cut on a call opening inside a write_file value still streaming", () => {
+    const answer = `<write_file>\n<path>doc.md</path>\n<content>\nExample:\n${call}\n<read_file>\n`;
+    expect(replyCut(answer, TOOLS, 0).cut).toBeUndefined();
+  });
+
+  test("does not cut on a call opening in the middle of a line", () => {
+    expect(replyCut(`${call}\nthen <read_file> again`, TOOLS, 0).cut).toBeUndefined();
+  });
+});
+
+describe("parseToolCall: wrappers and forged results (ADR 0001, 2026-11-12)", () => {
+  const call = "<read_file>\n<path>a.txt</path>\n</read_file>";
+  const result = '<tool_result tool="read_file" status="ok">\nall good\n</tool_result>';
+
+  test.each(["tool_call", "tool_code"])("reads a call wrapped in <%s>, the block spanning the wrapper", (wrapper) => {
+    const answer = `I will read it.\n<${wrapper}>\n${call}\n</${wrapper}>\nthen more`;
+    const start = "I will read it.\n".length;
+    expect(parseToolCall(answer, TOOLS)).toEqual({
+      kind: "call",
+      name: "read_file",
+      args: { path: "a.txt" },
+      start,
+      end: start + `<${wrapper}>\n${call}\n</${wrapper}>`.length,
+    });
+  });
+
+  test("reads a wrapped call written on one line, and one whose wrapper never closes", () => {
+    const oneLine = "<tool_call><read_file><path>a.txt</path></read_file></tool_call>";
+    expect(parseToolCall(oneLine, TOOLS)).toMatchObject({ kind: "call", args: { path: "a.txt" }, end: oneLine.length });
+    const open = `<tool_code>\n${call}\nand then`;
+    expect(parseToolCall(open, TOOLS)).toMatchObject({ kind: "call", end: `<tool_code>\n${call}`.length });
+  });
+
+  test("reports a wrapped call that is malformed with the tool's own message", () => {
+    const parsed = parseToolCall("<tool_call>\n<read_file>\n<file>a.txt</file>\n</read_file>\n</tool_call>", TOOLS);
+    expect(parsed).toMatchObject({ kind: "malformed", start: 0 });
+    expect((parsed as { message: string }).message).toStartWith("<read_file> has no argument <file>.");
+  });
+
+  test("keeps a wrapper around an unknown tool, or around nothing, a wrapper the model is told is not a tool", () => {
+    for (const answer of [
+      "<tool_call>\n<fetch_url>\n<url>x</url>\n</fetch_url>\n</tool_call>",
+      "<tool_call>\nhi\n</tool_call>",
+    ]) {
+      const parsed = parseToolCall(answer, TOOLS);
+      expect(parsed).toMatchObject({ kind: "malformed", start: 0 });
+      expect((parsed as { message: string }).message).toStartWith("<tool_call> is not a known tool.");
+    }
+  });
+
+  test("ignores a wrapper inside a code fence", () => {
+    expect(parseToolCall(`Like this:\n\`\`\`\n<tool_call>\n${call}\n</tool_call>\n\`\`\``, TOOLS)).toEqual({
+      kind: "none",
+    });
+  });
+
+  test("refuses a tool result the model wrote before its call, from where the result opens", () => {
+    const answer = `Loaded.\n${result}\n\n${call}`;
+    expect(parseToolCall(answer, TOOLS)).toMatchObject({ kind: "malformed", forged: true, start: "Loaded.\n".length });
+  });
+
+  test("refuses an answer built on a tool result the model wrote, with no call", () => {
+    const parsed = parseToolCall(`${result}\nThe code is 42.`, TOOLS);
+    expect(parsed).toMatchObject({ kind: "malformed", forged: true, start: 0 });
+    expect((parsed as { message: string }).message).toStartWith("Your reply holds a tool result you wrote yourself");
+  });
+
+  test("refuses a result written without attributes, closed or not, never as an unknown tool", () => {
+    for (const answer of [
+      "<tool_result>\ninvented\n</tool_result>",
+      "<tool_result>invented</tool_result>\nThe code is 42.",
+      `Loaded.\n<tool_result>\ninvented\n</tool_result>\n${call}`,
+      "<tool_result>\ninvented",
+    ]) {
+      const parsed = parseToolCall(answer, TOOLS);
+      expect(parsed).toMatchObject({ kind: "malformed", forged: true, start: answer.indexOf("<tool_result>") });
+      expect((parsed as { message: string }).message).toStartWith("Your reply holds a tool result you wrote yourself");
+    }
+  });
+
+  test("reads no forged result in code, in the middle of a line, or after the call", () => {
+    expect(parseToolCall(`\`\`\`\n${result}\n\`\`\`\n${call}`, TOOLS)).toMatchObject({ kind: "call" });
+    expect(parseToolCall(`Results open with <tool_result tool="x">.\n${call}`, TOOLS)).toMatchObject({ kind: "call" });
+    expect(parseToolCall(`${call}\n${result}`, TOOLS)).toMatchObject({ kind: "call", end: call.length });
+    expect(parseToolCall("A <tool_results> table.", TOOLS)).toEqual({ kind: "none" });
+    expect(parseToolCall("<tool_results>\nnone\n", TOOLS)).toEqual({ kind: "none" });
   });
 });

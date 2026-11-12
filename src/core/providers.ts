@@ -64,6 +64,30 @@ export function parseProviders(raw: unknown): ParsedProviders {
   return result;
 }
 
+/** A new entry as the parser reads it after the current entries: the provider it yields, or why it is skipped. */
+export type CandidateReading = { provider: Provider } | { reason: SkipReason };
+
+/**
+ * How `parseProviders` reads `entry` appended to the setting value `raw`. The one rule of what may be added: a form
+ * that validates a new provider with it accepts exactly what the settings would.
+ */
+export function readCandidate(raw: unknown, entry: unknown): CandidateReading {
+  const entries = appendProvider(raw, entry);
+  const { providers, skipped } = parseProviders(entries);
+  const refusal = skipped.find((skip) => skip.position === entries.length);
+  if (refusal) return { reason: refusal.reason };
+  // [>]: Not skipped, so the entry is the last provider the parser yields.
+  return { provider: providers.at(-1) as Provider };
+}
+
+/**
+ * The setting value `raw` with `entry` appended. Existing entries, skipped ones included, keep their order and every
+ * field; a value that is not an array (no providers to the parser) becomes the one-entry array.
+ */
+export function appendProvider(raw: unknown, entry: unknown): unknown[] {
+  return [...(Array.isArray(raw) ? raw : []), entry];
+}
+
 function readString(entry: unknown, key: string): string | undefined {
   if (typeof entry !== "object" || entry === null) return undefined;
   const value = (entry as Record<string, unknown>)[key];

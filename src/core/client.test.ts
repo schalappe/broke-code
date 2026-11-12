@@ -2,12 +2,13 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { brotliCompressSync, deflateSync, gzipSync } from "node:zlib";
 import {
   buildChatRequest,
+  lateReasoning,
   listModels,
   MODEL_LIST_MAX_BYTES,
   type ProviderAccess,
-  REPLY_MAX_LENGTH,
   streamChat,
 } from "./client";
+import { REPLY_MAX_LENGTH } from "./protocol";
 import { vllmOpening, vllmPlainStream, vllmReasoningRest } from "./vllmFixture";
 
 type Handler = (request: Request) => Response | Promise<Response>;
@@ -1058,5 +1059,27 @@ describe("bodies left unread", () => {
     const access = routed(`unread-${name}`, () => new Response(body, { status, headers }));
     expect(await listModels(access)).toMatchObject({ ok: false, error: { kind } });
     expect(await ended).toBe("ended");
+  });
+});
+
+describe("lateReasoning", () => {
+  test("moves the text before a bare </think> line to the reasoning, the answer starting after its blank lines", () => {
+    const content =
+      "The user wants a file.\n```\nunclosed fence\n</think>\n\n<write_file>\n<path>a</path>\n</write_file>";
+    expect(lateReasoning(content)).toEqual({
+      reasoning: "The user wants a file.\n```\nunclosed fence",
+      answer: "<write_file>\n<path>a</path>\n</write_file>",
+    });
+  });
+
+  test("gives an empty answer while only the reasoning has arrived", () => {
+    expect(lateReasoning("Thinking.\n</think>\n")).toEqual({ reasoning: "Thinking.", answer: "" });
+  });
+
+  test("leaves content alone without a bare </think> line, after a <think>, or with the tag inside a line", () => {
+    expect(lateReasoning("Just an answer.")).toBeUndefined();
+    expect(lateReasoning("<think>\nplan\n</think>\nanswer")).toBeUndefined();
+    expect(lateReasoning("Tags like </think> close reasoning.")).toBeUndefined();
+    expect(lateReasoning("Still thinking\n</think")).toBeUndefined();
   });
 });

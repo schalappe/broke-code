@@ -1,14 +1,16 @@
 /**
  * @module chatController
  * Chat state owner: provider and model choice, model listing, agent turns (streamed replies, body tool calls, tool
- * steps, their approval requests, step limit, context budget), context usage, stop, and the workspace's saved
+ * steps, their approval requests, step limit, context budget), the queue of messages sent during a turn, context
+ * usage, stop, "Undo changes" and "Changed files" over the latest turn that wrote a file, and the workspace's saved
  * conversations (new chat, reopen, delete). The conversation shown is saved when a message is sent, at most every 500 ms while a reply streams, when a
  * call starts, after each tool step, and when the turn ends, so a reload or crash loses at most the reply streaming.
  * vscode-free: host passes key store, workspace memento, mention reader, conversation store, tool runner, instruction
- * file reader, skill reader, limits source, and auto-approve setting through ports.
+ * file reader, skill reader, limits source, the auto-approve setting's reader and writer, the undo's workspace
+ * roots and unsaved check, and the changed files' diff editor through ports.
  */
 import type { ApprovalRequest, Decision, Preview } from "./approval";
-import { type ChatMessage, listModels, type ProviderAccess, streamChat } from "./client";
+import { type ChatMessage, lateReasoning, listModels, type ProviderAccess, streamChat } from "./client";
 import {
   CONVERSATION_VERSION,
   type ConversationRecord,
@@ -20,24 +22,46 @@ import {
   summarize,
 } from "./conversation";
 import type { ConversationStore } from "./conversationStore";
+import { type HistoryBudget, historyStart, sentEntries, summaryHistory, toHistory } from "./history";
+import { CONTINUE_TEXT, type LastTurnActions, lastTurnActions } from "./lastTurn";
 import { contextOf, estimateTokens, fillsContext, parseLimits, type TurnLimits } from "./limits";
+import { type LineCounts, lineDiffCount } from "./lineDiff";
 import { composeUserMessage, findMentions, type MentionReader, type MentionResult, type ReadMention } from "./mentions";
+import { workspacePath } from "./problems";
 import {
+  type ChangedFile,
   type ChatEntry,
   type ChatState,
   type ContextUsage,
+  type DraftInsert,
   type HaltReason,
   isReplying,
+  MAX_QUEUED_MESSAGES,
+  type Mode,
   type ReplyStatus,
+  type ShownEntries,
   type StepApproval,
   type StorageProblem,
+  type UndoneFile,
+  type UndoState,
 } from "./protocol";
 import type { ParsedProviders, Provider } from "./providers";
+import { RecordedChanges, type RecordedFile, type RestoreOutcome } from "./recordedChanges";
+import { reservedMention } from "./reservedMentions";
 import { SerialQueue } from "./serialQueue";
 import { findSlashSkill, loadSkillText, type SkillDiscovery } from "./skills";
-import { composeSystemPrompt, type InstructionFile, type Skill } from "./systemPrompt";
-import { forgedResultCut, type ParsedReply, parseToolCall, type ToolSpec } from "./toolCalls";
+import { builtInCommand } from "./suggestions";
+import {
+  composeSummaryPrompt,
+  composeSystemPrompt,
+  type InstructionFile,
+  offeredTools,
+  PLAN_BLOCKED_TOOLS,
+  type Skill,
+} from "./systemPrompt";
+import { type ParsedReply, parseToolCall, replyCut, type ToolSpec } from "./toolCalls";
 import type { ToolCall, ToolResult } from "./tools";
+import { realWorkspaceRoots, type WorkspaceRoot } from "./workspaceFiles";
 
 /** API key lookup. `undefined` = no key; must not reject. */
 export type KeyStore = { get(provider: string): Promise<string | undefined> };
@@ -49,6 +73,17 @@ export type ChoiceStore = {
 };
 
 /**
+ * A reply in flight as `runReply` hands it to its body. `reply`: the entry `settle` ends, which an agent turn moves to
+ * each new reply or summary it appends. `signal`: aborted by Stop, navigation, and a provider change. `settle`: ends
+ * `reply` with its status (and halt reason), publishes, hands the save to the store, and returns the status.
+ */
+type ReplyRun = {
+  reply: ChatEntry & { role: "assistant" };
+  readonly signal: AbortSignal;
+  settle(status: ReplyStatus, haltReason?: HaltReason): ReplyStatus;
+};
+
+/**
  * What a tool run gets from its turn. `signal`: Stop; the turn does not wait for a run that ignores it.
  * `requestApproval`: asks the user to accept or reject what the call is about to do, and settles with the decision.
  * The request shows in `ChatState.approval` with its preview open until the user decides; Stop, and the navigation
@@ -56,13 +91,19 @@ export type ChoiceStore = {
  * auto-approve setting is on; a command always waits. Rejects only when the preview cannot open, or when another
  * request of the run is still open. `skills`: the valid skills the send discovered. `skillRoots`: the real folders of
  * the skills loaded in the conversation, the ones the read tools may also read, derived at each call (see
- * `loadedSkillRoots`), so a load earlier in the turn counts.
+ * `loadedSkillRoots`), so a load earlier in the turn counts. `sentSkillRoots`: those of them loaded in the history
+ * sent, from the last summary on (see `historyStart`): `load_skill` answers "already loaded" for these only, since the
+ * text of an earlier load is no longer sent. `changes`: the turn's record of written files, which the host's applier
+ * records into (`recordingApplier`) so "Undo changes" can restore them; an applier that ignores it (the eval's) makes
+ * the turn hold nothing.
  */
 export type ToolContext = {
   signal: AbortSignal;
   requestApproval: (request: ApprovalRequest) => Promise<Decision>;
   skills: readonly Skill[];
   skillRoots: readonly string[];
+  sentSkillRoots: readonly string[];
+  changes: RecordedChanges;
 };
 
 /**
@@ -86,14 +127,45 @@ export type InstructionReader = { read(): Promise<InstructionFile[]> };
  */
 export type SkillReader = { read(): Promise<SkillDiscovery> };
 
+/**
+ * What "Undo changes" needs from the host: the workspace folders now, and whether an editor holds unsaved changes to a
+ * file, the write approval's check, which must not reject.
+ */
+export type UndoHost = {
+  roots(): WorkspaceRoot[];
+  hasUnsavedChanges(target: string): Promise<boolean>;
+};
+
+/**
+ * A held file's diff as "Changed files" opens it: `path`, the row's displayed path, for the title; `realPath`, the
+ * file, its right side; `original`, its text before the turn, its left side, `undefined` for a file the turn created.
+ */
+export type HeldFileDiff = { path: string; realPath: string; original: string | undefined };
+
+/**
+ * The editor's diff of a held file, for "Changed files". `open`: shows `file`'s diff, or its own error when the file no
+ * longer exists or the diff cannot open; must not reject. `close`: closes the diffs of the files at `realPaths`, which
+ * left the held turn; must not throw.
+ */
+export type ChangeDiffHost = {
+  open(file: HeldFileDiff): Promise<void>;
+  close(realPaths: readonly string[]): void;
+};
+
 /** The current turn limits, from the user settings. Must not throw. */
 export type LimitsSource = { read(): TurnLimits };
 
 /**
  * What the controller needs from the host. `limits`: absent gives the defaults (50 steps, 32,768 tokens for every
  * model). `autoApproveWrites`: the auto-approve setting, read at each write's approval request, so turning it off
- * reaches the next write of a turn in flight; absent or throwing means off. `now`: clock for record times, in
- * milliseconds since the epoch.
+ * reaches the next write of a turn in flight; absent or throwing means off. It also gives `ChatState.mode`, read at
+ * `modeChanged` and after each `setMode`.
+ * `writeAutoApproveWrites`: writes the user value of that setting; rejects when the write fails; absent, every write
+ * fails. `returnDraft`: puts a `paragraph` draft in the message box, delivered when the panel can take it: the queued
+ * texts the controller takes out without sending them, or refuses to queue, so nothing typed is lost; absent, each is
+ * logged as lost. `undo`: what "Undo changes" needs; absent (the eval), no turn is held and the button never shows.
+ * `changeDiffs`: opens and closes the diffs of "Changed files"; absent, the rows still show and a click does nothing.
+ * `now`: clock for record times, in milliseconds since the epoch.
  */
 export type ChatPorts = {
   apiKeys: KeyStore;
@@ -106,19 +178,78 @@ export type ChatPorts = {
   skills: SkillReader;
   limits?: LimitsSource;
   autoApproveWrites?: () => boolean;
+  writeAutoApproveWrites?: (on: boolean) => Promise<void>;
+  returnDraft?: (draft: DraftInsert) => void;
+  undo?: UndoHost;
+  changeDiffs?: ChangeDiffHost;
   now?: () => number;
 };
+
+/**
+ * What a mode pick did: `written`, the mode changed (the setting written, Plan turned on or off, or both);
+ * `unchanged`, it was already the mode; `ignored`, a reply is in flight; `failed`, the setting's write rejected with
+ * `cause`, logged, and the mode shown is still the one before (Plan stays on).
+ */
+export type ModeChange = { kind: "written" | "unchanged" | "ignored" } | { kind: "failed"; cause: string };
+
+/**
+ * What `/compact` did: `ran`, a summary reply ran to its end, whatever that end (done, failed, stopped, halted);
+ * `nothingToSummarize`, the conversation is empty or its last entry is already a done summary, and nothing was sent;
+ * `ignored`, a turn may not start (no provider or model, a reply in flight, a mode pick being written).
+ */
+export type CompactOutcome = "ran" | "nothingToSummarize" | "ignored";
 
 /** Malformed calls in a row that halt an agent turn; a call that parses resets the count. */
 export const MAX_MALFORMED_IN_A_ROW = 3;
 
 const LAST_CHOICE_KEY = "brokeCode.lastChoice";
+/**
+ * `true` while Plan is on in this workspace. A key of its own: the provider and model choice is rewritten whole and
+ * cleared without a provider, and Plan must survive both.
+ */
+const PLAN_KEY = "brokeCode.plan";
 /** Id of the conversation shown, reopened at the next window load. */
 const CURRENT_CONVERSATION_KEY = "brokeCode.currentConversation";
 /** Shortest time between two saves of a streaming reply. */
 const SAVE_INTERVAL_MS = 500;
 
 type LastChoice = { provider: string; model?: string };
+
+/**
+ * An agent turn as "Undo changes" sees it. `conversation`: the one it was sent in. `changes`: the files its writes
+ * changed, with their text before the turn, in memory only. `steps`: the write steps of each file of `changes`, by
+ * its real path, tied when the step is recorded to the file its write recorded (`written`: that file, for the call
+ * running), never by reading the step's path again; a write recorded without a step (it landed after Stop) has none.
+ * `reply`: its last reply, set once it has ended. `ranCommand`: the user ran one of its commands, which no undo
+ * reverts. `rows`: "Changed files" as last named (see `nameRows`), one per file of `changes` then; `naming`: bumped
+ * per naming, so only the latest lands.
+ */
+type Turn = {
+  conversation: Conversation;
+  changes: RecordedChanges;
+  steps: Map<string, ToolStep[]>;
+  written: string | undefined;
+  reply: ChatEntry | undefined;
+  ranCommand: boolean;
+  rows: ChangedRow[];
+  naming: number;
+};
+
+/** A row of "Changed files" with the real path of its file, the key the held turn knows it by. */
+type ChangedRow = ChangedFile & { realPath: string };
+
+type ToolStep = ChatEntry & { role: "tool" };
+
+type UserEntry = ChatEntry & { role: "user" };
+
+/**
+ * How an agent turn starts. `send`: a new message, its mentions read and its `/<name>` skill loaded now. `continue`: a
+ * new user entry whose model text is already set. `retry`: the last user entry, already the last entry, resent with
+ * the model text of its first send, so nothing it mentions or loads is read again.
+ */
+type TurnStart =
+  | { kind: "send"; content: string; picked: readonly string[] }
+  | { kind: "continue" | "retry"; user: UserEntry };
 
 /**
  * One conversation in memory. `entries` is the array `ChatState.entries` holds while it is shown; a reply keeps
@@ -147,6 +278,8 @@ export class ChatController {
   private reply: { abort: AbortController; provider: Provider; settled: Promise<void> } | undefined;
   /** Bumped per listing request; stale listings dropped. */
   private listingId = 0;
+  /** Last id given to a queued message. */
+  private queuedId = 0;
   /** Bumped per approval request shown; a decision counts only for the request open. */
   private approvalId = 0;
   /** The approval request open, mirrored in `ChatState.approval`, and how to settle it. */
@@ -166,6 +299,25 @@ export class ChatController {
    * of `ChatState`, which is posted to the webview on every streamed delta.
    */
   private readonly modelText = new WeakMap<ChatEntry, string>();
+  /**
+   * The latest turn of the conversation shown, so a write that lands after Stop is held while no later turn has
+   * started; cleared when the conversation shown changes, so a write that lands after that is not.
+   */
+  private lastTurn: Turn | undefined;
+  /**
+   * The turn "Undo changes" restores: the latest of the conversation shown that wrote a file, replaced when a later
+   * turn writes its first one, dropped when the conversation shown changes or once every file is restored. Memory
+   * only: never saved, never published, lost at a window reload.
+   */
+  private heldTurn: Turn | undefined;
+  /** An undo was asked and has not ended: Send does not act, and no other undo starts. */
+  private undoing = false;
+  /** What the last undo did, until the next send, the next undo, or a change of the conversation shown. */
+  private undoOutcome: UndoState["outcome"];
+  /** The diffs "Changed files" asked to open, by turn and file, until their file leaves the held turn. */
+  private openDiffs: { turn: Turn; realPath: string }[] = [];
+  /** Line counts of each recorded write, computed once per write: a `RecordedFile` is a new object at each write. */
+  private readonly lineCounts = new WeakMap<RecordedFile, LineCounts>();
 
   private readonly apiKeys: KeyStore;
   private readonly workspaceState: ChoiceStore;
@@ -177,9 +329,15 @@ export class ChatController {
   private readonly skills: SkillReader;
   private readonly limitsSource: LimitsSource;
   private readonly autoApproveWrites: () => boolean;
+  private readonly writeAutoApproveWrites: (on: boolean) => Promise<void>;
+  private readonly returnDraft: (draft: DraftInsert) => void;
+  private readonly undoHost: UndoHost | undefined;
+  private readonly changeDiffs: ChangeDiffHost | undefined;
   private readonly now: () => number;
   /** Limits the usage display reads, refreshed at each send and by `limitsChanged`. */
   private limits: TurnLimits;
+  /** Plan is on in this workspace: restored from the workspace memento, winning over the setting while on. */
+  private plan: boolean;
   /**
    * System prompt the usage display counts, for every conversation shown: the last one a send composed, since the
    * instruction files are the workspace's, not a conversation's; before the first send, the one without them.
@@ -200,7 +358,19 @@ export class ChatController {
     };
     this.limits = this.limitsSource.read();
     this.autoApproveWrites = ports.autoApproveWrites ?? (() => false);
+    this.writeAutoApproveWrites =
+      ports.writeAutoApproveWrites ??
+      (async () => {
+        throw new Error("no settings writer");
+      });
+    // [>]: The extension always wires the port; only a controller built without it (tests, the eval) logs the loss.
+    this.returnDraft =
+      ports.returnDraft ??
+      ((draft) => console.error("broke-code: no message box to return unsent text to; it is lost", draft.text));
+    this.undoHost = ports.undo;
+    this.changeDiffs = ports.changeDiffs;
     this.now = ports.now ?? Date.now;
+    this.plan = this.workspaceState.get<unknown>(PLAN_KEY) === true;
     // [>]: Instruction files and skills are read only at a send, never just to refresh the display.
     this.systemPrompt = composeSystemPrompt(offeredTools(this.tools.tools, []), [], []);
     this.conversation = this.freshConversation();
@@ -217,6 +387,13 @@ export class ChatController {
       listFailed: undefined,
       storageProblem: undefined,
       context: this.contextUsage(undefined),
+      // [>]: The setting is read at `modeChanged`, which the host calls at activation as it applies the providers; the
+      // constructor reads no setting.
+      mode: "ask",
+      modePending: false,
+      queue: [],
+      undo: { reply: undefined, ranCommand: false, running: false, outcome: undefined },
+      changedFiles: [],
     };
   }
 
@@ -330,6 +507,70 @@ export class ChatController {
     this.emit();
   }
 
+  /**
+   * Read the mode into `ChatState.mode`: Plan while on, else the auto-approve setting. At activation, and whenever the
+   * setting changes, here or elsewhere (the settings editor, another window).
+   */
+  modeChanged(): void {
+    this.state.mode = this.readMode();
+    this.emit();
+  }
+
+  /**
+   * The user picks `mode` in the message box. One pick at a time: ignored while a reply is in flight or an earlier
+   * pick's settings write is pending (`ChatState.modePending`, which also locks the composer, so `send` is ignored
+   * meanwhile and no turn starts on a mode about to change). Plan writes no setting, so it never pends: it turns
+   * Plan on in the workspace memento. Ask or Auto-edit writes the setting's user value first, only when it must
+   * change, then turns Plan off, only once that write succeeded: a failed write keeps the mode as it was. The mode
+   * shown is read back from the setting after the write, whether it succeeded or not, since the settings change event
+   * may come before the write settles. Never rejects.
+   */
+  async setMode(mode: Mode): Promise<ModeChange> {
+    if (isReplying(this.state) || this.state.modePending) return { kind: "ignored" };
+    if (mode === "plan") {
+      const change: ModeChange = { kind: this.plan ? "unchanged" : "written" };
+      this.rememberPlan(true);
+      this.modeChanged();
+      return change;
+    }
+    const on = mode === "autoEdit";
+    const writes = this.readAutoApprove() !== on;
+    if (writes) {
+      this.state.modePending = true;
+      this.emit();
+      try {
+        await this.writeAutoApproveWrites(on);
+      } catch (error) {
+        console.error("broke-code: could not write the auto-approve setting", error);
+        this.state.modePending = false;
+        this.modeChanged();
+        return { kind: "failed", cause: String(error) };
+      }
+      this.state.modePending = false;
+    }
+    const leavesPlan = this.plan;
+    this.rememberPlan(false);
+    this.modeChanged();
+    return { kind: writes || leavesPlan ? "written" : "unchanged" };
+  }
+
+  /**
+   * Turn Plan `on` or off, kept in the workspace memento. A failed memento write is logged only, as for the provider
+   * and model choice: Plan applies in this session and is lost at the next load.
+   */
+  private rememberPlan(on: boolean): void {
+    if (this.plan === on) return;
+    this.plan = on;
+    this.workspaceState.update(PLAN_KEY, on ? true : undefined).then(undefined, (error: unknown) => {
+      console.error("broke-code: could not remember Plan mode", error);
+    });
+  }
+
+  private readMode(): Mode {
+    if (this.plan) return "plan";
+    return this.readAutoApprove() ? "autoEdit" : "ask";
+  }
+
   /** Key of `provider` changed -> relist its models, since listing may have failed on old key. */
   keyChanged(provider: string): void {
     if (provider === this.state.provider) void this.loadModels();
@@ -367,53 +608,253 @@ export class ChatController {
    * Send user message with its mentions read now, and run the agent turn: stream the reply, run the body tool call
    * its answer holds, record the tool step, and request again, until a reply holds no call, a limit halts the turn,
    * the reply fails, or Stop. Limits: the step limit, three malformed calls in a row, and the context budget, checked
-   * before each request, the first included, so a request that would fill the model's context is never sent. The
-   * turn reads the settings once, when it starts. Ignored while replying or without provider and model. `picked`:
+   * before each request, the first included: the oldest tool results are left out of a request that would fill the
+   * model's context (see `toHistory`), and one that fills it even so is never sent. The
+   * turn reads the settings and Plan once, when it starts: in Plan it offers the read tools only, and a call to a tool
+   * Plan leaves out gets an `error` step saying so, counted toward the step limit like any step. The webview clears the
+   * box before the host answers and its state may lag, so a message that cannot start a turn now is never dropped: while
+   * a reply is in flight it goes through `queueMessage` (a turn the queue started after a stale `done`), and otherwise
+   * (a mode pick written, no provider or model) it goes back to the box. Blank text is dropped. `picked`:
    * paths chosen in the menu, mentions while their `@<path>` is still in the text. A mention that cannot be read is
    * reported to the model and in the entry; the message still goes. A message starting with `/<name>` of a discovered
    * skill sends that skill's text with the arguments instead of the text as typed (see `loadSkillText`), and the entry
    * records the skill, which opens its folder to the read tools; a `SKILL.md` that cannot be read is reported the same
-   * way as a mention.
+   * way as a mention. Once the turn has fully settled, and only when it ended `done`, the first queued message is sent
+   * the same way (see `sendNextQueued`); the returned promise settles after the turns it drained.
+   *
+   * `replaces`: sent from the panel's replacing state (Edit), what it showed. The send then first removes the last
+   * user entry and every entry after it, in the same synchronous step as the turn start, so the turn's first save,
+   * before its request, writes the record without them, and a crash before it keeps the conversation whole. The
+   * removal checks what Retry checks (`lastTurnNow`: the conversation and the count are the current ones and the last
+   * turn offers Retry); when it fails, nothing is removed and the text goes back to the box. While a reply is in
+   * flight the message is queued as an ordinary one, since the replacing state ended when that reply started.
    */
-  async send(text: string, picked: readonly string[] = []): Promise<void> {
+  async send(text: string, picked: readonly string[] = [], replaces?: ShownEntries): Promise<void> {
+    const content = text.trim();
+    if (!content) return;
+    if (isReplying(this.state)) return this.queueMessage(content, picked);
+    const giveBack = () => this.giveBack([{ text: content, mentions: [...picked] }]);
+    if (!this.mayStartTurn()) return giveBack();
+    if (replaces !== undefined) {
+      const actions = this.lastTurnNow(replaces);
+      if (!actions) return giveBack();
+      this.removeFrom(actions.user);
+    }
+    return this.startTurn({ kind: "send", content, picked });
+  }
+
+  /**
+   * Retry: remove every entry after the last user entry and run the turn again from it, with the text the model
+   * received then (its mentions and skill are not read again; a skill it loaded stays loaded) and the provider, model,
+   * mode, limits, instruction files, and skills of now. The removal is saved by the turn's first save, before its
+   * request; a crash before it keeps the conversation whole. `shown`: what the panel showed. Ignored unless it is the
+   * conversation shown with its current count, a turn may start, and the last turn offers Retry (`lastTurnActions`),
+   * so a click on a lagging panel removes nothing. Removed writes and commands are not reverted: the panel asks first.
+   */
+  retry(shown: ShownEntries): Promise<void> {
+    const actions = this.lastTurnNow(shown);
+    if (!actions) return Promise.resolve();
+    const user = this.conversation.entries[actions.user] as UserEntry;
+    this.removeFrom(actions.user + 1);
+    return this.startTurn({ kind: "retry", user });
+  }
+
+  /**
+   * Continue: append a user entry whose text as typed is `label` (the button's, in the display language) and whose
+   * model text is `CONTINUE_TEXT`, then run it as a send: a new step budget and the settings of now. `shown`: as for
+   * `retry`; also ignored unless the last turn offers Continue (stopped, or halted on the step limit or on malformed
+   * calls).
+   */
+  continueTurn(shown: ShownEntries, label: string): Promise<void> {
+    if (!this.lastTurnNow(shown)?.continues) return Promise.resolve();
+    const user: UserEntry = { role: "user", content: label, mentions: [] };
+    this.modelText.set(user, CONTINUE_TEXT);
+    return this.startTurn({ kind: "continue", user });
+  }
+
+  /**
+   * What the last turn offers now, for a request made while the panel showed `shown`. Another conversation with as many
+   * entries is refused; within the conversation shown, the count is the only check, so a request posted before a Retry
+   * that ended on as many entries acts on the turn that Retry ran.
+   */
+  private lastTurnNow({ conversationId, entries }: ShownEntries): LastTurnActions | undefined {
+    const current = conversationId === this.conversation.id && entries === this.conversation.entries.length;
+    if (!current || !this.mayStartTurn()) return undefined;
+    return lastTurnActions(this.conversation.entries);
+  }
+
+  /**
+   * Remove the entries from `index` on, for good once the next save runs. The data "Undo changes" holds goes with its
+   * turn when that turn's reply is among them, and so does the last undo's outcome; a turn held from before `index`
+   * stays held. A write of a removed turn that lands later is not held, since that turn is no longer the latest.
+   */
+  private removeFrom(index: number): void {
+    const entries = this.conversation.entries;
+    const removed = (turn: Turn | undefined) => {
+      const at = turn?.reply === undefined ? -1 : entries.indexOf(turn.reply);
+      return turn !== undefined && (at === -1 || at >= index);
+    };
+    if (removed(this.heldTurn)) this.heldTurn = undefined;
+    if (removed(this.lastTurn)) this.lastTurn = undefined;
+    if (this.undoOutcome !== undefined && this.undoOutcome.reply >= index) this.undoOutcome = undefined;
+    entries.splice(index);
+  }
+
+  /**
+   * Run the turn `start` describes, once `mayStartTurn` passed, then, once it has fully settled (`this.reply` cleared,
+   * navigation released), never inside `settle`, and only when it ended `done`, send the first queued message.
+   */
+  private async startTurn(start: TurnStart): Promise<void> {
+    const ended = await this.runTurn(start);
+    if (ended === "done") await this.sendNextQueued();
+  }
+
+  /**
+   * Whether a send may start an agent turn now: a provider and a model chosen, no reply in flight, no mode pick
+   * being written, since the turn would start on a mode about to change, and no undo running, since the turn would
+   * read files about to change. The one check `send`, `/compact`, and the queue share.
+   */
+  private mayStartTurn(): boolean {
+    return (
+      this.currentProvider() !== undefined &&
+      this.state.model !== undefined &&
+      !isReplying(this.state) &&
+      !this.state.modePending &&
+      !this.undoing
+    );
+  }
+
+  /**
+   * Queue `text` while a reply is in flight, with its `picked` paths, to be sent as if typed when a turn ends `done`.
+   * The webview clears the box before the host answers and its state may lag, so a message not queued goes back to the
+   * box (`returnDraft`), never dropped: exactly a built-in command (`/new`, `/model`, `/compact`), which the webview runs itself, and
+   * a message past `MAX_QUEUED_MESSAGES`. With no reply in flight (it ended before the request arrived), the message is
+   * sent at once as `send` would, when a turn may start and nothing is queued; otherwise it goes back to the box, so no
+   * message waits paused because of a late request. Blank text is dropped, as `send` drops it.
+   */
+  async queueMessage(text: string, picked: readonly string[]): Promise<void> {
+    const content = text.trim();
+    if (!content) return;
+    const message = { text: content, mentions: [...picked] };
+    if (!isReplying(this.state) && !builtInCommand(content) && this.mayStartTurn() && this.state.queue.length === 0) {
+      return this.send(content, picked);
+    }
+    const queues = isReplying(this.state) && !builtInCommand(content) && this.state.queue.length < MAX_QUEUED_MESSAGES;
+    if (!queues) return this.giveBack([message]);
+    this.state.queue = [...this.state.queue, { id: ++this.queuedId, ...message }];
+    this.emit();
+  }
+
+  /** Edit: take queued message `id` out and return its text and picked paths to the box. Ignored when not queued. */
+  editQueued(id: number): void {
+    const message = this.state.queue.find((queued) => queued.id === id);
+    if (!message) return;
+    this.removeQueued(id);
+    this.giveBack([message]);
+  }
+
+  /** Remove queued message `id`. Ignored when no such message is queued. */
+  removeQueued(id: number): void {
+    if (!this.state.queue.some((message) => message.id === id)) return;
+    this.state.queue = this.state.queue.filter((message) => message.id !== id);
+    this.emit();
+  }
+
+  /**
+   * "Send now" on a paused queue: send queued message `id` when it is the first and a turn may start; its turn ending
+   * `done` resumes the queue. Ignored otherwise.
+   */
+  sendQueued(id: number): Promise<void> {
+    if (this.state.queue[0]?.id !== id) return Promise.resolve();
+    return this.sendNextQueued();
+  }
+
+  /**
+   * Send the first queued message, as if typed now: its mentions read now, and the provider, model, mode, and limits of
+   * now. When a turn may not start (the model gone after a failed listing, a mode pick written), nothing is sent and it
+   * stays first. Taken off the queue in the same step as `send` shows it, so it is never in both.
+   */
+  private sendNextQueued(): Promise<void> {
+    const next = this.state.queue[0];
+    if (!next || !this.mayStartTurn()) return Promise.resolve();
+    this.state.queue = this.state.queue.slice(1);
+    return this.send(next.text, next.mentions);
+  }
+
+  /**
+   * Navigation that changes the conversation shown, when asked: empty the queue and return its texts to the box, in
+   * order, one per paragraph. Emptied once, so a second request returns nothing again.
+   */
+  private returnQueue(): void {
+    const messages = this.state.queue;
+    if (messages.length === 0) return;
+    this.state.queue = [];
+    this.emit();
+    this.giveBack(messages);
+  }
+
+  /** `messages`' texts back in the message box as one `paragraph` draft, their picked paths each once. */
+  private giveBack(messages: readonly { text: string; mentions: readonly string[] }[]): void {
+    const text = messages.map((message) => message.text).join("\n\n");
+    const picked = [...new Set(messages.flatMap((message) => message.mentions))];
+    try {
+      this.returnDraft({ text, mode: "paragraph", picked });
+    } catch (error) {
+      console.error("broke-code: could not return unsent text to the message box; it is lost", text, error);
+    }
+  }
+
+  /** Deactivation: nothing queued is sent or returned, since the panel goes too, and the reply in flight is stopped. */
+  dispose(): void {
+    this.state.queue = [];
+    this.stop();
+  }
+
+  /** The agent turn `start` describes, once `mayStartTurn` passed; its last status, `undefined` when it did not start. */
+  private async runTurn(start: TurnStart): Promise<ReplyStatus | undefined> {
     const provider = this.currentProvider();
     const model = this.state.model;
-    const content = text.trim();
-    if (!provider || !model || !content || isReplying(this.state)) return;
+    if (!provider || !model) return undefined;
     this.limits = this.limitsSource.read();
-    const { maxToolSteps } = this.limits;
+    // [!]: Read once: `limitsChanged` during the turn reaches the usage display, never this turn.
+    const { maxToolSteps, autoCompact } = this.limits;
+    // [!]: Plan is read once: the turn's tools and prompt hold until it ends. The auto-approve setting is not read
+    // here: each write's request reads it (see `askApproval`).
+    const mode: Mode | undefined = this.plan ? "plan" : undefined;
     const contextSize = contextOf(this.limits, model).size;
 
     const conversation = this.conversation;
     conversation.provider = provider.name;
     conversation.model = model;
-    const user: ChatEntry & { role: "user" } = { role: "user", content, mentions: [] };
-    let reply = waitingReply();
-    // [>]: Published before the reads, so the panel shows a reply in flight (Stop, composer locked) while they run;
-    // published again once the mentions are known.
-    conversation.entries.push(user, reply);
-    const abort = new AbortController();
-    const signal = abort.signal;
-    let markSettled: () => void = () => {};
-    const settled = new Promise<void>((resolve) => {
-      markSettled = resolve;
-    });
-    this.reply = { abort, provider, settled };
-    this.emit();
-    /** Last status of the turn, on its last reply, and its last save handed to the store. */
-    const settle = (status: ReplyStatus, haltReason?: HaltReason) => {
-      reply.status = status;
-      if (haltReason !== undefined) reply.haltReason = haltReason;
-      this.emit();
-      void this.save(conversation);
+    const turn: Turn = {
+      conversation,
+      changes: new RecordedChanges((file) => {
+        turn.written = file.realPath;
+        this.holdTurn(turn);
+        if (this.heldTurn === turn) void this.nameRows(turn);
+      }),
+      steps: new Map(),
+      written: undefined,
+      reply: undefined,
+      ranCommand: false,
+      rows: [],
+      naming: 0,
     };
-
-    try {
+    this.lastTurn = turn;
+    this.undoOutcome = undefined;
+    const user: UserEntry = start.kind === "send" ? { role: "user", content: start.content, mentions: [] } : start.user;
+    const first = waitingReply();
+    // [>]: Published before the reads, so the panel shows a reply in flight (Stop, composer locked) while they run;
+    // published again once the mentions are known. A retried entry is already the last one.
+    if (start.kind !== "retry") conversation.entries.push(user);
+    conversation.entries.push(first);
+    const ended = await this.runReply(provider, conversation, first, "the agent turn", async (run) => {
+      const { signal, settle } = run;
       // [>]: The message is on disk before the request goes, so a crash keeps it. A failed save is shown and the
       // reply still goes. Stop ends the wait at once, even if a read, the key lookup, or the save never settles.
       const prepared = await unlessAborted(
         Promise.all([
-          this.readMentions(content, picked),
+          start.kind === "send" ? this.readMentions(start.content, start.picked) : undefined,
           this.accessOf(provider),
           this.readInstructions(),
           this.readSkills(),
@@ -424,55 +865,83 @@ export class ChatController {
       if (!prepared) return settle("stopped");
       const [mentions, access, instructions, discovery] = prepared;
       this.state.skillWarnings = discovery.warnings;
-      // [>]: A `/<name>` that names no discovered skill (`/new` included) goes as typed. The token is never a mention,
-      // since a mention starts with `@`, so the mentions read above are the arguments'.
-      const slash = findSlashSkill(content, discovery.skills);
-      const loaded = slash ? await unlessAborted(loadSkillText(slash.skill, slash.args), signal) : undefined;
-      if (slash && !loaded) return settle("stopped");
-      user.mentions = mentions.map(toResult);
-      if (slash && loaded) {
-        user.skill = { name: slash.skill.name, status: loaded.status === "ok" ? "loaded" : "failed" };
-      }
-      this.modelText.set(user, composeUserMessage(loaded?.text ?? content, mentions));
-      if (mentions.length > 0 || slash) {
-        this.emit();
-        const saved = await unlessAborted(
-          this.save(conversation).then(() => true),
-          signal,
-        );
-        if (!saved) return settle("stopped");
+      if (start.kind === "send" && mentions) {
+        // [>]: A `/<name>` that names no discovered skill (`/new` included) goes as typed. The token is never a
+        // mention, since a mention starts with `@`, so the mentions read above are the arguments'.
+        const slash = findSlashSkill(start.content, discovery.skills);
+        const loaded = slash ? await unlessAborted(loadSkillText(slash.skill, slash.args), signal) : undefined;
+        if (slash && !loaded) return settle("stopped");
+        user.mentions = mentions.map(toResult);
+        if (slash && loaded) {
+          user.skill = { name: slash.skill.name, status: loaded.status === "ok" ? "loaded" : "failed" };
+        }
+        this.modelText.set(user, composeUserMessage(loaded?.text ?? start.content, mentions));
+        if (mentions.length > 0 || slash) {
+          this.emit();
+          const saved = await unlessAborted(
+            this.save(conversation).then(() => true),
+            signal,
+          );
+          if (!saved) return settle("stopped");
+        }
       }
 
-      const tools = offeredTools(this.tools.tools, discovery.skills);
-      const system = composeSystemPrompt(tools, instructions, discovery.skills);
+      const tools = offeredTools(this.tools.tools, discovery.skills, mode);
+      const system = composeSystemPrompt(tools, instructions, discovery.skills, mode);
       this.systemPrompt = system;
       // [>]: The display counts the instruction files and skills now, not at the first reply delta.
       this.emit();
       let steps = 0;
       let malformedInARow = 0;
+      /** This request was already compacted: at most one automatic summary per request. */
+      let compacted = false;
       for (;;) {
-        const messages = this.requestMessages(system, conversation);
+        const { messages } = this.requestMessages(conversation, { system, contextSize });
         // [>]: Never a provider error: no request goes. The reply that would have carried it ends halted.
         if (fillsContext(estimateTokens(messages), contextSize)) {
-          return settle("halted", "contextFull");
+          if (!autoCompact || compacted) return settle("halted", "contextFull");
+          const summary = this.summaryMessages(conversation.entries, instructions);
+          if (fillsContext(estimateTokens(summary), contextSize)) return settle("halted", "contextFull");
+          // [>]: The summary takes the place of the reply still waiting, which comes back after it once it ends done:
+          // the turn stays in flight across it, and a failed or stopped summary ends the turn as its last entry.
+          conversation.entries.pop();
+          const summaryEntry: ChatEntry & { role: "assistant" } = { ...waitingReply(), summary: true };
+          run.reply = summaryEntry;
+          conversation.entries.push(run.reply);
+          this.emit();
+          const ended = await this.stream(access, model, summary, [], conversation, run.reply, signal);
+          if (!ended) return settle("stopped");
+          if (ended.status === "failed") run.reply.error = ended.error;
+          if (ended.status !== "done") return settle(ended.status);
+          // [>]: The summary and the next reply land in one update, so a summary that ended done is never the last
+          // entry: that reply following it is what marks it automatic (`isAutomaticSummary`).
+          run.reply.status = "done";
+          run.reply = waitingReply();
+          conversation.entries.push(run.reply);
+          if (summaryEntry.content.trim() === "") return settle("halted", "contextFull");
+          this.emit();
+          void this.save(conversation);
+          compacted = true;
+          continue;
         }
-        const outcome = await this.stream(access, model, messages, tools, conversation, reply, signal);
+        compacted = false;
+        const outcome = await this.stream(access, model, messages, tools, conversation, run.reply, signal);
         if (!outcome) return settle("stopped");
-        if (outcome.status === "failed") reply.error = outcome.error;
+        if (outcome.status === "failed") run.reply.error = outcome.error;
         if (outcome.status !== "done") return settle(outcome.status);
 
         // [!]: The parser reads the answer only, never the reasoning.
-        const parsed = parseToolCall(reply.content, tools);
+        const parsed = parseToolCall(run.reply.content, tools);
         if (parsed.kind === "none") return settle("done");
         let step: ChatEntry & { role: "tool" };
         if (parsed.kind === "call") {
           const { name, args, start, end } = parsed;
           // [!]: One call per reply. What follows it never reaches the chat or the history: a model that goes on writes
           // calls that never run and results it invented, which it would then read back as true.
-          reply.content = reply.content.slice(0, end);
+          run.reply.content = run.reply.content.slice(0, end);
           // [>]: The reply stays `streaming` while its call runs, so the turn reads as in flight and a crash meanwhile
           // brings it back stopped.
-          reply.call = { name, args, start, end };
+          run.reply.call = { name, args, start, end };
           this.emit();
           void this.save(conversation);
           let approval: StepApproval | undefined;
@@ -481,11 +950,16 @@ export class ChatController {
             requestApproval: async (request) => {
               const answer = await this.askApproval(request, signal);
               approval = answer.approval ?? approval;
+              // [>]: Once Run is clicked the command runs, whether its step is recorded or dropped by Stop.
+              if (request.kind === "command" && answer.decision.kind === "accept") turn.ranCommand = true;
               return answer.decision;
             },
             skills: discovery.skills,
             skillRoots: loadedSkillRoots(conversation.entries, discovery.skills),
+            sentSkillRoots: loadedSkillRoots(sentEntries(conversation.entries), discovery.skills),
+            changes: turn.changes,
           };
+          turn.written = undefined;
           const result = await unlessAborted(this.runTool({ name, args }, context), signal);
           if (!result) return settle("stopped");
           step = {
@@ -496,11 +970,24 @@ export class ChatController {
             text: result.text,
             ...(approval ? { approval } : {}),
           };
+          if (turn.written !== undefined) {
+            turn.steps.set(turn.written, [...(turn.steps.get(turn.written) ?? []), step]);
+          }
+          malformedInARow = 0;
+        } else if (mode === "plan" && planBlocked(run.reply.content, parsed)) {
+          const name = malformedToolName(run.reply.content, parsed);
+          // [>]: An ordinary tool step, like a rejection: it counts toward the step limit and resets the malformed
+          // count. Nothing is planned and no approval opens. What follows the block is dropped, as after a call.
+          run.reply.content = run.reply.content.slice(0, parsed.end);
+          step = { role: "tool", name, args: {}, status: "error", text: `${name} is not available in Plan mode.` };
           malformedInARow = 0;
         } else {
+          // [!]: A result the model invented never reaches the chat or the history, or the model would read it back
+          // as true on the next request.
+          if (parsed.forged) run.reply.content = run.reply.content.slice(0, parsed.start);
           step = {
             role: "tool",
-            name: malformedToolName(reply.content, parsed),
+            name: malformedToolName(run.reply.content, parsed),
             args: {},
             status: "malformed",
             text: parsed.message,
@@ -512,31 +999,194 @@ export class ChatController {
         if (malformedInARow >= MAX_MALFORMED_IN_A_ROW) return settle("halted", "malformedCalls");
         if (steps >= maxToolSteps) return settle("halted", "stepLimit");
         // [>]: The step and the next reply land in one update, so the turn never reads as ended between them.
-        reply.status = "done";
-        reply = waitingReply();
-        conversation.entries.push(reply);
+        run.reply.status = "done";
+        run.reply = waitingReply();
+        conversation.entries.push(run.reply);
         this.emit();
         void this.save(conversation);
       }
+    });
+    turn.reply = ended.reply;
+    if (this.heldTurn === turn) this.emit();
+    return ended.status;
+  }
+
+  /**
+   * `turn` recorded a write: hold it, in place of the turn held so far, while it is the latest turn of the conversation
+   * shown, which a write that lands after Stop may still be. Nothing is held without the undo's host port.
+   */
+  private holdTurn(turn: Turn): void {
+    if (this.undoHost === undefined || this.lastTurn !== turn || this.heldTurn === turn) return;
+    this.heldTurn = turn;
+    this.emit();
+  }
+
+  /** `ChatState.undo`, derived: the button's reply only while a held turn has files left and no reply is in flight. */
+  private undoState(): UndoState {
+    const held = this.heldTurn;
+    const index = held?.reply === undefined ? -1 : this.conversation.entries.indexOf(held.reply);
+    const shows = held !== undefined && index !== -1 && held.changes.files.length > 0 && !isReplying(this.state);
+    return {
+      reply: shows ? index : undefined,
+      ranCommand: shows && held.ranCommand,
+      running: this.undoing,
+      outcome: this.undoOutcome,
+    };
+  }
+
+  /**
+   * Name `turn`'s files for "Changed files", as the file index writes them (relative to the workspace folder that holds
+   * each as it resolves now, else as the model wrote it), with their line counts, then publish them while the turn is
+   * held. Run at each recorded write of the held turn: naming needs the real roots, which are async, so the rows
+   * cannot be derived at each emit. A naming overtaken by a later one is dropped. Never rejects.
+   */
+  private async nameRows(turn: Turn): Promise<void> {
+    const naming = ++turn.naming;
+    let realRoots: WorkspaceRoot[] = [];
+    try {
+      realRoots = this.undoHost ? await realWorkspaceRoots(this.undoHost.roots()) : [];
     } catch (error) {
-      // [!]: A bug, never the provider's failure: logged with its stack, and shown, so the composer never stays
-      // locked on a reply that will not end.
-      console.error("broke-code: the agent turn failed unexpectedly", error instanceof Error ? error.stack : error);
-      reply.error = { kind: "internal", message: error instanceof Error ? error.message : String(error) };
-      settle("failed");
-    } finally {
-      // [>]: Also on an unexpected throw, so navigation waiting for this turn never hangs.
-      if (this.reply?.abort === abort) this.reply = undefined;
-      markSettled();
+      // [>]: The rows still show, named as the model wrote them; the undo reports a broken host on its own.
+      console.error("broke-code: could not resolve the workspace folders to name the changed files", error);
     }
+    if (naming !== turn.naming) return;
+    turn.rows = turn.changes.files.map((file) => ({
+      path: workspacePath(realRoots, file.realPath) ?? file.path,
+      realPath: file.realPath,
+      kind: file.original === undefined ? "created" : "edited",
+      ...this.countLines(file),
+    }));
+    if (this.heldTurn === turn) this.emit();
+  }
+
+  /** `file`'s line counts since before the turn, computed at the first call for this write and kept. */
+  private countLines(file: RecordedFile): LineCounts {
+    let counts = this.lineCounts.get(file);
+    if (counts === undefined) {
+      counts = lineDiffCount(file.original, file.written);
+      this.lineCounts.set(file, counts);
+    }
+    return counts;
+  }
+
+  /**
+   * "Changed files" now: the held turn's rows while "Undo changes" shows, less the files that left the held turn since
+   * they were named (an undo put them back).
+   */
+  private changedRows(): ChangedRow[] {
+    const held = this.heldTurn;
+    if (held === undefined || this.state.undo.reply === undefined) return [];
+    return held.rows.filter((row) => held.changes.has(row.realPath));
+  }
+
+  /**
+   * A row of "Changed files": open the diff of the first row shown under `path`, through the `changeDiffs` port, with
+   * its file's text before the turn. Ignored when no row shown has that path, or without the port. Settles once the
+   * port has; never rejects.
+   */
+  async openChangeDiff(path: string): Promise<void> {
+    const held = this.heldTurn;
+    const host = this.changeDiffs;
+    const row = this.changedRows().find((shown) => shown.path === path);
+    const file = row && held?.changes.files.find((recorded) => recorded.realPath === row.realPath);
+    if (!held || !host || !row || !file) return;
+    if (!this.openDiffs.some((open) => open.turn === held && open.realPath === file.realPath)) {
+      this.openDiffs.push({ turn: held, realPath: file.realPath });
+    }
+    try {
+      await host.open({ path: row.path, realPath: file.realPath, original: file.original });
+    } catch (error) {
+      console.error("broke-code: could not open the diff of a changed file", error);
+    }
+  }
+
+  /**
+   * Close the diffs whose file left the held turn: put back by an undo, or its turn no longer held (a later turn's first
+   * write, Retry or Edit removing it, New chat, open, delete). Run at each emit, the one place every such change passes.
+   */
+  private closeGoneDiffs(): void {
+    const held = this.heldTurn;
+    const stays = (open: { turn: Turn; realPath: string }) => open.turn === held && held.changes.has(open.realPath);
+    const gone = this.openDiffs.filter((open) => !stays(open));
+    if (gone.length === 0) return;
+    this.openDiffs = this.openDiffs.filter(stays);
+    try {
+      this.changeDiffs?.close(gone.map((open) => open.realPath));
+    } catch (error) {
+      console.error("broke-code: could not close the diffs of changed files", error);
+    }
+  }
+
+  /**
+   * "Undo changes": restore each file of the held turn (see `RecordedChanges.restore`), with the editor's unsaved check,
+   * and show what happened to each in `ChatState.undo.outcome`. Restored and removed files leave the held turn; skipped
+   * ones stay for the next undo, and the button goes once none is left. Ignored while a reply is in flight, while an
+   * undo runs, and when the button does not show. Runs in the navigation queue, so New chat, open, and delete asked
+   * meanwhile wait for it; Send does not act until it ends (`mayStartTurn`). Settles once it has ended.
+   */
+  undoChanges(): Promise<void> {
+    const held = this.heldTurn;
+    const host = this.undoHost;
+    if (!held || !host || this.undoing || this.undoState().reply === undefined) return Promise.resolve();
+    this.undoing = true;
+    this.undoOutcome = undefined;
+    this.emit();
+    return this.navigate(async () => {
+      try {
+        // [>]: A navigation asked before the undo has changed the conversation shown, which dropped the turn.
+        if (this.heldTurn !== held || held.reply === undefined) return;
+        const before = held.changes.files;
+        let outcome: NonNullable<UndoState["outcome"]>;
+        const reply = this.conversation.entries.indexOf(held.reply);
+        try {
+          const roots = host.roots();
+          const outcomes = await held.changes.restore(roots, {
+            hasUnsavedChanges: (target) => host.hasUnsavedChanges(target),
+          });
+          outcome = { reply, files: await undoneFiles(roots, outcomes) };
+        } catch (error) {
+          // [>]: The restore and the port never reject by contract; a bug here is shown, never silent, and the files
+          // not restored stay held for a retry. Those restored before it left the set (see `undoneSince`).
+          console.error("broke-code: the undo failed unexpectedly", error instanceof Error ? error.stack : error);
+          const message = error instanceof Error ? error.message : String(error);
+          outcome = { reply, files: undoneSince(before, held.changes), error: message };
+        }
+        // [!]: The mark follows the restore: it tells the model a change is gone, so it is never saved before the
+        // file is back. A crash between the two leaves the steps unmarked; marking again is harmless.
+        if (this.markUndone(held, before)) await this.save(held.conversation);
+        if (this.heldTurn !== held) return;
+        this.undoOutcome = outcome;
+        if (held.changes.files.length === 0) this.heldTurn = undefined;
+      } finally {
+        this.undoing = false;
+        this.emit();
+      }
+    }, false);
+  }
+
+  /**
+   * Mark undone every write step of `held` whose file was in `before` and has since left its set, restored or removed;
+   * a skipped file stays in the set, and its steps unmarked. Returns whether a step was marked.
+   */
+  private markUndone(held: Turn, before: RecordedFile[]): boolean {
+    let marked = false;
+    for (const { realPath } of before) {
+      if (held.changes.has(realPath)) continue;
+      for (const step of held.steps.get(realPath) ?? []) {
+        step.undone = true;
+        marked = true;
+      }
+      held.steps.delete(realPath);
+    }
+    return marked;
   }
 
   /**
    * Stream one reply of a turn into `reply`. `undefined` once `signal` aborts: Stop ends the reply at once, even if a
    * step inside `streamChat` never settles (a CA file read on a FIFO), and late deltas and the late outcome are
    * dropped, so navigation never waits on work that cannot be aborted. A reply whose answer holds a complete call
-   * followed by a tool result the model wrote itself (`forgedResultCut`) ends `done` there: its request is cancelled
-   * and later deltas are dropped, so a model forging results costs no more time.
+   * followed by a tool result the model wrote itself or by another call (`replyCut`) ends `done` there: its request is
+   * cancelled and later deltas are dropped, so a model forging results or repeating calls costs no more time.
    */
   private async stream(
     access: ProviderAccess,
@@ -553,8 +1203,18 @@ export class ChatController {
       if (signal.aborted || cut.signal.aborted) return;
       reply[field] += text;
       reply.status = "streaming";
+      if (field === "content" && reply.reasoning === "") {
+        // [>]: Reasoning streamed as content moves to the reasoning once its bare `</think>` arrives; the answer then
+        // starts over, so the cut scan does too.
+        const late = lateReasoning(reply.content);
+        if (late) {
+          reply.reasoning = late.reasoning;
+          reply.content = late.answer;
+          scanned = 0;
+        }
+      }
       if (field === "content") {
-        const found = forgedResultCut(reply.content, tools, scanned);
+        const found = replyCut(reply.content, tools, scanned);
         scanned = found.scanned;
         if (found.cut !== undefined) {
           reply.content = reply.content.slice(0, found.cut);
@@ -576,6 +1236,112 @@ export class ChatController {
     );
     if (outcome && cut.signal.aborted) return { status: "done" as const };
     return outcome;
+  }
+
+  /**
+   * `/compact`: one request asking the model for a summary of the conversation shown, streamed into an assistant entry
+   * marked `summary`, a reply like any other for Stop, saving, navigation, and "a reply is in flight". The request
+   * holds the summary system prompt (`composeSummaryPrompt`, the instruction files read now) and `summaryHistory`;
+   * over the context threshold even so, nothing is sent and the entry ends `halted` (`contextFull`). The answer is
+   * never parsed for a call. Once it ends `done` with text, the history sent starts at it (`historyStart`). As after a
+   * send, a summary that ends `done` then sends the first queued message.
+   */
+  async compact(): Promise<CompactOutcome> {
+    const entries = this.conversation.entries;
+    const last = entries.at(-1);
+    if (!this.mayStartTurn()) return "ignored";
+    const summarized =
+      last?.role === "assistant" && last.summary === true && historyStart(entries) === entries.length - 1;
+    if (last === undefined || summarized) return "nothingToSummarize";
+    const ended = await this.runSummary();
+    if (ended === "done") await this.sendNextQueued();
+    return "ran";
+  }
+
+  /** The summary reply of `compact`, once `mayStartTurn` passed; its status, `undefined` when it did not start. */
+  private async runSummary(): Promise<ReplyStatus | undefined> {
+    const provider = this.currentProvider();
+    const model = this.state.model;
+    if (!provider || !model) return undefined;
+    this.limits = this.limitsSource.read();
+    const contextSize = contextOf(this.limits, model).size;
+    const conversation = this.conversation;
+    conversation.provider = provider.name;
+    conversation.model = model;
+    // [>]: The history is taken before the reply joins the entries; a summary entry not yet done is never sent anyway.
+    const entries = [...conversation.entries];
+    const reply: ChatEntry & { role: "assistant" } = { ...waitingReply(), summary: true };
+    conversation.entries.push(reply);
+    const ended = await this.runReply(provider, conversation, reply, "the summary", async ({ signal, settle }) => {
+      const prepared = await unlessAborted(
+        Promise.all([this.accessOf(provider), this.readInstructions(), this.save(conversation)]),
+        signal,
+      );
+      if (!prepared) return settle("stopped");
+      const [access, instructions] = prepared;
+      const messages = this.summaryMessages(entries, instructions);
+      if (fillsContext(estimateTokens(messages), contextSize)) return settle("halted", "contextFull");
+      // [!]: No tools: the answer is never parsed for a call, so a call-shaped block in it runs nothing.
+      const outcome = await this.stream(access, model, messages, [], conversation, reply, signal);
+      if (!outcome) return settle("stopped");
+      if (outcome.status === "failed") reply.error = outcome.error;
+      return settle(outcome.status);
+    });
+    return ended.status;
+  }
+
+  /**
+   * The lifecycle of a reply in flight, an agent turn's or a summary's: `reply`, already among the conversation's
+   * entries, becomes the reply in flight (Stop, navigation, and a provider change abort its signal) and is published,
+   * then `body` runs with its `ReplyRun`. An unexpected throw inside `body` (a bug, never the provider's failure) ends
+   * the reply `failed` with an `internal` error, logged with its stack under `what`, so the composer never stays
+   * locked on a reply that will not end. Whatever ended `body`, the reply in flight is then released and navigation
+   * waiting for it goes on.
+   */
+  private async runReply(
+    provider: Provider,
+    conversation: Conversation,
+    reply: ChatEntry & { role: "assistant" },
+    what: string,
+    body: (run: ReplyRun) => Promise<ReplyStatus>,
+  ): Promise<{ status: ReplyStatus; reply: ChatEntry }> {
+    const abort = new AbortController();
+    let markSettled: () => void = () => {};
+    const settled = new Promise<void>((resolve) => {
+      markSettled = resolve;
+    });
+    this.reply = { abort, provider, settled };
+    const run: ReplyRun = {
+      reply,
+      signal: abort.signal,
+      settle: (status, haltReason) => {
+        run.reply.status = status;
+        if (haltReason !== undefined) run.reply.haltReason = haltReason;
+        this.emit();
+        void this.save(conversation);
+        return status;
+      },
+    };
+    this.emit();
+    try {
+      return { status: await body(run), reply: run.reply };
+    } catch (error) {
+      console.error(`broke-code: ${what} failed unexpectedly`, error instanceof Error ? error.stack : error);
+      run.reply.error = { kind: "internal", message: error instanceof Error ? error.message : String(error) };
+      return { status: run.settle("failed"), reply: run.reply };
+    } finally {
+      if (this.reply?.abort === abort) this.reply = undefined;
+      markSettled();
+    }
+  }
+
+  /**
+   * The summary request for `entries`, `/compact`'s and the automatic one's: the summary system prompt with the
+   * `instructions`, then `summaryHistory`. The caller checks its size.
+   */
+  private summaryMessages(entries: readonly ChatEntry[], instructions: readonly InstructionFile[]): ChatMessage[] {
+    const history = summaryHistory(entries, (entry) => this.modelText.get(entry) ?? entry.content);
+    return [{ role: "system", content: composeSummaryPrompt(instructions) }, ...history.messages];
   }
 
   /** Run `call`. A runner that rejects despite its contract gives an `error` result, logged. */
@@ -684,6 +1450,7 @@ export class ChatController {
    */
   newChat(): Promise<void> {
     this.stop();
+    this.returnQueue();
     return this.navigate(async () => {
       await this.settleReply();
       this.show(this.freshConversation());
@@ -695,7 +1462,10 @@ export class ChatController {
    * request -> `notFound`, and its row is dropped; a read that fails -> `openFailed`.
    */
   openConversation(id: string): Promise<void> {
-    if (id !== this.conversation.id) this.stop();
+    if (id !== this.conversation.id) {
+      this.stop();
+      this.returnQueue();
+    }
     return this.navigate(async () => {
       if (id === this.conversation.id) return;
       await this.settleReply();
@@ -717,7 +1487,10 @@ export class ChatController {
    * and a new one shown first. Another row -> the reply keeps running. A failed delete keeps the row and is reported.
    */
   deleteConversation(id: string): Promise<void> {
-    if (id === this.conversation.id) this.stop();
+    if (id === this.conversation.id) {
+      this.stop();
+      this.returnQueue();
+    }
     return this.navigate(async () => {
       if (id === this.conversation.id) {
         await this.settleReply();
@@ -807,7 +1580,7 @@ export class ChatController {
       findMentions(text, picked).map((path) =>
         this.mentions.read(path).catch((error: unknown): ReadMention => {
           console.error("broke-code: could not read mention", path, error);
-          const kind = path.endsWith("/") ? "folder" : "file";
+          const kind = reservedMention(path) ?? (path.endsWith("/") ? "folder" : "file");
           return { path, kind, status: "unreadable", content: "", omitted: 0, cause: String(error) };
         }),
       ),
@@ -853,6 +1626,10 @@ export class ChatController {
 
   /** Put `conversation` in front, as the one shown and reopened at the next window load. Navigation only. */
   private show(conversation: Conversation): void {
+    // [>]: The held changes belong to the conversation shown: another one never gets its button or outcome.
+    this.lastTurn = undefined;
+    this.heldTurn = undefined;
+    this.undoOutcome = undefined;
     this.conversation = conversation;
     this.state.conversationId = conversation.id;
     this.state.entries = conversation.entries;
@@ -928,28 +1705,16 @@ export class ChatController {
     this.emit();
   }
 
-  /** The messages of `conversation`'s next request: `system`, then its history. */
-  private requestMessages(system: string, conversation: Conversation): ChatMessage[] {
-    return [{ role: "system", content: system }, ...this.toHistory(conversation)];
-  }
-
   /**
-   * `conversation` as sent to the model: user messages as composed at send time, assistant answers verbatim, their
-   * call blocks included (stopped and cut-off partials too), and each tool step as a `user` message holding a
-   * `<tool_result>` tag, never the `tool` role, which needs native tool calling (ADR 0001). Reasoning never sent. A
-   * reply without text is left out, unless a tool step follows it: an empty answer goes back with its malformed step,
-   * so the roles keep alternating, which some chat templates (Gemma's) require.
+   * The messages of `conversation`'s next request: `budget.system`, then its history, the oldest tool results left out
+   * when the whole would fill `budget.contextSize` (see `toHistory`); `leftOut` counts them.
    */
-  private toHistory(conversation: Conversation): ChatMessage[] {
-    const messages: ChatMessage[] = [];
-    conversation.entries.forEach((entry, index) => {
-      if (entry.role === "user") messages.push({ role: "user", content: this.modelText.get(entry) ?? entry.content });
-      else if (entry.role === "tool") messages.push({ role: "user", content: toolResultMessage(entry) });
-      else if (entry.content !== "" || conversation.entries[index + 1]?.role === "tool") {
-        messages.push({ role: "assistant", content: entry.content });
-      }
-    });
-    return messages;
+  private requestMessages(
+    conversation: Conversation,
+    budget: HistoryBudget,
+  ): { messages: ChatMessage[]; leftOut: number } {
+    const history = toHistory(conversation.entries, (entry) => this.modelText.get(entry) ?? entry.content, budget);
+    return { messages: [{ role: "system", content: budget.system }, ...history.messages], leftOut: history.leftOut };
   }
 
   private currentProvider(): Provider | undefined {
@@ -977,14 +1742,22 @@ export class ChatController {
     });
   }
 
-  /** Estimate of the next request of the conversation shown, against `model`'s context size. */
+  /**
+   * Estimate of the next request of the conversation shown, as it would be sent, against `model`'s context size, and
+   * the count of tool results it leaves out, when any.
+   */
   private contextUsage(model: string | undefined): ContextUsage {
-    const used = estimateTokens(this.requestMessages(this.systemPrompt, this.conversation));
-    return { used, ...contextOf(this.limits, model) };
+    const context = contextOf(this.limits, model);
+    const budget = { system: this.systemPrompt, contextSize: context.size };
+    const { messages, leftOut } = this.requestMessages(this.conversation, budget);
+    return { used: estimateTokens(messages), ...context, ...(leftOut > 0 ? { leftOut } : {}) };
   }
 
   private emit(): void {
     this.state.context = this.contextUsage(this.state.model);
+    this.state.undo = this.undoState();
+    this.state.changedFiles = this.changedRows().map(({ realPath: _, ...row }) => row);
+    this.closeGoneDiffs();
     this.publish(this.state);
   }
 }
@@ -1012,15 +1785,6 @@ function waitingReply(): ChatEntry & { role: "assistant" } {
 }
 
 /**
- * The tools of a send: `load_skill` only while a skill is listed to the model, like the Skills section of the system
- * prompt, so a workspace without skills spends no prompt on a tool that cannot load anything.
- */
-function offeredTools(tools: readonly ToolSpec[], skills: readonly Skill[]): readonly ToolSpec[] {
-  if (skills.some((skill) => skill.listedToModel)) return tools;
-  return tools.filter((tool) => tool.name !== "load_skill");
-}
-
-/**
  * The real folders of the skills loaded in `entries`: each `ok` `load_skill` step's name and each user entry's skill
  * loaded with `/<name>`, found in `discovered` (the send's skills). A step that failed, or was stopped, and a skill
  * whose `SKILL.md` could not be read at send loaded nothing; a skill no longer discovered is no longer readable.
@@ -1036,12 +1800,6 @@ function loadedSkillRoots(entries: readonly ChatEntry[], discovered: readonly Sk
   return discovered.filter((skill) => names.has(skill.name)).map((skill) => skill.root);
 }
 
-/** A tool step as the model reads it. A malformed call goes back as an error. */
-function toolResultMessage(step: ChatEntry & { role: "tool" }): string {
-  const status = step.status === "malformed" ? "error" : step.status;
-  return `<tool_result tool="${step.name}" status="${status}">\n${step.text}\n</tool_result>`;
-}
-
 /**
  * The tag name a malformed block of `answer` opens with, a known tool or not, or `unknown` when none can be read.
  * [!]: The name matches the parser's tag pattern (`[a-z][a-z0-9_]*`), so it is safe inside the quoted `tool`
@@ -1051,7 +1809,44 @@ function malformedToolName(answer: string, parsed: ParsedReply & { kind: "malfor
   return /^<([a-z][a-z0-9_]*)>/.exec(answer.slice(parsed.start))?.[1] ?? "unknown";
 }
 
+/**
+ * Whether a malformed block of a Plan turn's `answer` is a call to a tool Plan leaves out. The parser reads against the
+ * offered tools, so such a closed block is "not a known tool"; a block of a tool Plan offers never names one of these.
+ */
+function planBlocked(answer: string, parsed: ParsedReply & { kind: "malformed" }): boolean {
+  return PLAN_BLOCKED_TOOLS.includes(malformedToolName(answer, parsed));
+}
+
+/**
+ * The files of `before` no longer in `changes`, which only a restore or a removal takes out: each as restored, or as
+ * removed when the writes created it. Named as the model wrote them, for an undo that failed before naming its files.
+ */
+function undoneSince(before: RecordedFile[], changes: RecordedChanges): UndoneFile[] {
+  return before
+    .filter(({ realPath }) => !changes.has(realPath))
+    .map(({ path, original }) => ({ path, status: original === undefined ? "removed" : "restored" }));
+}
+
+/**
+ * Each restore outcome as the chat names it: the file as the file index writes it, relative to the workspace folder
+ * that holds it as it resolves now, else as the model wrote it at the first write.
+ */
+async function undoneFiles(roots: WorkspaceRoot[], outcomes: RestoreOutcome[]): Promise<UndoneFile[]> {
+  const realRoots = await realWorkspaceRoots(roots);
+  return outcomes.map(({ realPath, path, ...outcome }) => ({
+    path: workspacePath(realRoots, realPath) ?? path,
+    ...outcome,
+  }));
+}
+
 /** What the chat shows and keeps of a read mention: no content. */
-function toResult({ path, kind, status, lines }: ReadMention): MentionResult {
-  return { path, kind, status, ...(lines !== undefined ? { lines } : {}) };
+function toResult({ path, kind, status, lines, range, failedFolders }: ReadMention): MentionResult {
+  return {
+    path,
+    kind,
+    status,
+    ...(lines !== undefined ? { lines } : {}),
+    ...(range !== undefined ? { range } : {}),
+    ...(failedFolders !== undefined ? { failedFolders } : {}),
+  };
 }

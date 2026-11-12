@@ -1,23 +1,26 @@
 /**
  * @module bench
  * `bun run eval`: plays every scenario, or those `--scenario` names, `--runs` times on each model against the local
- * Ollama, all runs of one model before the next so each model loads once, then prints the report and exits 1 when a
- * model is under the bar. A model Ollama does not list, or Ollama unreachable, exits 1 before any run. Runs locally on
- * demand, never in CI.
+ * Ollama, or the OpenAI-compatible server `--base-url` names (its key from `BENCH_API_KEY`, never a flag, so it stays
+ * out of the shell history), all runs of one model before the next so each model loads once, then prints the report
+ * and exits 1 when a model is under the bar. A model the server does not list, a server unreachable, or a macOS sandbox
+ * that cannot be applied to the models' commands (`sandboxProblem`) exits 1 before any run. Runs locally on demand,
+ * never in CI.
  */
 
 import { rmSync } from "node:fs";
-import { appendFile, mkdtemp, readFile, rm, truncate } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { appendFile, mkdtemp, readFile, realpath, rm, truncate } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { listModels, type ModelListing } from "../src/core/client";
+import { runCommand } from "../src/core/commands";
 import { formatDuration, formatReport, type RunResult } from "./report";
-import { playScenario, type RunOutcome } from "./run";
+import { benchCommandEnv, playScenario, type RunOutcome, SANDBOX_EXEC } from "./run";
 import { describeError, judge, SCENARIOS, type Scenario, type Verdict, workspaceChanges } from "./scenarios";
 
 export const BENCH_MODELS = ["qwen3.8:27b", "gemma4:26b-a4b-it-qat"];
-const OLLAMA_URL = "http://localhost:11434/v1";
+export const OLLAMA_URL = "http://localhost:11434/v1";
 /**
  * Small, so a model that loops ends as a step limit after a few requests, not after 50; room for an edit's list, read,
  * edit, and search, and for empty replies, which count as steps (ADR 0001).
@@ -28,14 +31,16 @@ const MAX_TOOL_STEPS = 10;
  * `models`: `--model`, repeatable, else both bench models; a name given twice is played once, since the report scores
  * a model's runs together against the bar of one batch. `scenarios`: those `--scenario` names, repeatable, in the
  * order of `SCENARIOS`, each once, else every scenario. `runs`: `--runs`, else 10. `dump`: `--dump <file>`, a JSON
- * Lines file each run's `dumpLine` is appended to, for reading failed replies and writes. Throws on an unknown
- * scenario and on any other flag.
+ * Lines file each run's `dumpLine` is appended to, for reading failed replies and writes. `baseUrl`: `--base-url`,
+ * an `http` or `https` URL, trailing slashes dropped, else the local Ollama. Throws on an unknown scenario, a base URL
+ * that is not one, and on any other flag.
  */
 export function parseBenchArgs(args: string[]): {
   models: string[];
   scenarios: readonly Scenario[];
   runs: number;
   dump: string | undefined;
+  baseUrl: string;
 } {
   const { values } = parseArgs({
     args,
@@ -44,6 +49,7 @@ export function parseBenchArgs(args: string[]): {
       scenario: { type: "string", multiple: true },
       runs: { type: "string" },
       dump: { type: "string" },
+      "base-url": { type: "string" },
     },
     strict: true,
     allowPositionals: false,
@@ -59,7 +65,11 @@ export function parseBenchArgs(args: string[]): {
   }
   const chosen = values.scenario;
   const scenarios = chosen === undefined ? SCENARIOS : SCENARIOS.filter((scenario) => chosen.includes(scenario.name));
-  return { models: [...new Set(values.model ?? BENCH_MODELS)], scenarios, runs, dump: values.dump };
+  const baseUrl = (values["base-url"] ?? OLLAMA_URL).replace(/\/+$/, "");
+  if (!/^https?:\/\/[^/]/.test(baseUrl)) {
+    throw new Error(`--base-url takes an http or https URL, not ${JSON.stringify(values["base-url"])}.`);
+  }
+  return { models: [...new Set(values.model ?? BENCH_MODELS)], scenarios, runs, dump: values.dump, baseUrl };
 }
 
 /**
@@ -67,10 +77,33 @@ export function parseBenchArgs(args: string[]): {
  * it lacks some of them, each named. `undefined` when every model is listed.
  */
 export function modelsProblem(listing: ModelListing, models: readonly string[], baseUrl: string): string | undefined {
-  if (!listing.ok) return `Ollama at ${baseUrl} could not list its models: ${describeError(listing.error)}`;
+  if (!listing.ok) return `The server at ${baseUrl} could not list its models: ${describeError(listing.error)}`;
   const missing = models.filter((model) => !listing.models.includes(model));
   if (missing.length === 0) return undefined;
-  return `Not served by Ollama at ${baseUrl}: ${missing.join(", ")}. Pull with \`ollama pull <name>\`.`;
+  const hint = baseUrl === OLLAMA_URL ? " Pull with `ollama pull <name>`." : "";
+  return `Not served at ${baseUrl}: ${missing.join(", ")}.${hint}`;
+}
+
+/**
+ * Why the bench cannot run its commands in the sandbox, or `undefined` when it can: runs `/usr/bin/true` in `folder`,
+ * any existing folder, the way a run runs a command. `sandbox-exec` missing, or unable to apply the profile (it exits
+ * 71, `sandbox_apply: Operation not permitted`, when the bench itself runs inside a sandbox), is a problem: the bench
+ * never runs a command outside the sandbox.
+ */
+export async function sandboxProblem(folder: string): Promise<string | undefined> {
+  const runFolder = await realpath(folder);
+  const paths = { runFolder, home: runFolder, tmp: runFolder, userHome: await realpath(homedir()) };
+  const probe = await runCommand(
+    { command: "/usr/bin/true", cwd: runFolder },
+    { signal: new AbortController().signal },
+    benchCommandEnv(paths, process.env),
+  );
+  return probe.status === "ok" ? undefined : describeSandboxFailure(probe.text);
+}
+
+/** The message the bench exits with when its sandbox probe gave `result`, the probe command's result text. */
+export function describeSandboxFailure(result: string): string {
+  return `Bench commands run under ${SANDBOX_EXEC}, which could not run one here, so no run started:\n${result}`;
 }
 
 /**
@@ -121,10 +154,18 @@ export function dumpLine(run: {
 }
 
 async function main(): Promise<number> {
-  const { models, scenarios, runs, dump } = parseBenchArgs(process.argv.slice(2));
+  const { models, scenarios, runs, dump, baseUrl } = parseBenchArgs(process.argv.slice(2));
+  const apiKey = process.env.BENCH_API_KEY || undefined;
 
-  const listing = await listModels({ provider: { name: "Ollama", baseUrl: OLLAMA_URL }, apiKey: undefined });
-  const problem = modelsProblem(listing, models, OLLAMA_URL);
+  // [!]: Fail closed: a model's command never runs outside the sandbox, so no run starts without it.
+  const sandbox = await sandboxProblem(tmpdir());
+  if (sandbox) {
+    console.error(sandbox);
+    return 1;
+  }
+
+  const listing = await listModels({ provider: { name: "bench", baseUrl }, apiKey });
+  const problem = modelsProblem(listing, models, baseUrl);
   if (problem) {
     console.error(problem);
     return 1;
@@ -135,7 +176,7 @@ async function main(): Promise<number> {
     if (dropped > 0)
       console.error(`${dump} ended with an incomplete line (${dropped} bytes), removed before appending.`);
   }
-  console.error(`broke-code eval: Ollama at ${OLLAMA_URL}, ${runs} runs per scenario, step limit ${MAX_TOOL_STEPS}.`);
+  console.error(`broke-code eval: ${baseUrl}, ${runs} runs per scenario, step limit ${MAX_TOOL_STEPS}.`);
   // [>]: One folder holds every run's workspace copy, so an interrupted bench can remove it too.
   const tmpRoot = await mkdtemp(join(tmpdir(), "broke-code-bench-"));
   process.once("SIGINT", () => {
@@ -149,7 +190,7 @@ async function main(): Promise<number> {
       for (const scenario of scenarios) {
         for (let run = 0; run < runs; run += 1) {
           const runStarted = performance.now();
-          const target = { baseUrl: OLLAMA_URL, model, maxToolSteps: MAX_TOOL_STEPS };
+          const target = { baseUrl, apiKey, model, maxToolSteps: MAX_TOOL_STEPS };
           const outcome = await playScenario(scenario, target, tmpRoot);
           const verdict = judge(scenario, outcome.entries, outcome.after);
           const ms = performance.now() - runStarted;

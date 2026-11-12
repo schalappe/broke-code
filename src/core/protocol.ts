@@ -25,7 +25,8 @@ export type ReplyStatus = "waiting" | "streaming" | "done" | "stopped" | "failed
 
 /**
  * `malformedCalls`: three malformed calls in a row. `stepLimit`: the turn reached its tool step limit. `contextFull`:
- * the next request's estimate left less than one eighth of the model's context for the reply, so it was not sent.
+ * the next request's estimate left less than one eighth of the model's context for the reply, even with every older
+ * tool result that may go left out, so it was not sent.
  */
 export type HaltReason = "malformedCalls" | "stepLimit" | "contextFull";
 
@@ -67,7 +68,8 @@ export type ChatEntry =
   /**
    * `reasoning`: text the model writes before its answer, shown collapsed, never sent back. `content`: the whole
    * answer, its call block included, so the history resends exactly what the model wrote; the chat hides the block by
-   * `call`'s range. `haltReason`: set exactly when `status` is `halted`.
+   * `call`'s range. `haltReason`: set exactly when `status` is `halted`. `summary`: the reply to `/compact`, a summary
+   * of the conversation before it; once it ends `done` with text, the history sent starts at it (`historyStart`).
    */
   | {
       role: "assistant";
@@ -77,10 +79,12 @@ export type ChatEntry =
       error?: ProviderError;
       call?: ReplyCall;
       haltReason?: HaltReason;
+      summary?: true;
     }
   /**
    * A tool step: one body tool call of the reply before it, or its malformed block, and the text the model got back.
-   * `approval`: set when the call asked for one.
+   * `approval`: set when the call asked for one. `undone`: a write step whose file "Undo changes" later restored or
+   * removed; the history tells the model so, and never leaves its result out.
    */
   | {
       role: "tool";
@@ -89,6 +93,7 @@ export type ChatEntry =
       status: ToolStepStatus;
       text: string;
       approval?: StepApproval;
+      undone?: true;
     };
 
 /**
@@ -129,10 +134,78 @@ export type SkillProblem =
 export type SkillWarning = { path: string; problem: SkillProblem };
 
 /**
- * The next request's estimated size against the selected model's context size, both in tokens. `known`: the model is
- * in `brokeCode.contextSizes`; else `size` is 32,768.
+ * The next request's estimated size, as it would be sent, against the selected model's context size, both in tokens.
+ * `known`: the model is in `brokeCode.contextSizes`; else `size` is 32,768. `leftOut`: the older tool results that
+ * request leaves out to fit the context (see `toHistory`), present only when there are any; the panel shows a notice.
  */
-export type ContextUsage = { used: number; size: number; known: boolean };
+export type ContextUsage = { used: number; size: number; known: boolean; leftOut?: number };
+
+/**
+ * What an agent turn may do: `ask` waits for Accept or Reject on each write, `autoEdit` accepts writes at once, both
+ * derived from the user value of `brokeCode.autoApproveWrites`; `plan` offers the read tools only, kept per workspace
+ * and winning over the setting while on. Commands wait for Run in every mode that offers them.
+ */
+export const MODES = ["ask", "autoEdit", "plan"] as const;
+export type Mode = (typeof MODES)[number];
+
+export function isMode(value: unknown): value is Mode {
+  return MODES.some((mode) => mode === value);
+}
+
+/**
+ * A message the user sent while a reply was in flight, waiting in `ChatState.queue` for a turn to end `done`. `id`: the
+ * controller's, unique in the session. `text`: as sent, trimmed. `mentions`: the paths picked in the menu, as `send`
+ * carries them; the mentions are read when the message is sent, never when it is queued.
+ */
+export type QueuedMessage = { id: number; text: string; mentions: string[] };
+
+/** Most messages the queue holds: the whole state is posted at each streamed delta. */
+export const MAX_QUEUED_MESSAGES = 10;
+
+/**
+ * Why "Undo changes" left a file untouched. `changed`: it holds neither the text the writes left nor its original text
+ * (edited since, removed, made a folder, or no longer text). `unsaved`: an editor holds unsaved changes to it.
+ * `symlink`: it is now a symbolic link. `outsideWorkspace`: it is in no workspace folder now, or its path leads out of
+ * them. `failed`: the write or the removal failed on disk, or the file could not be read (`cause`).
+ */
+export type RestoreRefusal = "changed" | "unsaved" | "symlink" | "outsideWorkspace" | "failed";
+
+/**
+ * What "Undo changes" did to one file of the held turn, named as the file index writes it. `restored`: it holds its
+ * text from before the turn again; `removed`: the turn created it, and it is gone; `skipped`: untouched, for `reason`
+ * (see `RestoreRefusal`), and still held, so the next undo retries it. `leftover`: the temporary file of the restoring
+ * write could not be removed and sits beside the file as `name`.
+ */
+export type UndoneFile = { path: string; leftover?: { name: string; cause: string } } & UndoneStatus;
+
+/** What an undo did to one file; see `UndoneFile`. */
+export type UndoneStatus =
+  | { status: "restored" | "removed" }
+  | { status: "skipped"; reason: Exclude<RestoreRefusal, "failed"> }
+  | { status: "skipped"; reason: "failed"; cause: string };
+
+/**
+ * "Undo changes" in the panel: the file changes of the latest turn of the conversation shown that wrote a file, held
+ * in the host's memory only; never their text here. `reply`: the index in `entries` of that turn's last reply, which
+ * carries the button; absent while nothing is held, or a reply is in flight. `ranCommand`: that turn ran a command,
+ * which no undo reverts. `running`: an undo runs; Send does not act and no other undo starts. `outcome`: what the last
+ * undo did, file by file, shown under the reply `reply` names; cleared by the next send, the next undo, and any change
+ * of the conversation shown. `outcome.error`: the undo failed unexpectedly (a bug), with this message; `files` then
+ * lists only the files restored or removed before the failure, and the others stay held for a retry.
+ */
+export type UndoState = {
+  reply: number | undefined;
+  ranCommand: boolean;
+  running: boolean;
+  outcome: { reply: number; files: UndoneFile[]; error?: string } | undefined;
+};
+
+/**
+ * One row of "Changed files": a file the turn `UndoState.reply` names created or edited and still holds, named as the
+ * file index writes it (else as the model wrote it), with the lines its writes added and removed since before the
+ * turn (see `lineDiffCount`). Never its text.
+ */
+export type ChangedFile = { path: string; kind: "created" | "edited"; added: number; removed: number };
 
 export type ChatState = {
   providers: string[];
@@ -157,7 +230,39 @@ export type ChatState = {
   context: ContextUsage;
   /** The approval request the reply in flight waits on; at most one, since one call runs per reply. */
   approval?: PendingApproval;
+  /**
+   * `plan` while Plan is on in this workspace, else the mode the setting holds; never the one last picked: a failed
+   * write leaves it as it was.
+   */
+  mode: Mode;
+  /**
+   * A mode pick's settings write is pending: the mode selector and Send are disabled, and the host ignores `setMode`
+   * and `send`, as while a reply is in flight.
+   */
+  modePending: boolean;
+  /**
+   * Messages queued while a reply was in flight, in order; the first is sent when a turn ends `done`. Kept in the
+   * panel's state only: never saved, lost at a window reload. Emptied by New chat, opening another conversation, and
+   * deleting the one shown, when they are asked.
+   */
+  queue: QueuedMessage[];
+  undo: UndoState;
+  /**
+   * "Changed files" under the reply `undo.reply` names, in the order of each file's first write; empty whenever that
+   * reply is absent.
+   */
+  changedFiles: ChangedFile[];
 };
+
+/**
+ * Text the host puts in the message box, never sent. From an editor entry point: `caret` inserts it at the box's
+ * caret, spaced from the text around it; `fillOrAppend` fills a box empty or holding only whitespace, else appends it
+ * after one line break; either closes History and focuses the box. From the queue: `paragraph`, the queued texts the
+ * controller took out without sending them (navigation, Edit) or refused to queue, fills a blank box, else follows its
+ * text after a blank line, and closes nothing and moves no focus. `picked`: the paths its mentions name, added to the
+ * box's picked paths, so a path with spaces or trailing punctuation is one mention.
+ */
+export type DraftInsert = { text: string; mode: "caret" | "fillOrAppend" | "paragraph"; picked: string[] };
 
 /** L10n bundle as `vscode.l10n.bundle`: absent in English. */
 export type L10nBundle = Record<string, string>;
@@ -174,21 +279,46 @@ export type HostMessage =
    * Answer to the `querySkills` of the same `id`: every skill a send would discover, those kept from the model
    * included, by name. `failed`: the skills could not be listed, so `items` is empty for that reason.
    */
-  | { type: "skillSuggestions"; id: number; items: SlashCommand[]; failed: boolean };
+  | { type: "skillSuggestions"; id: number; items: SlashCommand[]; failed: boolean }
+  /**
+   * "Add selection to chat" or "Fix with broke-code": edit the draft, close History, and focus the message box. Posted
+   * once, after `init`.
+   */
+  | ({ type: "insertDraft" } & DraftInsert);
+
+/**
+ * What the panel showed when the user asked to Retry, Continue, or send while replacing the last turn (Edit): the
+ * conversation shown (`ChatState.conversationId`) and its entries count. The host acts only on that conversation with
+ * that count, so a click on a lagging panel removes or extends nothing but the turn it showed.
+ */
+export type ShownEntries = { conversationId: string; entries: number };
 
 export type WebviewMessage =
   | { type: "ready" }
   | { type: "selectProvider"; provider: string }
   | { type: "selectModel"; model: string }
   | { type: "retryModels" }
-  /** `mentions`: paths picked in the menu; see `ChatController.send`. */
-  | { type: "send"; text: string; mentions: string[] }
+  /**
+   * `mentions`: paths picked in the menu; see `ChatController.send`. `replaces`: sent while the panel was replacing the
+   * last turn (Edit), what it showed; the host removes that turn first when it still may.
+   */
+  | { type: "send"; text: string; mentions: string[]; replaces?: ShownEntries }
+  /** Send while a reply is in flight: queue the message, with its picked mention paths, as `send` carries them. */
+  | { type: "queueMessage"; text: string; mentions: string[] }
+  /** Remove queued message `id`. */
+  | { type: "removeQueued"; id: number }
+  /** Edit queued message `id`: the host removes it and returns its text to the message box as a `paragraph` draft. */
+  | { type: "editQueued"; id: number }
+  /** "Send now" on queued message `id` while the queue is paused; acts only on the first, and only when Send would. */
+  | { type: "sendQueued"; id: number }
   /** `id`: grows with each query, so the webview can drop stale answers. */
   | { type: "queryFiles"; query: string; id: number }
   /** Ask once per `/` menu opening for the skills; the webview filters them as the user types. `id`: as `queryFiles`. */
   | { type: "querySkills"; id: number }
   /** `/model`: open the editor's model list over the selected provider's models; a pick goes as `selectModel`. */
   | { type: "chooseModel" }
+  /** `/compact`: summarize the conversation shown; later requests send the summary in place of what came before. */
+  | { type: "compact" }
   | { type: "stop" }
   | { type: "newChat" }
   /** `id`: a conversation of `ChatState.conversations`. */
@@ -198,13 +328,28 @@ export type WebviewMessage =
   /** Ask the user for `model`'s context size and save it to `brokeCode.contextSizes`. */
   | { type: "setContextSize"; model: string }
   | { type: "openSettings" }
+  /** "broke-code: Add provider": the guided flow in the editor's Quick Pick and input boxes. */
+  | { type: "addProvider" }
   /** The user's decision on approval request `id` (`ChatState.approval`); `reason`: optional, as typed. */
   | { type: "approve"; id: number }
-  | { type: "reject"; id: number; reason?: string };
+  | { type: "reject"; id: number; reason?: string }
+  /** Insert at cursor: replace every selection of the active text editor with a code block's `text`. */
+  | { type: "insertCode"; text: string }
+  /**
+   * Pick a mode in the message box: Plan is kept in the workspace memento; Ask and Auto-edit write the user setting
+   * `brokeCode.autoApproveWrites` when its value must change.
+   */
+  | { type: "setMode"; mode: Mode }
+  /** "Undo changes": restore the files of the turn `ChatState.undo.reply` names. */
+  | { type: "undoChanges" }
+  /** A row of "Changed files": open the diff of the first held file the row's displayed `path` names. */
+  | { type: "openChangeDiff"; path: string }
+  /** Retry or Continue the last turn (see `lastTurnActions`) of what the panel showed. */
+  | { type: "retry" | "continueTurn"; shown: ShownEntries };
 
 /** Chat state carried by `message`; `undefined` for a message that must leave the panel's state alone. */
 export function chatStateOf(message: HostMessage): ChatState | undefined {
-  return message.type === "fileSuggestions" || message.type === "skillSuggestions" ? undefined : message.state;
+  return message.type === "init" || message.type === "state" ? message.state : undefined;
 }
 
 /**
@@ -216,10 +361,32 @@ export function isReplying(state: ChatState): boolean {
   return last?.role === "assistant" && (last.status === "waiting" || last.status === "streaming");
 }
 
+/**
+ * Whether Send would act now: a model chosen, no reply in flight, no mode change being written, and no undo running.
+ * The one check of the panel's Send, Enter, built-in commands, Send now, Retry, and Continue; the host checks the same
+ * conditions again (`mayStartTurn`), since the panel's state may lag.
+ */
+export function sendWouldAct(state: ChatState): boolean {
+  return state.model !== undefined && !isReplying(state) && !state.modePending && !state.undo.running;
+}
+
+/**
+ * The queue waits for "Send now" or a turn that ends `done`: it holds a message and no reply is in flight, so the last
+ * turn did not end `done`, or Send could not act when it did.
+ */
+export function isQueuePaused(state: ChatState): boolean {
+  return state.queue.length > 0 && !isReplying(state);
+}
+
 /** Longest menu query the host answers; the webview asks nothing past it. */
 export const MAX_QUERY_LENGTH = 1024;
 /** Longest picked mention path accepted. */
 export const MAX_MENTION_PATH_LENGTH = 4096;
+/**
+ * Total `delta.content` plus reasoning fields of one reply, in UTF-16 code units: the client cuts a reply off past it.
+ * Also the longest `insertCode` text, since a code block cannot be longer than its reply.
+ */
+export const REPLY_MAX_LENGTH = 4 * 1024 * 1024;
 
 /** Validate a webview message's shape at the host boundary. Unknown or out of bounds -> `undefined`. */
 export function parseWebviewMessage(raw: unknown): WebviewMessage | undefined {
@@ -232,7 +399,10 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | undefined {
     case "stop":
     case "newChat":
     case "chooseModel":
+    case "compact":
     case "openSettings":
+    case "addProvider":
+    case "undoChanges":
       return { type: message.type };
     case "selectProvider":
     case "setApiKey": {
@@ -251,8 +421,23 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | undefined {
     case "send": {
       const value = text("text");
       const mentions = pathList(message.mentions);
-      return value === undefined || mentions === undefined ? undefined : { type: "send", text: value, mentions };
+      const { replaces } = message;
+      if (value === undefined || mentions === undefined) return undefined;
+      if (replaces === undefined) return { type: "send", text: value, mentions };
+      const shown = shownEntries(replaces);
+      return shown ? { type: "send", text: value, mentions, replaces: shown } : undefined;
     }
+    case "queueMessage": {
+      const value = text("text");
+      const mentions = pathList(message.mentions);
+      return value === undefined || mentions === undefined
+        ? undefined
+        : { type: "queueMessage", text: value, mentions };
+    }
+    case "removeQueued":
+    case "editQueued":
+    case "sendQueued":
+      return isRequestId(message.id) ? { type: message.type, id: message.id } : undefined;
     case "openConversation":
     case "deleteConversation": {
       // [!]: Ids name files in the storage directory: only the shape the host makes passes.
@@ -274,9 +459,31 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | undefined {
       if (!isRequestId(id) || (reason !== undefined && typeof reason !== "string")) return undefined;
       return reason === undefined ? { type: "reject", id } : { type: "reject", id, reason };
     }
+    case "insertCode": {
+      const value = text("text");
+      return value === undefined || value.length > REPLY_MAX_LENGTH ? undefined : { type: "insertCode", text: value };
+    }
+    case "retry":
+    case "continueTurn": {
+      const shown = shownEntries(message.shown);
+      return shown ? { type: message.type, shown } : undefined;
+    }
+    case "openChangeDiff": {
+      const path = text("path");
+      return path && path.length <= MAX_MENTION_PATH_LENGTH ? { type: "openChangeDiff", path } : undefined;
+    }
+    case "setMode":
+      return isMode(message.mode) ? { type: "setMode", mode: message.mode } : undefined;
     default:
       return undefined;
   }
+}
+
+/** `value` as `ShownEntries`, its unknown keys dropped; `undefined` for any other shape. */
+function shownEntries(value: unknown): ShownEntries | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const { conversationId, entries } = value as Record<string, unknown>;
+  return isConversationId(conversationId) && isRequestId(entries) ? { conversationId, entries } : undefined;
 }
 
 function isRequestId(id: unknown): id is number {

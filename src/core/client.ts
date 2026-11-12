@@ -11,6 +11,7 @@ import * as https from "node:https";
 import type { LookupFunction } from "node:net";
 import { pipeline, Readable, Transform } from "node:stream";
 import * as zlib from "node:zlib";
+import { REPLY_MAX_LENGTH } from "./protocol";
 import type { CutOffReason, ProviderError } from "./providerError";
 import type { Provider } from "./providers";
 import { readSseData, SseEventTooLargeError } from "./sse";
@@ -39,8 +40,6 @@ const DETAIL_LIMIT = 500;
 export const MODEL_LIST_MAX_BYTES = 8 * 1024 * 1024;
 /** Non-2xx body; only its first `DETAIL_LIMIT` characters are shown. */
 const ERROR_BODY_MAX_BYTES = 64 * 1024;
-/** Total `delta.content` plus reasoning fields of one reply, in UTF-16 code units. */
-export const REPLY_MAX_LENGTH = 4 * 1024 * 1024;
 /** Deadline for the response headers (DNS, connect, TLS included), then for each gap between body bytes. Node `fetch` used 300 s too. */
 const TIMEOUT_MS = 300_000;
 
@@ -219,6 +218,22 @@ class ReplySplitter {
   private emit(callback: (text: string) => void, text: string): void {
     if (text) callback(text);
   }
+}
+
+/**
+ * The reasoning a reply streamed as content: a chat template that opens `<think>` in the prompt (Qwen 3.8 on vLLM
+ * without a reasoning parser, #58) makes the model reason without the opening tag and close with a bare `</think>`. The
+ * first `</think>` standing alone on its line, with no `<think>` before it, ends the reasoning: the text before it is
+ * the reasoning, trimmed at its end, and the text after it, less its leading blank lines, the answer. `undefined` when
+ * `content` holds no such line. Callers apply it only to a reply that has no reasoning yet, since a leading `<think>`
+ * block or a reasoning field already split it.
+ */
+export function lateReasoning(content: string): { reasoning: string; answer: string } | undefined {
+  const close = /^[ \t]*<\/think>[ \t]*$/m.exec(content);
+  if (!close) return undefined;
+  if (content.lastIndexOf(THINK_OPEN, close.index) !== -1) return undefined;
+  const answer = withoutLeadingBlankLines(content.slice(close.index + close[0].length)) ?? "";
+  return { reasoning: content.slice(0, close.index).trimEnd(), answer };
 }
 
 /**

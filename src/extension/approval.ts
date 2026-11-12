@@ -102,3 +102,13 @@ export function hasUnsavedChanges(target: string): Promise<boolean> {
 export function readAutoApproveWrites(): boolean {
   return autoApproveWrites(vscode.workspace.getConfiguration("brokeCode").inspect<unknown>("autoApproveWrites"));
 }
+
+/**
+ * Write `on` to the user value of `brokeCode.autoApproveWrites`, the mode selector's pick: a user setting, so it applies
+ * to every window. Rejects when the write fails.
+ */
+export async function writeAutoApproveWrites(on: boolean): Promise<void> {
+  await vscode.workspace
+    .getConfiguration("brokeCode")
+    .update("autoApproveWrites", on, vscode.ConfigurationTarget.Global);
+}
