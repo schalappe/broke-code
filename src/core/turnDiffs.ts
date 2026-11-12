@@ -54,7 +54,7 @@ export type TurnDiffEditor<Uri extends EditorUri> = {
  * Opens a held file in the editor's diff: its text before the turn on the left, served by `text` (empty for a file the
  * turn created), the real file on the right, so it shows what the file holds now, unsaved editor changes included.
  * A file's diff closes with `close`, also one still opening: an open whose file was closed meanwhile opens nothing, or
- * closes the tab it opened once it is open. `dispose` closes them all.
+ * closes the tab it opened once it is open. `dispose` closes them all and cancels every open still pending.
  */
 export class TurnDiffs<Uri extends EditorUri> implements ChangeDiffHost {
   /** Text of each left side, by URI. */
@@ -63,6 +63,8 @@ export class TurnDiffs<Uri extends EditorUri> implements ChangeDiffHost {
   private readonly sides = new Map<string, Uri>();
   /** Closes of each file so far, by real path: an open started before the latest one is cancelled. */
   private readonly closes = new Map<string, number>();
+  /** Set by `dispose`: every open still pending is cancelled. */
+  private disposed = false;
 
   constructor(
     private readonly editor: TurnDiffEditor<Uri>,
@@ -76,12 +78,12 @@ export class TurnDiffs<Uri extends EditorUri> implements ChangeDiffHost {
 
   /**
    * Open `file`'s diff, titled with its path. A file no longer on disk opens no diff, and a diff that fails to open is
-   * shown: each as an error notification. Cancelled, without a word, when `close` names the file meanwhile. Never
-   * rejects.
+   * shown: each as an error notification. Cancelled, without a word, when `close` names the file or `dispose` runs
+   * meanwhile. Never rejects.
    */
   async open(file: HeldFileDiff): Promise<void> {
     const closes = this.closes.get(file.realPath) ?? 0;
-    const cancelled = () => (this.closes.get(file.realPath) ?? 0) !== closes;
+    const cancelled = () => this.disposed || (this.closes.get(file.realPath) ?? 0) !== closes;
     const shown = displayPath(file.path);
     // [>]: The diff editor shows a missing right side as an empty file, which would read as a change of its own.
     const exists = await this.editor.isFile(file.realPath);
@@ -115,8 +117,9 @@ export class TurnDiffs<Uri extends EditorUri> implements ChangeDiffHost {
     if (gone.length > 0) void this.closeSides(gone);
   }
 
-  /** Close every changed file's diff and drop every text: deactivation. */
+  /** Close every changed file's diff, drop every text and cancel the opens still pending: deactivation. */
   dispose(): void {
+    this.disposed = true;
     // [>]: A diff left open would come back after a reload with an empty left side.
     void Promise.resolve(this.editor.closeDiffs()).catch((error: unknown) =>
       console.error("broke-code: could not close the diffs of changed files", error),

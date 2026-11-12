@@ -225,4 +225,32 @@ describe("TurnDiffs", () => {
     expect(tabs).toEqual([]);
     expect(diffs.text(side)).toBe("");
   });
+
+  test("dispose during the existence check cancels the open: no diff, no error", async () => {
+    const { diffs, tabs, files, errors, gates } = editor();
+    files.add(held.realPath);
+    const check = deferred<void>();
+    gates.check = check.promise;
+    const opening = diffs.open(held);
+    diffs.dispose();
+    check.resolve();
+    await opening;
+    await Bun.sleep(0);
+    expect(tabs).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+
+  test("dispose while the diff opens closes the tab it opened once it is open", async () => {
+    const { diffs, tabs, files, gates } = editor();
+    files.add(held.realPath);
+    const shown = deferred<void>();
+    gates.open = shown.promise;
+    const opening = diffs.open(held);
+    await Bun.sleep(0);
+    diffs.dispose();
+    shown.resolve();
+    await opening;
+    await Bun.sleep(0);
+    expect(tabs).toEqual([]);
+  });
 });
