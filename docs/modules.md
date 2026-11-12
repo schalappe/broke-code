@@ -153,7 +153,8 @@ This file says which file holds which responsibility. Update it when a module ga
   `done`) and `judge`, the verdict and failure category of a run, which compares the workspace after the run with the
   fixture plus those writes; `run.ts` plays one run through the `ChatController` ports, with the read and write tools,
   `run_command`, and `load_skill` over a copy of the fixture under the system temporary directory, each write applied at
-  once by `fileApplier` and recorded for the dump, each command approved at once and run with `benchCommandEnv` (the
+  once by `fileApplier` and recorded for the dump, each command approved at once (rejected instead in a scenario with
+  `rejectCommands`, as a user's Reject would) and run with `benchCommandEnv` (the
   allow-listed environment and `sandbox-exec` with `BENCH_SANDBOX_PROFILE` as the launcher, the run's real paths as
   its parameters), and the skills discovered in a copy of the fixture home, never the real one;
   `report.ts` formats the scores; `bench.ts` is the CLI (`sandboxProblem`, its check before any run), guarded by `import.meta.main` so `bun test` never starts it.
