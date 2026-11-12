@@ -316,7 +316,8 @@ opacity over `--bc-fast`. Under `prefers-reduced-motion: reduce`, and when VS Co
   into the message box, where its text comes back, since the user asked to edit it and the row they clicked goes.
   Queuing a message moves no focus, and neither do the queued texts that come back to the box after New chat, an
   open, or a delete, or that the queue could not take: the request came from the panel, which already has the focus
-  where the user put it, and History stays open.
+  where the user put it, and History stays open. Such a text that arrives while the panel has no message box (no
+  provider) waits and lands in the box when it comes back; an editor draft is dropped instead.
 - From the message box, Shift+Tab reaches Reject, then Accept or Run, then the reason field: the reason field comes
   first in the DOM, then Accept or Run, then Reject, and nothing focusable may be added between them and the message
   box. The mode selector therefore comes after the message box: Tab from the message box reaches it, then Send, then

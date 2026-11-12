@@ -71,9 +71,10 @@ import { foldTurns } from "./turns";
 import { post } from "./vscodeApi";
 
 /**
- * `language`: BCP 47 tag of the VS Code display language, for dates. `drafts`: editor drafts not yet applied, which the
- * message box applies and `takeDrafts` removes; one closes History. Without a message box they are taken unapplied:
- * a draft is never held for a box that may never come. Queued texts the host returns (`paragraph` drafts) close nothing.
+ * `language`: BCP 47 tag of the VS Code display language, for dates. `drafts`: host drafts not yet applied, which the
+ * message box applies and `takeDrafts` removes. An editor draft closes History; without a message box it is taken
+ * unapplied, never held for a box that may never come. Queued texts the host returns (`paragraph` drafts) close
+ * nothing, and wait for the message box when it is absent, since the user typed them: they are never dropped.
  */
 export function App({
   state,
@@ -84,7 +85,7 @@ export function App({
   state: ChatState;
   language: string;
   drafts?: readonly DraftInsert[];
-  takeDrafts?: (count: number) => void;
+  takeDrafts?: (taken: readonly DraftInsert[]) => void;
 }) {
   const configured = state.providers.length > 0;
   const composerShown = configured || isReplying(state);
@@ -93,8 +94,10 @@ export function App({
 
   useEffect(() => {
     if (drafts.length === 0) return;
-    if (drafts.some(fromEditor)) setHistoryOpen(false);
-    if (!composerShown) takeDrafts(drafts.length);
+    const fromTheEditor = drafts.filter(fromEditor);
+    if (fromTheEditor.length === 0) return;
+    setHistoryOpen(false);
+    if (!composerShown) takeDrafts(fromTheEditor);
   }, [drafts, composerShown, takeDrafts]);
   return (
     <main className="panel">
@@ -1030,7 +1033,7 @@ function Composer({
   historyOpen: boolean;
   startNewChat: () => void;
   drafts: readonly DraftInsert[];
-  takeDrafts: (count: number) => void;
+  takeDrafts: (taken: readonly DraftInsert[]) => void;
 }) {
   const [text, setText] = useState("");
   const [caret, setCaret] = useState(0);
@@ -1131,7 +1134,7 @@ function Composer({
   useEffect(() => {
     if (drafts.length === 0) return;
     setDraft(drafts.reduce(applyDraft, { text, caret, picked }));
-    takeDrafts(drafts.length);
+    takeDrafts(drafts);
     if (!drafts.some(fromEditor)) return;
     input.current?.focus();
     draftFocus.current = true;

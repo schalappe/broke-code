@@ -2596,6 +2596,17 @@ describe("queued messages", () => {
     });
   });
 
+  test("a returned text waits while there is no message box and lands when it comes back; an editor draft is dropped", async () => {
+    await withPanel(stateWith(true, { entries: stopped }), async ({ host, show, receive }) => {
+      await show(stateWith(false, { entries: stopped }));
+      expect(host.querySelector("textarea")).toBeNull();
+      await receive({ type: "insertDraft", text: "unsent B", mode: "paragraph", picked: [] });
+      await receive({ type: "insertDraft", text: "from the editor", mode: "fillOrAppend", picked: [] });
+      await show(stateWith(true, { entries: stopped }));
+      expect(host.querySelector("textarea")?.value).toBe("unsent B");
+    });
+  });
+
   test("Send is secondary beside Stop during a reply, and primary otherwise", async () => {
     const sendClass = (state: ChatState) =>
       renderToStaticMarkup(<App state={state} language="en" />).match(/<button[^>]*>Send<\/button>/)?.[0];

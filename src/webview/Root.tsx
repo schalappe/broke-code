@@ -13,9 +13,12 @@ import { post } from "./vscodeApi";
 /** `language`: BCP 47 tag of the VS Code display language, for dates. */
 export function Root({ language }: { language: string }) {
   const [state, setState] = useState<ChatState>();
-  /** Drafts received and not yet applied, in arrival order; each is applied once, then taken. */
+  /** Drafts received and not yet applied, in arrival order; each is applied, or dropped, once, then taken. */
   const [drafts, setDrafts] = useState<DraftInsert[]>([]);
-  const takeDrafts = useCallback((count: number) => setDrafts((queued) => queued.slice(count)), []);
+  const takeDrafts = useCallback(
+    (taken: readonly DraftInsert[]) => setDrafts((queued) => queued.filter((draft) => !taken.includes(draft))),
+    [],
+  );
 
   useEffect(() => {
     const onMessage = (event: MessageEvent<HostMessage>) => {

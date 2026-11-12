@@ -242,6 +242,7 @@ export class ChatController {
       (async () => {
         throw new Error("no settings writer");
       });
+    // [>]: The extension always wires the port; only a controller built without it (tests, the eval) logs the loss.
     this.returnDraft =
       ports.returnDraft ??
       ((draft) => console.error("broke-code: no message box to return queued text to; it is lost", draft.text));

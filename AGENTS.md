@@ -500,7 +500,9 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   picked paths each once: `applyDraft` fills a blank box with it, else appends it after a blank line. The host queues
   it in the `DraftQueue` without showing the view (`ChatView.returnDraft`, `DraftQueue.queue`), since the request came
   from the panel, so a hidden panel gets it at its next `ready`; the webview applies it like an editor draft, but it
-  closes no History and moves no focus. A port that is absent or throws logs the text as lost. The rows sit under the
+  closes no History and moves no focus, and it is never dropped: while the panel has no message box (no valid provider)
+  it waits in Root's list and lands, in order, when the box comes back. The extension always wires the port; one that
+  is absent (a controller built without it, as in the tests and the eval) or throws logs the text as lost. The rows sit under the
   message box, after the mode selector, Send, and Stop in the tab order (DESIGN.md: nothing focusable between the
   approval controls and the box), each with Edit and Remove; queuing moves no focus. The queue lives in `ChatState`
   only: never in the record, kept while the panel is hidden, lost at a window reload. Deactivation calls
@@ -638,8 +640,9 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   the composer exists; the composer applies each queued draft in order with `applyDraft` (also while a reply is in
   flight), History closes, and the message box takes the focus (the second focus move DESIGN.md allows), and takes it back when the panel's
   window regains the focus with nothing focused, until the user clicks or presses a key in the panel (the view's focus
-  command settles before the workbench has focused the webview, which can blur the box right after the draft); a draft that
-  arrives while the panel has no message box is dropped. `mode: caret` inserts at the box's caret, with a space before
+  command settles before the workbench has focused the webview, which can blur the box right after the draft); an editor
+  draft that arrives while the panel has no message box is dropped (Root's `takeDrafts` takes it unapplied), while a
+  returned queued text (`paragraph`) stays in Root's list and is applied, in order, once the message box mounts. `mode: caret` inserts at the box's caret, with a space before
   it unless the text before is empty or ends with whitespace, and one after it unless whitespace follows, which the caret
   then passes, so it follows whitespace and no menu opens; `fillOrAppend` fills a box empty or holding only whitespace,
   else appends after one line break, the caret at the end. `picked` joins the box's picked paths. The selection command
