@@ -549,8 +549,12 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   (ADR 0001). A malformed call's message goes back the same way with `status="error"`, with `tool` the tag name the block
   opens with, a known tool or not, and `tool="unknown"` only when no tool name can be read, as for an empty reply. A
   reply without text is left out of the history, unless a tool step follows it: an empty reply goes back as an
-  assistant message with `content: ""` before its step, so the roles keep alternating (Gemma's chat template requires
-  it). An undone write step (#94) goes back with one more line after its text, inside the same wrapper: `The user undid
+  assistant message with `content: ""` before its step. The roles alternate, since Gemma's chat template requires it
+  (ADR 0001, 2026-11-12): in every history sent, a turn's request and the summary request alike, a `user` message that
+  would follow another `user` message (a tool result, a user message whose reply was left out, the summary's message,
+  `SUMMARY_REQUEST`) joins it after a blank line, its text unchanged and in order, so a message typed after a
+  `stepLimit` or `malformedCalls` halt, or after a reply that failed or stopped without text, goes in the same `user`
+  message as the one before it. A request with no such pair is byte-identical to one without the rule. An undone write step (#94) goes back with one more line after its text, inside the same wrapper: `The user undid
   this change afterwards.`, so the model does not answer from a change that no longer stands. An undone step before the
   summary the history starts at is no longer sent, so its own line never reaches the model: after the summary's text
   comes, per such step in order, a blank line then one line each, `The user undid this change, which the summary above may still describe: <tool> <path>`, the path being
@@ -647,8 +651,8 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   nothing: it appends a user entry whose typed text is `label` (the host passes `l10n.t("Continue")`, since the
   controller imports nothing from `vscode`) and whose model text is `CONTINUE_TEXT` (`Continue from where you
   stopped.`), no mention, no skill, and runs it as a send (`TurnStart` `continue`: a new step budget). After a
-  `stepLimit` or `malformedCalls` halt the history then holds two `user` messages in a row, as a typed message there
-  does today (#110). Both go through `startTurn`, `send`'s turn start: Stop, saving, folding, and the queue (Send
+  `stepLimit` or `malformedCalls` halt, the last tool result and `CONTINUE_TEXT` go as one `user` message, joined after
+  a blank line, as a typed message there does. Both go through `startTurn`, `send`'s turn start: Stop, saving, folding, and the queue (Send
   queues meanwhile; ending `done` sends the first queued message, so a Retry resumes a paused queue) work as for any
   turn. Files written and commands run by the removed steps are not reverted: when `unrevertedEffects(entries, user +
   1)` counts a write step that applied and is not undone (`write_file` or `edit_file`, `ok`) or a `run_command` the
@@ -688,10 +692,11 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   blank text is dropped. A completed `/compact` summary after the last user entry is kept, so Edit is not offered
   there (maintainer decision). `ChatState` and the record are unchanged.
 - Before each request of an agent turn, the first included, the controller estimates its size as the characters of the
-  system prompt and of each history message's content (as `toHistory` builds it, reasoning excluded) divided by 4,
+  system prompt and of each history message's content (as `toHistory` builds it, joins included, reasoning excluded) divided by 4,
   rounded up. Above `floor(size * 7 / 8)` of the model's context size (`fillsContext`, never a copy of its arithmetic),
   the history sent replaces the text of tool steps, oldest first over the whole conversation as sent (earlier turns
-  included), with one line inside the same `<tool_result>` wrapper, same `tool` and `status`:
+  included), with one line inside the same `<tool_result>` wrapper, same `tool` and `status`, leaving any text joined
+  to that message whole:
   `[result left out to save context: N lines]` (`1 line` for one), N being the step row's line count
   (`resultLineCount`: a trailing line break dropped, then split; 0 for an empty text). It replaces the fewest steps
   that make the estimate fit. Never replaced: the system prompt, user messages (a `/<name>` skill message included),
@@ -729,7 +734,7 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   included (maintainer decision, 2026-11-12; cost: the summary sees the calls and answers, not the files read), then
   `SUMMARY_REQUEST`, a user message asking for the goal, the decisions, the files read or changed with their paths, and
   what remains to do, joined after a blank line to the history's last message when that one is a user message (a
-  tool result, or a user message whose reply was left out), for role alternation. When its estimate still fills the
+  tool result, or a user message whose reply was left out), by the history's one join rule. When its estimate still fills the
   context (`fillsContext`), no request is sent and the entry ends `halted` with `contextFull`, its wording "Not
   summarized: …". Known cost: a prefix of its own defeats a provider's prompt cache for that request. The reply is an
   assistant entry with `summary: true`, streamed under a separator ("Summarizing the conversation…", then
@@ -739,7 +744,7 @@ on an error or warning puts a request to fix it there, with its file as a mentio
 - From then on the history sent starts at the last summary entry that ended `done` with text (`historyStart`): the
   system prompt, one user message `Summary of the conversation so far:`, a blank line, and the summary (then the lines of
   the undone steps it replaces, see the history above), then the entries after it; when the next entry sent is a user message, its composed text joins the summary's message after a
-  blank line, so two user messages never follow each other there. A summary that failed, was stopped, halted, or came
+  blank line, by the history's one join rule. A summary that failed, was stopped, halted, or came
   back empty (only whitespace) changes nothing and is never sent; its error shows as for any reply, and a `done` empty
   one says "The model's reply held no summary.". The leave-out rule, its last 3 steps, and the usage display count
   only what is sent, so after a summary the header's usage drops. Entries before it stay in the record and the chat,

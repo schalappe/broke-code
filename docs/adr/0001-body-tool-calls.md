@@ -142,6 +142,17 @@ sent back, the model called `edit_file` and passed. The same run took 18 minutes
 about 98,000 characters. `qwen3.8` twice wrote the placeholder `<tool_name>` of the format example as a call
 (`read` runs 1 and 5); each got the unknown-tool message, recovered, and passed.
 
+**Note (2026-11-12, #110).** The empty assistant message kept the roles alternating after a malformed step only.
+Other shapes still sent two `user` messages in a row: a message typed after a turn halted on a tool step (`stepLimit`,
+`malformedCalls`), and a message after a reply left out of the history (failed or stopped before any text, or halted on
+a full context). Decided by the maintainer (schalappe) on 2026-11-12: one rule for every history sent, a turn's
+request and the summary request alike. A `user` message that would follow another `user` message joins it after a
+blank line, its text unchanged and in order, so a request never holds two `user` messages in a row. A request without
+such a pair is byte-identical. A left-out tool result is replaced inside its `<tool_result>` wrapper only, so the text
+joined to it stays whole, and the size estimate counts the request as sent. Live, on local Ollama, `gemma4` and
+`qwen3.8` accepted two `user` messages in a row and answered the joined shape correctly; a server applying Gemma's
+chat template as published refuses the pair, and the employer's service was not checked.
+
 ## Amendment (2026-11-10): text after the call, and one-line arguments
 
 Decided by the maintainer (schalappe) on 2026-11-10, on live evidence: the first runs on the employer's service, with
