@@ -519,8 +519,8 @@ uncommitted changes of the workspace folders are sent with it.
 broke-code follows two things from [twinny](https://github.com/twinnydotdev/twinny), released under the MIT license,
 and copies none of its files:
 
-- The chat panel's look: one layer of design tokens derived from the VS Code theme, the user's message as a soft
-  filled block with the reply flush on the panel, a tool step as one small quiet line that opens to its result, the
+- The chat panel's look: one layer of design tokens derived from the VS Code theme, the user's message as a filled
+  block with the reply flush on the panel, a tool step as one small quiet line that opens to its result, the
   VS Code UI font for prose and the editor font for code, and surfaces set apart by a fill instead of a border.
 - The `@` token detection of the mention menu.
 

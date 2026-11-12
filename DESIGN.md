@@ -34,8 +34,10 @@ spacing:
 ## Overview
 
 The chat panel is a tool people work in all day, in the VS Code side bar, beside their code. It follows
-[twinny](https://github.com/twinnydotdev/twinny)'s minimal look: the user's message is a soft filled block, the reply
-runs flush on the panel, whitespace separates the turns, and greys do most of the work. It must look native in any
+[twinny](https://github.com/twinnydotdev/twinny)'s minimal look: the user's message is a block, the reply runs flush
+on the panel, whitespace separates the turns, and greys do most of the work. Three things stand out of the greys
+(maintainer decision, 2026-11-12): the latest user message, in the theme's button colors; the thread, a drawn line
+that carries the agent's tool steps as nodes; and the decision block, drawn in negative. It must look native in any
 VS Code theme, so it owns no color: every color comes from the active theme.
 
 The stylesheet has two layers. The token layer (`--bc-*` custom properties on `:root`) comes first and is the only
@@ -77,7 +79,7 @@ It must print nothing.
 | `--bc-fg` | `--vscode-foreground` | Text people read. |
 | `--bc-fg-dim` | 72% of the foreground (88% in high contrast) | Secondary text and the drawn marks. 72% keeps 4.5:1 on the default light and dark themes. |
 | `--bc-rule` | 16% of the foreground | Hairlines. |
-| `--bc-fill` | 6% of the foreground | A surface a shade off the panel: the user's message, a code block, the decision block. |
+| `--bc-fill` | 6% of the foreground | A surface a shade off the panel: a code block, a command, a queued message. |
 | `--bc-fill-strong` | 11% of the foreground | One step stronger: inline code, chips, a hovered or pressed secondary button. |
 | `--bc-unsent-opacity` | 0.6 (1 in high contrast) | The entries no longer sent to the model after a summary, and the turn Edit replaces. |
 
@@ -95,6 +97,11 @@ Each takes the color the theme gives that exact job, so a button is the theme's 
 | `--bc-button-fg`, `--bc-button-bg`, `--bc-button-bg-hover` | `button.foreground`, `.background`, `.hoverBackground` | The primary button. |
 | `--bc-button-border` | `button.border`, then `--bc-edge` | Its border. |
 | `--bc-button-border-hover` | `contrastActiveBorder`, then `--bc-button-border` | Its border when hovered. |
+| `--bc-accent-line` | `button.background`, then `--bc-edge` | The outline of an earlier user message. The latest one takes the button tokens themselves. |
+| `--bc-accent-chip` | 18% of `button.foreground` | A chip on the latest user message. |
+| `--bc-tool` | `textLink.foreground` | A tool's name on the thread. Not a link: its row opens, and the name is also in the editor font, weight 600. |
+| `--bc-inverse-well`, `--bc-inverse-hover`, `--bc-inverse-line` | 14%, 16%, and 45% of `sideBar.background` | On the decision block, drawn in negative: the command's ground, a hovered Reject, Reject's border. |
+| `--bc-inverse-button-hover` | 86% of `sideBar.background` over the foreground | The hovered Accept or Run on the decision block. |
 | `--bc-link`, `--bc-link-active` | `textLink.foreground`, `textLink.activeForeground` | Links, always underlined, so color is never the only cue. |
 | `--bc-code-fg` | `textPreformat.foreground`, then `--bc-fg` | Inline code. |
 | `--bc-error`, `--bc-warning` | `errorForeground`, `editorWarning.foreground` | Status text and marks. |
@@ -122,8 +129,11 @@ high-contrast theme defines `--vscode-contrastBorder` and `--vscode-contrastActi
 
 - `--bc-edge` is `var(--vscode-contrastBorder, transparent)`. Every filled surface carries
   `border: 1px solid var(--bc-edge)`: invisible in light and dark themes, a visible boundary in high contrast. This
-  covers the user's message, code blocks (the frame of a block with its header included), command blocks, chips,
-  buttons, and the warning and error blocks.
+  covers code blocks (the frame of a block with its header included), command blocks, chips, buttons, and the warning
+  and error blocks. The user's message takes the button's border (`--bc-button-border`), which is the contrast
+  border there; a high-contrast theme whose button has no fill shows the latest message and the earlier ones alike,
+  as outlined blocks, which is accepted: the difference is emphasis, not a state. The pickers and the header's
+  buttons, quiet text elsewhere, carry `--bc-edge` too.
 - `--bc-edge-active` is `var(--vscode-contrastActiveBorder, transparent)`. The highlighted menu row and the current
   History row carry it as a solid outline; a hovered row, as a dashed one.
 - `--bc-line` is `var(--vscode-contrastBorder, var(--bc-rule))`: a line that is drawn in every theme (a secondary
@@ -166,16 +176,17 @@ between its regions: header, notices, the conversation (or History in its place)
 - Spacing (padding, gap, margin) comes from the `--bc-space-*` scale: 2, 4, 8, 12, 24. Tight inside a group, wider
   between groups. Four kinds of length are not spacing and stay off the scale: a line (every border, rule, and
   outline is 1px, and the menu is pulled 1px over the message box's border); the focus ring's offset (see "Keyboard
-  and focus"); the two size tokens, `--bc-row` (22px, the least height of a one-line row) and `--bc-mark` (6px, a
-  dot or a chevron drawn in CSS), with the file and folder markers sized in `em`; and Markdown's vertical rhythm,
-  set in `em` so it follows the text size.
+  and focus"); the size tokens, `--bc-row` (22px, the least height of a one-line row), `--bc-mark` (6px, a chevron
+  drawn in CSS), `--bc-thread-indent` (20px, the indent of what sits on the thread), `--bc-node` (7px, a node) and
+  `--bc-node-solid` (9px, the decision block's node), with the file and folder markers sized in `em`; and Markdown's
+  vertical rhythm, set in `em` so it follows the text size.
 - Whitespace separates turns: 12px between entries, 8px more above a user's message; the replies and tool steps of
   one turn sit 4px apart, and so do a folded turn's row and its final reply. Opened, the fold lays its entries out in
   a column of its own with the same spacing, 4px under its row.
 - Long content never widens the panel: a path or a title on one line is cut with an ellipsis; a message, a command,
   and a chip wrap anywhere; a code block, a step result, and a table scroll inside themselves.
-- The header wraps: the two pickers share the first line; the usage and the buttons drop below once the pickers
-  would fall under 16em.
+- The header is a running head over one rule (`--bc-line`): the two pickers share the first line; the usage and the
+  buttons drop below once the pickers would fall under 16em.
 - The conversation keeps 4px of side padding inside its scroll box, so a focus ring on a row at its edge is not
   clipped.
 - The conversation follows its bottom while the user is there (within 24px of it) and stays where it is once they
@@ -200,9 +211,13 @@ user's message). Borders and rules are 1px. No colored side stripe.
 
 ### Buttons
 
-- Primary (Send, Stop, Accept, Run, Set API key, Add provider in the empty state): the theme's button colors. At most one per region; in the
-  conversation, only the decision block has one. While a reply is in flight, Stop is the message box's primary button
+- Primary (Send, Stop, Set API key, Add provider in the empty state): the theme's button colors. At most one per region. In the
+  conversation, only the decision block has one, Accept or Run, drawn in negative like its block (see "The decision
+  block"). While a reply is in flight, Stop is the message box's primary button
   and Send, which then queues, is secondary.
+- Header (New chat, History): secondary buttons shown as quiet text, dim and without a drawn box (`--bc-edge` only),
+  until hovered, focused, or pressed, when they take the secondary look. The two pickers follow the same rule: dim
+  text on the panel, one size down, their border back on hover and focus.
 - Secondary (New chat, History, Delete, Reject, Retry, Add provider under the skipped providers, a queued message's
   Send now, Edit, and Remove, the turn's Retry, Retry anyway, Cancel, Continue, and Undo changes, the last message's Edit and the Cancel of its mark): a hairline box on the panel (`--bc-line`), the foreground as
   text; `--bc-fill-strong` when hovered or pressed (`aria-expanded="true"`).
@@ -234,8 +249,13 @@ would not act. Above the rows, a notice line says "The queue is paused." when no
 
 ### The conversation
 
-- User message: `--bc-fill`, radius 10px, full width. Its chips sit under the text: a path in the editor font on
-  `--bc-fill-strong`, then its status in dim text; a failed chip is drawn in the error color. A chip that found
+- User message: radius 10px, full width. The latest one of the conversation is a block in the theme's button colors
+  (`--bc-button-fg` on `--bc-button-bg`); a message a later one follows (`.earlier`) keeps only their outline
+  (`--bc-accent-line`) on the panel, its text in the foreground, so the question in progress is the one filled block.
+  Its chips sit under the text: a path in the editor font on `--bc-fill-strong`, then its status in dim text; a
+  failed chip is drawn in the error color. On the latest message a chip is a tint of the text (`--bc-accent-chip`)
+  with its status and marker in that text's color, and a failed or neutral chip takes the panel's ground back, where
+  its own color reads. A chip that found
   nothing to attach without failing (`@problems` with no error or warning, `@diff` with no change) is neutral: no fill
   and dim text, its edge kept for high contrast, its status in words. A `@diff` whose source is absent or off (no
   repository, git not available) is failed, not neutral, and so is a partial `@diff`, some folders read and some
@@ -247,15 +267,23 @@ would not act. Above the rows, a notice line says "The queue is paused." when no
 - Code block of a reply: once its text is final, its frame (`.code-block`: `--bc-fill`, `--bc-edge`, radius 6px)
   holds a header (`.code-actions`) with Copy and Insert at cursor at the right, then the code, which scrolls inside
   itself under the header. A block still growing renders as a bare code block, without the header.
-- Reasoning: a small dim row with a chevron; opened, its text sits behind a 1px rule.
-- Tool step: one small dim line: chevron, tool name, main argument, status at the right. It opens to its result in a
+- The thread: a reply that holds a tool step, and a folded turn, sit 20px in, beside one drawn 1px line
+  (`--bc-line`) that runs from one to the next. Each row that opens is a node on it, a 7px ring filled with the
+  panel's color: plain for a tool step, dotted for reasoning, a double ring for a folded turn, in the error color for
+  a failed step (its status says so in words). What the agent says before a call is narration: small and dim. A
+  reply without a step, the turn's answer, leaves the thread and runs flush at full size. Opened, a fold's entries
+  move back onto the line.
+- A row that opens (reasoning, a tool step, a folded turn) ends with its chevron, turned down once open.
+- Reasoning: a small dim row; opened, its text sits behind a 1px rule. On the thread only when its reply holds a
+  step.
+- Tool step: one small dim line: tool name (`--bc-tool`), main argument, status at the right, then the chevron. It opens to its result in a
   code block. A command shows whole in a block under its line. A failed status is in the error color. A write that
   "Undo changes" put back says so first in its status, in words ("undone, ok, 1 line"), in the default look: nothing
   failed, and the line count stays the result's.
-- A call without a result has a dot where the chevron would be: filled and breathing while it runs, hollow when it
-  ended with no result.
-- Folded turn: an ended turn's steps and intermediate replies under one small dim row with the reasoning chevron,
-  between the user's message and the final reply: "3 steps, 1 failed, 1 rejected", the counts in words, never in color
+- A call without a result has no chevron: its node is filled and breathing while it runs, hollow when it ended with
+  no result.
+- Folded turn: an ended turn's steps and intermediate replies under one small dim row, a double-ring node on the
+  thread, between the user's message and the final reply: "3 steps, 1 failed, 1 rejected", the counts in words, never in color
   alone. Closed when the turn ends; opened, the entries show exactly as they rendered before. Its rules use the child
   combinator (`.turn-fold > summary`), so the reasoning and step rows inside keep their own chevrons.
 - Summary (`/compact`): its reply sits under a separator (`.summary-separator`), small dim words between two 1px
@@ -295,10 +323,13 @@ would not act. Above the rows, a notice line says "The queue is paused." when no
 
 ### The decision block
 
-The call that waits for the user and its controls share one filled, outlined block (`.decision`): the one element
-of the conversation that asks for attention. Its row is in the full foreground with a solid dot, "waiting for your
-decision" in weight 600, and it wraps so the path or command is never cut. Under it: the reason field, then Accept
-or Run (primary) and Reject (secondary).
+The call that waits for the user and its controls share one block drawn in negative (`.decision`): the foreground
+as its ground, the panel's color as its text. It is the one element of the conversation that asks for attention,
+and the thread ends on its solid 9px node. "Waiting for your decision" is in weight 600, and the row wraps so the
+path or command is never cut. Under it: the reason field, in the theme's input colors, then Accept or Run and
+Reject. On this block Accept or Run is the panel's own ground with the foreground as text, weight 600, since the
+theme's button color is not chosen for this ground and a high-contrast theme gives it no fill; Reject is outlined in
+the panel's color. A focus ring on its buttons is the panel's color.
 
 ### Menus and History
 
@@ -321,9 +352,9 @@ Each kind of state has one look, distinct from the others at a glance:
 | Warning (skipped providers and skills, an undo that skipped files) | A block on the theme's warning fill; under skipped providers, Add provider (secondary) below the block, only while a valid provider exists: without one, the empty state's Add provider is the panel's only one. |
 | Error (models unavailable, failed reply, storage and listing problems, an undo that failed unexpectedly) | A block on the theme's error fill: the message, its technical detail in the editor font, then its actions. |
 | Failed step or chip | The error color on the status text; no block. |
-| Waiting for a decision | The decision block. |
+| Waiting for a decision | The decision block, in negative, on the thread's solid node. |
 | Turn ending (Stopped, halted) | A short rule, then small dim text. |
-| Folded turn (an ended turn of two steps or more) | One small dim row with a chevron, "N steps", then the failed and rejected counts in words. |
+| Folded turn (an ended turn of two steps or more) | One small dim row on a double-ring node, "N steps", then the failed and rejected counts in words, then the chevron. |
 | Replacing (Edit on the last message) | The last turn dimmed as a group under one line in the full foreground saying that sending replaces it, with Cancel; not dimmed in high contrast. |
 | Summarized (a summary, and the entries it replaces) | A separator of dim words between two rules above the summary; the entries before it dimmed as a group under one dim line saying they are no longer sent (not dimmed in high contrast); the turn's message an automatic summary quotes undimmed, with a dim line saying it is still sent. |
 
@@ -389,7 +420,9 @@ opacity over `--bc-fast`. Under `prefers-reduced-motion: reduce`, and when VS Co
 
 - Don't write a literal color, an inline `style`, or a rule that depends on a theme's name. The two exceptions read
   `body.vscode-high-contrast`: the dim text strength and the status-colored alert text.
-- Don't mark a state with color alone, or with a colored side stripe.
+- Don't mark a state with color alone, or with a colored side stripe. The thread is a 1px neutral line, not a
+  stripe on a block.
+- Don't put the button colors on anything but a primary button and the latest user message.
 - Don't add an icon font, a component kit, or Unicode glyphs as icons; draw the mark in CSS.
 - Don't move the focus from code when the conversation changes.
 - Don't let content set the panel's width.

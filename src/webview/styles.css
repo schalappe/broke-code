@@ -29,6 +29,10 @@
   /* Sizes that are not spacing: a one-line row, and a mark drawn in CSS (a dot, a chevron). */
   --bc-row: 22px;
   --bc-mark: 6px;
+  /* The thread of an agent turn: the indent of what sits on it, a node, and the solid node of the call that waits. */
+  --bc-thread-indent: 20px;
+  --bc-node: 7px;
+  --bc-node-solid: 9px;
 
   /* Corners: controls, blocks, and the two large blocks (the message box, a user's message). */
   --bc-radius-sm: 4px;
@@ -76,6 +80,17 @@
   --bc-button-bg-hover: var(--vscode-button-hoverBackground);
   --bc-button-border: var(--vscode-button-border, var(--bc-edge));
   --bc-button-border-hover: var(--vscode-contrastActiveBorder, var(--bc-button-border));
+
+  /* The latest user message sits on the button colors; an earlier one keeps their outline, and a chip is a tint. */
+  --bc-accent-line: var(--vscode-button-background, var(--bc-edge));
+  --bc-accent-chip: color-mix(in srgb, var(--vscode-button-foreground) 18%, transparent);
+  /* A tool's name on the thread. */
+  --bc-tool: var(--vscode-textLink-foreground);
+  /* The decision block is drawn in negative, the panel's color on the foreground: its tints of the panel. */
+  --bc-inverse-well: color-mix(in srgb, var(--vscode-sideBar-background) 14%, transparent);
+  --bc-inverse-hover: color-mix(in srgb, var(--vscode-sideBar-background) 16%, transparent);
+  --bc-inverse-line: color-mix(in srgb, var(--vscode-sideBar-background) 45%, transparent);
+  --bc-inverse-button-hover: color-mix(in srgb, var(--vscode-sideBar-background) 86%, var(--vscode-foreground));
 
   --bc-warning-fill: var(--vscode-inputValidation-warningBackground);
   --bc-warning-edge: var(--vscode-contrastBorder, var(--vscode-inputValidation-warningBorder, transparent));
@@ -267,12 +282,15 @@ button:focus-visible {
 
 /* ---------- Header ---------- */
 
-/* The usage and the buttons wrap below the pickers once the pickers would fall under 16em, so model names stay readable. */
+/* A running head over one rule. The usage and the buttons wrap below the pickers once the pickers would fall under
+   16em, so model names stay readable. */
 .header {
   display: flex;
   flex-wrap: wrap;
   gap: var(--bc-space-2) var(--bc-space-3);
   align-items: center;
+  padding-bottom: var(--bc-space-3);
+  border-bottom: 1px solid var(--bc-line);
 }
 
 .pickers {
@@ -282,9 +300,21 @@ button:focus-visible {
   min-width: 0;
 }
 
+/* The pickers and the header's buttons are quiet text until hovered or focused; high contrast keeps their edge. */
 .pickers select {
   flex: 1 1 0;
   min-width: 0;
+  padding-left: 0;
+  color: var(--bc-fg-dim);
+  background: transparent;
+  border-color: var(--bc-edge);
+  font-size: var(--bc-fs-sm);
+}
+
+.pickers select:hover:not(:disabled),
+.pickers select:focus-visible {
+  color: var(--bc-select-fg);
+  border-color: var(--bc-select-border);
 }
 
 .usage {
@@ -312,6 +342,17 @@ button:focus-visible {
 .history button.secondary {
   padding: var(--bc-space-1) var(--bc-space-3);
   font-size: var(--bc-fs-sm);
+}
+
+.header button.secondary {
+  padding-inline: var(--bc-space-2);
+  color: var(--bc-fg-dim);
+  border-color: var(--bc-edge);
+}
+
+.header button.secondary:hover:not(:disabled),
+.header button.secondary[aria-expanded="true"] {
+  color: var(--bc-fg);
 }
 
 /* ---------- Notices, warnings, errors ---------- */
@@ -603,13 +644,21 @@ button.history-open:hover:not(:disabled) {
   background: var(--bc-line);
 }
 
-/* The user's message is a soft filled block; the reply runs flush on the panel itself. */
+/* The latest user message is a block in the theme's button colors; an earlier one keeps only their outline. The
+   reply runs flush on the panel itself. */
 .message.user {
   padding: var(--bc-space-3) var(--bc-space-4);
   white-space: pre-wrap;
-  background: var(--bc-fill);
-  border: 1px solid var(--bc-edge);
+  color: var(--bc-button-fg);
+  background: var(--bc-button-bg);
+  border: 1px solid var(--bc-button-border);
   border-radius: var(--bc-radius-lg);
+}
+
+.message.user.earlier {
+  color: var(--bc-fg);
+  background: transparent;
+  border-color: var(--bc-accent-line);
 }
 
 .message.user:not(:first-child) {
@@ -921,6 +970,30 @@ button.code-action:hover:not(:disabled) {
   border-color: var(--bc-error);
 }
 
+/* On the latest message's ground a chip is a tint of its text. A failed or neutral chip takes the panel's ground
+   back, where its own color reads. */
+.message.user:not(.earlier) .chip {
+  background: var(--bc-accent-chip);
+}
+
+.message.user:not(.earlier) .chip-status {
+  color: inherit;
+}
+
+.message.user:not(.earlier) .kind {
+  border-color: currentColor;
+}
+
+.message.user:not(.earlier) .chip.failed {
+  color: var(--bc-error);
+  background: var(--bc-bg);
+}
+
+.message.user:not(.earlier) .chip.neutral {
+  color: var(--bc-fg-dim);
+  background: var(--bc-bg);
+}
+
 /* ---------- Loading and turn endings ---------- */
 
 /* Loading: dim text that breathes; a line of its own leads with a dot. */
@@ -1077,10 +1150,10 @@ summary.step-row::-webkit-details-marker,
   min-height: var(--bc-row);
 }
 
-/* The mark of a row that opens: a chevron drawn from two borders, turned down once open. */
-.reasoning summary::before,
-summary.step-row::before,
-.turn-fold > summary::before {
+/* The mark of a row that opens: a chevron drawn from two borders at the end of the row, turned down once open. */
+.reasoning summary::after,
+summary.step-row::after,
+.turn-fold > summary::after {
   content: "";
   flex: none;
   align-self: center;
@@ -1094,9 +1167,9 @@ summary.step-row::before,
   transition: transform var(--bc-fast) var(--bc-ease);
 }
 
-.reasoning[open] > summary::before,
-.step[open] > summary.step-row::before,
-.turn-fold[open] > summary::before {
+.reasoning[open] > summary::after,
+.step[open] > summary.step-row::after,
+.turn-fold[open] > summary::after {
   transform: translateY(calc(-1 * var(--bc-space-1))) rotate(45deg);
 }
 
@@ -1136,6 +1209,92 @@ summary.step-row:hover,
   margin-top: var(--bc-space-2);
 }
 
+/* ---------- Thread ---------- */
+
+/*
+ * An agent turn's work is drawn as a thread: a reply that holds a tool step, and a folded turn, sit beside one drawn
+ * line, each row that opens a node on it. A reply without a step, the turn's answer, leaves the thread and runs flush.
+ */
+.message.assistant:has(.step),
+.turn-fold {
+  position: relative;
+  padding-left: var(--bc-thread-indent);
+}
+
+.message.assistant:has(.step)::before,
+.turn-fold::before {
+  content: "";
+  position: absolute;
+  left: calc((var(--bc-node) - 1px) / 2);
+  top: 0;
+  bottom: calc(-1 * var(--bc-space-2));
+  width: 1px;
+  background: var(--bc-line);
+}
+
+/* Opened, the fold's entries bring their own line: the fold's stops under its row, and they move back onto it. */
+.turn-fold[open]::before {
+  bottom: auto;
+  height: var(--bc-row);
+}
+
+.turn-fold-entries {
+  margin-left: calc(-1 * var(--bc-thread-indent));
+}
+
+/* What the agent says before a call is narration: small and dim, beside the thread. */
+.message.assistant:has(.step) .answer {
+  color: var(--bc-fg-dim);
+  font-size: var(--bc-fs-sm);
+}
+
+.message.assistant:has(.step) .answer + * {
+  margin-top: var(--bc-space-1);
+}
+
+/* A folded turn's node is a double ring: several steps in one. */
+.turn-fold > summary::before {
+  box-shadow:
+    0 0 0 2px var(--bc-bg),
+    0 0 0 3px var(--bc-fg-dim);
+}
+
+/* A node: a ring on the line, level with its row's first line. The panel's color inside it hides the line. */
+.step-row,
+.turn-fold > summary,
+.message.assistant:has(.step) .reasoning summary {
+  position: relative;
+}
+
+.step-row::before,
+.turn-fold > summary::before,
+.message.assistant:has(.step) .reasoning summary::before {
+  content: "";
+  position: absolute;
+  left: calc(-1 * var(--bc-thread-indent));
+  top: calc((var(--bc-row) - var(--bc-node)) / 2);
+  box-sizing: border-box;
+  width: var(--bc-node);
+  height: var(--bc-node);
+  background: var(--bc-bg);
+  border: 1px solid var(--bc-fg-dim);
+  border-radius: 50%;
+}
+
+/* The decision block's own solid node stands for its row's (see "Approval"). */
+.decision .step-row::before {
+  display: none;
+}
+
+/* Reasoning is a dotted node, a failed step a ring in the error color; its status says so in words. */
+.message.assistant:has(.step) .reasoning summary::before {
+  border-style: dotted;
+}
+
+.step:has(> .step-row > .step-status.failed) > .step-row::before {
+  border-color: var(--bc-error);
+}
+
 /* ---------- Tool steps ---------- */
 
 /* One quiet, small line per body tool call; it opens to its result. */
@@ -1153,19 +1312,7 @@ summary.step-row:hover,
   min-height: var(--bc-row);
 }
 
-/* A call without a result has no chevron: a dot holds its place, filled while the call runs or waits. */
-div.step-row::before {
-  content: "";
-  flex: none;
-  align-self: center;
-  box-sizing: border-box;
-  width: var(--bc-mark);
-  height: var(--bc-mark);
-  margin: 0 var(--bc-space-1);
-  border: 1px solid var(--bc-fg-dim);
-  border-radius: 50%;
-}
-
+/* A call without a result has no chevron; its node is filled while the call runs. */
 div.step-row:has(.step-status[role="status"])::before {
   background: var(--bc-fg-dim);
 }
@@ -1176,6 +1323,7 @@ div.step-row:has(.step-status.loading)::before {
 
 .step-tool {
   flex: none;
+  color: var(--bc-tool);
   font-family: var(--bc-mono);
   font-size: var(--bc-fs-mono);
   font-weight: 600;
@@ -1239,26 +1387,52 @@ div.step-row:has(.step-status.loading)::before {
 /* ---------- Approval ---------- */
 
 /*
- * The call that waits for the user and its controls share one filled block, the one element of the conversation
- * that asks for attention: it holds the conversation's only primary button.
+ * The call that waits for the user and its controls share one block drawn in negative, the panel's color on the
+ * foreground: the one element of the conversation that asks for attention. The thread ends on its solid node.
  */
 .decision {
+  position: relative;
   margin: var(--bc-space-3) 0;
   padding: var(--bc-space-2) var(--bc-space-4) var(--bc-space-4);
-  background: var(--bc-fill);
-  border: 1px solid var(--bc-line);
+  color: var(--bc-bg);
+  background: var(--bc-fg);
+  border: 1px solid var(--bc-fg);
   border-radius: var(--bc-radius);
+}
+
+/* Two pixels past the indent: the block's border, and half of what the solid node is wider than a ring. */
+.decision::before {
+  content: "";
+  position: absolute;
+  left: calc(-1 * var(--bc-thread-indent) - 2px);
+  top: calc(var(--bc-space-2) + (var(--bc-row) - var(--bc-node-solid)) / 2);
+  width: var(--bc-node-solid);
+  height: var(--bc-node-solid);
+  background: var(--bc-fg);
+  border-radius: 50%;
+  box-shadow: 0 0 0 3px var(--bc-bg);
 }
 
 .decision .step {
   margin: 0;
+  color: inherit;
 }
 
 /* What the user decides on shows whole: the row wraps and its path is never cut. */
 .decision .step-row {
   flex-wrap: wrap;
   row-gap: 0;
-  color: var(--bc-fg);
+  color: inherit;
+}
+
+.decision .step-tool {
+  color: inherit;
+}
+
+.decision .step-command {
+  color: inherit;
+  background: var(--bc-inverse-well);
+  border-color: transparent;
 }
 
 .decision .step-arg {
@@ -1269,11 +1443,6 @@ div.step-row:has(.step-status.loading)::before {
 
 .decision .step-status {
   font-weight: 600;
-}
-
-.decision div.step-row::before {
-  background: var(--bc-fg);
-  border-color: var(--bc-fg);
 }
 
 /* The reason field, then Accept or Run and Reject: Shift+Tab from the message box meets them in reverse. */
@@ -1290,6 +1459,33 @@ div.step-row:has(.step-status.loading)::before {
 .approval-reason {
   width: 100%;
   min-width: 0;
+}
+
+/* On the negative block the primary button is the panel's own ground, which holds in every theme, high contrast
+   included, where the theme's button has no fill. */
+.decision .actions button:not(.secondary) {
+  color: var(--bc-fg);
+  background: var(--bc-bg);
+  border-color: var(--bc-bg);
+  font-weight: 600;
+}
+
+.decision .actions button:not(.secondary):hover:not(:disabled) {
+  background: var(--bc-inverse-button-hover);
+}
+
+.decision button.secondary {
+  color: var(--bc-bg);
+  border-color: var(--bc-inverse-line);
+}
+
+.decision button.secondary:hover:not(:disabled) {
+  background: var(--bc-inverse-hover);
+  border-color: var(--bc-bg);
+}
+
+.decision button:focus-visible {
+  outline-color: var(--bc-bg);
 }
 
 /* ---------- Composer ---------- */
