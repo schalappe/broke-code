@@ -890,6 +890,33 @@ describe("the usage field", () => {
     expect(support.usageField(access.provider, "m")).toBe("unknown");
   });
 
+  test("sends a 400 once when another request proves the field while its body arrives", async () => {
+    const support = new ProviderSupport();
+    const { access, askedUsage } = scripted("field-proved-meanwhile", [
+      () => {
+        // The headers go at once; another request's stream starts before the body ends.
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('{"error":{"message":"unknown field"}'));
+            setTimeout(() => {
+              support.usageFieldAccepted(access.provider, "m");
+              controller.enqueue(new TextEncoder().encode("}"));
+              controller.close();
+            }, 50);
+          },
+        });
+        return new Response(body, { status: 400, headers: { "content-type": "application/json" } });
+      },
+      reply,
+    ]);
+    expect(await chat(access, support)).toEqual({
+      status: "failed",
+      error: { kind: "rejected", provider: "P-field-proved-meanwhile", status: 400, detail: "unknown field" },
+    });
+    expect(askedUsage).toEqual([true]);
+    expect(support.usageField(access.provider, "m")).toBe("accepts");
+  });
+
   test("leaves the model unknown when Stop lands before the second request's headers", async () => {
     const support = new ProviderSupport();
     const stop = new AbortController();

@@ -221,10 +221,11 @@ async function openStream(access: ProviderAccess, options: StreamChatOptions): P
     if (sent.ok && askUsage) support.usageFieldAccepted(provider, model);
     return sent;
   }
-  // [>]: Read to its end before the resend, so a Stop while it arrives sends nothing more. Its text is shown only when
-  // that Stop leaves it the last answer; the resend's answer is otherwise what the user sees.
+  // [>]: Read to its end before the resend, so a Stop while it arrives sends nothing more. The model's state is read
+  // once more after it: another request's stream may have proved the field meanwhile, and the 400 is then final. Its
+  // text is shown only in these two cases; the resend's answer is otherwise what the user sees.
   const read = await readText(response.body, ERROR_BODY_MAX_BYTES);
-  if (signal.aborted) {
+  if (signal.aborted || support.usageField(provider, model) === "accepts") {
     const detail = read.ok ? errorDetail(read.text) : "";
     return { ok: false, error: { kind: "rejected", provider: provider.name, status: response.status, detail } };
   }
