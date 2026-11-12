@@ -3949,7 +3949,8 @@ describe("ChatController queue", () => {
   const sent = () => (requests.get("queue") ?? []) as Request[];
   /** The last user message of each request sent, in order. */
   const sentTexts = () => sent().map((request) => request.messages.at(-1)?.content);
-  const userTexts = (state: ChatState) => state.entries.flatMap((entry) => (entry.role === "user" ? [entry.content] : []));
+  const userTexts = (state: ChatState) =>
+    state.entries.flatMap((entry) => (entry.role === "user" ? [entry.content] : []));
 
   beforeEach(() => {
     requests.delete("queue");
@@ -4001,7 +4002,9 @@ describe("ChatController queue", () => {
     const { controller, state, release } = await gated({ mentions: reader });
     const first = controller.send("A");
     controller.queueMessage("  then read @my file.ts  ", ["my file.ts"]);
-    expect(state().queue).toEqual([{ id: expect.any(Number), text: "then read @my file.ts", mentions: ["my file.ts"] }]);
+    expect(state().queue).toEqual([
+      { id: expect.any(Number), text: "then read @my file.ts", mentions: ["my file.ts"] },
+    ]);
     expect(reads).toEqual([]);
 
     await release();

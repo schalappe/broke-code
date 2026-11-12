@@ -11,6 +11,7 @@ import {
   openMenuToken,
   pickedInText,
   replaceToken,
+  restoreQueued,
   slashMenuView,
   slashPick,
 } from "./composer";
@@ -311,5 +312,31 @@ describe("applyDraft", () => {
     expect(next.picked).toEqual(["a b.ts", "src/app.ts"]);
     const again = applyDraft(next, { text: "@src/app.ts", mode: "caret", picked: ["src/app.ts"] });
     expect(again.picked).toEqual(["a b.ts", "src/app.ts"]);
+  });
+});
+
+describe("restoreQueued", () => {
+  const queued = (id: number, text: string, mentions: string[] = []) => ({ id, text, mentions });
+
+  test("fills an empty box with the queued texts, one per paragraph, caret at the end", () => {
+    const next = restoreQueued({ text: "", caret: 0, picked: [] }, [queued(1, "B"), queued(2, "C")]);
+    expect(next).toEqual({ text: "B\n\nC", caret: 4, picked: [] });
+    expect(restoreQueued({ text: " \n", caret: 1, picked: [] }, [queued(1, "B")]).text).toBe("B");
+  });
+
+  test("appends the queued texts after a draft, as new paragraphs", () => {
+    const next = restoreQueued({ text: "foo", caret: 1, picked: [] }, [queued(1, "B"), queued(2, "C")]);
+    expect(next).toEqual({ text: "foo\n\nB\n\nC", caret: 9, picked: [] });
+  });
+
+  test("adds each queued message's picked paths to the draft's, once", () => {
+    const draft = { text: "see @a b.ts", caret: 11, picked: ["a b.ts"] };
+    const next = restoreQueued(draft, [queued(1, "then @a b.ts and @c d.ts", ["a b.ts", "c d.ts"])]);
+    expect(next.picked).toEqual(["a b.ts", "c d.ts"]);
+  });
+
+  test("leaves the draft as it is when nothing was queued", () => {
+    const draft = { text: "foo", caret: 1, picked: ["x"] };
+    expect(restoreQueued(draft, [])).toBe(draft);
   });
 });

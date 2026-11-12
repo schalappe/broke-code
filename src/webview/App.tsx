@@ -5,6 +5,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
   type Ref,
+  useCallback,
   useContext,
   useEffect,
   useLayoutEffect,
@@ -21,11 +22,15 @@ import {
   type DraftInsert,
   type HostMessage,
   isMode,
+  isQueuePaused,
   isReplying,
+  MAX_QUEUED_MESSAGES,
   MODES,
   type Mode,
   type PendingApproval,
+  type QueuedMessage,
   type ReplyCall,
+  type WebviewMessage,
 } from "../core/protocol";
 import type { ProviderError } from "../core/providerError";
 import { isNothingToAttach, type ReservedMention, reservedMention } from "../core/reservedMentions";
@@ -41,7 +46,9 @@ import {
   menuView,
   openMenuToken,
   pickedInText,
+  queueReturnedBy,
   replaceToken,
+  restoreQueued,
   type SkillAnswer,
   type SlashRow,
   slashMenuView,
@@ -69,7 +76,8 @@ import { post } from "./vscodeApi";
 /**
  * `language`: BCP 47 tag of the VS Code display language, for dates. `drafts`: editor drafts not yet applied, which the
  * message box applies and `takeDrafts` removes; one closes History. Without a message box they are taken unapplied:
- * a draft is never held for a box that may never come.
+ * a draft is never held for a box that may never come. A navigation request that empties the queue returns its texts
+ * to the message box (`queueReturnedBy`); they wait for the box when it is not shown, since they were typed.
  */
 export function App({
   state,
@@ -86,6 +94,14 @@ export function App({
   const composerShown = configured || isReplying(state);
   const [historyOpen, setHistoryOpen] = useState(false);
   const historyButton = useRef<HTMLButtonElement>(null);
+  /** Queued messages returned by navigation and not yet back in the message box, in request order. */
+  const [returned, setReturned] = useState<(readonly QueuedMessage[])[]>([]);
+  const takeReturned = useCallback((count: number) => setReturned((pending) => pending.slice(count)), []);
+  const navigate = (request: WebviewMessage) => {
+    const messages = queueReturnedBy(request, state);
+    if (messages.length > 0) setReturned((pending) => [...pending, messages]);
+    post(request);
+  };
 
   useEffect(() => {
     if (drafts.length === 0) return;
@@ -101,6 +117,7 @@ export function App({
         historyOpen={historyOpen}
         toggleHistory={() => setHistoryOpen(!historyOpen)}
         historyButton={historyButton}
+        navigate={navigate}
       />
       {!configured && <EmptyState />}
       <Warnings state={state} />
@@ -118,6 +135,7 @@ export function App({
           state={state}
           language={language}
           close={() => setHistoryOpen(false)}
+          navigate={navigate}
           dismiss={() => {
             setHistoryOpen(false);
             historyButton.current?.focus();
@@ -141,9 +159,11 @@ export function App({
           historyOpen={historyOpen}
           drafts={drafts}
           takeDrafts={takeDrafts}
+          returned={returned}
+          takeReturned={takeReturned}
           startNewChat={() => {
             setHistoryOpen(false);
-            post({ type: "newChat" });
+            navigate({ type: "newChat" });
           }}
         />
       )}
@@ -173,7 +193,7 @@ const HISTORY_ID = "history";
 /**
  * Provider and model pickers (with a provider configured), the context usage of the selected model, New chat, and the
  * History toggle. `language`: BCP 47 tag for the usage numbers. `historyButton`: the toggle, which takes the focus
- * back when Escape closes History.
+ * back when Escape closes History. `navigate`: posts New chat, returning the queue to the message box.
  */
 export function Header({
   state,
@@ -181,12 +201,14 @@ export function Header({
   historyOpen,
   toggleHistory,
   historyButton,
+  navigate = post,
 }: {
   state: ChatState;
   language: string;
   historyOpen: boolean;
   toggleHistory: () => void;
   historyButton?: Ref<HTMLButtonElement>;
+  navigate?: (request: WebviewMessage) => void;
 }) {
   return (
     <header className="header">
@@ -203,7 +225,7 @@ export function Header({
           disabled={state.entries.length === 0}
           onClick={() => {
             if (historyOpen) toggleHistory();
-            post({ type: "newChat" });
+            navigate({ type: "newChat" });
           }}
         >
           {l10n.t("New chat")}
@@ -349,17 +371,20 @@ function ErrorBlock({ error, retry }: { error: ProviderError; retry?: () => void
  * History list wired to the host: a pick closes it and asks to open that conversation, even the one shown, since a
  * pending open may be about to replace it; the controller skips an open of the conversation shown when it runs.
  * Delete deletes. `dismiss`: Escape in an empty filter field, which closes History and focuses its toggle.
+ * `navigate`: posts the open and delete requests, returning the queue to the message box when they empty it.
  */
 export function HistoryPanel({
   state,
   language,
   close,
   dismiss,
+  navigate = post,
 }: {
   state: ChatState;
   language: string;
   close: () => void;
   dismiss: () => void;
+  navigate?: (request: WebviewMessage) => void;
 }) {
   return (
     <ConversationList
@@ -368,9 +393,9 @@ export function HistoryPanel({
       language={language}
       onOpen={(id) => {
         close();
-        post({ type: "openConversation", id });
+        navigate({ type: "openConversation", id });
       }}
-      onDelete={(id) => post({ type: "deleteConversation", id })}
+      onDelete={(id) => navigate({ type: "deleteConversation", id })}
       onDismiss={dismiss}
     />
   );
@@ -1006,6 +1031,10 @@ function Reasoning({ entry }: { entry: ChatEntry & { role: "assistant" } }) {
  * inserts `/<name> `. When a reply ends, the message box takes the focus, unless History is open (`historyOpen`): the
  * focus then stays where the user has it, so typing keeps going to the History filter. `drafts` from the editor are
  * applied in order (`applyDraft`), whatever the reply's state, then taken, and the message box takes the focus.
+ * While a reply is in flight, Send and Enter queue the message instead (`queueMessage`), up to `MAX_QUEUED_MESSAGES`,
+ * a built-in command excepted, which stays text in the box; the queue shows under the box (`QueuedMessages`).
+ * `returned` queued messages, which navigation emptied, go back in the box (`restoreQueued`), then are taken; neither
+ * moves the focus.
  */
 function Composer({
   state,
@@ -1013,12 +1042,16 @@ function Composer({
   startNewChat,
   drafts,
   takeDrafts,
+  returned,
+  takeReturned,
 }: {
   state: ChatState;
   historyOpen: boolean;
   startNewChat: () => void;
   drafts: readonly DraftInsert[];
   takeDrafts: (count: number) => void;
+  returned: readonly (readonly QueuedMessage[])[];
+  takeReturned: (count: number) => void;
 }) {
   const [text, setText] = useState("");
   const [caret, setCaret] = useState(0);
@@ -1140,14 +1173,27 @@ function Composer({
     };
   }, []);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: returned texts apply to the box as it stands when they arrive.
+  useEffect(() => {
+    if (returned.length === 0) return;
+    const next = returned.reduce(restoreQueued, { text, caret, picked });
+    setText(next.text);
+    setCaret(next.caret);
+    setPicked([...next.picked]);
+    nextCaret.current = next.caret;
+    takeReturned(returned.length);
+  }, [returned]);
+
   useLayoutEffect(() => {
     if (nextCaret.current === undefined) return;
     input.current?.setSelectionRange(nextCaret.current, nextCaret.current);
     nextCaret.current = undefined;
   });
 
-  // [!]: The one check of whether Send would act: Send, Enter, and the built-in commands all go through it.
+  // [!]: The one check of whether Send would act: Send, Enter, the built-in commands, and Send now all go through it.
   const canSend = ready && !replying && !state.modePending;
+  // [>]: Only a reply in flight queues; with no model or a mode change pending, Send does nothing either way.
+  const canQueue = ready && replying && !state.modePending && state.queue.length < MAX_QUEUED_MESSAGES;
 
   const clear = () => {
     setText("");
@@ -1178,11 +1224,25 @@ function Composer({
   };
 
   const send = () => {
-    if (!canSend || text.trim() === "") return;
+    if (text.trim() === "") return;
     const command = builtInCommand(text);
-    if (command) return run(command);
-    post({ type: "send", text, mentions: pickedInText(picked, text) });
+    if (canSend && command) return run(command);
+    // [>]: A built-in is never queued: during a reply it stays text in the box.
+    const type = canSend ? "send" : canQueue && !command ? "queueMessage" : undefined;
+    if (!type) return;
+    post({ type, text, mentions: pickedInText(picked, text) });
     clear();
+  };
+
+  const edit = (message: QueuedMessage) => {
+    post({ type: "removeQueued", id: message.id });
+    const next = restoreQueued({ text, caret, picked }, [message]);
+    setText(next.text);
+    setCaret(next.caret);
+    setPicked([...next.picked]);
+    nextCaret.current = next.caret;
+    // [>]: The user asked to edit it, and the row they clicked is gone: the message box takes the focus.
+    input.current?.focus();
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1205,53 +1265,124 @@ function Composer({
   };
 
   return (
-    <footer className="composer">
-      {mentionMenu && (
-        <MentionMenu
-          items={mentionMenu.items}
-          capped={mentionMenu.capped}
-          failed={mentionMenu.failed}
-          highlighted={highlighted}
-          onPick={pick}
+    <>
+      <footer className="composer">
+        {mentionMenu && (
+          <MentionMenu
+            items={mentionMenu.items}
+            capped={mentionMenu.capped}
+            failed={mentionMenu.failed}
+            highlighted={highlighted}
+            onPick={pick}
+          />
+        )}
+        {slashMenu && (
+          <SlashMenu items={slashMenu.items} failed={slashMenu.failed} highlighted={highlighted} onPick={pick} />
+        )}
+        <textarea
+          ref={input}
+          rows={3}
+          value={text}
+          placeholder={
+            ready
+              ? l10n.t("Ask anything. Enter to send, Shift+Enter for a new line.")
+              : l10n.t("Choose a model to start.")
+          }
+          aria-label={l10n.t("Message")}
+          aria-autocomplete="list"
+          aria-controls={menuId}
+          aria-activedescendant={menuId && rows ? optionId(menuId, highlighted) : undefined}
+          onChange={(event) => {
+            setText(event.target.value);
+            setCaret(event.target.selectionStart);
+          }}
+          onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
+          onKeyDown={onKeyDown}
         />
-      )}
-      {slashMenu && (
-        <SlashMenu items={slashMenu.items} failed={slashMenu.failed} highlighted={highlighted} onPick={pick} />
-      )}
-      <textarea
-        ref={input}
-        rows={3}
-        value={text}
-        placeholder={
-          ready
-            ? l10n.t("Ask anything. Enter to send, Shift+Enter for a new line.")
-            : l10n.t("Choose a model to start.")
-        }
-        aria-label={l10n.t("Message")}
-        aria-autocomplete="list"
-        aria-controls={menuId}
-        aria-activedescendant={menuId && rows ? optionId(menuId, highlighted) : undefined}
-        onChange={(event) => {
-          setText(event.target.value);
-          setCaret(event.target.selectionStart);
-        }}
-        onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
-        onFocus={() => setFocused(true)}
-        onBlur={() => setFocused(false)}
-        onKeyDown={onKeyDown}
-      />
-      {/* [!]: After the message box, so Shift+Tab from it still reaches an open request's controls first. */}
-      <ModeSelect mode={state.mode} disabled={replying || state.modePending} />
-      {replying ? (
-        <button type="button" onClick={() => post({ type: "stop" })}>
-          {l10n.t("Stop")}
-        </button>
-      ) : (
-        <button type="button" disabled={!canSend || text.trim() === ""} onClick={send}>
+        {/* [!]: After the message box, so Shift+Tab from it still reaches an open request's controls first. */}
+        <ModeSelect mode={state.mode} disabled={replying || state.modePending} />
+        {/* [>]: During a reply Send queues, so it stays beside Stop, secondary: Stop is the region's primary button. */}
+        <button
+          type="button"
+          className={replying ? "secondary" : undefined}
+          disabled={!(canSend || canQueue) || text.trim() === ""}
+          onClick={send}
+        >
           {l10n.t("Send")}
         </button>
+        {replying && (
+          <button type="button" onClick={() => post({ type: "stop" })}>
+            {l10n.t("Stop")}
+          </button>
+        )}
+      </footer>
+      {state.queue.length > 0 && <QueuedMessages state={state} canSend={canSend} edit={edit} />}
+    </>
+  );
+}
+
+/**
+ * The queued messages under the message box, in order, after Send and Stop in the tab order, so nothing focusable
+ * comes between an approval's controls and the message box. Each has Edit and Remove; while the queue is paused
+ * (`isQueuePaused`), a line says so and the first has Send now, enabled when Send would act (`canSend`). A line says
+ * when the queue is full.
+ */
+function QueuedMessages({
+  state,
+  canSend,
+  edit,
+}: {
+  state: ChatState;
+  canSend: boolean;
+  edit: (message: QueuedMessage) => void;
+}) {
+  const paused = isQueuePaused(state);
+  return (
+    <section className="queue" aria-label={l10n.t("Queued messages")}>
+      {paused && (
+        <p className="notice" role="status">
+          {l10n.t("The queue is paused.")}
+        </p>
       )}
-    </footer>
+      {state.queue.length >= MAX_QUEUED_MESSAGES && (
+        <p className="notice" role="status">
+          {l10n.t("The queue is full: {0} messages at most.", MAX_QUEUED_MESSAGES)}
+        </p>
+      )}
+      <ol>
+        {state.queue.map((message, index) => (
+          <li key={message.id}>
+            <span className="queued-text" title={message.text}>
+              {message.text}
+            </span>
+            <div className="actions">
+              {paused && index === 0 && (
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={!canSend}
+                  onClick={() => post({ type: "sendQueued", id: message.id })}
+                >
+                  {l10n.t("Send now")}
+                </button>
+              )}
+              <button type="button" className="secondary" onClick={() => edit(message)}>
+                {l10n.t("Edit")}
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => post({ type: "removeQueued", id: message.id })}
+              >
+                {l10n.t("Remove")}
+              </button>
+            </div>
+          </li>
+        ))}
+      </ol>
+    </section>
   );
 }
 
