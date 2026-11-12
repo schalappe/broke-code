@@ -11,9 +11,10 @@ import {
   type ProviderAccess,
   type StreamChatOptions,
 } from "./client";
-import { fillsContext } from "./limits";
+import { largestFittingCharacters } from "./limits";
 import type { Translator } from "./modelList";
 import { describeProviderError, type ErrorText } from "./providerError";
+import type { ProviderSupport } from "./providerSupport";
 
 export const COMMIT_MESSAGE_PROMPT = [
   "You write git commit messages. The user's message is the staged diff of a git repository.",
@@ -34,14 +35,15 @@ export const CUT_NOTICE =
 export type CommitRequest = { kind: "ok"; messages: ChatMessage[]; partial: boolean } | { kind: "contextTooSmall" };
 
 /**
- * The request for `diff` (a `git diff --cached`) under a model context of `contextSize` tokens. Its estimate
- * (`estimateTokens`) stays within the chat's threshold (`fillsContext`): for 32,768 tokens, 28,672 tokens, so 114,688
- * characters for the system prompt and the diff together. A diff over that is cut between files, on the lines starting
- * with `diff --git `: whole files in order while they fit. When the first file alone exceeds the room, it is cut to
- * it, between characters. A cut diff ends with `CUT_NOTICE`.
+ * The request for `diff` (a `git diff --cached`) under a model context of `contextSize` tokens, for a model of `ratio`
+ * characters per token (`ProviderSupport.ratio`). Its estimate (`estimateTokens`) stays within the chat's threshold
+ * (`fillsContext`): for 32,768 tokens, 28,672 tokens, so 114,688 characters for the system prompt and the diff together
+ * at ratio 4, 100,352 at 3.5. A diff over that is cut between files, on the lines starting with `diff --git `: whole
+ * files in order while they fit. When the first file alone exceeds the room, it is cut to it, between characters. A
+ * cut diff ends with `CUT_NOTICE`.
  */
-export function composeCommitRequest(diff: string, contextSize: number): CommitRequest {
-  const budget = largestFittingCharacters(contextSize);
+export function composeCommitRequest(diff: string, contextSize: number, ratio: number): CommitRequest {
+  const budget = largestFittingCharacters(contextSize, ratio);
   const room = budget - COMMIT_MESSAGE_PROMPT.length;
   if (diff.length <= room) return { kind: "ok", messages: messagesOf(diff), partial: false };
 
@@ -56,13 +58,6 @@ export function composeCommitRequest(diff: string, contextSize: number): CommitR
   if (kept === "") kept = cutText(files[0] ?? "", cutRoom);
   const content = `${kept.replace(/\n+$/, "")}\n\n${CUT_NOTICE}`;
   return { kind: "ok", messages: messagesOf(content), partial: true };
-}
-
-/** Most characters a request may hold under `fillsContext`: every character counts a quarter token, rounded up. */
-function largestFittingCharacters(contextSize: number): number {
-  const tokens = Math.floor((contextSize * 7) / 8);
-  // [>]: Ties the arithmetic to the chat's rule, so a change to `fillsContext` cannot silently pass this budget.
-  return fillsContext(tokens, contextSize) ? 0 : tokens * 4;
 }
 
 function messagesOf(diff: string): ChatMessage[] {
@@ -152,13 +147,16 @@ export type CommitSelection = { access: ProviderAccess; model: string; contextSi
 
 /**
  * What the command needs from the host. `selection`: the chat's provider and model, `undefined` when either is not
- * chosen. `stream`: `streamChat`. `confirmReplace`: asks whether to replace the text in the input box, true to replace.
+ * chosen. `stream`: `streamChat`. `providerSupport`: the memory the chat's requests share, passed to every request; the
+ * diff is cut at its ratio for the selected model, and a reply's usage teaches that ratio to the chat.
+ * `confirmReplace`: asks whether to replace the text in the input box, true to replace.
  * `withProgress`: runs `task` under a cancellable progress notification, whose Cancel aborts the signal it gets.
  * `showError` and `showWarning`: native notifications.
  */
 export type CommitMessagePorts = {
   selection(): Promise<CommitSelection | undefined>;
   stream(access: ProviderAccess, options: StreamChatOptions): Promise<ChatOutcome>;
+  providerSupport: ProviderSupport;
   confirmReplace(repository: CommitRepository): Promise<boolean>;
   withProgress<T>(task: (cancelled: AbortSignal) => Promise<T>): Promise<T>;
   showError(text: ErrorText): void;
@@ -294,7 +292,8 @@ export class CommitMessageGenerator {
     }
     if (signal.aborted) return { kind: "stopped" };
     if (diff.trim() === "") return { kind: "nothingStaged" };
-    const request = composeCommitRequest(diff, selection.contextSize);
+    const ratio = this.ports.providerSupport.ratio(selection.access.provider, selection.model);
+    const request = composeCommitRequest(diff, selection.contextSize, ratio);
     if (request.kind === "contextTooSmall") {
       return {
         kind: "error",
@@ -311,6 +310,7 @@ export class CommitMessageGenerator {
       model: selection.model,
       messages: request.messages,
       signal,
+      support: this.ports.providerSupport,
       onContent: (text) => {
         reply += text;
       },

@@ -327,7 +327,7 @@ function undoneStatus(file: UndoneStatus): string {
 /** The next request's estimate against the context size, as tokens and a share, numbers in `language` (BCP 47). */
 export function describeContextUsage({ used, size }: ContextUsage, language: string): string {
   const percent: Intl.NumberFormatOptions = { style: "percent", maximumFractionDigits: 0 };
-  const format = (locale: string | undefined) => {
+  return inLanguage(language, (locale) => {
     const number = new Intl.NumberFormat(locale);
     return l10n.t(
       "{0} / {1} tokens ({2})",
@@ -335,11 +335,30 @@ export function describeContextUsage({ used, size }: ContextUsage, language: str
       number.format(size),
       new Intl.NumberFormat(locale, percent).format(used / size),
     );
-  };
+  });
+}
+
+/**
+ * The usage line's tooltip: what the line estimates, then the counts the last chat request reported, when it reported
+ * any, numbers in `language` (BCP 47) like the line's.
+ */
+export function describeContextTitle({ reported }: ContextUsage, language: string): string {
+  if (reported === undefined) return l10n.t("Estimated size of the next request");
+  return inLanguage(language, (locale) => {
+    const number = new Intl.NumberFormat(locale);
+    return l10n.t(
+      "Estimated size of the next request. Last reply: {0} prompt tokens, {1} completion tokens",
+      number.format(reported.prompt),
+      number.format(reported.completion),
+    );
+  });
+}
+
+/** `format` with `language`, or with the runtime's language when Intl rejects the tag (RangeError). */
+function inLanguage(language: string, format: (locale: string | undefined) => string): string {
   try {
     return format(language);
   } catch {
-    // [>]: A tag Intl rejects (RangeError) still gets readable numbers.
     return format(undefined);
   }
 }

@@ -421,7 +421,14 @@ broke-code tells the agent that you undid the change, so it reads the file again
 Next to the model picker, the panel header shows how much of the model's context the next request would use, in tokens
 and as a percentage. It is an estimate. broke-code counts the characters of everything the request sends (the
 instructions, your messages with their attachments, the model's answers, and the tool results, but not its reasoning)
-and divides by 4.
+and divides by the model's characters per token. That number starts at 4. Each reply that reports at least 1,000 prompt
+tokens teaches broke-code the model's real number, and the estimate uses the lowest one seen, never under 2, so code
+and text in other languages than English, which run near 3.5 characters per token, are not underestimated. broke-code
+learns it for each model of each provider separately, from chat and commit message replies alike, and forgets it when
+the window reloads. When the provider reports how many tokens the last reply used, the tooltip of that line shows the
+reported counts too: "Last reply: 12,001 prompt tokens, 345 completion tokens". broke-code asks every provider for these
+counts. A provider that refuses the request field gets the request again without it, and broke-code stops asking that
+model until the window reloads.
 
 Before each request of an agent turn, broke-code checks that estimate. If the request leaves less than one eighth of
 the context for the reply, broke-code leaves the oldest tool results out of that request, as few as make it fit,
@@ -614,8 +621,8 @@ Command Palette does the same for the only repository open, or for the one you p
 - A notification shows while the model writes. Its **Cancel** stops the request and leaves the box as it was. The
   message appears once the reply has ended, without the model's reasoning and without a code block or quotes around
   it.
-- The request uses the chat's provider, model, and context size. If the diff is too large for the model's context,
-  broke-code cuts it between files and keeps the first ones whole. If the first file alone is larger than the room,
+- The request uses the chat's provider, model, and context size, and the characters per token broke-code learned for
+  that model (see "Context size and step limit"). If the diff is too large for the model's context, broke-code cuts it between files and keeps the first ones whole. If the first file alone is larger than the room,
   broke-code cuts that file to fit. A notification then says the message covers only part of the changes.
 - It needs the Git extension built into VS Code and VSCodium. A notification says so, and the box stays as it was, when
   that extension is disabled, when nothing is staged, when no provider or model is chosen, or when the provider fails.

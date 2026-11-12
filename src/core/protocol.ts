@@ -137,8 +137,16 @@ export type SkillWarning = { path: string; problem: SkillProblem };
  * The next request's estimated size, as it would be sent, against the selected model's context size, both in tokens.
  * `known`: the model is in `brokeCode.contextSizes`; else `size` is 32,768. `leftOut`: the older tool results that
  * request leaves out to fit the context (see `toHistory`), present only when there are any; the panel shows a notice.
+ * `reported`: the usage the last chat request of the conversation shown reported, kept while the next one is in flight;
+ * absent when it reported none, after a change of the conversation shown or of the model, and after a window reload.
  */
-export type ContextUsage = { used: number; size: number; known: boolean; leftOut?: number };
+export type ContextUsage = { used: number; size: number; known: boolean; leftOut?: number; reported?: ReportedUsage };
+
+/**
+ * The token counts a provider reported for one reply (`usage.prompt_tokens`, `usage.completion_tokens`): what the
+ * request's messages and the reply cost, as the provider counted them. Advisory: never checked against the estimate.
+ */
+export type ReportedUsage = { prompt: number; completion: number };
 
 /**
  * What an agent turn may do: `ask` waits for Accept or Reject on each write, `autoEdit` accepts writes at once, both

@@ -122,6 +122,7 @@
   "An unexpected internal error ended the reply.": "Une erreur interne inattendue a interrompu la réponse.",
   "{0} / {1} tokens ({2})": "{0} / {1} tokens ({2})",
   "Estimated size of the next request": "Taille estimée de la prochaine requête",
+  "Estimated size of the next request. Last reply: {0} prompt tokens, {1} completion tokens": "Taille estimée de la prochaine requête. Dernière réponse : {0} tokens en entrée, {1} en sortie",
   "Unknown context size, using 32k": "Taille de contexte inconnue, 32k utilisés",
   "1 older tool result is left out of the request to save context.": "1 ancien résultat d'outil est laissé hors de la requête pour économiser le contexte.",
   "{0} older tool results are left out of the request to save context.": "{0} anciens résultats d'outils sont laissés hors de la requête pour économiser le contexte.",

@@ -26,8 +26,11 @@ This file specifies the command "broke-code: Generate commit message". ADR 0004 
   its own notification.
 - The request (`composeCommitRequest`) is a `system` message asking for an English Conventional Commits message (a
   subject of at most 72 characters, asked and never enforced, an optional body saying why, no fence or quotes), then
-  the diff as one `user` message; no tool section. Its estimate (`estimateTokens`) stays within `fillsContext`'s
-  threshold: `floor(size * 7 / 8) * 4` characters for both messages, 114,688 for 32,768 tokens. A diff over it is
+  the diff as one `user` message; no tool section. Its estimate (`estimateTokens`, at the selected model's ratio of
+  characters per token in the `ProviderSupport` the chat shares, `docs/spec/harness.md`) stays within `fillsContext`'s
+  threshold: `floor(floor(size * 7 / 8) * t / 10)` characters for both messages (`largestFittingCharacters`, `t` the
+  ratio times 10), 114,688 for 32,768 tokens at ratio 4 and 100,352 at 3.5. A reply that completes with at least 1,000
+  reported prompt tokens lowers that model's ratio for the chat too, by the chat's rule. A diff over it is
   split before each line starting with `diff --git ` and kept whole file by whole file in order while the files fit;
   when the first file alone exceeds the room it is cut to it between characters (never inside a surrogate pair). A
   cut diff ends with a blank line and `CUT_NOTICE`, telling the model, and the run then shows a warning that the

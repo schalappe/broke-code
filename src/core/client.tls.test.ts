@@ -3,6 +3,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type ChatOutcome, listModels, type ProviderAccess, streamChat } from "./client";
 import type { ProviderError } from "./providerError";
+import { ProviderSupport } from "./providerSupport";
 import type { Provider } from "./providers";
 import { createTlsFixture, type KeyPair, removeTlsFixture, type TlsFixture } from "./tlsFixture";
 
@@ -59,6 +60,7 @@ async function chat(target: ProviderAccess): Promise<{ outcome: ChatOutcome; tex
     model: "m",
     messages: [{ role: "user", content: "Hi" }],
     signal: new AbortController().signal,
+    support: new ProviderSupport(),
     onContent: (piece) => (text += piece),
     onReasoning: () => {},
   });

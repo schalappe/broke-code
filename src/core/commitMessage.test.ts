@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { ChatOutcome, ProviderAccess, StreamChatOptions } from "./client";
+import { type ChatOutcome, type ProviderAccess, type StreamChatOptions, streamChat } from "./client";
 import {
   CommitMessageGenerator,
   type CommitMessagePorts,
@@ -11,6 +11,7 @@ import {
 } from "./commitMessage";
 import { estimateTokens } from "./limits";
 import type { ErrorText } from "./providerError";
+import { ProviderSupport } from "./providerSupport";
 
 /** A file's section of a `git diff --cached`, `lines` added lines of 39 characters each, plus their line breaks. */
 function fileDiff(name: string, lines: number): string {
@@ -21,7 +22,7 @@ function fileDiff(name: string, lines: number): string {
 describe("composeCommitRequest", () => {
   test("sends a system prompt asking for an English Conventional Commits message, then the diff, and no tool", () => {
     const diff = fileDiff("src/a.ts", 3);
-    const request = composeCommitRequest(diff, 32_768);
+    const request = composeCommitRequest(diff, 32_768, 4);
     if (request.kind !== "ok") throw new Error(request.kind);
     const [system, user] = request.messages;
     expect(request.messages).toHaveLength(2);
@@ -38,9 +39,9 @@ describe("composeCommitRequest", () => {
 
   test("never lets the request's estimate pass 28,672 tokens for a context of 32,768", () => {
     for (const lines of [2_900, 2_930, 2_950, 3_000, 10_000]) {
-      const request = composeCommitRequest(fileDiff("a.ts", 1) + fileDiff("big.ts", lines), 32_768);
+      const request = composeCommitRequest(fileDiff("a.ts", 1) + fileDiff("big.ts", lines), 32_768, 4);
       if (request.kind !== "ok") throw new Error(request.kind);
-      expect(estimateTokens(request.messages)).toBeLessThanOrEqual(28_672);
+      expect(estimateTokens(request.messages, 4)).toBeLessThanOrEqual(28_672);
       const characters = request.messages.reduce((total, message) => total + message.content.length, 0);
       expect(characters).toBeLessThanOrEqual(114_688);
     }
@@ -50,7 +51,7 @@ describe("composeCommitRequest", () => {
     const first = fileDiff("first.ts", 1_000);
     const second = fileDiff("second.ts", 1_000);
     const third = fileDiff("third.ts", 1_000);
-    const request = composeCommitRequest(first + second + third, 32_768);
+    const request = composeCommitRequest(first + second + third, 32_768, 4);
     if (request.kind !== "ok") throw new Error(request.kind);
     const sent = request.messages[1]?.content ?? "";
     expect(sent.startsWith(first + second)).toBe(true);
@@ -61,20 +62,20 @@ describe("composeCommitRequest", () => {
 
   test("cuts a single file that alone exceeds the room, and flags the request partial", () => {
     const big = fileDiff("big.ts", 5_000);
-    const request = composeCommitRequest(big, 32_768);
+    const request = composeCommitRequest(big, 32_768, 4);
     if (request.kind !== "ok") throw new Error(request.kind);
     const sent = request.messages[1]?.content ?? "";
     const kept = sent.slice(0, sent.indexOf("\n\n["));
     expect(big.startsWith(kept)).toBe(true);
     expect(kept.length).toBeGreaterThan(100_000);
     expect(request.partial).toBe(true);
-    expect(estimateTokens(request.messages)).toBeLessThanOrEqual(28_672);
+    expect(estimateTokens(request.messages, 4)).toBeLessThanOrEqual(28_672);
   });
 
   test("never splits a character written as two UTF-16 units when it cuts inside a line", () => {
     // [>]: Two line starts of opposite parity, so one of them puts the room inside a pair.
     for (const lead of ["+", "+ "]) {
-      const request = composeCommitRequest(`diff --git a/e b/e\n${lead}${"😀".repeat(70_000)}\n`, 32_768);
+      const request = composeCommitRequest(`diff --git a/e b/e\n${lead}${"😀".repeat(70_000)}\n`, 32_768, 4);
       if (request.kind !== "ok") throw new Error(request.kind);
       const sent = request.messages[1]?.content ?? "";
       expect(sent).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
@@ -83,8 +84,18 @@ describe("composeCommitRequest", () => {
     }
   });
 
+  test("at ratio 3.5, cuts the diff to 100,352 characters of prompt and diff for a context of 32,768", () => {
+    const request = composeCommitRequest(fileDiff("big.ts", 5_000), 32_768, 3.5);
+    if (request.kind !== "ok") throw new Error(request.kind);
+    const characters = request.messages.reduce((total, message) => total + message.content.length, 0);
+    expect(characters).toBeLessThanOrEqual(100_352);
+    expect(characters).toBeGreaterThan(100_300);
+    expect(estimateTokens(request.messages, 3.5)).toBeLessThanOrEqual(28_672);
+    expect(request.partial).toBe(true);
+  });
+
   test("refuses a context too small to hold the prompt and any of the diff", () => {
-    expect(composeCommitRequest(fileDiff("a.ts", 1), 100)).toEqual({ kind: "contextTooSmall" });
+    expect(composeCommitRequest(fileDiff("a.ts", 1), 100, 4)).toEqual({ kind: "contextTooSmall" });
   });
 });
 
@@ -177,6 +188,7 @@ describe("CommitMessageGenerator", () => {
     reply?: (request: StreamChatOptions) => Promise<ChatOutcome>;
     confirm?: boolean | Promise<boolean> | (() => Promise<boolean>);
     selection?: CommitSelection | undefined;
+    providerSupport?: ProviderSupport;
   }) {
     const calls = {
       requests: [] as StreamChatOptions[],
@@ -193,6 +205,7 @@ describe("CommitMessageGenerator", () => {
         calls.requests.push(request);
         return options.reply ? options.reply(request) : answer("feat: add a")(request);
       },
+      providerSupport: options.providerSupport ?? new ProviderSupport(),
       confirmReplace: async () => {
         calls.questions++;
         const { confirm } = options;
@@ -228,6 +241,50 @@ describe("CommitMessageGenerator", () => {
   const found = (repository: CommitRepository) => async (): Promise<RepositoryLookup> => ({
     kind: "found",
     repository,
+  });
+
+  test("cuts the diff with the learned ratio of the selected model", async () => {
+    const support = new ProviderSupport();
+    support.learnRatio(access.provider, "qwen", 35_000, 10_000);
+    const repository = fakeRepository("", fileDiff("big.ts", 5_000));
+    const { ports, calls } = fakePorts({ providerSupport: support });
+    await new CommitMessageGenerator(ports, english).run(found(repository));
+    const characters = calls.requests[0]!.messages.reduce((total, message) => total + message.content.length, 0);
+    expect(characters).toBeLessThanOrEqual(100_352);
+    expect(characters).toBeGreaterThan(100_300);
+  });
+
+  test("a reply of at least 1,000 prompt tokens lowers the model's ratio in the memory the chat shares", async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch: () =>
+        new Response(
+          [
+            `data: ${JSON.stringify({ choices: [{ delta: { content: "feat: add a" }, finish_reason: "stop" }] })}\n\n`,
+            `data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 100_000, completion_tokens: 4 } })}\n\n`,
+            "data: [DONE]\n\n",
+          ].join(""),
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+    });
+    try {
+      const local: ProviderAccess = {
+        provider: { name: "Local", baseUrl: `http://localhost:${server.port}/v1` },
+        apiKey: undefined,
+      };
+      const support = new ProviderSupport();
+      const repository = fakeRepository();
+      const { ports } = fakePorts({
+        providerSupport: support,
+        selection: { access: local, model: "qwen", contextSize: 32_768 },
+      });
+      ports.stream = streamChat;
+      await new CommitMessageGenerator(ports, english).run(found(repository));
+      expect(repository.writes).toEqual(["feat: add a"]);
+      expect(support.ratio(local.provider, "qwen")).toBe(2);
+    } finally {
+      server.stop(true);
+    }
   });
 
   test("writes the cleaned reply, without its reasoning, to the input box once, from the diff and the selected model", async () => {

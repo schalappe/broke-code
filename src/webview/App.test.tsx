@@ -2206,6 +2206,21 @@ describe("context usage", () => {
     expect(html).not.toContain("Unknown context size");
   });
 
+  test("the usage line's tooltip names the estimate only when the last reply reported no usage", () => {
+    const html = renderToStaticMarkup(
+      <App state={stateWith(true, { context: { ...usage, known: true } })} language="en" />,
+    );
+    expect(html).toContain('<span class="usage" title="Estimated size of the next request">');
+  });
+
+  test("the usage line's tooltip adds the counts the last reply reported, formatted like the line", () => {
+    const context = { ...usage, known: true, reported: { prompt: 12001, completion: 345 } };
+    const html = renderToStaticMarkup(<App state={stateWith(true, { context })} language="en" />);
+    expect(html).toContain(
+      'title="Estimated size of the next request. Last reply: 12,001 prompt tokens, 345 completion tokens"',
+    );
+  });
+
   test("a model absent from the table shows the 32k notice with its link beside the usage", () => {
     const html = renderToStaticMarkup(
       <App state={stateWith(true, { context: { ...usage, known: false } })} language="en" />,

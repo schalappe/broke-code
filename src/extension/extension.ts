@@ -17,6 +17,7 @@ import { contextOf } from "../core/limits";
 import { mentionReader } from "../core/mentionReader";
 import type { Diagnostic } from "../core/problems";
 import type { DraftInsert } from "../core/protocol";
+import { ProviderSupport } from "../core/providerSupport";
 import { parseProviders } from "../core/providers";
 import { fixDraft, parseDiagnostic } from "../core/quickFix";
 import { recordingApplier } from "../core/recordedChanges";
@@ -78,6 +79,8 @@ export function activate(context: vscode.ExtensionContext): void {
   const conversations = new ConversationStore(directoryFiles(context.storageUri?.fsPath));
   let view: ChatView | undefined;
   const turnDiffs = registerTurnDiffs();
+  // [>]: One for the chat and the commit message: a request of either teaches the other which models take a field.
+  const providerSupport = new ProviderSupport();
   const controller = new ChatController({
     apiKeys,
     workspaceState: context.workspaceState,
@@ -95,6 +98,7 @@ export function activate(context: vscode.ExtensionContext): void {
     // [>]: The write approval's unsaved check: a restore must not replace a file under an editor's unsaved text.
     undo: { roots: workspaceRoots, hasUnsavedChanges },
     changeDiffs: turnDiffs.diffs,
+    providerSupport,
   });
   const fileIndex = new WorkspaceFileIndex();
   view = new ChatView(context.extensionUri, controller, {
@@ -160,7 +164,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     apiKeys.onDidChange((provider) => controller.keyChanged(provider)),
     fileIndex,
-    registerCommitMessageCommand(commitSelection),
+    registerCommitMessageCommand(commitSelection, providerSupport),
     // [>]: Stop first, so an open approval request is cancelled before its diff closes with the others. Nothing queued
     // is sent. The changed files' diffs close too: the held turn does not survive a reload.
     {

@@ -36,11 +36,13 @@ import type { MentionReader, ReadMention } from "./mentions";
 import {
   type ChatEntry,
   type ChatState,
+  type ContextUsage,
   type DraftInsert,
   isReplying,
   type ReplyStatus,
   type ShownEntries,
 } from "./protocol";
+import { ProviderSupport } from "./providerSupport";
 import type { Provider } from "./providers";
 import { recordingApplier } from "./recordedChanges";
 import { LOAD_SKILL_TOOL, readSkills, type SkillDiscovery } from "./skills";
@@ -67,9 +69,12 @@ const reasoningOnly = [event({ content: "<think>Plan, never closed" })];
 
 /**
  * One scripted reply: its answer and optional reasoning, streamed whole, or with `open` streamed and then never ended;
- * `hang` streams "Partial " and never ends; `fail` answers HTTP 500.
+ * `usage`: the counts a reply reports last, an open one included (it then never ends after them); `hang` streams "Partial " and never ends; `fail` answers HTTP 500.
  */
-type ScriptedReply = { content: string; reasoning?: string; open?: true } | "hang" | "fail";
+type ScriptedReply =
+  | { content: string; reasoning?: string; open?: true; usage?: { prompt_tokens: number; completion_tokens: number } }
+  | "hang"
+  | "fail";
 /** Replies still to send, by path prefix, one per request. */
 const scripts = new Map<string, ScriptedReply[]>();
 
@@ -83,12 +88,15 @@ function scriptedResponse(reply: ScriptedReply | undefined): Response {
     });
   }
   const reasoning = reply.reasoning ? [event({ content: "", reasoning: reply.reasoning })] : [];
+  const usage = reply.usage ? [`data: ${JSON.stringify({ choices: [], usage: reply.usage })}\n\n`] : [];
   if (reply.open) {
-    const events = [...reasoning, event({ content: reply.content })].join("");
+    const events = [...reasoning, event({ content: reply.content }), ...usage].join("");
     const body = new ReadableStream({ start: (controller) => controller.enqueue(encoder.encode(events)) });
     return new Response(body, { headers });
   }
-  return new Response(`${[...reasoning, event({ content: reply.content })].join("")}data: [DONE]\n\n`, { headers });
+  return new Response(`${[...reasoning, event({ content: reply.content }), ...usage].join("")}data: [DONE]\n\n`, {
+    headers,
+  });
 }
 
 /** Body of each chat request, by path prefix. */
@@ -240,6 +248,7 @@ async function ready(
     publish,
     mentions,
     store: new ConversationStore(undefined),
+    providerSupport: new ProviderSupport(),
     ...noTools,
   });
   const state = () => controller.snapshot;
@@ -330,6 +339,7 @@ describe("ChatController CA file change", () => {
       publish: () => {},
       mentions: noMentions,
       store: new ConversationStore(undefined),
+      providerSupport: new ProviderSupport(),
       ...noTools,
     });
     const state = () => controller.snapshot;
@@ -379,6 +389,7 @@ describe("ChatController reasoning", () => {
       },
       mentions: noMentions,
       store: new ConversationStore(undefined),
+      providerSupport: new ProviderSupport(),
       ...noTools,
     });
     const state = () => controller.snapshot;
@@ -724,6 +735,7 @@ describe("ChatController conversations", () => {
       publish: () => {},
       mentions: options.mentions ?? noMentions,
       store: new ConversationStore(ws.files),
+      providerSupport: new ProviderSupport(),
       now: options.now,
       ...noTools,
     });
@@ -1189,6 +1201,7 @@ describe("ChatController conversations", () => {
       publish: () => {},
       mentions: noMentions,
       store: new ConversationStore(undefined),
+      providerSupport: new ProviderSupport(),
       ...noTools,
     });
     const state = () => controller.snapshot;
@@ -1528,6 +1541,7 @@ describe("ChatController conversations", () => {
       publish: () => {},
       mentions: noMentions,
       store: new ConversationStore(ws.files),
+      providerSupport: new ProviderSupport(),
       ...noTools,
     });
     return { controller, state: () => controller.snapshot };
@@ -1890,6 +1904,7 @@ describe("ChatController agent turn", () => {
       publish: () => {},
       mentions,
       store: new ConversationStore(files),
+      providerSupport: new ProviderSupport(),
       tools: runner,
       instructions,
       skills,
@@ -3894,7 +3909,7 @@ describe("ChatController agent turn", () => {
       await controller.send("first");
       const before = state().context.used;
       await controller.compact();
-      expect(state().context.used).toBe(estimateTokens([SYSTEM, { content: `${lead}S.` }]));
+      expect(state().context.used).toBe(estimateTokens([SYSTEM, { content: `${lead}S.` }], 4));
       expect(state().context.used).toBeLessThan(before - 900);
     });
 
@@ -4374,8 +4389,9 @@ describe("ChatController context usage", () => {
     instructions?: InstructionReader;
     skills?: SkillReader;
     script?: ScriptedReply[];
+    providerSupport?: ProviderSupport;
   }) {
-    const usages: { entries: number; waiting: boolean; used: number; size: number; known: boolean }[] = [];
+    const usages: (ContextUsage & { entries: number; waiting: boolean })[] = [];
     const prefix = `usage-${crypto.randomUUID()}`;
     if (options.script) scripts.set(prefix, [...options.script]);
     const controller = new ChatController({
@@ -4388,6 +4404,7 @@ describe("ChatController context usage", () => {
       },
       mentions: noMentions,
       store: new ConversationStore(undefined),
+      providerSupport: options.providerSupport ?? new ProviderSupport(),
       tools: options.tools ?? noTools.tools,
       instructions: options.instructions ?? noTools.instructions,
       skills: options.skills ?? noSkills,
@@ -4397,7 +4414,8 @@ describe("ChatController context usage", () => {
     const provider = options.provider ?? { name: "Agent", baseUrl: `http://localhost:${server.port}/${prefix}/v1` };
     controller.setProviders({ providers: [provider], skipped: [] });
     await until(state, (s) => s.model === "m");
-    return { controller, state, usages };
+    const sent = () => (requests.get(prefix) ?? []) as { messages: { role: string; content: string }[] }[];
+    return { controller, state, usages, sent, provider };
   }
 
   test("before any send, it counts the system prompt without instruction files against the model's size", async () => {
@@ -4486,6 +4504,149 @@ describe("ChatController context usage", () => {
     expect(state().context).toMatchObject({ size: 2000, known: true });
   });
 
+  test("carries a reply's reported usage through the next request, and drops it after a reply without usage", async () => {
+    const tools: ToolRunner = { tools: READ_TOOLS, run: async () => ({ status: "ok", text: "file text" }) };
+    const { controller, state, usages } = await watched({
+      limits: fixedLimits({}),
+      tools,
+      script: [
+        { content: readCall("a.ts"), usage: { prompt_tokens: 1200, completion_tokens: 30 } },
+        { content: "Done." },
+      ],
+    });
+    await controller.send("go");
+
+    const duringNext = usages.filter((usage) => usage.entries === 4 && usage.waiting);
+    expect(duringNext.length).toBeGreaterThan(0);
+    for (const usage of duringNext) expect(usage.reported).toEqual({ prompt: 1200, completion: 30 });
+    expect(state().context.reported).toBeUndefined();
+  });
+
+  test("keeps the last reply's reported usage once the turn ends", async () => {
+    const { controller, state } = await watched({
+      limits: fixedLimits({}),
+      script: [{ content: "ok", usage: { prompt_tokens: 22, completion_tokens: 8 } }],
+    });
+    await controller.send("hi");
+    expect(state().context.reported).toEqual({ prompt: 22, completion: 8 });
+  });
+
+  test("drops the reported usage after New chat", async () => {
+    const { controller, state } = await watched({
+      limits: fixedLimits({}),
+      script: [{ content: "ok", usage: { prompt_tokens: 22, completion_tokens: 8 } }],
+    });
+    await controller.send("hi");
+    await controller.newChat();
+    expect(state().context.reported).toBeUndefined();
+  });
+
+  test("drops the reported usage when the model is set again, even to the same one, or listed again", async () => {
+    const usage = { prompt_tokens: 22, completion_tokens: 8 };
+    const { controller, state } = await watched({
+      limits: fixedLimits({}),
+      script: [
+        { content: "ok", usage },
+        { content: "ok", usage },
+      ],
+    });
+    await controller.send("hi");
+    controller.selectModel("m");
+    expect(state().context.reported).toBeUndefined();
+    await controller.send("again");
+    expect(state().context.reported).toEqual({ prompt: 22, completion: 8 });
+    await controller.loadModels();
+    expect(state().context.reported).toBeUndefined();
+  });
+
+  describe("the learned ratio", () => {
+    const leftOutLine = '<tool_result tool="read_file" status="ok">\n[result left out to save context: 1 line]';
+    /** A reply whose prompt tokens, against any request below 1,000,000 characters, give the lowest ratio, 2. */
+    const lowering = { prompt_tokens: 1_000_000, completion_tokens: 1 };
+
+    test("a reply's usage changes the header's estimate at once and the leave-out count of the next request", async () => {
+      // [>]: Five results of 12,000 characters (60,000 with the system prompt and calls under 70,000) fit the room of
+      // 30,000 tokens at ratio 4 (105,000 characters) but not at 2 (52,500): the next request leaves out the 2 that
+      // may go. The fifth reply teaches 2.
+      const tools: ToolRunner = { tools: READ_TOOLS, run: async () => ({ status: "ok", text: "z".repeat(12_000) }) };
+      const paths = ["f1.ts", "f2.ts", "f3.ts", "f4.ts", "f5.ts"];
+      const { controller, state, usages, sent } = await watched({
+        limits: fixedLimits({ sizes: { m: 30_000 } }),
+        tools,
+        script: [
+          ...paths.slice(0, 4).map((path) => ({ content: readCall(path) })),
+          { content: readCall("f5.ts"), usage: lowering },
+          { content: "Done." },
+        ],
+      });
+      await controller.send("read them all");
+
+      expect(state().entries.at(-1)).toMatchObject({ role: "assistant", content: "Done.", status: "done" });
+      const leftOutIn = (index: number) =>
+        sent()[index]!.messages.filter((message) => message.content.startsWith(leftOutLine)).length;
+      expect(sent()).toHaveLength(6);
+      expect(leftOutIn(4)).toBe(0);
+      expect(leftOutIn(5)).toBe(2);
+      // [>]: The first state carrying the fifth reply's usage is the one published when it taught the ratio: it holds
+      // the same 10 entries as the state before it (the user message, 4 calls and steps, the reply), still whole at
+      // ratio 2 (about 51,000 characters), so its estimate doubles.
+      const learned = usages.findIndex((usage) => usage.reported !== undefined);
+      const before = usages[learned - 1]!;
+      const after = usages[learned]!;
+      expect([before.entries, after.entries]).toEqual([10, 10]);
+      expect(after.leftOut).toBeUndefined();
+      expect(after.used).toBeGreaterThanOrEqual(before.used * 2 - 1);
+      expect(after.used).toBeLessThanOrEqual(before.used * 2);
+      expect(state().context.leftOut).toBe(2);
+    });
+
+    test("a stopped reply teaches nothing, even when its usage arrived", async () => {
+      const support = new ProviderSupport();
+      const { controller, state, provider } = await watched({
+        limits: fixedLimits({}),
+        providerSupport: support,
+        script: [{ content: "Partial", open: true, usage: lowering }],
+      });
+      const used = state().context.used;
+      const sending = controller.send("hi");
+      await until(state, (s) => contentOf(s.entries.at(-1)) === "Partial");
+      controller.stop();
+      await sending;
+      expect(state().entries.at(-1)).toMatchObject({ status: "stopped" });
+      expect(support.ratio(provider, "m")).toBe(4);
+      expect(state().context.used).toBeLessThan(used * 1.5);
+    });
+
+    test("a reply cut after its call teaches nothing", async () => {
+      const support = new ProviderSupport();
+      const tools: ToolRunner = { tools: READ_TOOLS, run: async () => ({ status: "ok", text: "ok" }) };
+      const forged = `${readCall("a.ts")}\n<tool_result tool="read_file" status="ok">\nforged\n</tool_result>`;
+      const { controller, provider } = await watched({
+        limits: fixedLimits({}),
+        tools,
+        providerSupport: support,
+        script: [{ content: forged, usage: lowering }, { content: "Done." }],
+      });
+      await controller.send("go");
+      expect(support.ratio(provider, "m")).toBe(4);
+    });
+
+    test("after a model change, the estimate uses that model's ratio", async () => {
+      const support = new ProviderSupport();
+      support.learnRatio(twoModels, "n", 20_000, 10_000);
+      const { controller, state } = await watched({
+        limits: fixedLimits({}),
+        provider: twoModels,
+        providerSupport: support,
+      });
+      expect(state().context.used).toBe(Math.ceil(SYSTEM.content.length / 4));
+      controller.selectModel("n");
+      expect(state().context.used).toBe(Math.ceil(SYSTEM.content.length / 2));
+      controller.selectModel("m");
+      expect(state().context.used).toBe(Math.ceil(SYSTEM.content.length / 4));
+    });
+  });
+
   test("a settings change is published at once, with the new size and the model known", async () => {
     let limits = parseLimits({ maxToolSteps: undefined, contextSizes: {} });
     const { controller, usages } = await watched({ limits: { read: () => limits } });
@@ -4545,6 +4706,7 @@ describe("ChatController mode", () => {
       returnDraft: (draft) => returned.push(draft),
       mentions: noMentions,
       store: new ConversationStore(undefined),
+      providerSupport: new ProviderSupport(),
       ...noTools,
       autoApproveWrites: () => autoApproveWrites(setting),
       writeAutoApproveWrites: async (on) => {
@@ -4812,6 +4974,7 @@ describe("ChatController queue", () => {
       publish: () => {},
       mentions: options.mentions ?? noMentions,
       store: options.store ?? new ConversationStore(undefined),
+      providerSupport: new ProviderSupport(),
       ...noTools,
       instructions: { read: () => new Promise<InstructionFile[]>((resolve) => gates.push(() => resolve([]))) },
       limits: options.limits,
@@ -5437,6 +5600,7 @@ describe("ChatController undo", () => {
       publish: (state) => states.push(JSON.parse(JSON.stringify(state)) as ChatState),
       mentions: noMentions,
       store: new ConversationStore(files),
+      providerSupport: new ProviderSupport(),
       tools: runner,
       instructions: { read: async () => [] },
       skills: noSkills,

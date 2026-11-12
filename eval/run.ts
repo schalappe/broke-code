@@ -20,6 +20,7 @@ import type { CommandEnv } from "../src/core/commands";
 import { ConversationStore } from "../src/core/conversationStore";
 import { DEFAULT_CONTEXT_SIZE, parseLimits } from "../src/core/limits";
 import type { ChatEntry } from "../src/core/protocol";
+import { ProviderSupport } from "../src/core/providerSupport";
 import { readSkills } from "../src/core/skills";
 import { workspaceToolRunner } from "../src/core/toolRunner";
 import { ripgrepCandidates } from "../src/core/tools";
@@ -160,6 +161,8 @@ export async function playScenario(scenario: Scenario, target: RunTarget, tmpRoo
       // [!]: Never `homedir()`: the maintainer's own skills would change the prompt between runs and machines.
       skills: { read: () => readSkills(home, [root]) },
       limits: { read: () => limits },
+      // [>]: Fresh per run, so what one run learns of the server never changes the requests of the next.
+      providerSupport: new ProviderSupport(),
     });
 
     controller.setProviders({ providers: [{ name: "bench", baseUrl: target.baseUrl }], skipped: [] });

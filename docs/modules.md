@@ -14,12 +14,15 @@ This file says which file holds which responsibility. Update it when a module ga
   parser reads a new entry appended to the setting, the one rule of what may be added), the "Add provider" flow
   (`addProvider.ts`: the Ollama preset, the input boxes' validation, the key then the setting, over ports the host
   fills), the API key shape check, the provider
-  HTTP client, the CA trust and certificate error classification (`tls.ts`), the SSE reader, the typed provider
+  HTTP client (`client.ts`: the request body with the usage field, its one resend without it after a 400 or 422, and
+  the reply's reported usage in its outcome), the provider support memory (`providerSupport.ts`: `ProviderSupport`,
+  per provider name, base URL, and model, whether the usage field is taken and the characters per token the replies'
+  reported usage taught; one instance, made by the host, shared by the chat controller and the commit message), the CA trust and certificate error classification (`tls.ts`), the SSE reader, the typed provider
   errors and their wording (`providerError.ts`: `describeProviderError` with a translator, for the panel and the
   host's notifications), the generated commit message (`commitMessage.ts`: the request's system prompt, the diff cut to
   the context threshold, the reply's cleaning, and `CommitMessageGenerator`, the command over its git, provider
   request, and user interface ports), the chat controller (conversation state, the agent turn loop with its tool runner, instruction reader, and
-  skill reader ports, its limits source and step limits, the context budget check, streaming, Stop, saving, reopen, delete,
+  skill reader ports, its limits source and step limits, the context budget check, the usage display with the last reported usage (`ContextUsage.reported`), streaming, Stop, saving, reopen, delete,
   the queue of messages sent while a reply is in flight, with `mayStartTurn`, the one check a send, `/compact`, the
   queue, Retry, and Continue share, Retry and Continue (`retry`, `continueTurn`, over `startTurn` and `removeFrom`), a
   send replacing the last turn (`send`'s `replaces`, Edit, over the same checks and `removeFrom`), and "Undo changes": each turn's `RecordedChanges` on `ToolContext.changes`, the held turn with its
@@ -75,7 +78,8 @@ This file says which file holds which responsibility. Update it when a module ga
   skills, instruction files; `composeSummaryPrompt`, the summary request's own prompt; `offeredTools`, the tools a send
   offers, and `PLAN_BLOCKED_TOOLS`), the turn limits (`limits.ts`: `brokeCode.maxToolSteps`, `brokeCode.contextSizes`, and `brokeCode.autoCompact` parsing,
   `userLimits`, their user values only,
-  the token estimate, the context-full threshold, the typed size check, and `brokeCode.commandTimeoutSeconds` parsing),
+  the token estimate at a model's characters per token and the most characters that fit, exact in tenths, the
+  context-full threshold, the typed size check, and `brokeCode.commandTimeoutSeconds` parsing),
   the command tool (`commands.ts`: `RUN_COMMAND_TOOL`, `runCommandTool` checks the call and the folder and asks the
   approval, `runCommand` runs an approved command in its own process group with an injected shell and timeout, and,
   when given (the eval bench only), `environment`, the child's whole environment in place of the host's, and
@@ -147,7 +151,8 @@ This file says which file holds which responsibility. Update it when a module ga
   message box; `main.tsx` mounts it. `turns.ts` groups the entries for rendering without React (`foldTurns`: each entry once,
   an ended turn's fold and its step counts, a summary a boundary of its own), and `text.ts` words the fold's row (`describeFold`), the step row
   (`mainArgument`, a `read_file` range after its path; `describeToolStep`, "undone" included), and the undo's outcome (`describeUndoOutcome`, `describeUndoneFile`, each path a part of its own for the editor font,
-  `describeUndoFailure`).
+  `describeUndoFailure`), and the header's usage line and its tooltip with the reported usage (`describeContextUsage`,
+  `describeContextTitle`).
 - `src/l10n.test.ts`: checks that every `l10n.t` message has a French translation and that the
   `package.nls*.json` files match.
 - `l10n/bundle.l10n.fr.json`, `package.nls.json`, `package.nls.fr.json`: French strings for the host and

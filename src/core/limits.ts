@@ -74,22 +74,56 @@ export function contextOf(limits: TurnLimits, model: string | undefined): Contex
   return size === undefined ? { size: DEFAULT_CONTEXT_SIZE, known: false } : { size, known: true };
 }
 
+/** Characters per token of a model no reply has taught a lower ratio (`ProviderSupport.ratio`). */
+export const DEFAULT_RATIO = 4;
+/** The lowest characters per token a model's ratio goes down to, whatever its replies report. */
+export const MIN_RATIO = 2;
+
 /**
- * Estimated tokens of a request made of `messages`: the characters (UTF-16 code units) of their contents divided by 4,
- * rounded up. A decision, not a tokenizer: no provider reports usage without `stream_options`.
+ * Estimated tokens of a request made of `messages` for a model of `ratio` characters per token: the characters (UTF-16
+ * code units) of their contents divided by the ratio, rounded up. A decision, not a tokenizer: the counts a provider
+ * reports (`ReportedUsage`) arrive only with the reply, after the request was sized; they only teach the ratio of the
+ * next requests (ADR 0006).
  */
-export function estimateTokens(messages: readonly { content: string }[]): number {
-  return tokensOfCharacters(messages.reduce((total, message) => total + message.content.length, 0));
+export function estimateTokens(messages: readonly { content: string }[], ratio: number): number {
+  return tokensOfCharacters(charactersOf(messages), ratio);
 }
 
-/** The estimate of `estimateTokens` for messages holding `characters` in all, for a caller that keeps a running sum. */
-export function tokensOfCharacters(characters: number): number {
-  return Math.ceil(characters / 4);
+/** What the estimate counts of `messages`: the UTF-16 code units of their contents, no roles, no template tokens. */
+export function charactersOf(messages: readonly { content: string }[]): number {
+  return messages.reduce((total, message) => total + message.content.length, 0);
+}
+
+/**
+ * The estimate of `estimateTokens` for messages holding `characters` in all, for a caller that keeps a running sum.
+ * [!]: Computed in whole tenths of the ratio (one decimal, from 2 to 4), so the result is exact: a floating-point
+ * division is off by one in places (69 characters at 2.3 are 30 tokens, not 31).
+ */
+export function tokensOfCharacters(characters: number, ratio: number): number {
+  return Math.ceil((characters * 10) / tenthsOf(ratio));
 }
 
 /** True when an estimate of `used` tokens leaves less than one eighth of `size` for the reply. */
 export function fillsContext(used: number, size: number): boolean {
-  return used > Math.floor((size * 7) / 8);
+  return used > roomOf(size);
+}
+
+/**
+ * Most characters a request may hold, at `ratio` characters per token, without filling a context of `contextSize`
+ * tokens (`fillsContext`): the room of the context times the ratio, rounded down, exact in tenths.
+ */
+export function largestFittingCharacters(contextSize: number, ratio: number): number {
+  return Math.floor((roomOf(contextSize) * tenthsOf(ratio)) / 10);
+}
+
+/** Tokens a request may use in a context of `size` tokens: seven eighths of it, one eighth left for the reply. */
+function roomOf(size: number): number {
+  return Math.floor((size * 7) / 8);
+}
+
+/** The ratio times 10 as an integer; a ratio always has one decimal at most. */
+function tenthsOf(ratio: number): number {
+  return Math.round(ratio * 10);
 }
 
 /** A context size typed in the input box: digits only, spaces around them trimmed, at least 1; else `undefined`. */
