@@ -20,6 +20,7 @@ const step = (text: string, name = "read_file", status: ToolStepStatus = "ok"): 
   status,
   text,
 });
+const undoneStep = (text: string, name: string): ChatEntry => ({ ...step(text, name), undone: true }) as ChatEntry;
 /** `count` lines of about 100 characters each, no final line break. */
 const lines = (count: number) => Array.from({ length: count }, (_, i) => `line ${i} ${"x".repeat(90)}`).join("\n");
 const typed = (entry: ChatEntry & { role: "user" }) => entry.content;
@@ -142,6 +143,51 @@ describe("toHistory", () => {
     expect(messages[4]?.content).toBe(wrapped(body, "load_skill", "error"));
     expect(messages[6]?.content).toBe(wrapped("[result left out to save context: 100 lines]"));
     expect(messages[8]?.content).toBe(wrapped("[result left out to save context: 100 lines]"));
+  });
+
+  test("an undone write step's result ends with the line saying the user undid it; other steps get none", () => {
+    const entries: ChatEntry[] = [
+      user("edit"),
+      answer("call"),
+      undoneStep("edit_file: replaced the passage in a.ts.", "edit_file"),
+      answer("call"),
+      step("edit_file: replaced the passage in b.ts.", "edit_file"),
+      answer("Done."),
+    ];
+    const { messages } = toHistory(entries, typed, roomy);
+    expect(messages[2]?.content).toBe(
+      '<tool_result tool="edit_file" status="ok">\nedit_file: replaced the passage in a.ts.\nThe user undid this change afterwards.\n</tool_result>',
+    );
+    expect(messages[4]?.content).toBe(wrapped("edit_file: replaced the passage in b.ts.", "edit_file"));
+  });
+
+  test("never replaces an undone step: it keeps its text while older eligible steps are left out", () => {
+    const entries: ChatEntry[] = [
+      user("go"),
+      answer("call"),
+      undoneStep(lines(100), "write_file"),
+      ...fiveBigSteps.slice(1),
+    ];
+    // [>]: Six results of about 10,000 characters against 42,000: the undone one stays, the next two oldest go.
+    const { messages, leftOut } = toHistory(entries, typed, { system: SYSTEM, contextSize: 12_000 });
+    expect(messages[2]?.content).toBe(wrapped(`${lines(100)}\nThe user undid this change afterwards.`, "write_file"));
+    expect(messages[4]?.content).toBe(wrapped("[result left out to save context: 100 lines]"));
+    expect(messages[6]?.content).toBe(wrapped("[result left out to save context: 100 lines]"));
+    expect(messages[8]?.content).toBe(wrapped(lines(100)));
+    expect(leftOut).toBe(2);
+    expect(fits(messages, 12_000)).toBe(true);
+  });
+
+  test("the undone line is part of what is sent, so the estimate counts it", () => {
+    const base: ChatEntry[] = [user("go"), answer("call"), step("x".repeat(400), "write_file"), answer("Done.")];
+    const undone: ChatEntry[] = base.map((entry, index) =>
+      index === 2 ? undoneStep("x".repeat(400), "write_file") : entry,
+    );
+    const length = (history: { messages: { content: string }[] }) =>
+      history.messages.reduce((total, message) => total + message.content.length, 0);
+    expect(length(toHistory(undone, typed, roomy)) - length(toHistory(base, typed, roomy))).toBe(
+      "\nThe user undid this change afterwards.".length,
+    );
   });
 
   test("replaces a malformed-call step of several lines like another, as an error of its tag", () => {
@@ -307,6 +353,15 @@ describe("summaryHistory", () => {
     const last = messages.at(-1);
     expect(last?.role).toBe("user");
     for (const kept of ["goal", "decisions", "files", "remains to do"]) expect(last?.content).toContain(kept);
+  });
+
+  test("keeps an undone step whole, with its undone line", () => {
+    const entries: ChatEntry[] = [user("go"), answer("call"), undoneStep(lines(3), "write_file")];
+    const { messages, leftOut } = summaryHistory(entries, typed);
+    expect(leftOut).toBe(0);
+    expect(messages[2]?.content).toStartWith(
+      wrapped(`${lines(3)}\nThe user undid this change afterwards.`, "write_file"),
+    );
   });
 
   test("joins the request for a summary to a history that ends with a user message", () => {

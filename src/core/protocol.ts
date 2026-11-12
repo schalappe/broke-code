@@ -84,7 +84,8 @@ export type ChatEntry =
     }
   /**
    * A tool step: one body tool call of the reply before it, or its malformed block, and the text the model got back.
-   * `approval`: set when the call asked for one.
+   * `approval`: set when the call asked for one. `undone`: a write step whose file "Undo changes" later restored or
+   * removed; the history tells the model so, and never leaves its result out.
    */
   | {
       role: "tool";
@@ -93,6 +94,7 @@ export type ChatEntry =
       status: ToolStepStatus;
       text: string;
       approval?: StepApproval;
+      undone?: true;
     };
 
 /**
@@ -181,13 +183,14 @@ export type UndoneStatus =
  * carries the button; absent while nothing is held, or a reply is in flight. `ranCommand`: that turn ran a command,
  * which no undo reverts. `running`: an undo runs; Send does not act and no other undo starts. `outcome`: what the last
  * undo did, file by file, shown under the reply `reply` names; cleared by the next send, the next undo, and any change
- * of the conversation shown.
+ * of the conversation shown. `outcome.error`: the undo failed unexpectedly (a bug), with this message; `files` then
+ * lists only the files restored or removed before the failure, and the others stay held for a retry.
  */
 export type UndoState = {
   reply: number | undefined;
   ranCommand: boolean;
   running: boolean;
-  outcome: { reply: number; files: UndoneFile[] } | undefined;
+  outcome: { reply: number; files: UndoneFile[]; error?: string } | undefined;
 };
 
 export type ChatState = {

@@ -44,12 +44,18 @@ export type RestoreOutcome = { path: string; realPath: string; leftover?: { name
 
 /**
  * The files a set of writes changed, one entry per file, in the order of their first write. `onRecord`: called after
- * each write is recorded, such as to hold the set once it has a file.
+ * each write is recorded with the file it changed, such as to hold the set once it has a file, or to tie the write's
+ * step to that file.
  */
 export class RecordedChanges {
   private readonly byPath = new Map<string, RecordedFile>();
 
-  constructor(private readonly onRecord: () => void = () => {}) {}
+  constructor(private readonly onRecord: (file: RecordedFile) => void = () => {}) {}
+
+  /** Whether the file at `realPath` is in the set: recorded, and not restored since. */
+  has(realPath: string): boolean {
+    return this.byPath.has(realPath);
+  }
 
   /** The recorded files, in the order of their first write. */
   get files(): RecordedFile[] {
@@ -61,8 +67,9 @@ export class RecordedChanges {
     const known = this.byPath.get(realPath);
     // [>]: A new object each time, so a restore running meanwhile sees that the entry it handled moved on.
     const original = known === undefined ? before : known.original;
-    this.byPath.set(realPath, { path: known?.path ?? path, realPath, original, written: after });
-    this.onRecord();
+    const file = { path: known?.path ?? path, realPath, original, written: after };
+    this.byPath.set(realPath, file);
+    this.onRecord(file);
   }
 
   /**

@@ -42,7 +42,7 @@ import {
   type UndoState,
 } from "./protocol";
 import type { ParsedProviders, Provider } from "./providers";
-import { RecordedChanges, type RestoreOutcome } from "./recordedChanges";
+import { RecordedChanges, type RecordedFile, type RestoreOutcome } from "./recordedChanges";
 import { reservedMention } from "./reservedMentions";
 import { SerialQueue } from "./serialQueue";
 import { findSlashSkill, loadSkillText, type SkillDiscovery } from "./skills";
@@ -195,15 +195,22 @@ type LastChoice = { provider: string; model?: string };
 
 /**
  * An agent turn as "Undo changes" sees it. `conversation`: the one it was sent in. `changes`: the files its writes
- * changed, with their text before the turn, in memory only. `reply`: its last reply, set once it has ended.
- * `ranCommand`: the user ran one of its commands, which no undo reverts.
+ * changed, with their text before the turn, in memory only. `steps`: the write steps of each file of `changes`, by
+ * its real path, tied when the step is recorded to the file its write recorded (`written`: that file, for the call
+ * running), never by reading the step's path again; a write recorded without a step (it landed after Stop) has none.
+ * `reply`: its last reply, set once it has ended. `ranCommand`: the user ran one of its commands, which no undo
+ * reverts.
  */
 type Turn = {
   conversation: Conversation;
   changes: RecordedChanges;
+  steps: Map<string, ToolStep[]>;
+  written: string | undefined;
   reply: ChatEntry | undefined;
   ranCommand: boolean;
 };
+
+type ToolStep = ChatEntry & { role: "tool" };
 
 /**
  * One conversation in memory. `entries` is the array `ChatState.entries` holds while it is shown; a reply keeps
@@ -698,7 +705,12 @@ export class ChatController {
     conversation.model = model;
     const turn: Turn = {
       conversation,
-      changes: new RecordedChanges(() => this.holdTurn(turn)),
+      changes: new RecordedChanges((file) => {
+        turn.written = file.realPath;
+        this.holdTurn(turn);
+      }),
+      steps: new Map(),
+      written: undefined,
       reply: undefined,
       ranCommand: false,
     };
@@ -818,6 +830,7 @@ export class ChatController {
             sentSkillRoots: loadedSkillRoots(sentEntries(conversation.entries), discovery.skills),
             changes: turn.changes,
           };
+          turn.written = undefined;
           const result = await unlessAborted(this.runTool({ name, args }, context), signal);
           if (!result) return settle("stopped");
           step = {
@@ -828,6 +841,9 @@ export class ChatController {
             text: result.text,
             ...(approval ? { approval } : {}),
           };
+          if (turn.written !== undefined) {
+            turn.steps.set(turn.written, [...(turn.steps.get(turn.written) ?? []), step]);
+          }
           malformedInARow = 0;
         } else if (mode === "plan" && planBlocked(run.reply.content, parsed)) {
           const name = malformedToolName(run.reply.content, parsed);
@@ -904,22 +920,50 @@ export class ChatController {
       try {
         // [>]: A navigation asked before the undo has changed the conversation shown, which dropped the turn.
         if (this.heldTurn !== held || held.reply === undefined) return;
-        const roots = host.roots();
-        const outcomes = await held.changes.restore(roots, {
-          hasUnsavedChanges: (target) => host.hasUnsavedChanges(target),
-        });
-        const files = await undoneFiles(roots, outcomes);
+        const before = held.changes.files;
+        let outcome: NonNullable<UndoState["outcome"]>;
+        const reply = this.conversation.entries.indexOf(held.reply);
+        try {
+          const roots = host.roots();
+          const outcomes = await held.changes.restore(roots, {
+            hasUnsavedChanges: (target) => host.hasUnsavedChanges(target),
+          });
+          outcome = { reply, files: await undoneFiles(roots, outcomes) };
+        } catch (error) {
+          // [>]: The restore and the port never reject by contract; a bug here is shown, never silent, and the files
+          // not restored stay held for a retry. Those restored before it left the set (see `undoneSince`).
+          console.error("broke-code: the undo failed unexpectedly", error instanceof Error ? error.stack : error);
+          const message = error instanceof Error ? error.message : String(error);
+          outcome = { reply, files: undoneSince(before, held.changes), error: message };
+        }
+        // [!]: The mark follows the restore: it tells the model a change is gone, so it is never saved before the
+        // file is back. A crash between the two leaves the steps unmarked; marking again is harmless.
+        if (this.markUndone(held, before)) await this.save(held.conversation);
         if (this.heldTurn !== held) return;
-        this.undoOutcome = { reply: this.conversation.entries.indexOf(held.reply), files };
+        this.undoOutcome = outcome;
         if (held.changes.files.length === 0) this.heldTurn = undefined;
-      } catch (error) {
-        // [>]: The restore and the port never reject by contract; a bug here must not leave Send locked.
-        console.error("broke-code: the undo failed unexpectedly", error);
       } finally {
         this.undoing = false;
         this.emit();
       }
     }, false);
+  }
+
+  /**
+   * Mark undone every write step of `held` whose file was in `before` and has since left its set, restored or removed;
+   * a skipped file stays in the set, and its steps unmarked. Returns whether a step was marked.
+   */
+  private markUndone(held: Turn, before: RecordedFile[]): boolean {
+    let marked = false;
+    for (const { realPath } of before) {
+      if (held.changes.has(realPath)) continue;
+      for (const step of held.steps.get(realPath) ?? []) {
+        step.undone = true;
+        marked = true;
+      }
+      held.steps.delete(realPath);
+    }
+    return marked;
   }
 
   /**
@@ -1544,6 +1588,16 @@ function malformedToolName(answer: string, parsed: ParsedReply & { kind: "malfor
  */
 function planBlocked(answer: string, parsed: ParsedReply & { kind: "malformed" }): boolean {
   return PLAN_BLOCKED_TOOLS.includes(malformedToolName(answer, parsed));
+}
+
+/**
+ * The files of `before` no longer in `changes`, which only a restore or a removal takes out: each as restored, or as
+ * removed when the writes created it. Named as the model wrote them, for an undo that failed before naming its files.
+ */
+function undoneSince(before: RecordedFile[], changes: RecordedChanges): UndoneFile[] {
+  return before
+    .filter(({ realPath }) => !changes.has(realPath))
+    .map(({ path, original }) => ({ path, status: original === undefined ? "removed" : "restored" }));
 }
 
 /**

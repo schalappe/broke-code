@@ -225,6 +225,7 @@ function parseEntry(raw: unknown): StoredEntry | undefined {
     if (!isString(raw.name) || !isString(raw.text) || !isStringRecord(raw.args)) return undefined;
     if (!TOOL_STEP_STATUSES.includes(raw.status as ToolStepStatus)) return undefined;
     if (raw.approval !== undefined && !STEP_APPROVALS.includes(raw.approval as StepApproval)) return undefined;
+    if (raw.undone !== undefined && raw.undone !== true) return undefined;
     const status = raw.status as ToolStepStatus;
     const approval = raw.approval as StepApproval | undefined;
     return {
@@ -234,6 +235,7 @@ function parseEntry(raw: unknown): StoredEntry | undefined {
       status,
       text: raw.text,
       ...(approval !== undefined ? { approval } : {}),
+      ...(raw.undone === true ? { undone: true } : {}),
     };
   }
   return undefined;

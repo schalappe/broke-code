@@ -81,7 +81,7 @@ function isSentSummary(entry: ChatEntry): boolean {
  * `entries` as sent to the model, from `historyStart`: user messages as `userText` gives them (the text composed at
  * send time), assistant answers verbatim, their call blocks included (stopped and cut-off partials too), and each tool
  * step as a `user` message holding a `<tool_result>` tag, never the `tool` role, which needs native tool calling (ADR
- * 0001). Reasoning is never sent. A reply without text is left out, unless a tool step follows it: an empty answer goes
+ * 0001); an undone step's result ends with `UNDONE_LINE`. Reasoning is never sent. A reply without text is left out, unless a tool step follows it: an empty answer goes
  * back with its malformed step, so the roles keep alternating, which some chat templates (Gemma's) require. The summary
  * the history starts at goes as one user message, `Summary of the conversation so far:` then its text, joined by the
  * user message right after it, for the same reason; an automatic one (`isAutomaticSummary`) is followed by its turn's
@@ -91,7 +91,8 @@ function isSentSummary(entry: ChatEntry): boolean {
  * When `budget.system` plus that history fills the context (`fillsContext`), the text of the oldest tool steps is
  * replaced, one step at a time, by `[result left out to save context: N lines]`, until the request fits. Never
  * replaced: the last `KEPT_RECENT_STEPS` steps sent, every `load_skill` step (a second load answers "already loaded"
- * without the body, so the model could not get it back), and a result no longer than its replacement line. When the
+ * without the body, so the model could not get it back), every undone step, and a result no longer than its
+ * replacement line. When the
  * request cannot fit even then, the history goes whole and `leftOut` is 0: nothing is sent, so nothing is left out.
  * Pure and linear in the entries, since the usage display runs it at each streamed delta.
  */
@@ -180,9 +181,12 @@ function appendUser(messages: ChatMessage[], text: string): void {
   else messages.push({ role: "user", content: text });
 }
 
-/** `step`'s message with its result left out, or `undefined` when it must go whole (`load_skill`, or short enough). */
+/**
+ * `step`'s message with its result left out, or `undefined` when it must go whole: `load_skill`, an undone step (a
+ * left-out line would tell the model the change stands), or a result short enough.
+ */
 function leftOutResult(step: ToolStep): string | undefined {
-  if (step.name === "load_skill") return undefined;
+  if (step.name === "load_skill" || step.undone) return undefined;
   const line = leftOutLine(resultLineCount(step.text));
   return line.length >= step.text.length ? undefined : toolResultMessage(step, line);
 }
@@ -196,8 +200,15 @@ function leftOutLine(lines: number): string {
   return `[result left out to save context: ${lines === 1 ? "1 line" : `${lines} lines`}]`;
 }
 
-/** A tool step as the model reads it, holding `text`. A malformed call goes back as an error. */
+/** The last line of an undone step's result: the file no longer holds what the step wrote. */
+const UNDONE_LINE = "The user undid this change afterwards.";
+
+/**
+ * A tool step as the model reads it, holding `text`, then `UNDONE_LINE` when the step is undone. A malformed call goes
+ * back as an error.
+ */
 function toolResultMessage(step: ToolStep, text: string): string {
   const status = step.status === "malformed" ? "error" : step.status;
-  return `<tool_result tool="${step.name}" status="${status}">\n${text}\n</tool_result>`;
+  const result = step.undone ? `${text}\n${UNDONE_LINE}` : text;
+  return `<tool_result tool="${step.name}" status="${status}">\n${result}\n</tool_result>`;
 }
