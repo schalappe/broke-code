@@ -4,6 +4,7 @@ import type { SlashCommand, Suggestion } from "../core/suggestions";
 import {
   applyDraft,
   composerKeyAction,
+  editDraft,
   type MenuAnswer,
   mentionPick,
   menuToken,
@@ -325,5 +326,34 @@ describe("applyDraft", () => {
     expect(next.picked).toEqual(["a b.ts", "src/app.ts"]);
     const again = applyDraft(next, { text: "@src/app.ts", mode: "caret", picked: ["src/app.ts"] });
     expect(again.picked).toEqual(["a b.ts", "src/app.ts"]);
+  });
+});
+
+describe("editDraft", () => {
+  const entry = {
+    role: "user" as const,
+    content: "fix @src/a b.ts in @lib with @problems and @./diff",
+    mentions: [
+      { path: "src/a b.ts", kind: "file" as const, status: "attached" as const, lines: 3 },
+      { path: "lib", kind: "folder" as const, status: "attached" as const, lines: 2 },
+      { path: "problems", kind: "problems" as const, status: "noProblems" as const },
+      { path: "./diff", kind: "file" as const, status: "missing" as const },
+    ],
+  };
+
+  test("fills a blank box with the text as typed, the file and folder paths picked, not the reserved mentions", () => {
+    expect(applyDraft({ text: "  ", caret: 0, picked: [] }, editDraft(entry))).toEqual({
+      text: entry.content,
+      caret: entry.content.length,
+      picked: ["src/a b.ts", "lib", "./diff"],
+    });
+  });
+
+  test("follows a draft after a blank line, keeping its picked paths", () => {
+    expect(applyDraft({ text: "draft @x y.ts", caret: 2, picked: ["x y.ts"] }, editDraft(entry))).toEqual({
+      text: `draft @x y.ts\n\n${entry.content}`,
+      caret: 15 + entry.content.length,
+      picked: ["x y.ts", "src/a b.ts", "lib", "./diff"],
+    });
   });
 });

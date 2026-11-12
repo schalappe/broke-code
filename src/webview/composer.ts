@@ -1,10 +1,10 @@
 /**
  * @module composer
  * Decisions of the message box, kept out of React so tests need no DOM: which token opens a menu (`@` mentions, `/`
- * commands), which menu rows to show, what a key does, which picked paths to send, and how a host draft (an editor
- * entry point, or queued texts returned) edits the message box.
+ * commands), which menu rows to show, what a key does, which picked paths to send, and how a draft (an editor entry
+ * point, queued texts returned, or the last message put back by Edit) edits the message box.
  */
-import { type DraftInsert, MAX_QUERY_LENGTH } from "../core/protocol";
+import { type ChatEntry, type DraftInsert, MAX_QUERY_LENGTH } from "../core/protocol";
 import { type MentionKind, pickedPath, RESERVED_MENTIONS, reservedMention } from "../core/reservedMentions";
 import {
   type BuiltInCommand,
@@ -164,6 +164,17 @@ export function composerKeyAction(pressed: ComposerKey, rows: number | undefined
  */
 export function pickedInText(picked: readonly string[], text: string): string[] {
   return picked.filter((path) => text.includes(`@${path}`));
+}
+
+/**
+ * What Edit on the last user message puts in the message box, through `applyDraft` like a returned queued text: its
+ * text as typed, and the paths of its file and folder mentions as picked paths, so a path with spaces stays one
+ * mention. The entry keeps no record of which paths were picked; a picked path counts only while its `@<path>` stands
+ * in the text, so offering every one is safe. A reserved mention stays typed text, read again at send.
+ */
+export function editDraft(entry: ChatEntry & { role: "user" }): DraftInsert {
+  const paths = entry.mentions.flatMap((mention) => (reservedMention(mention.kind) ? [] : [mention.path]));
+  return { text: entry.content, mode: "paragraph", picked: paths };
 }
 
 /** The message box's content: its text, its caret, and the paths picked in it. */
