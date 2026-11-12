@@ -90,7 +90,7 @@ export async function runWriteTool(
   roots: WorkspaceRoot[],
   apply: ChangeApplier,
   signal: AbortSignal,
-): Promise<ToolResult> {
+): Promise<AppliedResult> {
   if (!WRITE_TOOLS.some((tool) => tool.name === call.name)) {
     return { status: "error", text: `${excerpt(call.name)} is not a write tool.` };
   }

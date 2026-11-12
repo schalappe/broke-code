@@ -31,6 +31,11 @@ import {
 // from its path, as a workspace opened through a symlink would.
 let base: string;
 let app: WorkspaceRoot;
+
+/** A path under the workspace folder as the write reports it: symlinks resolved (`/private/var` on macOS). */
+async function realIn(...parts: string[]): Promise<string> {
+  return join(await realpath(app.path), ...parts);
+}
 let lib: WorkspaceRoot;
 
 beforeAll(async () => {
@@ -419,8 +424,9 @@ describe("writeWorkspaceFile while the file changes", () => {
     await mkdir(join(app.path, "w4"));
     const made = await planned("w4/made/a.txt");
     const create = () => mkdir(join(app.path, "w4", "made")).then(() => {});
-    expect(await writeWorkspaceFile([app], made.target, made.before, "a\n", { afterCheck: create })).toMatchObject({
+    expect(await writeWorkspaceFile([app], made.target, made.before, "a\n", { afterCheck: create })).toEqual({
       status: "written",
+      realPath: await realIn("w4", "made", "a.txt"),
     });
     expect(await readFile(join(app.path, "w4", "made", "a.txt"), "utf8")).toBe("a\n");
 
@@ -468,8 +474,9 @@ describe("writeWorkspaceFile while the file changes", () => {
           stagedModes.push((await stat(join(app.path, "w6", name))).mode & 0o777);
         }
       };
-      expect(await writeWorkspaceFile([app], target, before, "new\n", { afterTempWritten: look })).toMatchObject({
+      expect(await writeWorkspaceFile([app], target, before, "new\n", { afterTempWritten: look })).toEqual({
         status: "written",
+        realPath: await realIn("w6", `mode-${mode.toString(8)}.txt`),
       });
       expect(stagedModes).toEqual([0o600]);
       expect((await stat(file)).mode & 0o777).toBe(mode);
@@ -486,8 +493,9 @@ describe("writeWorkspaceFile while the file changes", () => {
     const look = async () => {
       staged.push(...(await temporaryFiles(join(app.path, "w8"))));
     };
-    expect(await writeWorkspaceFile([app], target, before, "long\n", { afterTempWritten: look })).toMatchObject({
+    expect(await writeWorkspaceFile([app], target, before, "long\n", { afterTempWritten: look })).toEqual({
       status: "written",
+      realPath: await realIn("w8", name),
     });
     expect(await readFile(join(app.path, "w8", name), "utf8")).toBe("long\n");
     expect(staged).toHaveLength(1);
