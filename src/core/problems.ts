@@ -60,8 +60,13 @@ export async function readProblems(
 
 /** One problem's line; `path` already workspace-relative. */
 function problemLine({ path, line, character, severity, message, source }: Diagnostic): string {
-  const text = `${path}:${line + 1}:${character + 1} ${severity} ${message.replace(/\r\n|\r|\n/g, " ")}`;
+  const text = `${path}:${line + 1}:${character + 1} ${severity} ${oneLine(message)}`;
   return source ? `${text} (${source})` : text;
+}
+
+/** A diagnostic's message on one line: each line break a space. */
+export function oneLine(message: string): string {
+  return message.replace(/\r\n|\r|\n/g, " ");
 }
 
 /**

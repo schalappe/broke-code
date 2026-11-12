@@ -4,10 +4,11 @@
  */
 import * as vscode from "vscode";
 import type { ChatController } from "../core/chatController";
+import { DraftQueue } from "../core/draftQueue";
 import type { FileQueryAnswer } from "../core/fileIndex";
 import { insertCode } from "../core/insertCode";
 import { chooseModel } from "../core/modelList";
-import { type ChatState, type HostMessage, parseWebviewMessage } from "../core/protocol";
+import { type ChatState, type DraftInsert, type HostMessage, parseWebviewMessage } from "../core/protocol";
 import { answerSkillQuery, type SkillDiscovery } from "../core/skills";
 import { renderWebviewHtml } from "../core/webviewHtml";
 
@@ -27,8 +28,16 @@ export type ChatViewActions = {
 
 export class ChatView implements vscode.WebviewViewProvider {
   private view: vscode.WebviewView | undefined;
-  /** False until webview script posts `ready`; webview rebuilt on each show -> reset. */
+  /**
+   * False until webview script posts `ready`; the webview is rebuilt on each show, and a hidden one drops what it is
+   * posted, so hiding resets it too.
+   */
   private ready = false;
+  /** Drafts waiting for the webview, posted once, in order, right after `init`. */
+  private readonly drafts = new DraftQueue({
+    canDeliver: () => this.ready && this.view?.visible === true,
+    send: (draft) => this.sendDraft(draft),
+  });
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -46,6 +55,9 @@ export class ChatView implements vscode.WebviewViewProvider {
       this.view = undefined;
       this.ready = false;
     });
+    view.onDidChangeVisibility(() => {
+      if (!view.visible) this.ready = false;
+    });
     view.webview.html = renderWebviewHtml({
       cspSource: view.webview.cspSource,
       scriptUri: view.webview.asWebviewUri(vscode.Uri.joinPath(distUri, "main.js")).toString(),
@@ -57,6 +69,36 @@ export class ChatView implements vscode.WebviewViewProvider {
 
   publish(state: ChatState): void {
     if (this.ready) this.post({ type: "state", state });
+  }
+
+  /**
+   * Put `draft` in the message box from an editor entry point, and show the chat. Never sends. The draft waits until
+   * the webview is ready, a first show included, then is posted once. Without a valid provider the panel has no
+   * message box: the chat shows, a notification says to add a provider, and the draft is dropped.
+   */
+  async insertDraft(draft: DraftInsert): Promise<void> {
+    const outcome = await this.drafts.insert(draft, {
+      hasProvider: this.controller.snapshot.providers.length > 0,
+      // [>]: The view's generated focus command resolves it on a first show, and reveals it when hidden.
+      show: async () => void (await vscode.commands.executeCommand(`${CHAT_VIEW_ID}.focus`)),
+    });
+    if (outcome === "noProvider") {
+      void vscode.window.showWarningMessage(
+        vscode.l10n.t("Add a provider first: the chat has no message box without one."),
+      );
+    }
+  }
+
+  /** Post one draft; `false` when the webview did not get it, which the queue keeps for its next `ready`. */
+  private async sendDraft(draft: DraftInsert): Promise<boolean> {
+    try {
+      const delivered = (await this.view?.webview.postMessage({ type: "insertDraft", ...draft })) === true;
+      if (!delivered) console.warn("broke-code: the chat did not take a draft; it waits for the chat's next load");
+      return delivered;
+    } catch (error) {
+      console.error("broke-code: could not post a draft to the chat; it waits for the chat's next load", error);
+      return false;
+    }
   }
 
   private post(message: HostMessage): void {
@@ -96,7 +138,7 @@ export class ChatView implements vscode.WebviewViewProvider {
       case "ready":
         this.ready = true;
         this.post({ type: "init", l10n: vscode.l10n.bundle, state: controller.snapshot });
-        return;
+        return void this.drafts.deliver();
       case "selectProvider":
         controller.selectProvider(message.provider);
         return;

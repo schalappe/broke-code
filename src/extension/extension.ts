@@ -3,7 +3,8 @@
  * Activation entry point: wires settings, API keys, mentions (and the diagnostics `@problems`, the git diffs `@diff`,
  * and the selection `@selection` read), read tools, write tools and commands behind their approval, instruction files,
  * skills, turn limits, file index, saved conversations, chat controller, chat view, `broke-code.setApiKey`,
- * `broke-code.addProvider`, and `broke-code.generateCommitMessage`.
+ * `broke-code.addProvider`, `broke-code.generateCommitMessage`, and the editor's entry points into the chat:
+ * `broke-code.addSelectionToChat` and the quick fix "Fix with broke-code" (`broke-code.fixDiagnostic`).
  */
 import { homedir } from "node:os";
 import * as vscode from "vscode";
@@ -15,7 +16,9 @@ import { readInstructionFiles } from "../core/instructions";
 import { contextOf } from "../core/limits";
 import { mentionReader } from "../core/mentionReader";
 import type { Diagnostic } from "../core/problems";
+import type { DraftInsert } from "../core/protocol";
 import { parseProviders } from "../core/providers";
+import { fixDraft, parseDiagnostic } from "../core/quickFix";
 import { editorSelection } from "../core/selection";
 import { describeSkillDiscovery, readSkills, type SkillDiscovery } from "../core/skills";
 import { workspaceToolRunner } from "../core/toolRunner";
@@ -113,8 +116,29 @@ export function activate(context: vscode.ExtensionContext): void {
       controller.selectProvider(name);
     });
 
+  const chatView = view;
+  // [>]: Shows its own failures; a command handler that rejects would only reach VS Code's generic error.
+  const insertDraft = (draft: DraftInsert) =>
+    chatView.insertDraft(draft).catch((error: unknown) => {
+      console.error("broke-code: could not put the draft in the chat", error);
+      void vscode.window.showErrorMessage(vscode.l10n.t("Could not open the chat: {0}", String(error)));
+    });
+
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(CHAT_VIEW_ID, view),
+    // [>]: The selection is read when the message is sent, so the editor's selection is left as it is.
+    vscode.commands.registerCommand("broke-code.addSelectionToChat", () =>
+      insertDraft({ text: "@selection", mode: "caret", picked: [] }),
+    ),
+    // [!]: Any extension can run this command with any argument: it is checked, then filtered as the quick fix is.
+    vscode.commands.registerCommand("broke-code.fixDiagnostic", (raw?: unknown) => {
+      const diagnostic = parseDiagnostic(raw);
+      const draft = diagnostic ? fixDraft(workspaceRoots(), diagnostic) : undefined;
+      return draft ? insertDraft(draft) : undefined;
+    }),
+    vscode.languages.registerCodeActionsProvider({ scheme: "file" }, new FixWithBrokeCode(), {
+      providedCodeActionKinds: [vscode.CodeActionKind.QuickFix],
+    }),
     vscode.commands.registerCommand("broke-code.setApiKey", (provider?: unknown) =>
       setApiKey(typeof provider === "string" ? provider : undefined),
     ),
@@ -156,17 +180,41 @@ function logSkills(discovery: SkillDiscovery): SkillDiscovery {
 
 /** Every diagnostic VS Code holds now, as the raw records `@problems` filters and formats. */
 function readDiagnostics(): Diagnostic[] {
-  return vscode.languages.getDiagnostics().flatMap(([uri, diagnostics]) =>
-    diagnostics.map(({ range, severity, message, source }) => ({
-      scheme: uri.scheme,
-      path: uri.fsPath,
-      line: range.start.line,
-      character: range.start.character,
-      severity: severityName(severity),
-      message,
-      ...(source ? { source } : {}),
-    })),
-  );
+  return vscode.languages
+    .getDiagnostics()
+    .flatMap(([uri, diagnostics]) => diagnostics.map((diagnostic) => rawDiagnostic(uri, diagnostic)));
+}
+
+/** `diagnostic` of the document at `uri` as the raw record the core reads. */
+function rawDiagnostic(uri: vscode.Uri, { range, severity, message, source }: vscode.Diagnostic): Diagnostic {
+  return {
+    scheme: uri.scheme,
+    path: uri.fsPath,
+    line: range.start.line,
+    character: range.start.character,
+    severity: severityName(severity),
+    message,
+    ...(source ? { source } : {}),
+  };
+}
+
+/**
+ * "Fix with broke-code" on each error or warning of a `file` document inside the workspace folders (`fixDraft`): its
+ * command fills the chat's message box and sends nothing.
+ */
+class FixWithBrokeCode implements vscode.CodeActionProvider {
+  provideCodeActions(document: vscode.TextDocument, _range: vscode.Range, context: vscode.CodeActionContext) {
+    const roots = workspaceRoots();
+    return context.diagnostics.flatMap((diagnostic) => {
+      const raw = rawDiagnostic(document.uri, diagnostic);
+      if (!fixDraft(roots, raw)) return [];
+      const title = vscode.l10n.t("Fix with broke-code");
+      const action = new vscode.CodeAction(title, vscode.CodeActionKind.QuickFix);
+      action.diagnostics = [diagnostic];
+      action.command = { command: "broke-code.fixDiagnostic", title, arguments: [raw] };
+      return [action];
+    });
+  }
 }
 
 function severityName(severity: vscode.DiagnosticSeverity): Diagnostic["severity"] {

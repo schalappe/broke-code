@@ -176,4 +176,8 @@ describe("chatStateOf", () => {
     expect(chatStateOf({ type: "fileSuggestions", id: 1, items: [], capped: false, failed: false })).toBeUndefined();
     expect(chatStateOf({ type: "skillSuggestions", id: 1, items: [], failed: false })).toBeUndefined();
   });
+
+  test("leaves the chat state alone for a draft", () => {
+    expect(chatStateOf({ type: "insertDraft", text: "@selection", mode: "caret", picked: [] })).toBeUndefined();
+  });
 });
