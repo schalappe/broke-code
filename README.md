@@ -212,7 +212,8 @@ The agent has three read tools. They run without asking you, inside the workspac
 skills loaded in the conversation (see [Skills](#skills)).
 
 - **read_file** reads a file, with the same limits as a mention. It refuses binary files and files over 1 MiB, and
-  cuts a file over 2,000 lines to its first 2,000.
+  shows at most 2,000 lines. It can read a range of lines, so the agent reads on past the first 2,000: a cut read
+  tells it the line to read on from, and the step's row shows the range after the path (`big.log 2001-4000`).
 - **list_files** lists the direct children of a folder.
 - **search** searches the workspace with ripgrep, either the copy your editor ships or the `rg` on your `PATH`. It
   skips hidden files, files that `.gitignore` ignores, and symlinks, and stops after 30 seconds.
@@ -642,7 +643,7 @@ with no folder open keeps its conversation in memory only.
 ## Tested models
 
 The eval bench measures broke-code's tool calls on two local models with Ollama, `qwen3.8:27b` and
-`gemma4:26b-a4b-it-qat`. It runs each task ten times, and a task passes at nine. The bench has seven tasks.
+`gemma4:26b-a4b-it-qat`. It runs each task ten times, and a task passes at nine. The bench has eight tasks.
 
 - **Read** answers with the value of a setting that only a file holds.
 - **Edit** renames a function in a source file and changes nothing else.
@@ -652,6 +653,7 @@ The eval bench measures broke-code's tool calls on two local models with Ollama,
 - **Slash** sends the skill task's question after `/` and the skill's name, which loads the skill for the model.
 - **Hidden** repeats the slash task with a skill kept from the model, which only you can load, next to an unrelated
   skill the model may load.
+- **Range** gives the code on the last line of a 2,400-line file, by reading on past its first 2,000 lines.
 
 In the latest full run, both models passed all 10 runs of every task. When a model thinks, then stops without a word,
 broke-code tells it so and asks again. Contributors run the bench with `bun run eval`.

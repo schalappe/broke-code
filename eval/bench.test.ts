@@ -58,7 +58,7 @@ describe("parseBenchArgs", () => {
 
   test("refuses a scenario the bench does not hold, naming those it does", () => {
     expect(() => parseBenchArgs(["--scenario", "reed"])).toThrow(
-      '--scenario takes one of read, edit, create, skill, command, slash, hidden, not "reed".',
+      '--scenario takes one of read, edit, create, skill, command, slash, hidden, range, not "reed".',
     );
   });
 

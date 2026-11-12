@@ -11,6 +11,7 @@ import {
   fileAt,
   HIDDEN_SCENARIO,
   judge,
+  RANGE_SCENARIO,
   READ_SCENARIO,
   SCENARIOS,
   SKILL_SCENARIO,
@@ -699,7 +700,101 @@ describe("judge on the command scenario", () => {
   });
 });
 
-test("SCENARIOS holds read, edit, create, skill, command, slash, and hidden, in that order", () => {
+const DISPATCH_LOG = "dispatch.log";
+const LAST_CODE = "VX7Q-K2RM";
+const logText = fileAt(RANGE_SCENARIO.files, DISPATCH_LOG) ?? "";
+const rangeUser: ChatEntry = { role: "user", content: RANGE_SCENARIO.message, mentions: [] };
+const readLog = (args: Record<string, string>, text: string): ChatEntry[] => [
+  { ...callReply("read_file", DISPATCH_LOG), call: { name: "read_file", args, start: 0, end: 0 } },
+  { role: "tool", name: "read_file", args, status: "ok", text },
+];
+const firstPart = readLog(
+  { path: DISPATCH_LOG },
+  `@${DISPATCH_LOG} (file, lines 1-2000 of 2400)\n\`\`\`\n...\n\`\`\`\n[truncated: 400 more lines not shown; read on with start_line 2001]`,
+);
+const lastPart = readLog(
+  { path: DISPATCH_LOG, start_line: "2001" },
+  `@${DISPATCH_LOG} (file, lines 2001-2400 of 2400)\n\`\`\`\n...\nnice seal ${LAST_CODE}\n\`\`\``,
+);
+const rangeUntouched = { ...RANGE_SCENARIO.files };
+
+describe("range scenario fixture", () => {
+  test("holds a log of 2,400 lines of at most 24 characters each, line break included", () => {
+    const lines = logText.split(/(?<=\n)/);
+    expect(lines).toHaveLength(2400);
+    expect(lines.every((line) => line.endsWith("\n") && line.length <= 24)).toBe(true);
+  });
+
+  test("holds the code once in the workspace, on the log's last line, past line 2,000", () => {
+    const holders = Object.entries(RANGE_SCENARIO.files).filter(([, text]) => text.includes(LAST_CODE));
+    expect(holders.map(([path]) => path)).toEqual([DISPATCH_LOG]);
+    expect(logText.split(LAST_CODE)).toHaveLength(2);
+    expect(logText.endsWith(`\nnice seal ${LAST_CODE}\n`)).toBe(true);
+  });
+
+  test("names the log in a short README", () => {
+    expect(fileAt(RANGE_SCENARIO.files, "README.md")).toContain(DISPATCH_LOG);
+    expect(Object.keys(RANGE_SCENARIO.files).sort()).toEqual(["README.md", DISPATCH_LOG]);
+  });
+
+  test("asks to read the log without naming the tool, its arguments, a line number, or a word of the line", () => {
+    expect(RANGE_SCENARIO.message).toContain(DISPATCH_LOG);
+    for (const hint of [
+      "read_file",
+      "start_line",
+      "end_line",
+      "2400",
+      "2,400",
+      "2000",
+      "2001",
+      "nice",
+      "seal",
+      "VX7Q",
+    ]) {
+      expect(RANGE_SCENARIO.message).not.toContain(hint);
+    }
+    expect(RANGE_SCENARIO.writes).toEqual({});
+  });
+});
+
+test("only the range scenario rejects commands", () => {
+  expect(SCENARIOS.filter((scenario) => scenario.rejectCommands).map((scenario) => scenario.name)).toEqual(["range"]);
+});
+
+describe("judge on the range scenario", () => {
+  test("passes a turn that read on with start_line and answered with the code", () => {
+    const entries = [rangeUser, ...firstPart, ...lastPart, answer(`The code on the last line is ${LAST_CODE}.`)];
+    expect(judge(RANGE_SCENARIO, entries, rangeUntouched)).toEqual({ pass: true });
+  });
+
+  test("fails as wrongTool a turn that found the code without a ranged read_file", () => {
+    const searched: ChatEntry[] = [
+      { ...callReply("search", "."), call: { name: "search", args: { pattern: "seal" }, start: 0, end: 0 } },
+      {
+        role: "tool",
+        name: "search",
+        args: { pattern: "seal" },
+        status: "ok",
+        text: `${DISPATCH_LOG}:2400:nice seal ${LAST_CODE}`,
+      },
+    ];
+    const entries = [rangeUser, ...firstPart, ...searched, answer(LAST_CODE)];
+    expect(judge(RANGE_SCENARIO, entries, rangeUntouched)).toMatchObject({ pass: false, category: "wrongTool" });
+  });
+
+  test("fails as wrongTool a turn whose ranged read missed the code", () => {
+    const middle = readLog({ path: DISPATCH_LOG, start_line: "1000", end_line: "1100" }, "@dispatch.log (file, ...)");
+    const entries = [rangeUser, ...firstPart, ...middle, answer(LAST_CODE)];
+    expect(judge(RANGE_SCENARIO, entries, rangeUntouched)).toMatchObject({ pass: false, category: "wrongTool" });
+  });
+
+  test("fails as wrongAnswer a turn that read the code but answered without it", () => {
+    const entries = [rangeUser, ...firstPart, ...lastPart, answer("The log ends with a dispatch from nice.")];
+    expect(judge(RANGE_SCENARIO, entries, rangeUntouched)).toMatchObject({ pass: false, category: "wrongAnswer" });
+  });
+});
+
+test("SCENARIOS holds read, edit, create, skill, command, slash, hidden, and range, in that order", () => {
   expect(SCENARIOS.map((scenario) => scenario.name)).toEqual([
     "read",
     "edit",
@@ -708,6 +803,7 @@ test("SCENARIOS holds read, edit, create, skill, command, slash, and hidden, in 
     "command",
     "slash",
     "hidden",
+    "range",
   ]);
 });
 

@@ -12,6 +12,7 @@ import {
   CREATE_SCENARIO,
   EDIT_SCENARIO,
   judge,
+  RANGE_SCENARIO,
   READ_SCENARIO,
   type Scenario,
   SKILL_SCENARIO,
@@ -126,6 +127,25 @@ describe("playScenario", () => {
       role: "system",
       content: composeSystemPrompt([...READ_TOOLS, ...WRITE_TOOLS, RUN_COMMAND_TOOL], [], []),
     });
+  });
+
+  test("rejects every command of the range scenario as the user's Reject does, and approves one elsewhere", async () => {
+    const tail = "<run_command>\n<command>tail -n 1 dispatch.log</command>\n</run_command>";
+    const target = { baseUrl, apiKey: undefined, model: "m", maxToolSteps: 6 };
+    replies = [tail, "I could not read it."];
+    const rejected = (await playScenario(RANGE_SCENARIO, target, parent)).entries[2];
+    replies = ["<run_command>\n<command>tail -n 1 README.md</command>\n</run_command>", "61"];
+    const approved = (await playScenario(COMMAND_SCENARIO, target, parent)).entries[2];
+
+    expect(rejected).toEqual({
+      role: "tool",
+      name: "run_command",
+      args: { command: "tail -n 1 dispatch.log" },
+      status: "error",
+      text: "The user rejected this command.",
+    });
+    expect(approved).toMatchObject({ role: "tool", name: "run_command", status: "ok" });
+    expect(approved?.role === "tool" ? approved.text : "").toContain("config/settings.toml");
   });
 
   test("runs a run_command call at once with /bin/sh in the copy of the fixture, its command and output in the step", async () => {

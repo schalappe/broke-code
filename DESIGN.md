@@ -276,7 +276,7 @@ would not act. Above the rows, a notice line says "The queue is paused." when no
 - A row that opens (reasoning, a tool step, a folded turn) ends with its chevron, turned down once open.
 - Reasoning: a small dim row; opened, its text sits behind a 1px rule. On the thread only when its reply holds a
   step.
-- Tool step: one small dim line: tool name (`--bc-tool`), main argument, status at the right, then the chevron. It opens to its result in a
+- Tool step: one small dim line: tool name (`--bc-tool`), main argument (a `read_file` range after its path, `big.log 2001-`), status at the right, then the chevron. It opens to its result in a
   code block. A command shows whole in a block under its line. A failed status is in the error color. A write that
   "Undo changes" put back says so first in its status, in words ("undone, ok, 1 line"), in the default look: nothing
   failed, and the line count stays the result's.
