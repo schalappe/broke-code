@@ -577,12 +577,14 @@ function Conversation({
   // before any read or request, so a removed entry's opened blocks unmount before the new reply fills that index.
   // An entry moving into a fold remounts, so a row opened inside comes back closed. The open request goes to the last
   // entry, never folded, since only an ended turn folds.
+  const latestUser = entries.findLastIndex((shown) => shown.role === "user");
   const entry = (index: number) => {
     const shown = entries[index]!;
     const rendered = (
       <Entry
         key={index}
         entry={shown}
+        earlier={index < latestUser}
         previous={entries[index - 1]}
         next={entries[index + 1]}
         approval={index === entries.length - 1 ? approval : undefined}
@@ -697,10 +699,12 @@ function Conversation({
 /**
  * One entry of the conversation, with its neighbours: a tool step shows inside the reply before it. `approval`: the
  * request open, given to the last entry only. `undo` and `undone`: "Undo changes" and the last undo's files, given to
- * the reply they belong to. `turnActions`: Retry and Continue, given to the last turn's reply.
+ * the reply they belong to. `turnActions`: Retry and Continue, given to the last turn's reply. `earlier`: a user
+ * message a later one follows, which keeps only the outline of the latest one's block.
  */
 function Entry({
   entry,
+  earlier,
   previous,
   next,
   approval,
@@ -709,6 +713,7 @@ function Entry({
   turnActions,
 }: {
   entry: ChatEntry;
+  earlier: boolean;
   previous?: ChatEntry;
   next?: ChatEntry;
   approval?: PendingApproval;
@@ -719,7 +724,7 @@ function Entry({
   switch (entry.role) {
     case "user":
       return (
-        <div className="message user">
+        <div className={earlier ? "message user earlier" : "message user"}>
           {entry.content}
           {(entry.mentions.length > 0 || entry.skill) && <Mentions entry={entry} />}
         </div>

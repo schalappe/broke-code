@@ -463,6 +463,11 @@ describe("folded turn", () => {
     });
   });
 
+  test("only a user message a later one follows is marked earlier", () => {
+    const html = conversationOf([user, final, user, final]);
+    expect(html.match(/class="message user[^"]*"/g)).toEqual(['class="message user earlier"', 'class="message user"']);
+  });
+
   test("a turn with one step renders the same markup as before folding existed", () => {
     expect(conversationOf([user, call, ok, final])).toBe(
       '<section class="conversation"><div class="message user">Hi</div><div class="user-actions"><button type="button" class="secondary">Edit</button></div><div class="message assistant"><div class="answer"><p>Look.</p></div><details class="step"><summary class="step-row"><span class="step-tool">read_file</span><span class="step-arg">a.ts</span><span class="step-status">ok, 1 line</span></summary><pre class="step-result"><code>x</code></pre></details></div><div class="message assistant"><div class="answer"><p>FINAL_ANSWER</p></div><div class="turn-actions"><button type="button" class="secondary">Retry</button></div></div><div></div></section>',
