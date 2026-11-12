@@ -29,21 +29,25 @@ export type LastTurnActions = { user: number; reply: number; continues: boolean 
 export function lastTurnActions(entries: readonly ChatEntry[]): LastTurnActions | undefined {
   const user = entries.findLastIndex((entry) => entry.role === "user");
   const last = entries.at(-1);
-  if (user === -1 || user === entries.length - 1 || last === undefined) return undefined;
+  if (user === -1 || last === undefined || last === entries[user]) return undefined;
   if (last.role === "assistant" && (last.status === "waiting" || last.status === "streaming")) return undefined;
   const start = historyStart(entries);
   if (start > user && !isAutomaticSummary(entries[start]!, entries[start + 1])) return undefined;
-  const replies = entries.map((entry, index) => ({ entry, index })).slice(user + 1);
-  const answer = replies.findLast(({ entry }) => entry.role === "assistant" && entry.summary !== true);
-  const shown = answer ?? replies.findLast(({ entry }) => entry.role === "assistant");
-  if (shown === undefined) return undefined;
-  const ended = answer?.entry.role === "assistant" ? answer.entry : undefined;
+  const isReply = (index: number) => entries[index]?.role === "assistant";
+  const isAnswer = (index: number) => isReply(index) && (entries[index] as Assistant).summary !== true;
+  const after = Array.from({ length: entries.length - user - 1 }, (_, offset) => user + 1 + offset);
+  const answer = after.findLast(isAnswer);
+  const reply = answer ?? after.findLast(isReply);
+  if (reply === undefined) return undefined;
+  const ended = answer === undefined ? undefined : (entries[answer] as Assistant);
   const stopped =
     ended?.status === "stopped" ||
     (ended?.status === "halted" && (ended.haltReason === "stepLimit" || ended.haltReason === "malformedCalls"));
-  const lastIsSummary = last.role === "assistant" && last.summary === true;
-  return { user, reply: shown.index, continues: stopped && !lastIsSummary };
+  const endsOnSummary = last.role === "assistant" && last.summary === true;
+  return { user, reply, continues: stopped && !endsOnSummary };
 }
+
+type Assistant = ChatEntry & { role: "assistant" };
 
 /**
  * What removing the entries from index `from` on leaves on disk, since a removal reverts nothing: `writes`, the write
