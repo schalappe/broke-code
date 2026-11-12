@@ -81,7 +81,7 @@ describe("write_file", () => {
 
   test("replaces an existing file whole, and writes empty content as an empty file", async () => {
     await writeFile(join(app.path, "whole.txt"), "old\ncontent\n");
-    expect(await run("write_file", { path: "whole.txt", content: "new" })).toEqual({
+    expect(await run("write_file", { path: "whole.txt", content: "new" })).toMatchObject({
       status: "ok",
       text: "write_file: replaced whole.txt.",
     });
@@ -175,7 +175,7 @@ describe("write_file", () => {
 describe("edit_file", () => {
   test("replaces the one exact passage and nothing else, in a CRLF file too", async () => {
     await writeFile(join(app.path, "lf.ts"), "const a = 1;\nconst b = 2;\nconst c = 3;\n");
-    expect(await run("edit_file", { path: "lf.ts", old: "const b = 2;", new: "const b = 20;" })).toEqual({
+    expect(await run("edit_file", { path: "lf.ts", old: "const b = 2;", new: "const b = 20;" })).toMatchObject({
       status: "ok",
       text: "edit_file: replaced the passage in lf.ts.",
     });
@@ -290,7 +290,7 @@ describe("fileApplier", () => {
     const content = `${"a".repeat(8 * 1024)}\u0000b`;
     const change = await plan("write_file", { path: "late-nul.txt", content });
     const apply = fileApplier([app]);
-    expect(await apply(change)).toEqual({ status: "ok", text: "write_file: created late-nul.txt." });
+    expect(await apply(change)).toMatchObject({ status: "ok", text: "write_file: created late-nul.txt." });
     expect(await apply(change)).toEqual({ status: "ok", text: "write_file: late-nul.txt already holds this change." });
     expect(await readFile(join(app.path, "late-nul.txt"), "utf8")).toBe(`${content}\n`);
   });
@@ -485,7 +485,7 @@ describe("approvalApplier", () => {
     );
     expect(requests).toMatchObject([{ kind: "write", tool: "edit_file", summary: "asked.txt" }]);
     expect(previewed).toMatchObject([{ tool: "edit_file", before: "old\n", after: "new\n" }]);
-    expect(result).toEqual({ status: "ok", text: "edit_file: replaced the passage in asked.txt." });
+    expect(result).toMatchObject({ status: "ok", text: "edit_file: replaced the passage in asked.txt." });
     expect(await readFile(join(app.path, "asked.txt"), "utf8")).toBe("new\n");
   });
 

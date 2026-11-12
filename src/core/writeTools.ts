@@ -32,8 +32,15 @@ export type PlannedChange = {
   after: string;
 };
 
+/**
+ * The tool's result of applying a change. `written`: set only when this change was written to disk, with the file's
+ * real path (its folder's real path plus its name); never when the file already held the new text, nor when the change
+ * was declined or failed. The controller keeps the status and text only.
+ */
+export type AppliedResult = ToolResult & { written?: { realPath: string } };
+
 /** Applies a planned change, or declines it, and says what happened as the tool's result. Must not reject. */
-export type ChangeApplier = (change: PlannedChange) => Promise<ToolResult>;
+export type ChangeApplier = (change: PlannedChange) => Promise<AppliedResult>;
 
 /** The write tools as the model sees them: for the system prompt and the body tool call parser. */
 export const WRITE_TOOLS: ToolSpec[] = [
@@ -220,12 +227,17 @@ export function fileApplier(roots: WorkspaceRoot[]): ChangeApplier {
   };
 }
 
-function describeOutcome(change: PlannedChange, outcome: WriteOutcome): ToolResult {
+function describeOutcome(change: PlannedChange, outcome: WriteOutcome): AppliedResult {
   const shown = displayPath(change.path);
   switch (outcome.status) {
-    case "written":
-      if (change.tool === "edit_file") return { status: "ok", text: `edit_file: replaced the passage in ${shown}.` };
-      return { status: "ok", text: `write_file: ${change.before === undefined ? "created" : "replaced"} ${shown}.` };
+    case "written": {
+      const written = { realPath: outcome.realPath };
+      if (change.tool === "edit_file") {
+        return { status: "ok", text: `edit_file: replaced the passage in ${shown}.`, written };
+      }
+      const verb = change.before === undefined ? "created" : "replaced";
+      return { status: "ok", text: `write_file: ${verb} ${shown}.`, written };
+    }
     case "alreadyWritten":
       return { status: "ok", text: `${change.tool}: ${shown} already holds this change.` };
     case "changed":

@@ -419,7 +419,7 @@ describe("writeWorkspaceFile while the file changes", () => {
     await mkdir(join(app.path, "w4"));
     const made = await planned("w4/made/a.txt");
     const create = () => mkdir(join(app.path, "w4", "made")).then(() => {});
-    expect(await writeWorkspaceFile([app], made.target, made.before, "a\n", { afterCheck: create })).toEqual({
+    expect(await writeWorkspaceFile([app], made.target, made.before, "a\n", { afterCheck: create })).toMatchObject({
       status: "written",
     });
     expect(await readFile(join(app.path, "w4", "made", "a.txt"), "utf8")).toBe("a\n");
@@ -468,7 +468,7 @@ describe("writeWorkspaceFile while the file changes", () => {
           stagedModes.push((await stat(join(app.path, "w6", name))).mode & 0o777);
         }
       };
-      expect(await writeWorkspaceFile([app], target, before, "new\n", { afterTempWritten: look })).toEqual({
+      expect(await writeWorkspaceFile([app], target, before, "new\n", { afterTempWritten: look })).toMatchObject({
         status: "written",
       });
       expect(stagedModes).toEqual([0o600]);
@@ -486,7 +486,7 @@ describe("writeWorkspaceFile while the file changes", () => {
     const look = async () => {
       staged.push(...(await temporaryFiles(join(app.path, "w8"))));
     };
-    expect(await writeWorkspaceFile([app], target, before, "long\n", { afterTempWritten: look })).toEqual({
+    expect(await writeWorkspaceFile([app], target, before, "long\n", { afterTempWritten: look })).toMatchObject({
       status: "written",
     });
     expect(await readFile(join(app.path, "w8", name), "utf8")).toBe("long\n");

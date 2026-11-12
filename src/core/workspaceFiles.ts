@@ -394,7 +394,8 @@ export async function locateWriteTarget(
 }
 
 /**
- * What applying a change did. `alreadyWritten`: the file already holds the new text, so running twice changes nothing.
+ * What applying a change did. `written`: the new text took the file's place at `realPath`, its folder's real path plus
+ * its name. `alreadyWritten`: the file already holds the new text, so running twice changes nothing.
  * `changed`: the file no longer holds the planned text, or the path no longer leads where it did; nothing is written.
  * `notWritten`: a disk failure (`cause`) stopped the write; the file is as it was, but folders created for it stay.
  * `unwritable`: the new text would not read back identically (`reason`, see `unwritableText`); nothing is touched.
@@ -402,7 +403,8 @@ export async function locateWriteTarget(
  * removed (`cause`); it sits in the file's folder under `name`.
  */
 export type WriteOutcome = (
-  | { status: "written" | "alreadyWritten" | "changed" }
+  | { status: "written"; realPath: string }
+  | { status: "alreadyWritten" | "changed" }
   | Exclude<WriteTarget, { status: "ok" }>
   | { status: "notWritten"; cause: string }
   | { status: "unwritable"; reason: UnwritableText }
@@ -565,11 +567,11 @@ async function swapIn(
 
   if (checked.before !== undefined) {
     await rename(temp, checked.realPath);
-    return { status: "written" };
+    return { status: "written", realPath: checked.realPath };
   }
   // [>]: `link` never replaces an existing name, unlike `rename`: a file created since the last check stays.
   return link(temp, checked.realPath).then(
-    () => ({ status: "written" }),
+    () => ({ status: "written", realPath: checked.realPath }),
     (error: unknown) => {
       if (errorCode(error) === "EEXIST") return { status: "changed" };
       throw error;
