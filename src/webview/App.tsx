@@ -14,6 +14,7 @@ import {
 import Markdown, { type Components, type ExtraProps } from "react-markdown";
 import { type ConversationSummary, filterConversations } from "../core/conversation";
 import { historyStart, isAutomaticSummary, sentEntries } from "../core/history";
+import { type LastTurnActions, lastTurnActions, unrevertedEffects } from "../core/lastTurn";
 import { codeBlockText, FENCE_CLOSED, hasTextAfter, remarkFenceClosed } from "../core/markdownCode";
 import { emptyModelsLabel } from "../core/modelList";
 import {
@@ -30,6 +31,7 @@ import {
   type PendingApproval,
   type QueuedMessage,
   type ReplyCall,
+  sendWouldAct,
   type UndoState,
 } from "../core/protocol";
 import type { ProviderError } from "../core/providerError";
@@ -145,6 +147,7 @@ export function App({
           entries={state.entries}
           approval={state.approval}
           undo={state.undo}
+          canAct={sendWouldAct(state)}
           hidden={historyOpen}
         />
       )}
@@ -483,17 +486,20 @@ export function ConversationList({
 
 /**
  * `approval`: the request open, shown on the last reply, the one in flight. `undo`: "Undo changes", shown under the
- * reply it names, and the last undo's outcome under the reply it undid. `hidden`: History shows instead.
+ * reply it names, and the last undo's outcome under the reply it undid. Retry and Continue show under the last turn's
+ * reply (`lastTurnActions`), enabled when `canAct` (Send would act). `hidden`: History shows instead.
  */
 function Conversation({
   entries,
   approval,
   undo,
+  canAct,
   hidden,
 }: {
   entries: ChatEntry[];
   approval?: PendingApproval;
   undo: UndoState;
+  canAct: boolean;
   hidden: boolean;
 }) {
   const end = useRef<HTMLDivElement>(null);
@@ -502,6 +508,15 @@ function Conversation({
   const last = entries.at(-1);
   const replying = last?.role === "assistant" && (last.status === "waiting" || last.status === "streaming");
   const [pinned, setPinned] = useState(true);
+  const lastTurn = lastTurnActions(entries);
+  const turnActions: TurnActionsProps | undefined = lastTurn && {
+    actions: lastTurn,
+    entries: entries.length,
+    canAct,
+    // [>]: Retry reverts nothing: it asks first when the removed entries changed files or ran commands, or when
+    // "Undo changes" is offered for the turn it removes.
+    asks: hasEffects(unrevertedEffects(entries, lastTurn.user + 1)) || (undo.reply ?? -1) > lastTurn.user,
+  };
 
   // Follow stream only while user stays at bottom. Unpinned, nothing moves the view: see `overflow-anchor` in the CSS.
   useLayoutEffect(() => {
@@ -520,6 +535,7 @@ function Conversation({
       approval={index === entries.length - 1 ? approval : undefined}
       undo={index === undo.reply && !replying ? undo : undefined}
       undone={index === undo.outcome?.reply ? undo.outcome : undefined}
+      turnActions={index === lastTurn?.reply ? turnActions : undefined}
     />
   );
 
@@ -587,7 +603,7 @@ function Conversation({
 /**
  * One entry of the conversation, with its neighbours: a tool step shows inside the reply before it. `approval`: the
  * request open, given to the last entry only. `undo` and `undone`: "Undo changes" and the last undo's files, given to
- * the reply they belong to.
+ * the reply they belong to. `turnActions`: Retry and Continue, given to the last turn's reply.
  */
 function Entry({
   entry,
@@ -596,6 +612,7 @@ function Entry({
   approval,
   undo,
   undone,
+  turnActions,
 }: {
   entry: ChatEntry;
   previous?: ChatEntry;
@@ -603,6 +620,7 @@ function Entry({
   approval?: PendingApproval;
   undo?: UndoState;
   undone?: UndoOutcomeState;
+  turnActions?: TurnActionsProps;
 }) {
   switch (entry.role) {
     case "user":
@@ -616,7 +634,7 @@ function Entry({
       return entry.summary ? (
         <>
           <p className="summary-separator">{describeSummary(entry, isAutomaticSummary(entry, next))}</p>
-          <Reply entry={entry} approval={approval} undo={undo} undone={undone} />
+          <Reply entry={entry} approval={approval} undo={undo} undone={undone} turnActions={turnActions} />
         </>
       ) : (
         <Reply
@@ -625,6 +643,7 @@ function Entry({
           approval={approval}
           undo={undo}
           undone={undone}
+          turnActions={turnActions}
         />
       );
     case "tool":
@@ -640,8 +659,9 @@ function Entry({
 /**
  * One reply of an agent turn: its reasoning, its answer as Markdown less its call block, the row of its tool step
  * (`step`: the entry after it), the decision its call waits on (`approval`, the request open, given while this is the
- * last reply), in one `decision` block with the call's row, how the turn ended when it ended here, then "Undo changes"
- * (`undo`) when this is the last reply of the turn whose writes are held, and what the last undo did (`undone`).
+ * last reply), in one `decision` block with the call's row, how the turn ended when it ended here, what the last undo
+ * did (`undone`), then one row of the turn's actions: Retry and Continue (`turnActions`) when this is the last turn's
+ * reply, and "Undo changes" (`undo`) when this is the last reply of the turn whose writes are held.
  */
 function Reply({
   entry,
@@ -649,12 +669,14 @@ function Reply({
   approval,
   undo,
   undone,
+  turnActions,
 }: {
   entry: ChatEntry & { role: "assistant" };
   step?: ChatEntry & { role: "tool" };
   approval?: PendingApproval;
   undo?: UndoState;
   undone?: UndoOutcomeState;
+  turnActions?: TurnActionsProps;
 }) {
   const { call } = entry;
   const answer = call ? (entry.content.slice(0, call.start) + entry.content.slice(call.end)).trim() : entry.content;
@@ -700,22 +722,86 @@ function Reply({
       )}
       {entry.error && <ErrorBlock error={entry.error} />}
       {undone && <UndoOutcome outcome={undone} />}
-      {undo && <UndoChanges undo={undo} />}
+      {(turnActions || undo) && <TurnActions turnActions={turnActions} undo={undo} />}
     </div>
   );
 }
 
 /**
- * "Undo changes" under the last reply of the turn whose writes are held, with a line saying commands are not undone
- * when the turn ran one. Disabled, and worded so, while the undo runs.
+ * Retry and Continue of the last turn. `actions`: where they apply and whether Continue is offered. `entries`: the
+ * entries count the requests carry, so the host ignores a click on a lagging panel. `canAct`: Send would act. `asks`:
+ * Retry would leave files or commands it does not revert, so its first click asks.
  */
-function UndoChanges({ undo }: { undo: UndoState }) {
+type TurnActionsProps = { actions: LastTurnActions; entries: number; canAct: boolean; asks: boolean };
+
+function hasEffects(effects: { writes: number; commands: number }): boolean {
+  return effects.writes > 0 || effects.commands > 0;
+}
+
+/**
+ * The actions row under a reply: Retry, Continue, then "Undo changes", each a secondary button, wrapping when narrow.
+ * When Retry asks, its first click shows the line saying what it does not revert, renames the same button "Retry
+ * anyway", so the focus stays on it, and adds Cancel after it; the second click retries. Cancel, and any change of the
+ * entries count, drop the confirmation; Cancel gives the focus back to Retry, since the button it was on goes. "Undo
+ * changes" is disabled, and worded so, while the undo runs, and a line says commands are not undone when its turn ran
+ * one.
+ */
+function TurnActions({ turnActions, undo }: { turnActions?: TurnActionsProps; undo?: UndoState }) {
+  const retryButton = useRef<HTMLButtonElement>(null);
+  const [askedAt, setAskedAt] = useState<number>();
+  const confirming = turnActions?.asks === true && askedAt === turnActions.entries;
+  const retry = () => {
+    if (!turnActions) return;
+    if (turnActions.asks && !confirming) return setAskedAt(turnActions.entries);
+    setAskedAt(undefined);
+    post({ type: "retry", entries: turnActions.entries });
+  };
+  const cancel = () => {
+    setAskedAt(undefined);
+    retryButton.current?.focus();
+  };
   return (
-    <div className="undo">
-      <button type="button" className="secondary" disabled={undo.running} onClick={() => post({ type: "undoChanges" })}>
-        {undo.running ? l10n.t("Undoing changes…") : l10n.t("Undo changes")}
-      </button>
-      {undo.ranCommand && <p className="undo-hint">{l10n.t("Commands this turn ran are not undone.")}</p>}
+    <div className="turn-actions">
+      {confirming && (
+        <p className="retry-warning" role="status">
+          {l10n.t(
+            "Retry does not revert the files this turn wrote or the commands it ran. To get the files back, use Undo changes first.",
+          )}
+        </p>
+      )}
+      {turnActions && (
+        <>
+          <button ref={retryButton} type="button" className="secondary" disabled={!turnActions.canAct} onClick={retry}>
+            {confirming ? l10n.t("Retry anyway") : l10n.t("Retry")}
+          </button>
+          {confirming && (
+            <button type="button" className="secondary" onClick={cancel}>
+              {l10n.t("Cancel")}
+            </button>
+          )}
+          {turnActions.actions.continues && (
+            <button
+              type="button"
+              className="secondary"
+              disabled={!turnActions.canAct}
+              onClick={() => post({ type: "continueTurn", entries: turnActions.entries })}
+            >
+              {l10n.t("Continue")}
+            </button>
+          )}
+        </>
+      )}
+      {undo && (
+        <button
+          type="button"
+          className="secondary"
+          disabled={undo.running}
+          onClick={() => post({ type: "undoChanges" })}
+        >
+          {undo.running ? l10n.t("Undoing changes…") : l10n.t("Undo changes")}
+        </button>
+      )}
+      {undo?.ranCommand && <p className="undo-hint">{l10n.t("Commands this turn ran are not undone.")}</p>}
     </div>
   );
 }
@@ -1304,7 +1390,7 @@ function Composer({
 
   // [!]: The one check of whether Send would act: Send, Enter, the built-in commands, and Send now all go through it.
   // An undo running blocks it as a mode change does: the host refuses a turn until the files are back.
-  const canSend = ready && !replying && !state.modePending && !state.undo.running;
+  const canSend = sendWouldAct(state);
   // [>]: Only a reply in flight queues; with no model or a mode change pending, Send does nothing either way.
   const canQueue = ready && replying && !state.modePending && state.queue.length < MAX_QUEUED_MESSAGES;
 

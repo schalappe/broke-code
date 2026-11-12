@@ -2925,7 +2925,10 @@ describe("ChatController agent turn", () => {
       await controller.retry(2);
 
       expect(state().entries[0]).toMatchObject({ skill: { name: "grilling", status: "loaded" } });
-      expect(sent()[1]!.messages[1]).toEqual({ role: "user", content: `${header("grilling", root)}\n\nGrill: my idea\n` });
+      expect(sent()[1]!.messages[1]).toEqual({
+        role: "user",
+        content: `${header("grilling", root)}\n\nGrill: my idea\n`,
+      });
       expect(seen).toEqual([[root]]);
       expect(state().entries.at(-1)).toMatchObject({ content: "Done.", status: "done" });
     });
@@ -4048,7 +4051,11 @@ describe("ChatController agent turn", () => {
       expect(state().entries.map((entry) => entry.role)).toEqual(["user", "assistant", "tool", "user", "assistant"]);
       expect(state().entries[3]).toEqual({ role: "user", content: "Continuer", mentions: [] });
       expect(state().entries[4]).toMatchObject({ content: "Next.", status: "done" });
-      expect(sent()[1]!.messages.slice(1).map((message) => [message.role, message.content])).toEqual([
+      expect(
+        sent()[1]!
+          .messages.slice(1)
+          .map((message) => [message.role, message.content]),
+      ).toEqual([
         ["user", "read it"],
         ["assistant", readCall("a.ts")],
         ["user", '<tool_result tool="read_file" status="ok">\nread a.ts\n</tool_result>'],
@@ -4057,10 +4064,20 @@ describe("ChatController agent turn", () => {
     });
 
     test("Continue is ignored after done, failed, a contextFull halt, under a summary, during a reply, and on a stale count", async () => {
-      const cases: { name: string; script: ScriptedReply[]; run: (c: ChatController, s: () => ChatState) => Promise<void>; limits?: LimitsSource }[] = [
+      const cases: {
+        name: string;
+        script: ScriptedReply[];
+        run: (c: ChatController, s: () => ChatState) => Promise<void>;
+        limits?: LimitsSource;
+      }[] = [
         { name: "done", script: [{ content: "Ok." }], run: (c) => c.send("go") },
         { name: "failed", script: ["fail"], run: (c) => c.send("go") },
-        { name: "contextFull", script: [], run: (c) => c.send("x".repeat(4000)), limits: fixedLimits({ sizes: { m: 1000 } }) },
+        {
+          name: "contextFull",
+          script: [],
+          run: (c) => c.send("x".repeat(4000)),
+          limits: fixedLimits({ sizes: { m: 1000 } }),
+        },
         {
           name: "summary",
           script: ["hang", "fail"],
@@ -4071,7 +4088,12 @@ describe("ChatController agent turn", () => {
         },
       ];
       for (const { name, script, run, limits } of cases) {
-        const { controller, state, sent } = await scripted([...script, { content: "never sent" }], okRunner().runner, undefined, limits);
+        const { controller, state, sent } = await scripted(
+          [...script, { content: "never sent" }],
+          okRunner().runner,
+          undefined,
+          limits,
+        );
         await run(controller, state);
         const before = structuredClone(state().entries);
         const requests = sent().length;

@@ -356,7 +356,7 @@ describe("folded turn", () => {
     expect(html).toContain('<details class="turn-fold">');
     expect(html).not.toContain('<details class="turn-fold" open');
     expect(html).toContain(
-      '</div></div></details><div class="message assistant"><div class="answer"><p>FINAL_ANSWER</p></div></div>',
+      '</div></div></details><div class="message assistant"><div class="answer"><p>FINAL_ANSWER</p></div><div class="turn-actions"><button type="button" class="secondary">Retry</button></div></div>',
     );
     expect(html.indexOf('<div class="message user">Hi</div><details class="turn-fold">')).toBeGreaterThan(-1);
   });
@@ -461,7 +461,7 @@ describe("folded turn", () => {
 
   test("a turn with one step renders the same markup as before folding existed", () => {
     expect(conversationOf([user, call, ok, final])).toBe(
-      '<section class="conversation"><div class="message user">Hi</div><div class="message assistant"><div class="answer"><p>Look.</p></div><details class="step"><summary class="step-row"><span class="step-tool">read_file</span><span class="step-arg">a.ts</span><span class="step-status">ok, 1 line</span></summary><pre class="step-result"><code>x</code></pre></details></div><div class="message assistant"><div class="answer"><p>FINAL_ANSWER</p></div></div><div></div></section>',
+      '<section class="conversation"><div class="message user">Hi</div><div class="message assistant"><div class="answer"><p>Look.</p></div><details class="step"><summary class="step-row"><span class="step-tool">read_file</span><span class="step-arg">a.ts</span><span class="step-status">ok, 1 line</span></summary><pre class="step-result"><code>x</code></pre></details></div><div class="message assistant"><div class="answer"><p>FINAL_ANSWER</p></div><div class="turn-actions"><button type="button" class="secondary">Retry</button></div></div><div></div></section>',
     );
   });
 });
@@ -2887,6 +2887,145 @@ describe("undo changes", () => {
       expect(buttons.find((element) => element.textContent === "Send")?.disabled).toBe(true);
       await press("Enter");
       expect(posted).toEqual([]);
+    });
+  });
+});
+
+describe("retry and continue", () => {
+  const question: ChatEntry = { role: "user", content: "Do it", mentions: [] };
+  const reply = (status: Reply["status"], extra: Partial<Reply> = {}): ChatEntry => ({
+    role: "assistant",
+    reasoning: "",
+    content: `Reply ${status}.`,
+    status,
+    ...extra,
+  });
+  const readStep: ChatEntry = { role: "tool", name: "read_file", args: { path: "a.ts" }, status: "ok", text: "x" };
+  const html = (entries: ChatEntry[], overrides: Partial<ChatState> = {}) =>
+    renderToStaticMarkup(<App state={stateWith(true, { entries, ...overrides })} language="en" />);
+  const count = (text: string, part: string) => text.split(part).length - 1;
+  const RETRY = ">Retry</button>";
+  const CONTINUE = ">Continue</button>";
+
+  test("Retry shows once, under the last turn's last reply, for every end status", () => {
+    const earlier: ChatEntry[] = [{ role: "user", content: "First", mentions: [] }, reply("done")];
+    for (const status of ["done", "failed", "stopped"] as const) {
+      const shown = html([...earlier, question, reply(status)]);
+      expect(count(shown, RETRY)).toBe(1);
+      expect(shown.indexOf(RETRY)).toBeGreaterThan(shown.indexOf(`Reply ${status}.`));
+    }
+  });
+
+  test("neither shows while a reply is in flight", () => {
+    for (const status of ["waiting", "streaming"] as const) {
+      const shown = html([question, reply(status)]);
+      expect(shown).not.toContain(RETRY);
+      expect(shown).not.toContain(CONTINUE);
+    }
+  });
+
+  test("Continue shows only after Stop, a step-limit halt, or a malformed-calls halt", () => {
+    expect(html([question, reply("stopped")])).toContain(CONTINUE);
+    for (const haltReason of ["stepLimit", "malformedCalls"] as const) {
+      const shown = html([question, reply("halted", { haltReason }), readStep]);
+      expect(count(shown, CONTINUE)).toBe(1);
+      expect(shown).toContain(RETRY);
+    }
+    expect(html([question, reply("halted", { haltReason: "contextFull" })])).not.toContain(CONTINUE);
+    expect(html([question, reply("done")])).not.toContain(CONTINUE);
+    expect(html([question, reply("failed")])).not.toContain(CONTINUE);
+  });
+
+  test("neither shows when a completed /compact summary follows the last user entry", () => {
+    const shown = html([question, reply("stopped"), reply("done", { summary: true, content: "Summary." })]);
+    expect(shown).not.toContain(RETRY);
+    expect(shown).not.toContain(CONTINUE);
+  });
+
+  test("both are disabled when Send would not act; the order is Retry, Continue, Undo changes", () => {
+    const entries = [question, reply("stopped")];
+    const disabled = (shown: string) => shown.includes('disabled="">Retry<') && shown.includes('disabled="">Continue<');
+    expect(disabled(html(entries))).toBe(false);
+    expect(disabled(html(entries, { modePending: true }))).toBe(true);
+    expect(disabled(html(entries, { model: undefined }))).toBe(true);
+    const undo = { reply: 1, ranCommand: false, running: true, outcome: undefined };
+    const shown = html(entries, { undo });
+    expect(disabled(shown)).toBe(true);
+    expect(shown.indexOf(RETRY.slice(1))).toBeLessThan(shown.indexOf(CONTINUE.slice(1)));
+    expect(shown.indexOf(CONTINUE.slice(1))).toBeLessThan(shown.indexOf("Undoing changes…"));
+  });
+
+  const wrote: ChatEntry[] = [
+    question,
+    reply("done", { content: "Writing." }),
+    { role: "tool", name: "write_file", args: { path: "a.ts" }, status: "ok", text: "ok", approval: "auto" },
+    reply("done"),
+  ];
+
+  test("Retry posts at once when the turn left nothing on disk; Continue posts with the entries count", async () => {
+    await withPanel(stateWith(true, { entries: [question, reply("stopped")] }), async ({ click }) => {
+      await click("Retry");
+      await click("Continue");
+      expect(posted).toEqual([
+        { type: "retry", entries: 2 },
+        { type: "continueTurn", entries: 2 },
+      ]);
+    });
+  });
+
+  const ran: ChatEntry[] = [
+    question,
+    reply("done"),
+    { role: "tool", name: "run_command", args: { command: "ls" }, status: "ok", text: "x", approval: "accepted" },
+    reply("done"),
+  ];
+  const undoOffered: [ChatEntry[], Partial<ChatState>] = [
+    [question, reply("done")],
+    { undo: { reply: 1, ranCommand: false, running: false, outcome: undefined } },
+  ];
+
+  for (const [name, entries, overrides] of [
+    ["a write that applied", wrote, {}],
+    ["a command the user ran", ran, {}],
+    ["Undo changes offered for the turn", ...undoOffered],
+  ] as const) {
+    test(`with ${name}, the first click asks; the second posts; Cancel restores the button`, async () => {
+      await withPanel(stateWith(true, { entries: [...entries], ...overrides }), async ({ host, click }) => {
+        const retry = [...host.querySelectorAll("button")].find((element) => element.textContent === "Retry")!;
+        retry.focus();
+        await click("Retry");
+        expect(posted).toEqual([]);
+        expect(host.textContent).toContain("Retry does not revert the files this turn wrote or the commands it ran.");
+        expect(retry.textContent).toBe("Retry anyway");
+        expect(document.activeElement).toBe(retry);
+        await click("Cancel");
+        expect(retry.textContent).toBe("Retry");
+        expect(host.textContent).not.toContain("does not revert");
+        expect(document.activeElement).toBe(retry);
+        await click("Retry");
+        await click("Retry anyway");
+        expect(posted).toEqual([{ type: "retry", entries: entries.length }]);
+      });
+    });
+  }
+
+  test("a change of the entries drops the confirmation", async () => {
+    await withPanel(stateWith(true, { entries: wrote }), async ({ host, click, show }) => {
+      await click("Retry");
+      expect(host.textContent).toContain("Retry anyway");
+      await show(
+        stateWith(true, { entries: [...wrote, { role: "user", content: "More", mentions: [] }, reply("done")] }),
+      );
+      expect(host.textContent).not.toContain("Retry anyway");
+      expect(host.textContent).not.toContain("does not revert");
+    });
+  });
+
+  test("an undone write asks nothing", async () => {
+    const undone = wrote.map((entry) => (entry.role === "tool" ? { ...entry, undone: true as const } : entry));
+    await withPanel(stateWith(true, { entries: undone }), async ({ click }) => {
+      await click("Retry");
+      expect(posted).toEqual([{ type: "retry", entries: 4 }]);
     });
   });
 });

@@ -936,13 +936,24 @@ p.loading::before {
   background: var(--bc-fg-dim);
 }
 
-/* "Undo changes" under the last reply of the turn whose writes are held; a secondary button, its hint beside it. */
-.undo {
+/*
+ * The turn's actions under a reply: Retry, Continue, and "Undo changes", secondary buttons on one line that wraps, the
+ * undo's hint after them.
+ */
+.turn-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--bc-space-2) var(--bc-space-3);
   margin: var(--bc-space-3) 0 0;
+}
+
+/* Retry's confirmation: a line of its own above the buttons, in the full foreground, since it asks before acting. */
+.retry-warning {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--bc-fg);
+  font-size: var(--bc-fs-sm);
 }
 
 .undo-hint {

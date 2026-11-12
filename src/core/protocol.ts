@@ -341,6 +341,15 @@ export function isReplying(state: ChatState): boolean {
 }
 
 /**
+ * Whether Send would act now: a model chosen, no reply in flight, no mode change being written, and no undo running.
+ * The one check of the panel's Send, Enter, built-in commands, Send now, Retry, and Continue; the host checks the same
+ * conditions again (`mayStartTurn`), since the panel's state may lag.
+ */
+export function sendWouldAct(state: ChatState): boolean {
+  return state.model !== undefined && !isReplying(state) && !state.modePending && !state.undo.running;
+}
+
+/**
  * The queue waits for "Send now" or a turn that ends `done`: it holds a message and no reply is in flight, so the last
  * turn did not end `done`, or Send could not act when it did.
  */
