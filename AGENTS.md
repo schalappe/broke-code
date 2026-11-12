@@ -104,8 +104,8 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   which the webview reads for the "no longer sent" mark; `isAutomaticSummary`, a summary the turn ran itself, told by
   the reply after it, and `sentEntries`, the entries the history sends, the message an automatic summary quotes
   included; `summaryHistory` and `SUMMARY_REQUEST`, the summary request's
-  history; and `resultLineCount`, the step row's line count), the body tool call parser (`toolCalls.ts`: `ToolSpec`, the first call-shaped block,
-  malformed-call messages), the system prompt composer (`systemPrompt.ts`: role, the Plan paragraph, call format, rules, tools,
+  history; and `resultLineCount`, the step row's line count), the body tool call parser (`toolCalls.ts`: `ToolSpec`, the first call-shaped block, `CALL_WRAPPERS`, a forged
+  result before the call, `replyCut`, the stream's cut, malformed-call messages), the system prompt composer (`systemPrompt.ts`: role, the Plan paragraph, call format, rules, tools,
   skills, instruction files; `composeSummaryPrompt`, the summary request's own prompt; `offeredTools`, the tools a send
   offers, and `PLAN_BLOCKED_TOOLS`), the turn limits (`limits.ts`: `brokeCode.maxToolSteps`, `brokeCode.contextSizes`, and `brokeCode.autoCompact` parsing,
   `userLimits`, their user values only,
@@ -289,7 +289,17 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   call per reply, calls inside code fences are ignored, a malformed call goes back to the model as a precise
   error, three malformed calls in a row stop the agent turn, and a reply with text but no call is the final answer. An
   empty reply (no text once trimmed, reasoning excluded) is no final answer: it is handled as a malformed call
-  (maintainer decision, ADR 0001). Change these rules only on evidence from the Ollama eval.
+  (maintainer decision, ADR 0001). Change these rules only on evidence from the eval (local Ollama, or a rented vLLM
+  for the employer's models, #58).
+- A call may sit inside a wrapper tag, `<tool_call>` or `<tool_code>` (`CALL_WRAPPERS`), as Gemma writes on vLLM: a
+  wrapper starting a line outside code, whose content starts (after whitespace) with a known tool's opening tag, is
+  that call, its block spanning the wrapper when the wrapper's closing tag follows the call after whitespace; the
+  closing tag is optional. A wrapper around anything else stays "not a known tool" (ADR 0001, 2026-11-12).
+- A tool result the model wrote itself (`<tool_result` then a space or `>`, starting a line, outside code; never itself
+  a call-shaped block, `<tool_result>` included) before the reply's first call-shaped block, or in a reply with no
+  call, makes the reply malformed (`forged`): the answer is cut where the result opens, so the chat and the history
+  never hold the invented result, and the model gets a message saying only the extension writes results. Accepted
+  cost: a final answer that quotes a raw result opening at a line start, outside code, is refused once.
 - A known tool's call ends at the `</tool_name>` after its last argument value, not at the first one. A value ends at
   the first `</argument>` that closes no `<argument>` opened inside the value and is followed by nothing but
   whitespace and then another argument tag of the tool or the call's closing tag: an inner `<argument>` …
@@ -528,7 +538,12 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   on a visible entry under the row (maintainer decision, 2026-11-11). Known limit: a fold that leaves too little
   content under the view makes the browser lower the scroll position, moving the row down. It moves no focus.
 - Reasoning output (`<think>` tags, `reasoning`, or `reasoning_content`) shows collapsed in the chat. The parser
-  never looks for tool calls in it, and the conversation history sent back to the model drops it.
+  never looks for tool calls in it, and the conversation history sent back to the model drops it. A reply with no
+  reasoning yet whose content holds a bare `</think>` line (alone on its line, no `<think>` before it) reasoned as
+  content: a chat template opened `<think>` in the prompt, as Qwen 3.8 on vLLM without a reasoning parser does (#58).
+  Once that line streams in, the text before it moves to the reasoning and the answer starts after it (`lateReasoning`);
+  until then the reasoning shows as answer text. The commit message drops it the same way. Accepted cost: an answer
+  holding a bare `</think>` line loses the text before it.
 - A code block of an assistant answer (fenced or indented, rendered by the answer's Markdown) has Copy and Insert at
   cursor in a header above its code once its text is final: its closing fence was written, rendered text follows it
   (the parser closed it), or its reply has ended (done, stopped, failed, halted, or cut off). While its reply is
@@ -569,9 +584,10 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   summary; derived from the entries at each build, never stored, counted by the estimate, and in `/compact`'s request
   too. A step still sent gets its own line only. `toHistory`
   (`history.ts`) builds it, and leaves the oldest tool results out of a request that would fill the context (below). After a summary (`/compact`, below), the history starts at it.
-- While a reply streams, a `<tool_result` the model writes after a complete call (`forgedResultCut`) cancels the request,
-  and the reply ends `done` at the end of that call (ADR 0001, 2026-11-10): models forge results of calls that never
-  ran. An opening with no complete call before it stops nothing.
+- While a reply streams, a `<tool_result` the model writes after a complete call, or the opening tag of another call (a
+  known tool or a wrapper, starting a line) after it (`replyCut`), cancels the request, and the reply ends `done` at the
+  end of that call (ADR 0001, 2026-11-10 and 2026-11-12): models forge results of calls that never ran, and Gemma on
+  vLLM once repeated one call for 24 minutes. An opening with no complete call before it stops nothing.
 - When a reply ends, its answer goes through the parser. Text and no call: the turn ends. A call: the answer is cut
   at the end of the call block, so the chat and the history never hold the text after it, then the tool runs with the
   turn's context (`ToolRunner.run(call, { signal, requestApproval })`, the abort signal and the approval request), a tool step entry records its name, arguments, status, text, and approval, and the loop requests again.
@@ -1247,7 +1263,9 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   took 5 min 38 s, 10/10 on both models: `qwen3.8:27b` read the reference file at once in every run; `gemma4` called
   `load_skill(depot-codes)` in 2 runs, got "already loaded", then read the file, and listed the skill folder first in 4.
   On edc18b5 the seven scenarios took 56 min 39 s, 10/10 for every scenario on both models (140 of 140 runs); one
-  `gemma4` `edit` run alone took 19 min 19 s and passed.
+  `gemma4` `edit` run alone took 19 min 19 s and passed. With `--base-url` against `gemma-4-31b-it` on vLLM 0.28 (a rented A100, #58), before the
+  wrapper and forged-result rules `skill` passed 6/10 and `command` 9/10; with them, 70 of 70 in 6 min 32 s, and the
+  local bench stayed at 140 of 140 (58 min 23 s).
 - v1 supports macOS only. Windows and Linux are planned for v2.
 
 ## Git and release workflow

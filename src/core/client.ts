@@ -221,6 +221,22 @@ class ReplySplitter {
 }
 
 /**
+ * The reasoning a reply streamed as content: a chat template that opens `<think>` in the prompt (Qwen 3.8 on vLLM
+ * without a reasoning parser, #58) makes the model reason without the opening tag and close with a bare `</think>`. The
+ * first `</think>` standing alone on its line, with no `<think>` before it, ends the reasoning: the text before it is
+ * the reasoning, trimmed at its end, and the text after it, less its leading blank lines, the answer. `undefined` when
+ * `content` holds no such line. Callers apply it only to a reply that has no reasoning yet, since a leading `<think>`
+ * block or a reasoning field already split it.
+ */
+export function lateReasoning(content: string): { reasoning: string; answer: string } | undefined {
+  const close = /^[ \t]*<\/think>[ \t]*$/m.exec(content);
+  if (!close) return undefined;
+  if (content.lastIndexOf(THINK_OPEN, close.index) !== -1) return undefined;
+  const answer = withoutLeadingBlankLines(content.slice(close.index + close[0].length)) ?? "";
+  return { reasoning: content.slice(0, close.index).trimEnd(), answer };
+}
+
+/**
  * `text` from its first non-blank line, that line's indentation kept (indented code block); `undefined` when
  * `text` is all whitespace.
  */

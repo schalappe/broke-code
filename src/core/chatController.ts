@@ -10,7 +10,7 @@
  * roots and unsaved check through ports.
  */
 import type { ApprovalRequest, Decision, Preview } from "./approval";
-import { type ChatMessage, listModels, type ProviderAccess, streamChat } from "./client";
+import { type ChatMessage, lateReasoning, listModels, type ProviderAccess, streamChat } from "./client";
 import {
   CONVERSATION_VERSION,
   type ConversationRecord,
@@ -57,7 +57,7 @@ import {
   PLAN_BLOCKED_TOOLS,
   type Skill,
 } from "./systemPrompt";
-import { forgedResultCut, type ParsedReply, parseToolCall, type ToolSpec } from "./toolCalls";
+import { type ParsedReply, parseToolCall, replyCut, type ToolSpec } from "./toolCalls";
 import type { ToolCall, ToolResult } from "./tools";
 import { realWorkspaceRoots, type WorkspaceRoot } from "./workspaceFiles";
 
@@ -946,6 +946,9 @@ export class ChatController {
           step = { role: "tool", name, args: {}, status: "error", text: `${name} is not available in Plan mode.` };
           malformedInARow = 0;
         } else {
+          // [!]: A result the model invented never reaches the chat or the history, or the model would read it back
+          // as true on the next request.
+          if (parsed.forged) run.reply.content = run.reply.content.slice(0, parsed.start);
           step = {
             role: "tool",
             name: malformedToolName(run.reply.content, parsed),
@@ -1063,8 +1066,8 @@ export class ChatController {
    * Stream one reply of a turn into `reply`. `undefined` once `signal` aborts: Stop ends the reply at once, even if a
    * step inside `streamChat` never settles (a CA file read on a FIFO), and late deltas and the late outcome are
    * dropped, so navigation never waits on work that cannot be aborted. A reply whose answer holds a complete call
-   * followed by a tool result the model wrote itself (`forgedResultCut`) ends `done` there: its request is cancelled
-   * and later deltas are dropped, so a model forging results costs no more time.
+   * followed by a tool result the model wrote itself or by another call (`replyCut`) ends `done` there: its request is
+   * cancelled and later deltas are dropped, so a model forging results or repeating calls costs no more time.
    */
   private async stream(
     access: ProviderAccess,
@@ -1081,8 +1084,18 @@ export class ChatController {
       if (signal.aborted || cut.signal.aborted) return;
       reply[field] += text;
       reply.status = "streaming";
+      if (field === "content" && reply.reasoning === "") {
+        // [>]: Reasoning streamed as content moves to the reasoning once its bare `</think>` arrives; the answer then
+        // starts over, so the cut scan does too.
+        const late = lateReasoning(reply.content);
+        if (late) {
+          reply.reasoning = late.reasoning;
+          reply.content = late.answer;
+          scanned = 0;
+        }
+      }
       if (field === "content") {
-        const found = forgedResultCut(reply.content, tools, scanned);
+        const found = replyCut(reply.content, tools, scanned);
         scanned = found.scanned;
         if (found.cut !== undefined) {
           reply.content = reply.content.slice(0, found.cut);
