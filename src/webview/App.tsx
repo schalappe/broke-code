@@ -105,8 +105,8 @@ export function App({
   const [historyOpen, setHistoryOpen] = useState(false);
   const historyButton = useRef<HTMLButtonElement>(null);
   const [replacing, setReplacing] = useState<Replacing>();
-  /** The last Edit's draft for the message box; a new `id` per click, so the same text applies again. */
-  const [editing, setEditing] = useState<{ insert: DraftInsert; id: number }>();
+  /** Edit's draft until the message box has applied it, once: a composer mounted later never applies it again. */
+  const [editing, setEditing] = useState<DraftInsert>();
   const replacingNow = replacing && stillReplacing(replacing, state) ? replacing : undefined;
 
   // [>]: Once it fails, the state ends for good: a later snapshot that matches again (a Retry ending on as many
@@ -117,7 +117,7 @@ export function App({
 
   const edit = (entry: ChatEntry & { role: "user" }) => {
     setReplacing({ conversationId: state.conversationId, entries: state.entries.length });
-    setEditing((last) => ({ insert: editDraft(entry), id: (last?.id ?? 0) + 1 }));
+    setEditing(editDraft(entry));
   };
 
   useEffect(() => {
@@ -182,6 +182,7 @@ export function App({
           drafts={drafts}
           takeDrafts={takeDrafts}
           editing={editing}
+          takeEditing={() => setEditing(undefined)}
           replaces={replacingNow?.entries}
           startNewChat={() => {
             setHistoryOpen(false);
@@ -1336,6 +1337,7 @@ function Composer({
   drafts,
   takeDrafts,
   editing,
+  takeEditing = () => {},
   replaces,
 }: {
   state: ChatState;
@@ -1343,7 +1345,8 @@ function Composer({
   startNewChat: () => void;
   drafts: readonly DraftInsert[];
   takeDrafts: (taken: readonly DraftInsert[]) => void;
-  editing?: { insert: DraftInsert; id: number };
+  editing?: DraftInsert;
+  takeEditing?: () => void;
   replaces?: number;
 }) {
   const [text, setText] = useState("");
@@ -1453,15 +1456,16 @@ function Composer({
 
   // [>]: Edit on the last message puts its text in the box as a returned text lands, and focuses the box, since the
   // user asked to edit there.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: each Edit click applies once, to the box as it stands.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Edit's draft applies once, to the box as it stands.
   useEffect(() => {
     if (!editing) return;
-    const next = applyDraft({ text, caret, picked }, editing.insert);
+    takeEditing();
+    const next = applyDraft({ text, caret, picked }, editing);
     setDraft(next);
     // [>]: A message ending on a mention puts the caret on its token: its menu stays closed until the user types on.
     setDismissed(menuToken(next.text, next.caret, next.picked));
     input.current?.focus();
-  }, [editing?.id]);
+  }, [editing]);
 
   // [!]: The view's focus command settles before the workbench has focused the webview, so a draft can land first:
   // the workbench's focus then blurs the box and gives the panel back its focus with nothing focused inside (#68,
