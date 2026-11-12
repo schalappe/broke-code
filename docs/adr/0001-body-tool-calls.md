@@ -203,9 +203,10 @@ the employer's service. It passed `skill` 6/10 and `command` 9/10, every other s
   call, is that call. The block spans the wrapper when its closing tag follows the call; the closing tag is optional.
   A wrapper around anything else is still "not a known tool". Accepting the native habit costs one rule; refusing it
   costs a request and, as measured, sends the model off course.
-- A tool result opening the model writes before the reply's first call-shaped block, or in a reply with no call, makes
-  the reply malformed: it is cut where the result opens, so the invented result never reaches the chat or the
-  history, and the model is told that only the extension writes results.
+- A tool result opening the model writes (never itself a call-shaped block, even as a bare `<tool_result>`) before the
+  reply's first call-shaped block, or in a reply with no call, makes the reply malformed: it is cut where the result
+  opens, so the invented result never reaches the chat or the history, and the model is told that only the extension
+  writes results.
 - While a reply streams, the opening tag of another call (a known tool or a wrapper, starting a line) after a complete
   call ends the reply there, as a forged result already does. One call runs per reply, so nothing after the first call
   was ever used.

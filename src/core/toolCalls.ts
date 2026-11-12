@@ -58,9 +58,9 @@ const FORGED_RESULT = `Your reply holds a tool result you wrote yourself (${TOOL
  * `</name>` itself; an unknown tool's block, or a malformed one, ends at the first `</name>` after the problem found.
  * A wrapper (`CALL_WRAPPERS`) whose content starts, after whitespace, with a known tool's opening tag is that call,
  * ending past the wrapper's closing tag when only whitespace comes before it. A tool result the model wrote (a
- * `<tool_result` starting a line outside code) before the first block, or with no block at all, makes the answer
- * `malformed` and `forged`: the model invented a result, and an answer built on it is no final answer. Anything after
- * the first block is ignored.
+ * `<tool_result` starting a line outside code, never itself a block) before the first block, or with no block at all,
+ * makes the answer `malformed` and `forged`: the model invented a result, and an answer built on it is no final
+ * answer. Anything after the first block is ignored.
  */
 export function parseToolCall(answer: string, tools: readonly ToolSpec[]): ParsedReply {
   // [>]: Models sometimes reason, then stop with no text; ending the turn there would leave the task undone.
@@ -77,7 +77,9 @@ export function parseToolCall(answer: string, tools: readonly ToolSpec[]): Parse
   };
   for (const match of answer.matchAll(OPENING_TAG)) {
     const start = match.index;
-    if (forged !== -1 && start > forged) return forgedReply;
+    // [>]: `>=`: an attribute-free `<tool_result>` matches as a tag at the forged index itself; it is a result, not a
+    // call-shaped block, so it must never come back as an unknown tool with the invented text kept.
+    if (forged !== -1 && start >= forged) return forgedReply;
     if (!startsLine(answer, start)) continue;
     if (masked[start] === MASK) continue;
     const name = match[1]!;

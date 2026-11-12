@@ -295,11 +295,11 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   wrapper starting a line outside code, whose content starts (after whitespace) with a known tool's opening tag, is
   that call, its block spanning the wrapper when the wrapper's closing tag follows the call after whitespace; the
   closing tag is optional. A wrapper around anything else stays "not a known tool" (ADR 0001, 2026-11-12).
-- A tool result the model wrote itself (`<tool_result` then a space or `>`, starting a line, outside code) before the
-  reply's first call-shaped block, or in a reply with no call, makes the reply malformed (`forged`): the answer is cut
-  where the result opens, so the chat and the history never hold the invented result, and the model gets a message
-  saying only the extension writes results. Accepted cost: a final answer that quotes a raw result opening at a line
-  start, outside code, is refused once.
+- A tool result the model wrote itself (`<tool_result` then a space or `>`, starting a line, outside code; never itself
+  a call-shaped block, `<tool_result>` included) before the reply's first call-shaped block, or in a reply with no
+  call, makes the reply malformed (`forged`): the answer is cut where the result opens, so the chat and the history
+  never hold the invented result, and the model gets a message saying only the extension writes results. Accepted
+  cost: a final answer that quotes a raw result opening at a line start, outside code, is refused once.
 - A known tool's call ends at the `</tool_name>` after its last argument value, not at the first one. A value ends at
   the first `</argument>` that closes no `<argument>` opened inside the value and is followed by nothing but
   whitespace and then another argument tag of the tool or the call's closing tag: an inner `<argument>` …
