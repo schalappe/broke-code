@@ -2,12 +2,18 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BENCH_MODELS, dumpLine, modelsProblem, parseBenchArgs, trimIncompleteLine } from "./bench";
+import { BENCH_MODELS, dumpLine, modelsProblem, OLLAMA_URL, parseBenchArgs, trimIncompleteLine } from "./bench";
 import { CREATE_SCENARIO, SCENARIOS } from "./scenarios";
 
 describe("parseBenchArgs", () => {
   test("defaults to both models, every scenario, and 10 runs", () => {
-    expect(parseBenchArgs([])).toEqual({ models: BENCH_MODELS, scenarios: SCENARIOS, runs: 10, dump: undefined });
+    expect(parseBenchArgs([])).toEqual({
+      models: BENCH_MODELS,
+      scenarios: SCENARIOS,
+      runs: 10,
+      dump: undefined,
+      baseUrl: OLLAMA_URL,
+    });
     expect(BENCH_MODELS).toEqual(["qwen3.8:27b", "gemma4:26b-a4b-it-qat"]);
   });
 
@@ -17,7 +23,17 @@ describe("parseBenchArgs", () => {
       scenarios: SCENARIOS,
       runs: 3,
       dump: "/tmp/runs.jsonl",
+      baseUrl: OLLAMA_URL,
     });
+  });
+
+  test("takes another server's base URL, trailing slashes dropped, and refuses anything else", () => {
+    expect(parseBenchArgs(["--base-url", "https://pod-8000.proxy.runpod.net/v1/"]).baseUrl).toBe(
+      "https://pod-8000.proxy.runpod.net/v1",
+    );
+    for (const url of ["pod:8000/v1", "ftp://pod/v1", "https://", ""]) {
+      expect(() => parseBenchArgs(["--base-url", url])).toThrow("--base-url");
+    }
   });
 
   test("plays a model named twice once, in first-seen order, so its runs are never scored together", () => {
@@ -49,20 +65,22 @@ describe("parseBenchArgs", () => {
 describe("modelsProblem", () => {
   const url = "http://localhost:11434/v1";
 
-  test("names Ollama's URL and the error when the models cannot be listed", () => {
+  test("names the server's URL and the error when the models cannot be listed", () => {
     const listing = {
       ok: false as const,
       error: { kind: "unreachable" as const, provider: "Ollama", baseUrl: url, cause: "connect ECONNREFUSED" },
     };
     const problem = modelsProblem(listing, ["a"], url);
-    expect(problem).toContain(`Ollama at ${url}`);
+    expect(problem).toContain(`The server at ${url}`);
     expect(problem).toContain("unreachable");
     expect(problem).toContain("connect ECONNREFUSED");
   });
 
-  test("names each requested model Ollama does not list", () => {
+  test("names each requested model the server does not list, with Ollama's pull hint only for the local Ollama", () => {
     const problem = modelsProblem({ ok: true, models: ["a", "c"] }, ["a", "b", "d"], url);
-    expect(problem).toBe(`Not served by Ollama at ${url}: b, d. Pull with \`ollama pull <name>\`.`);
+    expect(problem).toBe(`Not served at ${url}: b, d. Pull with \`ollama pull <name>\`.`);
+    const remote = "https://pod-8000.proxy.runpod.net/v1";
+    expect(modelsProblem({ ok: true, models: [] }, ["b"], remote)).toBe(`Not served at ${remote}: b.`);
   });
 
   test("finds no problem when Ollama lists every requested model", () => {
