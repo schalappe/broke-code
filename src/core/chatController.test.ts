@@ -27,13 +27,14 @@ import { RUN_COMMAND_TOOL } from "./commands";
 import { type ConversationRecord, newConversationId, serializeSummary } from "./conversation";
 import { type MemoryFiles, memoryFiles } from "./conversationFixture";
 import { ConversationStore } from "./conversationStore";
-import { parseLimits } from "./limits";
+import { SUMMARY_REQUEST } from "./history";
+import { estimateTokens, parseLimits } from "./limits";
 import { mentionReader } from "./mentionReader";
 import type { MentionReader, ReadMention } from "./mentions";
 import { type ChatEntry, type ChatState, type DraftInsert, isReplying } from "./protocol";
 import type { Provider } from "./providers";
 import { LOAD_SKILL_TOOL, readSkills, type SkillDiscovery } from "./skills";
-import { composeSystemPrompt, type InstructionFile, type Skill } from "./systemPrompt";
+import { composeSummaryPrompt, composeSystemPrompt, type InstructionFile, type Skill } from "./systemPrompt";
 import { createTlsFixture, removeTlsFixture } from "./tlsFixture";
 import { workspaceToolRunner } from "./toolRunner";
 import { READ_TOOLS, runReadTool, type ToolResult } from "./tools";
@@ -3081,6 +3082,42 @@ describe("ChatController agent turn", () => {
         text: "load_skill: deploy: no skill of that name can be loaded. Skills you can load: review.",
       });
     });
+
+    test("after a summary, a skill loaded before it stays readable and load_skill returns its body; after, already loaded", async () => {
+      const root = personalSkill("grilling", "Grill: $ARGUMENTS\n");
+      writeFileSync(join(root, "reference.md"), "the reference\n");
+      const runner = workspaceToolRunner(
+        () => [{ name: "ws", path: workspaceDir }],
+        { ripgrepCandidates: [] },
+        (roots) => fileApplier(roots),
+      );
+      const loadCall = "<load_skill>\n<name>grilling</name>\n</load_skill>";
+      const { controller, state } = await scripted(
+        [
+          { content: "Ok." },
+          { content: "The user grills an idea." },
+          { content: readCall(join(root, "reference.md")) },
+          { content: loadCall },
+          { content: loadCall },
+          { content: "Done." },
+        ],
+        runner,
+        undefined,
+        undefined,
+        discovery,
+      );
+      await controller.send("/grilling my idea");
+      expect(await controller.compact()).toBe("ran");
+      await controller.send("go on");
+      const steps = state()
+        .entries.slice(4)
+        .filter((entry) => entry.role === "tool");
+      expect(steps.map((entry) => [entry.status, entry.text])).toEqual([
+        ["ok", expect.stringContaining("the reference")],
+        ["ok", `${header("grilling", root)}\n\nGrill: $ARGUMENTS\n`],
+        ["ok", `Skill grilling is already loaded; its files live in ${root}; read them by that absolute path.`],
+      ]);
+    });
   });
 
   test("without instruction files the system message is the prompt alone", async () => {
@@ -3508,6 +3545,177 @@ describe("ChatController agent turn", () => {
       ask();
       expect(await late).toEqual({ kind: "cancel" });
       expect(state().approval).toBeUndefined();
+    });
+  });
+
+  describe("compact", () => {
+    const summarySystem = { role: "system", content: composeSummaryPrompt([]) };
+    const lead = "Summary of the conversation so far:\n\n";
+
+    test("asks for a summary, marks the reply as one, and the next request starts at it", async () => {
+      const { controller, state, sent, saved } = await scripted([
+        { content: "A." },
+        { content: "The goal is x.", reasoning: "Thinking." },
+        { content: "B." },
+      ]);
+      await controller.send("first");
+      expect(await controller.compact()).toBe("ran");
+      expect(sent()[1]!.messages).toEqual([
+        summarySystem,
+        { role: "user", content: "first" },
+        { role: "assistant", content: "A." },
+        { role: "user", content: SUMMARY_REQUEST },
+      ]);
+      const summary: ChatEntry = {
+        role: "assistant",
+        reasoning: "Thinking.",
+        content: "The goal is x.",
+        status: "done",
+        summary: true,
+      };
+      expect(state().entries[2]).toEqual(summary);
+      await settledSave(saved, 3);
+      expect(saved()!.entries[2]).toEqual(summary);
+
+      await controller.send("second");
+      expect(sent()[2]!.messages).toEqual([SYSTEM, { role: "user", content: `${lead}The goal is x.\n\nsecond` }]);
+    });
+
+    test("a reopened conversation with a summary rebuilds the same request", async () => {
+      const { controller, state, sent } = await scripted([
+        { content: "A." },
+        { content: "S." },
+        { content: "B." },
+        { content: "C." },
+      ]);
+      await controller.send("first");
+      await controller.compact();
+      await controller.send("second");
+      const id = state().conversationId;
+      await controller.newChat();
+      await controller.openConversation(id);
+      expect(state().entries[2]).toMatchObject({ summary: true, content: "S." });
+      await controller.send("third");
+      expect(sent()[3]!.messages).toEqual([
+        SYSTEM,
+        { role: "user", content: `${lead}S.\n\nsecond` },
+        { role: "assistant", content: "B." },
+        { role: "user", content: "third" },
+      ]);
+    });
+
+    test("leaves out every result it may, the last 3 included, and keeps the instruction last", async () => {
+      const result = "line\n".repeat(50);
+      const { runner } = fakeRunner(async () => ({ status: "ok", text: result }));
+      const { controller, sent } = await scripted(
+        [{ content: readCall("a.ts") }, { content: "Done." }, { content: "S." }],
+        runner,
+      );
+      await controller.send("first");
+      await controller.compact();
+      const request = sent()[2]!.messages;
+      expect(request[0]).toEqual(summarySystem);
+      expect(request[0]!.content).not.toContain("# Tools");
+      expect(request[0]!.content).not.toContain("<tool_name>");
+      expect(request[3]).toEqual({
+        role: "user",
+        content:
+          '<tool_result tool="read_file" status="ok">\n[result left out to save context: 50 lines]\n</tool_result>',
+      });
+      expect(request.at(-1)).toEqual({ role: "user", content: SUMMARY_REQUEST });
+    });
+
+    test("over the threshold even so, sends nothing and the summary ends halted on a full context", async () => {
+      let limits = parseLimits({ maxToolSteps: undefined, contextSizes: undefined });
+      const { controller, state, sent } = await scripted([{ content: "A." }], undefined, undefined, {
+        read: () => limits,
+      });
+      await controller.send("x".repeat(4000));
+      limits = parseLimits({ maxToolSteps: undefined, contextSizes: { m: 1000 } });
+      expect(await controller.compact()).toBe("ran");
+      expect(sent()).toHaveLength(1);
+      expect(state().entries[2]).toEqual({
+        role: "assistant",
+        reasoning: "",
+        content: "",
+        status: "halted",
+        haltReason: "contextFull",
+        summary: true,
+      });
+    });
+
+    test("a call-shaped block in the summary runs no tool", async () => {
+      const { runner, calls } = okRunner();
+      const { controller, state } = await scripted([{ content: "A." }, { content: readCall("a.ts") }], runner);
+      await controller.send("first");
+      await controller.compact();
+      expect(calls).toEqual([]);
+      expect(state().entries).toHaveLength(3);
+      expect(state().entries[2]).toMatchObject({ status: "done", summary: true, content: readCall("a.ts") });
+    });
+
+    test("a failed, stopped, or empty summary leaves the history as it was", async () => {
+      for (const summary of ["fail", "hang", { content: "" }] as ScriptedReply[]) {
+        const { controller, state, sent } = await scripted([{ content: "A." }, summary, { content: "B." }]);
+        await controller.send("first");
+        const compacting = controller.compact();
+        if (summary === "hang") {
+          await until(state, (s) => contentOf(s.entries[2]) === "Partial ");
+          controller.stop();
+        }
+        await compacting;
+        expect(state().entries[2]).toMatchObject({
+          summary: true,
+          status: summary === "fail" ? "failed" : summary === "hang" ? "stopped" : "done",
+        });
+        await controller.send("second");
+        expect(sent()[2]!.messages).toEqual([
+          SYSTEM,
+          { role: "user", content: "first" },
+          { role: "assistant", content: "A." },
+          { role: "user", content: "second" },
+        ]);
+      }
+    });
+
+    test("sends nothing on an empty conversation, or right after a done summary", async () => {
+      const { controller, sent } = await scripted([{ content: "A." }, { content: "S." }]);
+      expect(await controller.compact()).toBe("nothingToSummarize");
+      expect(sent()).toHaveLength(0);
+      await controller.send("first");
+      await controller.compact();
+      expect(await controller.compact()).toBe("nothingToSummarize");
+      expect(sent()).toHaveLength(2);
+    });
+
+    test("is ignored while a reply is in flight", async () => {
+      const { controller, state } = await scripted(["hang"]);
+      const sending = controller.send("first");
+      await until(state, (s) => contentOf(s.entries[1]) === "Partial ");
+      expect(await controller.compact()).toBe("ignored");
+      controller.stop();
+      await sending;
+      expect(state().entries).toHaveLength(2);
+    });
+
+    test("the usage display after a summary counts only what is sent", async () => {
+      const { controller, state } = await scripted([{ content: "A".repeat(4000) }, { content: "S." }]);
+      await controller.send("first");
+      const before = state().context.used;
+      await controller.compact();
+      expect(state().context.used).toBe(estimateTokens([SYSTEM, { content: `${lead}S.` }]));
+      expect(state().context.used).toBeLessThan(before - 900);
+    });
+
+    test("a message queued while the summary is in flight is sent once it ends done", async () => {
+      const { controller, state, sent } = await scripted([{ content: "A." }, { content: "S." }, { content: "B." }]);
+      await controller.send("first");
+      const compacting = controller.compact();
+      await controller.queueMessage("next", []);
+      expect(state().queue).toHaveLength(1);
+      await compacting;
+      expect(state().queue).toEqual([]);
+      expect(sent()[2]!.messages.at(-1)).toEqual({ role: "user", content: `${lead}S.\n\nnext` });
     });
   });
 

@@ -34,6 +34,7 @@ const context: ToolContext = {
   requestApproval: async () => ({ kind: "accept" }),
   skills: [],
   skillRoots: [],
+  sentSkillRoots: [],
 };
 
 /** A runner over `root` whose applier records each change and the context it was built for, and writes nothing. */
@@ -81,8 +82,20 @@ describe("workspaceToolRunner", () => {
       status: "ok",
       text: `Skill review loaded; its files live in ${skill.root}; read them by that absolute path.\n\nRead reference.md.\n`,
     });
-    const again = await runner.run(call, { ...context, skills: [skill], skillRoots: [skill.root] });
+    const again = await runner.run(call, {
+      ...context,
+      skills: [skill],
+      skillRoots: [skill.root],
+      sentSkillRoots: [skill.root],
+    });
     expect(again.text).toStartWith("Skill review is already loaded;");
+  });
+
+  test("loads a skill again, body included, when its load is no longer sent (before a summary)", async () => {
+    const { runner } = recordingRunner();
+    const call = { name: "load_skill", args: { name: "review" } };
+    const again = await runner.run(call, { ...context, skills: [skill], skillRoots: [skill.root] });
+    expect(again.text).toEndWith("\n\nRead reference.md.\n");
   });
 
   test("reads a loaded skill's file by absolute path, and refuses it before the load", async () => {

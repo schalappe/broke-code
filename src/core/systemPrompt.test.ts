@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { RUN_COMMAND_TOOL } from "./commands";
 import { LOAD_SKILL_TOOL } from "./skills";
 import type { Skill } from "./systemPrompt";
-import { composeSystemPrompt, offeredTools } from "./systemPrompt";
+import { composeSummaryPrompt, composeSystemPrompt, offeredTools } from "./systemPrompt";
 import type { ToolSpec } from "./toolCalls";
 import { READ_TOOLS } from "./tools";
 import { WRITE_TOOLS } from "./writeTools";
@@ -195,5 +195,16 @@ describe("composeSystemPrompt", () => {
       expect(offeredTools(ALL, [listed])).toEqual(ALL);
       expect(offeredTools(ALL, [hidden])).toEqual(ALL.slice(0, -1));
     });
+  });
+});
+
+describe("composeSummaryPrompt", () => {
+  test("says the model summarizes a conversation with a coding agent, then the instruction files; no tool format", () => {
+    const prompt = composeSummaryPrompt([{ label: "AGENTS.md", text: "Use bun." }]);
+    expect(prompt).toBe(
+      "You summarize a conversation between a user and a coding agent working in the user's workspace.\n\n# Instructions from AGENTS.md\n\nUse bun.",
+    );
+    expect(composeSummaryPrompt([])).not.toContain("# Tools");
+    expect(composeSummaryPrompt([])).not.toContain("tool call");
   });
 });

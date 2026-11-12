@@ -1,7 +1,8 @@
 /**
  * @module systemPrompt
  * The system prompt: the agent's role, in Plan mode the Plan paragraph, the body tool call format and its rules, the
- * tools, the skills listed to the model, then the instruction files; and the tools a send offers (`offeredTools`).
+ * tools, the skills listed to the model, then the instruction files; the summary request's own prompt
+ * (`composeSummaryPrompt`); and the tools a send offers (`offeredTools`).
  * Composed from data only; the host reads the files. No `node:` or `vscode` import. Model-facing text is English and
  * never localized.
  */
@@ -95,13 +96,28 @@ export function composeSystemPrompt(
     "# Tools",
     ...tools.map((tool) => `## ${tool.name}\n\n${tool.description}\n\n${describeTool(tool)}`),
   ];
-  const files = instructions.map((file) => `# Instructions from ${file.label}\n\n${file.text}`);
+  const files = instructionSections(instructions);
   const rules = [
     RULES,
     ...tools.flatMap((tool) => (Object.hasOwn(TOOL_RULES, tool.name) ? [TOOL_RULES[tool.name]] : [])),
   ];
   const role = mode === "plan" ? [PLAN_ROLE, PLAN] : [ROLE];
   return [...role, FORMAT, rules.join("\n"), ...toolList, ...skillSection(skills), ...files].join("\n\n");
+}
+
+const SUMMARY_ROLE = "You summarize a conversation between a user and a coding agent working in the user's workspace.";
+
+/**
+ * The system prompt of the summary request (`/compact`): its role, then the instruction files, in order. No call
+ * format, rules, tools, or skills: the summary runs no tool, and the size saved matters most near a full context.
+ */
+export function composeSummaryPrompt(instructions: readonly InstructionFile[]): string {
+  return [SUMMARY_ROLE, ...instructionSections(instructions)].join("\n\n");
+}
+
+/** One section per instruction file, labelled. */
+function instructionSections(instructions: readonly InstructionFile[]): string[] {
+  return instructions.map((file) => `# Instructions from ${file.label}\n\n${file.text}`);
 }
 
 /** The skills section: one line per skill listed to the model, its description on one line; none without such skill. */

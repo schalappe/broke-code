@@ -68,7 +68,8 @@ export type ChatEntry =
   /**
    * `reasoning`: text the model writes before its answer, shown collapsed, never sent back. `content`: the whole
    * answer, its call block included, so the history resends exactly what the model wrote; the chat hides the block by
-   * `call`'s range. `haltReason`: set exactly when `status` is `halted`.
+   * `call`'s range. `haltReason`: set exactly when `status` is `halted`. `summary`: the reply to `/compact`, a summary
+   * of the conversation before it; once it ends `done` with text, the history sent starts at it (`historyStart`).
    */
   | {
       role: "assistant";
@@ -78,6 +79,7 @@ export type ChatEntry =
       error?: ProviderError;
       call?: ReplyCall;
       haltReason?: HaltReason;
+      summary?: true;
     }
   /**
    * A tool step: one body tool call of the reply before it, or its malformed block, and the text the model got back.

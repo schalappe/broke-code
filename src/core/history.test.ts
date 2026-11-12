@@ -1,10 +1,18 @@
 import { describe, expect, test } from "bun:test";
-import { resultLineCount, toHistory } from "./history";
+import { historyStart, resultLineCount, summaryHistory, toHistory } from "./history";
 import { estimateTokens, fillsContext } from "./limits";
-import type { ChatEntry, ToolStepStatus } from "./protocol";
+import type { ChatEntry, ReplyStatus, ToolStepStatus } from "./protocol";
 
 const user = (content: string): ChatEntry => ({ role: "user", content, mentions: [] });
 const answer = (content: string): ChatEntry => ({ role: "assistant", reasoning: "Plan.", content, status: "done" });
+const summary = (content: string, status: ReplyStatus = "done"): ChatEntry => ({
+  role: "assistant",
+  reasoning: "Thinking.",
+  content,
+  status,
+  summary: true,
+  ...(status === "halted" ? { haltReason: "contextFull" as const } : {}),
+});
 const step = (text: string, name = "read_file", status: ToolStepStatus = "ok"): ChatEntry => ({
   role: "tool",
   name,
@@ -152,6 +160,119 @@ describe("toHistory", () => {
     const entries: ChatEntry[] = [user("go"), answer("call"), step("y".repeat(60_000)), ...fiveBigSteps.slice(1, 7)];
     const { messages } = toHistory(entries, typed, { system: SYSTEM, contextSize: 12_572 });
     expect(messages[2]?.content).toBe(wrapped("[result left out to save context: 1 line]"));
+  });
+});
+
+describe("history after a summary", () => {
+  const before: ChatEntry[] = [user("first"), answer("call"), step("one\ntwo"), answer("Done.")];
+
+  test("starts at the last summary that ended done with text: the summary and the next user message as one", () => {
+    const entries: ChatEntry[] = [
+      ...before,
+      summary("Old summary."),
+      user("second"),
+      answer("Fine."),
+      summary("The goal is x."),
+      user("third"),
+      answer("call"),
+      step("three"),
+    ];
+    expect(historyStart(entries)).toBe(7);
+    expect(toHistory(entries, typed, roomy)).toEqual({
+      leftOut: 0,
+      messages: [
+        { role: "user", content: "Summary of the conversation so far:\n\nThe goal is x.\n\nthird" },
+        { role: "assistant", content: "call" },
+        { role: "user", content: wrapped("three") },
+      ],
+    });
+  });
+
+  test("a summary followed by no user message goes alone", () => {
+    const entries: ChatEntry[] = [...before, summary("The goal is x.")];
+    expect(toHistory(entries, typed, roomy).messages).toEqual([
+      { role: "user", content: "Summary of the conversation so far:\n\nThe goal is x." },
+    ]);
+  });
+
+  test("a failed, stopped, halted, or empty summary changes nothing and is never sent", () => {
+    const whole = toHistory([...before, user("second")], typed, roomy);
+    for (const skipped of [
+      summary("partial", "failed"),
+      summary("partial", "stopped"),
+      summary("", "halted"),
+      summary(" \n "),
+    ]) {
+      const entries = [...before, skipped, user("second")];
+      expect(historyStart(entries)).toBe(0);
+      expect(toHistory(entries, typed, roomy)).toEqual(whole);
+    }
+  });
+
+  test("a failed summary as the first entry is not sent either", () => {
+    expect(toHistory([summary("x", "failed"), user("go")], typed, roomy).messages).toEqual([
+      { role: "user", content: "go" },
+    ]);
+  });
+
+  test("a summary that failed after a done one is skipped, the done one still starts the history", () => {
+    const entries: ChatEntry[] = [...before, summary("The goal is x."), summary("", "failed"), user("second")];
+    expect(toHistory(entries, typed, roomy).messages).toEqual([
+      { role: "user", content: "Summary of the conversation so far:\n\nThe goal is x.\n\nsecond" },
+    ]);
+  });
+
+  test("leaves out and keeps the last 3 counting only the steps after the summary", () => {
+    const entries: ChatEntry[] = [...fiveBigSteps, summary("S."), ...fiveBigSteps];
+    const { messages, leftOut } = toHistory(entries, typed, { system: SYSTEM, contextSize: 12_572 });
+    expect(leftOut).toBe(1);
+    expect(messages[2]?.content).toBe(wrapped("[result left out to save context: 100 lines]"));
+    expect(messages[4]?.content).toBe(wrapped(lines(100)));
+  });
+});
+
+describe("summaryHistory", () => {
+  test("leaves out every eligible result, the last 3 included, keeps load_skill and short results, and asks last", () => {
+    const entries: ChatEntry[] = [
+      user("go"),
+      answer("call"),
+      step(lines(2), "load_skill"),
+      answer("call"),
+      step("ok"),
+      answer("call"),
+      step(lines(3)),
+      answer("Done."),
+    ];
+    const { messages, leftOut } = summaryHistory(entries, typed);
+    expect(leftOut).toBe(1);
+    expect(messages.slice(0, -1)).toEqual([
+      { role: "user", content: "go" },
+      { role: "assistant", content: "call" },
+      { role: "user", content: wrapped(lines(2), "load_skill") },
+      { role: "assistant", content: "call" },
+      { role: "user", content: wrapped("ok") },
+      { role: "assistant", content: "call" },
+      { role: "user", content: wrapped("[result left out to save context: 3 lines]") },
+      { role: "assistant", content: "Done." },
+    ]);
+    const last = messages.at(-1);
+    expect(last?.role).toBe("user");
+    for (const kept of ["goal", "decisions", "files", "remains to do"]) expect(last?.content).toContain(kept);
+  });
+
+  test("joins the request for a summary to a history that ends with a user message", () => {
+    const { messages } = summaryHistory([user("go"), answer("call"), step(lines(3))], typed);
+    expect(messages).toHaveLength(3);
+    expect(messages[2]?.content.startsWith(`${wrapped("[result left out to save context: 3 lines]")}\n\n`)).toBe(true);
+  });
+
+  test("starts at the last done summary, like the history of a request", () => {
+    const { messages } = summaryHistory([...fiveBigSteps, summary("S."), user("next"), answer("Ok.")], typed);
+    expect(messages.slice(0, 2)).toEqual([
+      { role: "user", content: "Summary of the conversation so far:\n\nS.\n\nnext" },
+      { role: "assistant", content: "Ok." },
+    ]);
+    expect(messages).toHaveLength(3);
   });
 });
 

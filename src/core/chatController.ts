@@ -21,7 +21,7 @@ import {
   summarize,
 } from "./conversation";
 import type { ConversationStore } from "./conversationStore";
-import { type HistoryBudget, toHistory } from "./history";
+import { type HistoryBudget, historyStart, summaryHistory, toHistory } from "./history";
 import { contextOf, estimateTokens, fillsContext, parseLimits, type TurnLimits } from "./limits";
 import { composeUserMessage, findMentions, type MentionReader, type MentionResult, type ReadMention } from "./mentions";
 import {
@@ -43,6 +43,7 @@ import { SerialQueue } from "./serialQueue";
 import { findSlashSkill, loadSkillText, type SkillDiscovery } from "./skills";
 import { builtInCommand } from "./suggestions";
 import {
+  composeSummaryPrompt,
   composeSystemPrompt,
   type InstructionFile,
   offeredTools,
@@ -69,13 +70,16 @@ export type ChoiceStore = {
  * auto-approve setting is on; a command always waits. Rejects only when the preview cannot open, or when another
  * request of the run is still open. `skills`: the valid skills the send discovered. `skillRoots`: the real folders of
  * the skills loaded in the conversation, the ones the read tools may also read, derived at each call (see
- * `loadedSkillRoots`), so a load earlier in the turn counts.
+ * `loadedSkillRoots`), so a load earlier in the turn counts. `sentSkillRoots`: those of them loaded in the history
+ * sent, from the last summary on (see `historyStart`): `load_skill` answers "already loaded" for these only, since the
+ * text of an earlier load is no longer sent.
  */
 export type ToolContext = {
   signal: AbortSignal;
   requestApproval: (request: ApprovalRequest) => Promise<Decision>;
   skills: readonly Skill[];
   skillRoots: readonly string[];
+  sentSkillRoots: readonly string[];
 };
 
 /**
@@ -134,6 +138,13 @@ export type ChatPorts = {
  * `cause`, logged, and the mode shown is still the one before (Plan stays on).
  */
 export type ModeChange = { kind: "written" | "unchanged" | "ignored" } | { kind: "failed"; cause: string };
+
+/**
+ * What `/compact` did: `ran`, a summary reply ran to its end, whatever that end (done, failed, stopped, halted);
+ * `nothingToSummarize`, the conversation is empty or its last entry is already a done summary, and nothing was sent;
+ * `ignored`, a turn may not start (no provider or model, a reply in flight, a mode pick being written).
+ */
+export type CompactOutcome = "ran" | "nothingToSummarize" | "ignored";
 
 /** Malformed calls in a row that halt an agent turn; a call that parses resets the count. */
 export const MAX_MALFORMED_IN_A_ROW = 3;
@@ -720,6 +731,10 @@ export class ChatController {
             },
             skills: discovery.skills,
             skillRoots: loadedSkillRoots(conversation.entries, discovery.skills),
+            sentSkillRoots: loadedSkillRoots(
+              conversation.entries.slice(historyStart(conversation.entries)),
+              discovery.skills,
+            ),
           };
           const result = await unlessAborted(this.runTool({ name, args }, context), signal);
           if (!result) return settle("stopped");
@@ -818,6 +833,81 @@ export class ChatController {
     );
     if (outcome && cut.signal.aborted) return { status: "done" as const };
     return outcome;
+  }
+
+  /**
+   * `/compact`: one request asking the model for a summary of the conversation shown, streamed into an assistant entry
+   * marked `summary`, a reply like any other for Stop, saving, navigation, and "a reply is in flight". The request
+   * holds the summary system prompt (`composeSummaryPrompt`, the instruction files read now) and `summaryHistory`;
+   * over the context threshold even so, nothing is sent and the entry ends `halted` (`contextFull`). The answer is
+   * never parsed for a call. Once it ends `done` with text, the history sent starts at it (`historyStart`). As after a
+   * send, a summary that ends `done` then sends the first queued message.
+   */
+  async compact(): Promise<CompactOutcome> {
+    const entries = this.conversation.entries;
+    const last = entries.at(-1);
+    if (!this.mayStartTurn()) return "ignored";
+    if (last === undefined || historyStart(entries) === entries.length - 1) return "nothingToSummarize";
+    const ended = await this.runSummary();
+    if (ended === "done") await this.sendNextQueued();
+    return "ran";
+  }
+
+  /** The summary reply of `compact`, once `mayStartTurn` passed; its status, `undefined` when it did not start. */
+  private async runSummary(): Promise<ReplyStatus | undefined> {
+    const provider = this.currentProvider();
+    const model = this.state.model;
+    if (!provider || !model) return undefined;
+    this.limits = this.limitsSource.read();
+    const contextSize = contextOf(this.limits, model).size;
+    const conversation = this.conversation;
+    conversation.provider = provider.name;
+    conversation.model = model;
+    // [>]: The history is taken before the reply joins the entries; a summary entry not yet done is never sent anyway.
+    const history = summaryHistory(conversation.entries, (entry) => this.modelText.get(entry) ?? entry.content);
+    const reply: ChatEntry & { role: "assistant" } = { ...waitingReply(), summary: true };
+    conversation.entries.push(reply);
+    const abort = new AbortController();
+    const signal = abort.signal;
+    let markSettled: () => void = () => {};
+    const settled = new Promise<void>((resolve) => {
+      markSettled = resolve;
+    });
+    this.reply = { abort, provider, settled };
+    this.emit();
+    const settle = (status: ReplyStatus, haltReason?: HaltReason): ReplyStatus => {
+      reply.status = status;
+      if (haltReason !== undefined) reply.haltReason = haltReason;
+      this.emit();
+      void this.save(conversation);
+      return status;
+    };
+
+    try {
+      const prepared = await unlessAborted(
+        Promise.all([this.accessOf(provider), this.readInstructions(), this.save(conversation)]),
+        signal,
+      );
+      if (!prepared) return settle("stopped");
+      const [access, instructions] = prepared;
+      const messages: ChatMessage[] = [
+        { role: "system", content: composeSummaryPrompt(instructions) },
+        ...history.messages,
+      ];
+      if (fillsContext(estimateTokens(messages), contextSize)) return settle("halted", "contextFull");
+      // [!]: No tools: the answer is never parsed for a call, so a call-shaped block in it runs nothing.
+      const outcome = await this.stream(access, model, messages, [], conversation, reply, signal);
+      if (!outcome) return settle("stopped");
+      if (outcome.status === "failed") reply.error = outcome.error;
+      return settle(outcome.status);
+    } catch (error) {
+      console.error("broke-code: the summary failed unexpectedly", error instanceof Error ? error.stack : error);
+      reply.error = { kind: "internal", message: error instanceof Error ? error.message : String(error) };
+      return settle("failed");
+    } finally {
+      if (this.reply?.abort === abort) this.reply = undefined;
+      markSettled();
+    }
   }
 
   /** Run `call`. A runner that rejects despite its contract gives an `error` result, logged. */
