@@ -6,7 +6,7 @@ This file describes `bun run eval`: what it runs, its sandbox, its scenarios, it
   on `qwen3.8:27b` then `gemma4:26b-a4b-it-qat`, all runs of one model before the next. Each run drives the
   chat controller with the read and write tools, `run_command`, and `load_skill` over a throwaway copy of the scenario's
   fixture, each write applied at once, each command approved at once through the run context (the bench plays the
-  model, not the user; nothing in the product auto-approves a command) and run with `/bin/sh` in the copy with a
+  model, not the user; nothing in the product auto-approves a command; `range` rejects each instead) and run with `/bin/sh` in the copy with a
   10-second timeout, no instruction file, and a step limit of 10. Since `--base-url` lets replies come from a remote
   server, a command runs with a minimal environment inside a macOS sandbox (`benchCommandEnv`): its environment holds
   only `PATH`, `LANG`, and each `LC_*` of the bench's when set there, `HOME`, the run's home copy, and `TMPDIR`, a
@@ -57,8 +57,13 @@ This file describes `bun run eval`: what it runs, its sandbox, its scenarios, it
     names it; its last line, `nice seal VX7Q-K2RM`, alone holds a code. The message asks to read the file and give the
     code on its last line, and names neither the tool, its arguments, a line number, nor a word of that line, so
     `search` has no pattern for it. Passes when an `ok` `read_file` step called with a `start_line` holds the code, the
-    answer holds it, and no file changed; without such a step it is `wrongTool`, a `search` or `run_command` that found
-    the code included: it measures that the model follows the note of a cut read (#100). The lines are plain words
+    answer holds it, and no file changed; without such a step it is `wrongTool`, a `search` that found the code
+    included: it measures that the model follows the note of a cut read (#100). The bench rejects every command
+    approval of this scenario, as the user's Reject does (the model gets "The user rejected this command."); writes
+    are unchanged (maintainer decision, 2026-11-12). On 2bda260, before that rule, the full run passed 158 of 160 in
+    54 min 07 s: every other scenario 10/10 on both models, `range` 10/10 on `qwen3.8:27b` and 8/10 on `gemma4`, whose
+    two misses ran `tail -n 1 dispatch.log` with `run_command` and answered without reading the file, so they measured
+    nothing of the note. The lines are plain words
     because a first fixture of numbered random codes (`0001 98UJ-YCK7`) cost about 25,900 tokens for the first read on
     `gemma4`, close to the 32,768-token context with the second, and its prefill took `qwen3.8:27b` over the
     300-second reply timeout on its first run (twice in 2 tries).

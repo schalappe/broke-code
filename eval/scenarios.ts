@@ -63,7 +63,9 @@ export type Verdict = { pass: true } | { pass: false; category: FailureCategory;
  * model gets no skill. `message`: what the user sends. `writes`: the files the turn must leave in the workspace, each
  * with its exact text, byte for byte; every other fixture file must stay as it is and no other file may appear. Empty
  * for a scenario that changes nothing. `check`: what else a turn that ended `done` with the expected workspace must
- * show, from its entries; absent when the workspace says it all.
+ * show, from its entries; absent when the workspace says it all. `rejectCommands`: every `run_command` approval is
+ * rejected as the user's Reject does, so a command cannot stand in for the tool the scenario measures; absent, each is
+ * approved.
  */
 export type Scenario = {
   name: string;
@@ -72,6 +74,7 @@ export type Scenario = {
   message: string;
   writes: WorkspaceFiles;
   check?(entries: readonly ChatEntry[]): Verdict;
+  rejectCommands?: true;
 };
 
 /** The tools whose `ok` text is what the model read: a value in it came from a file. */
@@ -403,8 +406,8 @@ function dispatchLog(): string {
  * and its note names the `start_line` to read on from; the message names neither the tool, its arguments, a line
  * number, nor a word of the last line, so `search` has no pattern to find it. Passes when an `ok` `read_file` step
  * called with a `start_line` holds the code, the answer holds it, and no file changed; without such a step it is
- * `wrongTool`, a `search` or `run_command` that found the code included: the scenario measures that the model follows
- * the note.
+ * `wrongTool`, a `search` that found the code included: the scenario measures that the model follows the note. Every
+ * command is rejected, as `tail -n 1` would find the code without reading the file.
  */
 export const RANGE_SCENARIO: Scenario = {
   name: "range",
@@ -414,6 +417,7 @@ export const RANGE_SCENARIO: Scenario = {
   },
   message: `Read ${DISPATCH_LOG} and tell me the code on its last line. Reply with the exact code.`,
   writes: {},
+  rejectCommands: true,
   check(entries) {
     const steps = entries.filter((entry) => entry.role === "tool");
     const readOn = steps.some(

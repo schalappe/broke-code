@@ -260,4 +260,5 @@ Decided by the maintainer (schalappe) on 2026-11-12 (#100). `read_file` gets two
 are ordinary named arguments in the body of the call, and the parser needs no new rule. A cut read without a range now
 gets the header `lines 1-2000 of T` and the notice `[truncated: N more lines not shown; read on with start_line 2001]`:
 the first read of a long file never has a range, so the notice is where the model learns it can read on. The bench's
-`range` scenario measures that the model follows it. Mentions and the other tools keep their wording.
+`range` scenario measures that the model follows it; the bench rejects its commands, since `tail -n 1` found the
+answer without the notice in 2 of 10 `gemma4` runs. Mentions and the other tools keep their wording.

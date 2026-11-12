@@ -2,7 +2,7 @@
  * @module run
  * One run of a scenario: the chat controller the extension runs, hosted through its ports with the read and write
  * tools, `run_command`, and `load_skill` over a throwaway copy of the fixture under the system temporary directory, each
- * write applied at once and recorded, each command approved at once and run with `/bin/sh` in the copy, inside the
+ * write applied at once and recorded, each command approved at once (rejected in a scenario that says so) and run with `/bin/sh` in the copy, inside the
  * macOS sandbox with an allow-listed environment (`benchCommandEnv`: a reply may come from a remote server, so a
  * command gets none of the bench's variables, reads nothing under the user's home, and writes only in the run's
  * folder; see `BENCH_SANDBOX_PROFILE` for what stays readable), the skills discovered as the extension does but
@@ -14,6 +14,7 @@ import type { Dirent } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, readlink, realpath, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, relative, sep } from "node:path";
+import type { Decision } from "../src/core/approval";
 import { ChatController, type ChoiceStore, type ToolRunner } from "../src/core/chatController";
 import type { CommandEnv } from "../src/core/commands";
 import { ConversationStore } from "../src/core/conversationStore";
@@ -146,7 +147,8 @@ export async function playScenario(scenario: Scenario, target: RunTarget, tmpRoo
         },
       },
       store: new ConversationStore(undefined),
-      tools: approvingCommands(
+      tools: decidingCommands(
+        scenario.rejectCommands === true,
         workspaceToolRunner(
           () => [root],
           toolEnv,
@@ -178,14 +180,16 @@ export async function playScenario(scenario: Scenario, target: RunTarget, tmpRoo
 }
 
 /**
- * `runner`, with every approval request of its runs accepted at once: the bench plays the model, not the user, and the
- * product never auto-approves a command, so this lives in the run context the bench hands the tools, not in a setting.
- * Only `run_command` asks; a write goes straight to the bench's applier.
+ * `runner`, with every approval request of its runs decided at once: accepted, or rejected as the user's Reject does
+ * when `reject` (a scenario's `rejectCommands`). The bench plays the model, not the user, and the product never
+ * auto-approves a command, so this lives in the run context the bench hands the tools, not in a setting. Only
+ * `run_command` asks; a write goes straight to the bench's applier.
  */
-function approvingCommands(runner: ToolRunner): ToolRunner {
+function decidingCommands(reject: boolean, runner: ToolRunner): ToolRunner {
+  const decision: Decision = reject ? { kind: "reject" } : { kind: "accept" };
   return {
     tools: runner.tools,
-    run: (call, context) => runner.run(call, { ...context, requestApproval: async () => ({ kind: "accept" }) }),
+    run: (call, context) => runner.run(call, { ...context, requestApproval: async () => decision }),
   };
 }
 

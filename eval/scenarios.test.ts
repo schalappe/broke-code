@@ -757,6 +757,10 @@ describe("range scenario fixture", () => {
   });
 });
 
+test("only the range scenario rejects commands", () => {
+  expect(SCENARIOS.filter((scenario) => scenario.rejectCommands).map((scenario) => scenario.name)).toEqual(["range"]);
+});
+
 describe("judge on the range scenario", () => {
   test("passes a turn that read on with start_line and answered with the code", () => {
     const entries = [rangeUser, ...firstPart, ...lastPart, answer(`The code on the last line is ${LAST_CODE}.`)];
