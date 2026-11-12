@@ -373,6 +373,62 @@ function numberTokens(text: string): string[] {
   return runs.filter((run) => /\d/.test(run)).map((run) => run.replace(/[.,]+$/, ""));
 }
 
+const MANIFEST_PATH = "manifest.txt";
+const MANIFEST_LINES = 2400;
+const LAST_PARCEL_CODE = "VX7Q-K2RM";
+const CODE_LETTERS = "ABCDEFGHJKLMNPQRSTUWYZ23456789";
+
+/**
+ * One parcel per line, `<number> <code>`, 15 characters with the line break: codes drawn from a fixed seed, so the
+ * fixture is the same on every run, their letters without the V and X of the last code, so it is held once.
+ */
+function manifest(): string {
+  // [>]: The Park-Miller generator: its products stay under 2^53, so every step is exact.
+  let seed = 2_400_100;
+  const letter = () => {
+    seed = (seed * 48_271) % 2_147_483_647;
+    return CODE_LETTERS[seed % CODE_LETTERS.length];
+  };
+  const code = () =>
+    Array.from({ length: 8 }, letter)
+      .join("")
+      .replace(/^(.{4})/, "$1-");
+  const lines = Array.from(
+    { length: MANIFEST_LINES - 1 },
+    (_, index) => `${String(index + 1).padStart(4, "0")} ${code()}`,
+  );
+  return [...lines, `${MANIFEST_LINES} ${LAST_PARCEL_CODE}`, ""].join("\n");
+}
+
+/**
+ * Read past the first 2,000 lines: the code of the last parcel in a 2,400-line manifest. The first read is cut at line
+ * 2,000 and its note names the `start_line` to read on from; the message names neither the tool, its arguments, nor a
+ * word of the last line, so `search` has no pattern to find it. Passes when an `ok` `read_file` step called with a
+ * `start_line` holds the code, the answer holds it, and no file changed; without such a step it is `wrongTool`, a
+ * `search` or `run_command` that found the code included: the scenario measures that the model follows the note.
+ */
+export const RANGE_SCENARIO: Scenario = {
+  name: "range",
+  files: {
+    "README.md": `# Courier\n\n${MANIFEST_PATH} lists the parcels of the day, one per line: its number, then its code.\n`,
+    [MANIFEST_PATH]: manifest(),
+  },
+  message: `Read ${MANIFEST_PATH} and tell me the code of its last parcel. Reply with the exact code.`,
+  writes: {},
+  check(entries) {
+    const steps = entries.filter((entry) => entry.role === "tool");
+    const readOn = steps.some(
+      (step) =>
+        step.name === "read_file" &&
+        step.status === "ok" &&
+        step.args.start_line !== undefined &&
+        step.text.includes(LAST_PARCEL_CODE),
+    );
+    if (!readOn) return { pass: false, category: "wrongTool", detail: `steps: ${describeSteps(steps)}` };
+    return answerHolds(entries, LAST_PARCEL_CODE);
+  },
+};
+
 /** Every scenario the bench plays, in order. */
 export const SCENARIOS: readonly Scenario[] = [
   READ_SCENARIO,
@@ -382,6 +438,7 @@ export const SCENARIOS: readonly Scenario[] = [
   COMMAND_SCENARIO,
   SLASH_SCENARIO,
   HIDDEN_SCENARIO,
+  RANGE_SCENARIO,
 ];
 
 /**

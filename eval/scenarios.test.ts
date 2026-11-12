@@ -11,6 +11,7 @@ import {
   fileAt,
   HIDDEN_SCENARIO,
   judge,
+  RANGE_SCENARIO,
   READ_SCENARIO,
   SCENARIOS,
   SKILL_SCENARIO,
@@ -699,7 +700,86 @@ describe("judge on the command scenario", () => {
   });
 });
 
-test("SCENARIOS holds read, edit, create, skill, command, slash, and hidden, in that order", () => {
+const MANIFEST = "manifest.txt";
+const LAST_CODE = "VX7Q-K2RM";
+const manifestText = fileAt(RANGE_SCENARIO.files, MANIFEST) ?? "";
+const rangeUser: ChatEntry = { role: "user", content: RANGE_SCENARIO.message, mentions: [] };
+const readManifest = (args: Record<string, string>, text: string): ChatEntry[] => [
+  { ...callReply("read_file", MANIFEST), call: { name: "read_file", args, start: 0, end: 0 } },
+  { role: "tool", name: "read_file", args, status: "ok", text },
+];
+const firstPart = readManifest(
+  { path: MANIFEST },
+  `@${MANIFEST} (file, lines 1-2000 of 2400)\n\`\`\`\n...\n\`\`\`\n[truncated: 400 more lines not shown; read on with start_line 2001]`,
+);
+const lastPart = readManifest(
+  { path: MANIFEST, start_line: "2001" },
+  `@${MANIFEST} (file, lines 2001-2400 of 2400)\n\`\`\`\n...\n2400 ${LAST_CODE}\n\`\`\``,
+);
+const rangeUntouched = { ...RANGE_SCENARIO.files };
+
+describe("range scenario fixture", () => {
+  test("holds a manifest of 2,400 lines of at most 24 characters each, line break included", () => {
+    const lines = manifestText.split(/(?<=\n)/);
+    expect(lines).toHaveLength(2400);
+    expect(lines.every((line) => line.endsWith("\n") && line.length <= 24)).toBe(true);
+  });
+
+  test("holds the code once in the workspace, on the manifest's last line, past line 2,000", () => {
+    const holders = Object.entries(RANGE_SCENARIO.files).filter(([, text]) => text.includes(LAST_CODE));
+    expect(holders.map(([path]) => path)).toEqual([MANIFEST]);
+    expect(manifestText.split(LAST_CODE)).toHaveLength(2);
+    expect(manifestText.endsWith(`2400 ${LAST_CODE}\n`)).toBe(true);
+  });
+
+  test("names the manifest in a short README", () => {
+    expect(fileAt(RANGE_SCENARIO.files, "README.md")).toContain(MANIFEST);
+    expect(Object.keys(RANGE_SCENARIO.files).sort()).toEqual(["README.md", MANIFEST]);
+  });
+
+  test("asks to read the manifest without naming the tool, its arguments, a line number, or a word of the line", () => {
+    expect(RANGE_SCENARIO.message).toContain(MANIFEST);
+    for (const hint of ["read_file", "start_line", "end_line", "2400", "2,400", "2000", "2001", LAST_CODE, "VX7Q"]) {
+      expect(RANGE_SCENARIO.message).not.toContain(hint);
+    }
+    expect(RANGE_SCENARIO.writes).toEqual({});
+  });
+});
+
+describe("judge on the range scenario", () => {
+  test("passes a turn that read on with start_line and answered with the code", () => {
+    const entries = [rangeUser, ...firstPart, ...lastPart, answer(`The last parcel's code is ${LAST_CODE}.`)];
+    expect(judge(RANGE_SCENARIO, entries, rangeUntouched)).toEqual({ pass: true });
+  });
+
+  test("fails as wrongTool a turn that found the code without a ranged read_file", () => {
+    const searched: ChatEntry[] = [
+      { ...callReply("search", "."), call: { name: "search", args: { pattern: "^2400 " }, start: 0, end: 0 } },
+      {
+        role: "tool",
+        name: "search",
+        args: { pattern: "^2400 " },
+        status: "ok",
+        text: `${MANIFEST}:2400:2400 ${LAST_CODE}`,
+      },
+    ];
+    const entries = [rangeUser, ...firstPart, ...searched, answer(LAST_CODE)];
+    expect(judge(RANGE_SCENARIO, entries, rangeUntouched)).toMatchObject({ pass: false, category: "wrongTool" });
+  });
+
+  test("fails as wrongTool a turn whose ranged read missed the code", () => {
+    const middle = readManifest({ path: MANIFEST, start_line: "1000", end_line: "1100" }, "@manifest.txt (file, ...)");
+    const entries = [rangeUser, ...firstPart, ...middle, answer(LAST_CODE)];
+    expect(judge(RANGE_SCENARIO, entries, rangeUntouched)).toMatchObject({ pass: false, category: "wrongTool" });
+  });
+
+  test("fails as wrongAnswer a turn that read the code but answered without it", () => {
+    const entries = [rangeUser, ...firstPart, ...lastPart, answer("The manifest ends at parcel 2400.")];
+    expect(judge(RANGE_SCENARIO, entries, rangeUntouched)).toMatchObject({ pass: false, category: "wrongAnswer" });
+  });
+});
+
+test("SCENARIOS holds read, edit, create, skill, command, slash, hidden, and range, in that order", () => {
   expect(SCENARIOS.map((scenario) => scenario.name)).toEqual([
     "read",
     "edit",
@@ -708,6 +788,7 @@ test("SCENARIOS holds read, edit, create, skill, command, slash, and hidden, in 
     "command",
     "slash",
     "hidden",
+    "range",
   ]);
 });
 
