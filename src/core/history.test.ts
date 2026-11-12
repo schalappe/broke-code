@@ -1,5 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { historyStart, isAutomaticSummary, resultLineCount, sentEntries, summaryHistory, toHistory } from "./history";
+import type { ChatMessage } from "./client";
+import {
+  historyStart,
+  isAutomaticSummary,
+  resultLineCount,
+  SUMMARY_REQUEST,
+  sentEntries,
+  summaryHistory,
+  toHistory,
+} from "./history";
 import { estimateTokens, fillsContext } from "./limits";
 import type { ChatEntry, ReplyStatus, ToolStepStatus } from "./protocol";
 
@@ -19,6 +28,14 @@ const step = (text: string, name = "read_file", status: ToolStepStatus = "ok"): 
   args: { path: "a.ts" },
   status,
   text,
+});
+/** A reply that ended without text: `status` failed, stopped, or halted (on a full context). */
+const empty = (status: ReplyStatus): ChatEntry => ({
+  role: "assistant",
+  reasoning: "",
+  content: "",
+  status,
+  ...(status === "halted" ? { haltReason: "contextFull" as const } : {}),
 });
 const undoneStep = (text: string, name: string): ChatEntry => ({ ...step(text, name), undone: true }) as ChatEntry;
 /** `count` lines of about 100 characters each, no final line break. */
@@ -451,6 +468,99 @@ describe("summaryHistory", () => {
     ]);
     expect(messages).toHaveLength(3);
   });
+});
+
+describe("user messages in a row", () => {
+  const afterStep = wrapped("r");
+  const joined: ChatMessage[] = [
+    { role: "user", content: "go" },
+    { role: "assistant", content: "call" },
+    { role: "user", content: `${afterStep}\n\nnext` },
+  ];
+  /** True when no two messages in a row have the role `user`. */
+  const alternates = (messages: { role: string }[]) =>
+    messages.every((message, index) => index === 0 || message.role !== "user" || messages[index - 1]?.role !== "user");
+
+  test("a user message after a tool step joins the result after a blank line", () => {
+    const { messages } = toHistory([user("go"), answer("call"), step("r"), user("next")], typed, roomy);
+    expect(messages).toEqual(joined);
+  });
+
+  test("a user message after a reply left out joins the user message or tool result before it", () => {
+    expect(toHistory([user("A"), empty("stopped"), user("B")], typed, roomy).messages).toEqual([
+      { role: "user", content: "A\n\nB" },
+    ]);
+    const afterFailed = [user("go"), answer("call"), step("r"), empty("failed"), user("next")];
+    expect(toHistory(afterFailed, typed, roomy).messages).toEqual(joined);
+  });
+
+  test("a left-out result replaces only the result inside its wrapper, never the user text joined to it", () => {
+    const entries: ChatEntry[] = [user("go"), answer("call"), step(lines(100)), user("next"), ...fiveBigSteps.slice(1)];
+    // [>]: Threshold 13,125 tokens (52,500 characters): about 60,000 in all, one result out brings it to about 50,000.
+    const { messages, leftOut } = toHistory(entries, typed, { system: SYSTEM, contextSize: 15_000 });
+    expect(leftOut).toBe(1);
+    expect(messages[2]).toEqual({
+      role: "user",
+      content: `${wrapped("[result left out to save context: 100 lines]")}\n\nnext`,
+    });
+    expect(messages[4]?.content).toBe(wrapped(lines(100)));
+    expect(fits(messages, 15_000)).toBe(true);
+  });
+
+  test("the estimate counts the blank line of a join", () => {
+    const entries: ChatEntry[] = [
+      user("go"),
+      answer("call"),
+      step(lines(100)),
+      user("next"),
+      ...[0, 1, 2].flatMap(() => [answer("call"), step("ok")]),
+      answer("Done."),
+    ];
+    // [>]: 10,171 characters without the join's 2 (2,543 tokens), 10,173 with them (2,544); the threshold of 2,907 is
+    // 2,543 tokens, so the request fits only when the join is not counted.
+    const { messages, leftOut } = toHistory(entries, typed, { system: SYSTEM, contextSize: 2_907 });
+    expect(leftOut).toBe(1);
+    expect(messages[2]?.content).toBe(`${wrapped("[result left out to save context: 100 lines]")}\n\nnext`);
+  });
+
+  test("summaryHistory joins the user message and the request for a summary to the left-out result", () => {
+    const { messages, leftOut } = summaryHistory([user("go"), answer("call"), step(lines(3)), user("next")], typed);
+    expect(leftOut).toBe(1);
+    expect(messages).toEqual([
+      { role: "user", content: "go" },
+      { role: "assistant", content: "call" },
+      {
+        role: "user",
+        content: `${wrapped("[result left out to save context: 3 lines]")}\n\nnext\n\n${SUMMARY_REQUEST}`,
+      },
+    ]);
+  });
+
+  const halted = (reason: "stepLimit" | "malformedCalls"): ChatEntry[] => [
+    user("go"),
+    answer("call"),
+    step("r", "read_file", reason === "stepLimit" ? "ok" : "malformed"),
+    user("next"),
+  ];
+  const shapes: [string, ChatEntry[]][] = [
+    ["after a stepLimit halt", halted("stepLimit")],
+    ["after a malformedCalls halt", halted("malformedCalls")],
+    ["after an empty failed reply", [user("go"), empty("failed"), user("next")]],
+    [
+      "after a failed automatic summary that followed a tool step",
+      [user("go"), answer("call"), step("r"), summary("", "failed"), user("next")],
+    ],
+    [
+      "after a /compact summary and a turn that ended on a tool step",
+      [...fiveBigSteps, summary("S."), user("then"), answer("call"), step("r"), user("next")],
+    ],
+  ];
+  for (const [name, entries] of shapes) {
+    test(`no two user messages in a row ${name}`, () => {
+      expect(alternates(toHistory(entries, typed, roomy).messages)).toBe(true);
+      expect(alternates(summaryHistory(entries, typed).messages)).toBe(true);
+    });
+  }
 });
 
 describe("resultLineCount", () => {

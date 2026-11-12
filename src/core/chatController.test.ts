@@ -2157,6 +2157,23 @@ describe("ChatController agent turn", () => {
     expect(state().entries.at(-1)).toMatchObject({ role: "tool", args: { path: "f2.ts" }, status: "ok" });
   });
 
+  test("a message sent after a step-limit halt joins the last tool result, so the roles alternate", async () => {
+    const { controller, sent } = await scripted(
+      [{ content: readCall("a.ts") }, { content: "Done." }],
+      okRunner().runner,
+      undefined,
+      fixedLimits({ steps: 1 }),
+    );
+    await controller.send("go");
+    await controller.send("next");
+
+    const messages = sent()[1]!.messages;
+    expect(messages.map((message) => message.role)).toEqual(["system", "user", "assistant", "user"]);
+    expect(messages.at(-1)?.content).toBe(
+      '<tool_result tool="read_file" status="ok">\nread a.ts\n</tool_result>\n\nnext',
+    );
+  });
+
   test("a message that fills the context halts the turn before any request, saved halted, and reopens as such", async () => {
     const { controller, state, sent, saved } = await scripted(
       [{ content: "never sent" }],
@@ -4049,7 +4066,7 @@ describe("ChatController agent turn", () => {
       expect(saved()!.entries[2]).toEqual({ role: "user", content: "Continue", mentions: [], modelText: CONTINUE });
     });
 
-    test("Continue after a step-limit halt sends the tool result, then the continue message", async () => {
+    test("Continue after a step-limit halt sends the tool result joined to the continue message", async () => {
       const { controller, state, sent } = await scripted(
         [{ content: readCall("a.ts") }, { content: "Next." }],
         okRunner().runner,
@@ -4070,8 +4087,7 @@ describe("ChatController agent turn", () => {
       ).toEqual([
         ["user", "read it"],
         ["assistant", readCall("a.ts")],
-        ["user", '<tool_result tool="read_file" status="ok">\nread a.ts\n</tool_result>'],
-        ["user", CONTINUE],
+        ["user", `<tool_result tool="read_file" status="ok">\nread a.ts\n</tool_result>\n\n${CONTINUE}`],
       ]);
     });
 
@@ -4975,7 +4991,7 @@ describe("ChatController queue", () => {
     await release();
     await release();
     await resumed;
-    expect(sentTexts()).toEqual(["B", "C"]);
+    expect(sentTexts()).toEqual(["A\n\nB", "C"]);
     expect(state().queue).toEqual([]);
   });
 
@@ -4991,7 +5007,7 @@ describe("ChatController queue", () => {
     await release();
     await release();
     await normal;
-    expect(sentTexts()).toEqual(["N", "B"]);
+    expect(sentTexts()).toEqual(["A\n\nN", "B"]);
     expect(userTexts(state())).toEqual(["A", "N", "B"]);
   });
 
