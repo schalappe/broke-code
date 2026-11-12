@@ -63,7 +63,7 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   protocol and its validation, the model list (`modelList.ts`: `emptyModelsLabel`, why the list is empty, for the
   header's select and the Quick Pick; `modelChoices`, the rows `/model` opens; `chooseModel`, the `/model` pick over a
   pick port the host fills with `showQuickPick`), workspace file access (`workspaceFiles.ts`: the inside-workspace check and its read-only
-  roots (the loaded skills' folders outside the workspace, for reads only), capped reads, one-level listings, line truncation, the write boundary and atomic writes, with `node:fs`), mentions (`mentions.ts`: token detection, picked and typed
+  roots (the loaded skills' folders outside the workspace, for reads only), capped reads, one-level listings, line truncation, the write boundary and atomic writes, `removeWorkspaceFile`, the remove with the write's checks, with `node:fs`), mentions (`mentions.ts`: token detection, picked and typed
   mentions merged, reading, the text the model receives, and `cutToMentionCaps`, the cut of a reserved mention's text),
   the reserved mentions (`reservedMentions.ts`: `RESERVED_MENTIONS`, the table a new name is added to, `MentionKind`,
   `NOTHING_TO_ATTACH`, the statuses of a neutral chip, and
@@ -105,7 +105,11 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   by absolute path), the write tools (`writeTools.ts`:
   `write_file` and `edit_file` plan a change `{ path, target, before, after }` and never write; an applier port writes
   it, `fileApplier` straight to disk for the tests and the eval, `approvalApplier` around it in the extension: the
-  unsaved-editor check, the approval request, then the write), the approval seam (`approval.ts`: the request a tool
+  unsaved-editor check, the approval request, then the write; an applier's result carries `written`, the file's real
+  path, only when that change was written), the recorded changes (`recordedChanges.ts`: `recordingApplier`, opt-in,
+  records into `RecordedChanges` each change its applier reports `written`, one `RecordedFile` per file;
+  `RecordedChanges.restore`, the per-file restore over the workspace roots and an unsaved-changes port, each file
+  `restored`, `removed`, or `skipped` with its `RestoreRefusal`), the approval seam (`approval.ts`: the request a tool
   makes, the decision it gets, the rejection text, and the decisions of the editor side: which change diffs to close,
   the unsaved-editor check over the open documents, the auto-approve setting from its user value), the tool runner (`toolRunner.ts`: the read and write tools over the
   workspace folders, the read tools also over the run's `skillRoots`, each write handed to the applier the host builds
@@ -297,6 +301,30 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   rights: a write landing between the last read and the rename is overwritten (Node has no compare-and-swap on a
   path), and a missing parent folder swapped for a symlink out after the check makes `mkdir` create an empty folder
   outside before the write is refused.
+- A recording applier (`recordingApplier`, opt-in: nothing wires it yet, and the eval bench's `fileApplier` runs record
+  nothing) wraps another and records each change written, told by the applier's `written` result, never by its
+  text: a change that found the file already holding the new text (`alreadyWritten`), and a rejected, refused, or
+  failed one, record nothing, since an undo could otherwise revert a change the turn never made, such as the user's
+  own identical edit. A file is keyed by the real path of its folder plus its name, as the write resolved it, so two
+  spellings of one file are one entry; the entry keeps the text before its first recorded write (or that it did not
+  exist) and the text its last recorded write left. The set lives in memory only.
+- `RecordedChanges.restore(roots, host)` handles each file on its own, in first-write order, with the workspace folders
+  as they are then (their real paths). A file `host.hasUnsavedChanges` reports dirty in an editor is skipped
+  (`unsaved`) before anything else. A file that still holds the text the writes left gets its original text back
+  through the atomic write above (planned text: the written one), byte for byte, a BOM included, or is removed when
+  the writes created it (`removeWorkspaceFile`); folders created for the writes stay. A file that already holds its
+  original text, or is already gone when the writes created it, counts as `restored` or `removed`. Anything else is
+  `skipped` and untouched: `changed` (other text, missing, a folder, no longer text), `symlink`, `outsideWorkspace`, or
+  `failed` with the disk's cause (a technical failure, apart from the refusals). A temporary file the restoring write
+  could not remove is named on the outcome (`leftover`). Restored and removed files leave the set; skipped ones stay,
+  so a second run retries only them. Each file holds its old text or the written one at every moment, so running
+  twice, or again after a crash halfway, damages nothing and reports the same files.
+- `removeWorkspaceFile(roots, path, expected)` mirrors the write's last check: the folder resolves inside a workspace
+  folder, the target is a regular file and not a symlink, the open handle is that file (device and inode), and it holds
+  `expected` byte for byte; then the folder is checked to still lead where it did, and only then is the file unlinked.
+  A missing file is `alreadyRemoved`, a success; other text is `changed`; a disk failure is `notRemoved` with its cause;
+  the boundary's refusals are as for the write. Each refusal leaves the file as it is. Residual race, accepted as for
+  the write: a write landing between the last read and the unlink is lost with the file.
 - The file tools (`read_file`, `list_files`, `search`, `write_file`, `edit_file`, and `load_skill`) act inside the open
   workspace only. `run_command` is not confined: its `cwd` must be a workspace folder, but an approved command runs
   with the user's rights and can read, change, or delete anything the user can, outside the workspace too; the
