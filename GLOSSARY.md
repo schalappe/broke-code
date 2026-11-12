@@ -47,11 +47,11 @@ for Run in every mode that offers them.
 _Avoid_: agent mode, approval mode, permission mode
 
 **Queued message**:
-A message the user sends while an agent turn is in flight. It waits, under the message box, and is sent as if typed
-then when a turn ends with a final answer, its mentions read and its skill loaded at that moment; one turn each, in
-order, at most 10. A turn that ends any other way pauses the queue until "Send now" or a turn that ends with a final
-answer. Edit puts it back in the message box; New chat and leaving the conversation shown put every queued message
-back there. Never saved, and lost at a window reload.
+A message the user sends while a reply is in flight (an agent turn or a summary). It waits, under the message box,
+and is sent as if typed then when a turn ends with a final answer or a summary succeeds, its mentions read and its
+skill loaded at that moment; one turn each, in order, at most 10. A turn that ends any other way pauses the queue
+until "Send now" or a turn that ends with a final answer. Edit puts it back in the message box; New chat and leaving
+the conversation shown put every queued message back there. Never saved, and lost at a window reload.
 _Avoid_: pending message, steering, follow-up
 
 **Conversation**:
