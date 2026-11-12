@@ -157,9 +157,9 @@ function errorCode(error: unknown): string {
 
 /**
  * Run approved `request` as `<shell> -c <command>`, after `env.launcher` when given: hidden, in its own process group,
- * stdin closed, with `env.environment`, else the host's environment inherited. Never rejects. The result starts with `exit code N`, `killed by <signal>`, or `stopped after N
- * seconds` at the timeout, then a `stdout:` and a `stderr:` section, each cut to its first 2,000 lines and 1 MiB; it
- * is `ok` only on exit code 0.
+ * stdin closed, with `env.environment`, else the host's environment inherited. Never rejects. The result starts with
+ * `exit code N`, `killed by <signal>`, or `stopped after N seconds` at the timeout, then a `stdout:` and a `stderr:`
+ * section, each cut to its first 2,000 lines and 1 MiB; it is `ok` only on exit code 0.
  *
  * The timeout and `context.signal` (Stop) end the whole group, a pipeline's other processes included: SIGTERM, then
  * SIGKILL after the grace. Processes the command leaves in its group once the shell exits are stopped the same way,
