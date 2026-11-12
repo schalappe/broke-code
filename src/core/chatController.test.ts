@@ -2497,6 +2497,35 @@ describe("ChatController agent turn", () => {
       expect(state().context.used).toBeLessThanOrEqual(threshold);
     });
 
+    test("a long turn leaves results out in blocks of 4, every request under the threshold", async () => {
+      // [>]: Threshold 19,500 tokens (78,000 characters): the system prompt and seven results fit, so 4 results that may
+      // go stay whole beside the last 3 and the cap never applies. Fourteen files reach 8 left out.
+      const blockContextSize = 22_286;
+      const blockThreshold = 19_500;
+      const { runner } = fakeRunner(async (call) => ({ status: "ok", text: bigResult(call.args.path!) }));
+      const paths = Array.from({ length: 14 }, (_, index) => `f${index + 1}.ts`);
+      const { controller, state, sent } = await scripted(
+        [...paths.map((path) => ({ content: readCall(path) })), { content: "Done." }],
+        runner,
+        undefined,
+        fixedLimits({ sizes: { m: blockContextSize } }),
+      );
+      await controller.send("read them all");
+
+      expect(state().entries.at(-1)).toMatchObject({ role: "assistant", content: "Done.", status: "done" });
+      expect(sent()).toHaveLength(15);
+      const counts = sent().map(
+        (request) => request.messages.filter((message) => message.content.startsWith(leftOutResult)).length,
+      );
+      expect(counts.every((count) => count % 4 === 0)).toBe(true);
+      expect(Math.max(...counts)).toBe(8);
+      for (const request of sent()) {
+        expect(Math.ceil(request.messages.reduce((total, m) => total + m.content.length, 0) / 4)).toBeLessThanOrEqual(
+          blockThreshold,
+        );
+      }
+    });
+
     test("the saved record keeps every result whole, and reopening it rebuilds the same request", async () => {
       const { controller, state, saved } = await readFiveFiles();
       await settledSave(saved, 12);

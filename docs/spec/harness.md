@@ -374,7 +374,9 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
   to that message whole:
   `[result left out to save context: N lines]` (`1 line` for one), N being the step row's line count
   (`resultLineCount`: a trailing line break dropped, then split; 0 for an empty text). It replaces the fewest steps
-  that make the estimate fit. Never replaced: the system prompt, user messages (a `/<name>` skill message included),
+  that make the estimate fit, rounded up to the next multiple of 4 (`LEFT_OUT_BLOCK`) and capped at the steps that
+  may be replaced: the count changes about once every 4 new steps, so the requests in between only add to the prompt
+  of the one before and a provider's prompt cache holds. Never replaced: the system prompt, user messages (a `/<name>` skill message included),
   assistant answers, the last 3 tool steps sent (`KEPT_RECENT_STEPS`), whatever turn they belong to,
   every `load_skill` step, whatever its status (a second load answers "already loaded" without the body), every undone
   step (a left-out line would tell the model the change stands; the estimate and the usage display count its added
@@ -387,8 +389,12 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
   The usage display (`ChatState.context`) counts the request as it would be sent, and its optional `leftOut` counts the
   results left out; while it is set, the panel shows "N older tool results are left out of the request to save
   context." in the place and look of the unknown-size notice, derived from the state, never saved or sent. Known cost,
-  accepted: once at the threshold, most requests replace one more old step, which changes the prompt's prefix and
-  defeats a provider's prompt cache. A turn reads the step limit, the context sizes, `brokeCode.autoCompact`, and Plan once, when it starts; a
+  accepted: when fewer steps may be replaced than the rounded count, every one of them is replaced and the count
+  grows with the next step, which changes the prompt's prefix and defeats a provider's prompt cache for that request.
+  A context that keeps 3 or more replaceable results whole beside the last 3 steps never gets there; with 2, 1, or 0,
+  about 2, 3, or 4 requests in every 4 do, and a long turn drifts there as it nears a full context. Nothing is
+  remembered between requests: an undo, a new context size, a mode change, a loaded skill, or a new summary
+  recomputes the count and may change the prefix once. A turn reads the step limit, the context sizes, `brokeCode.autoCompact`, and Plan once, when it starts; a
   settings change reaches the usage display at once (`limitsChanged`) and the turns from the next send. A mode change
   cannot land during a turn (the selector is disabled and `setMode` ignored while a reply is in flight), and the
   usage display follows it at the next send, which composes the prompt of the new mode. The display counts the

@@ -82,18 +82,25 @@ describe("toHistory", () => {
     });
   });
 
-  test("over the threshold, replaces the oldest result only, when that one is enough", () => {
-    // [>]: Threshold 11,000 tokens (44,000 characters): the whole history is about 50,000, less one result about 40,000.
+  test("over the threshold, with fewer results that may go than the block, leaves every one of them out", () => {
+    // [>]: Threshold 11,000 tokens (44,000 characters): the whole history is about 50,000, one result out is enough,
+    // and the block of 4 is capped at the 2 results that may go.
     const contextSize = 12_572;
     const { messages, leftOut } = toHistory(fiveBigSteps, typed, { system: SYSTEM, contextSize });
-    expect(leftOut).toBe(1);
+    expect(leftOut).toBe(2);
     expect(messages[2]).toEqual({ role: "user", content: wrapped("[result left out to save context: 100 lines]") });
-    expect(messages[4]).toEqual({ role: "user", content: wrapped(lines(100)) });
+    expect(messages[4]).toEqual({ role: "user", content: wrapped("[result left out to save context: 100 lines]") });
     expect(messages.slice(5)).toEqual(toHistory(fiveBigSteps, typed, roomy).messages.slice(5));
     expect(fits(messages, contextSize)).toBe(true);
+
+    // [>]: Four steps, one that may go: one out is enough, and the cap leaves out that one only.
+    const oneEligible = toHistory(fiveBigSteps.slice(0, 9), typed, { system: SYSTEM, contextSize: 9_143 });
+    expect(oneEligible.leftOut).toBe(1);
+    expect(oneEligible.messages[2]?.content).toBe(wrapped("[result left out to save context: 100 lines]"));
+    expect(oneEligible.messages[4]?.content).toBe(wrapped(lines(100)));
   });
 
-  test("replaces as many of the oldest results as the request needs to fit, and no more", () => {
+  test("replaces as many of the oldest results as the request needs to fit", () => {
     // [>]: Threshold 8,000 tokens (32,000 characters): two results out bring it to about 30,000.
     const contextSize = 9_143;
     const { messages, leftOut } = toHistory(fiveBigSteps, typed, { system: SYSTEM, contextSize });
@@ -125,7 +132,7 @@ describe("toHistory", () => {
     expect(messages.filter((message) => message.content.includes("left out"))).toHaveLength(1);
   });
 
-  test("keeps a result no longer than its replacement line and replaces the next oldest instead", () => {
+  test("keeps a result no longer than its replacement line and replaces the next two oldest instead", () => {
     const entries: ChatEntry[] = [
       user("go"),
       answer("call"),
@@ -135,10 +142,11 @@ describe("toHistory", () => {
       ...fiveBigSteps.slice(1),
     ];
     const { messages, leftOut } = toHistory(entries, typed, { system: SYSTEM, contextSize: 12_572 });
-    expect(leftOut).toBe(1);
+    expect(leftOut).toBe(2);
     expect(messages[2]?.content).toBe(wrapped("ok"));
     expect(messages[4]?.content).toBe(wrapped("a.ts: not found"));
     expect(messages[6]?.content).toBe(wrapped("[result left out to save context: 100 lines]"));
+    expect(messages[8]?.content).toBe(wrapped("[result left out to save context: 100 lines]"));
   });
 
   test("never replaces a load_skill step, ok or error, nor user messages and answers", () => {
@@ -215,8 +223,74 @@ describe("toHistory", () => {
       ...fiveBigSteps.slice(3),
     ];
     const { messages, leftOut } = toHistory(entries, typed, { system: SYSTEM, contextSize: 12_572 });
-    expect(leftOut).toBe(1);
+    expect(leftOut).toBe(2);
     expect(messages[2]?.content).toBe(wrapped("[result left out to save context: 100 lines]", "read_file", "error"));
+  });
+
+  describe("leaves results out in blocks of 4", () => {
+    /** A user message, then `count` calls whose results are 100 lines each (about 10,000 characters per result). */
+    const bigSteps = (count: number): ChatEntry[] => [
+      user("go"),
+      ...Array.from({ length: count }, (_, index) => [answer(`call ${index}`), step(lines(100))]).flat(),
+    ];
+    const leftOutContent = wrapped("[result left out to save context: 100 lines]");
+
+    // [>]: 15 steps, about 149,000 characters in all, each result left out saving about 9,800. At each size, the
+    // smallest count of results left out that fits is the one named; 12 results may go.
+    test.each([
+      [41_000, 1, 4],
+      [38_000, 2, 4],
+      [35_000, 3, 4],
+      [32_000, 4, 4],
+      [30_000, 5, 8],
+      [27_000, 6, 8],
+      [24_000, 7, 8],
+      [21_000, 8, 8],
+      [18_000, 9, 12],
+    ])(
+      "context size %d: a smallest fitting count of %d leaves %d out, the oldest first",
+      (contextSize, smallest, expected) => {
+        const entries = bigSteps(15);
+        const whole = toHistory(entries, typed, roomy).messages;
+        const withOldestOut = (count: number) => {
+          let replaced = 0;
+          return whole.map((message, index) =>
+            index > 0 && message.role === "user" && replaced++ < count
+              ? { ...message, content: leftOutContent }
+              : message,
+          );
+        };
+        expect(fits(withOldestOut(smallest - 1), contextSize)).toBe(false);
+        expect(fits(withOldestOut(smallest), contextSize)).toBe(true);
+        const { messages, leftOut } = toHistory(entries, typed, { system: SYSTEM, contextSize });
+        expect(leftOut).toBe(expected);
+        const results = messages.filter((message, index) => index > 0 && message.role === "user");
+        expect(results.slice(0, expected).every((message) => message.content === leftOutContent)).toBe(true);
+        expect(results.slice(expected).every((message) => message.content === wrapped(lines(100)))).toBe(true);
+        expect(fits(messages, contextSize)).toBe(true);
+      },
+    );
+
+    test("the requests between two changes of the count each start with the whole previous request", () => {
+      // [>]: About 73,500 characters fit at 21,000: 7 results whole, the last 3 and 4 eligible ones.
+      const requests = Array.from({ length: 24 }, (_, index) =>
+        toHistory(bigSteps(index + 1), typed, { system: SYSTEM, contextSize: 21_000 }),
+      );
+      expect(requests.map((request) => request.leftOut)).toEqual([
+        ...Array(7).fill(0),
+        ...Array(4).fill(4),
+        ...Array(4).fill(8),
+        ...Array(4).fill(12),
+        ...Array(4).fill(16),
+        20,
+      ]);
+      for (let index = 1; index < requests.length; index++) {
+        const previous = requests[index - 1]!;
+        const request = requests[index]!;
+        if (request.leftOut !== previous.leftOut) continue;
+        expect(request.messages.slice(0, previous.messages.length)).toEqual(previous.messages);
+      }
+    });
   });
 
   test("says 1 line for a result of one line", () => {
@@ -288,9 +362,10 @@ describe("history after a summary", () => {
   test("leaves out and keeps the last 3 counting only the steps after the summary", () => {
     const entries: ChatEntry[] = [...fiveBigSteps, summary("S."), ...fiveBigSteps];
     const { messages, leftOut } = toHistory(entries, typed, { system: SYSTEM, contextSize: 12_572 });
-    expect(leftOut).toBe(1);
+    expect(leftOut).toBe(2);
     expect(messages[2]?.content).toBe(wrapped("[result left out to save context: 100 lines]"));
-    expect(messages[4]?.content).toBe(wrapped(lines(100)));
+    expect(messages[4]?.content).toBe(wrapped("[result left out to save context: 100 lines]"));
+    expect(messages[6]?.content).toBe(wrapped(lines(100)));
   });
 });
 
@@ -496,14 +571,17 @@ describe("user messages in a row", () => {
 
   test("a left-out result replaces only the result inside its wrapper, never the user text joined to it", () => {
     const entries: ChatEntry[] = [user("go"), answer("call"), step(lines(100)), user("next"), ...fiveBigSteps.slice(1)];
-    // [>]: Threshold 13,125 tokens (52,500 characters): about 60,000 in all, one result out brings it to about 50,000.
+    // [>]: Threshold 13,125 tokens (52,500 characters): about 60,000 in all, one result out is enough, and the block
+    // of 4 is capped at the 3 results that may go.
     const { messages, leftOut } = toHistory(entries, typed, { system: SYSTEM, contextSize: 15_000 });
-    expect(leftOut).toBe(1);
+    expect(leftOut).toBe(3);
     expect(messages[2]).toEqual({
       role: "user",
       content: `${wrapped("[result left out to save context: 100 lines]")}\n\nnext`,
     });
-    expect(messages[4]?.content).toBe(wrapped(lines(100)));
+    expect(messages[4]?.content).toBe(wrapped("[result left out to save context: 100 lines]"));
+    expect(messages[6]?.content).toBe(wrapped("[result left out to save context: 100 lines]"));
+    expect(messages[8]?.content).toBe(wrapped(lines(100)));
     expect(fits(messages, 15_000)).toBe(true);
   });
 

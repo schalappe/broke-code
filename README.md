@@ -424,13 +424,15 @@ instructions, your messages with their attachments, the model's answers, and the
 and divides by 4.
 
 Before each request of an agent turn, broke-code checks that estimate. If the request leaves less than one eighth of
-the context for the reply, broke-code leaves the oldest tool results out of that request, one at a time, until it
-fits. The model gets each result left out as a single line, `[result left out to save context: N lines]`.
+the context for the reply, broke-code leaves the oldest tool results out of that request, as few as make it fit,
+rounded up to a block of four, so that the requests that follow start with the same text and the provider can reuse
+its cache. The model gets each result left out as a single line, `[result left out to save context: N lines]`.
 
 broke-code always sends these whole:
 
 - the last three tool steps sent;
 - every skill load;
+- every change you undid with **Undo changes**;
 - your messages and the model's answers;
 - a result shorter than that line.
 
