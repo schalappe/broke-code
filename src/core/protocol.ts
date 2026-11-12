@@ -7,7 +7,6 @@ import { type ConversationSummary, isConversationId } from "./conversation";
 import type { MentionResult } from "./mentions";
 import type { ProviderError } from "./providerError";
 import type { SkippedProvider } from "./providers";
-import type { RestoreRefusal } from "./recordedChanges";
 import type { SlashCommand, Suggestion } from "./suggestions";
 
 export type ModelsState =
@@ -162,6 +161,14 @@ export type QueuedMessage = { id: number; text: string; mentions: string[] };
 
 /** Most messages the queue holds: the whole state is posted at each streamed delta. */
 export const MAX_QUEUED_MESSAGES = 10;
+
+/**
+ * Why "Undo changes" left a file untouched. `changed`: it holds neither the text the writes left nor its original text
+ * (edited since, removed, made a folder, or no longer text). `unsaved`: an editor holds unsaved changes to it.
+ * `symlink`: it is now a symbolic link. `outsideWorkspace`: it is in no workspace folder now, or its path leads out of
+ * them. `failed`: the write or the removal failed on disk, or the file could not be read (`cause`).
+ */
+export type RestoreRefusal = "changed" | "unsaved" | "symlink" | "outsideWorkspace" | "failed";
 
 /**
  * What "Undo changes" did to one file of the held turn, named as the file index writes it. `restored`: it holds its

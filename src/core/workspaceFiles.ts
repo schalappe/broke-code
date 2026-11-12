@@ -249,6 +249,17 @@ async function realRootPaths(roots: WorkspaceRoot[]): Promise<string[]> {
 }
 
 /**
+ * The roots that resolve, in order, each under its own name at its real path: a real path found inside one is inside it
+ * as written. A root that no longer resolves is left out.
+ */
+export async function realWorkspaceRoots(roots: WorkspaceRoot[]): Promise<WorkspaceRoot[]> {
+  return (await resolveWorkspaceRoots(roots)).resolved.map(({ root, realRoot }) => ({
+    name: root.name,
+    path: realRoot,
+  }));
+}
+
+/**
  * The roots that resolve, in order, each with its real path, and those that do not (deleted, unmounted, a parent
  * denying access), each with the error code. A caller that covers every root must report the unresolved ones.
  */

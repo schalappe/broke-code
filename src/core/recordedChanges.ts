@@ -4,10 +4,12 @@
  * recorded write, or removed when the writes created it, file by file, through the checks of the atomic write. Opt-in:
  * only an applier wrapped in `recordingApplier` records, so the eval bench's `fileApplier` runs record nothing.
  */
+
+import type { UndoneFile, UndoneStatus } from "./protocol";
 import {
   type RemoveOutcome,
+  realWorkspaceRoots,
   removeWorkspaceFile,
-  resolveWorkspaceRoots,
   type WorkspaceRoot,
   type WriteFailure,
   type WriteOutcome,
@@ -22,25 +24,8 @@ import type { ChangeApplier, WriteApprovalHost } from "./writeTools";
  */
 export type RecordedFile = { path: string; realPath: string; original: string | undefined; written: string };
 
-/**
- * Why a file was not restored; nothing of it was touched. `changed`: it holds neither the text the writes left nor its
- * original text (edited since, removed, made a folder, or no longer text). `unsaved`: an editor holds unsaved changes
- * to it. `symlink`: it is now a symbolic link. `outsideWorkspace`: it is in no workspace folder now, or its path leads
- * out of them. `failed`: the write or the removal failed on disk, or the file could not be read (`cause`).
- */
-export type RestoreRefusal = "changed" | "unsaved" | "symlink" | "outsideWorkspace" | "failed";
-
-/**
- * What restoring one file did. `restored`: it holds its original text again, now or already. `removed`: the writes
- * created it, and it is gone, now or already. `skipped`: see `RestoreRefusal`; it stays in the set. `leftover`: the
- * temporary file of the restoring write could not be removed (`cause`); it sits beside the file as `name`.
- */
-export type RestoreOutcome = { path: string; realPath: string; leftover?: { name: string; cause: string } } & (
-  | { status: "restored" }
-  | { status: "removed" }
-  | { status: "skipped"; reason: Exclude<RestoreRefusal, "failed"> }
-  | { status: "skipped"; reason: "failed"; cause: string }
-);
+/** What restoring one file did (see `UndoneFile`), with `realPath`, its folder's real path plus its name. */
+export type RestoreOutcome = UndoneFile & { realPath: string };
 
 /**
  * The files a set of writes changed, one entry per file, in the order of their first write. `onRecord`: called after
@@ -83,10 +68,7 @@ export class RecordedChanges {
    */
   async restore(roots: WorkspaceRoot[], host: Pick<WriteApprovalHost, "hasUnsavedChanges">): Promise<RestoreOutcome[]> {
     // [>]: Real roots, so a recorded real path is inside them as written; a root that no longer resolves holds nothing.
-    const realRoots = (await resolveWorkspaceRoots(roots)).resolved.map(({ root, realRoot }) => ({
-      name: root.name,
-      path: realRoot,
-    }));
+    const realRoots = await realWorkspaceRoots(roots);
     const outcomes: RestoreOutcome[] = [];
     for (const file of this.files) {
       const outcome = await restoreFile(realRoots, file, host);
@@ -113,10 +95,7 @@ async function restoreFile(
   return { path, realPath, ...leftover, ...writeResult(written) };
 }
 
-/** A `RestoreOutcome` without the file it names. */
-type FileResult = RestoreOutcome extends infer T ? (T extends unknown ? Omit<T, "path" | "realPath"> : never) : never;
-
-function removeResult(outcome: RemoveOutcome): FileResult {
+function removeResult(outcome: RemoveOutcome): UndoneStatus {
   switch (outcome.status) {
     case "removed":
     case "alreadyRemoved":
@@ -128,7 +107,7 @@ function removeResult(outcome: RemoveOutcome): FileResult {
   }
 }
 
-function writeResult(outcome: WriteOutcome): FileResult {
+function writeResult(outcome: WriteOutcome): UndoneStatus {
   switch (outcome.status) {
     case "written":
     case "alreadyWritten":
@@ -144,7 +123,7 @@ function writeResult(outcome: WriteOutcome): FileResult {
 }
 
 /** A refusal of the write boundary's check, as a restore's reason. */
-function refusal(status: WriteFailure | "changed", cause: string | undefined): FileResult {
+function refusal(status: WriteFailure | "changed", cause: string | undefined): UndoneStatus {
   switch (status) {
     case "symlink":
     case "outsideWorkspace":

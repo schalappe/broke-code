@@ -57,7 +57,7 @@ import {
 } from "./systemPrompt";
 import { forgedResultCut, type ParsedReply, parseToolCall, type ToolSpec } from "./toolCalls";
 import type { ToolCall, ToolResult } from "./tools";
-import { resolveWorkspaceRoots, type WorkspaceRoot } from "./workspaceFiles";
+import { realWorkspaceRoots, type WorkspaceRoot } from "./workspaceFiles";
 
 /** API key lookup. `undefined` = no key; must not reject. */
 export type KeyStore = { get(provider: string): Promise<string | undefined> };
@@ -1605,10 +1605,7 @@ function undoneSince(before: RecordedFile[], changes: RecordedChanges): UndoneFi
  * that holds it as it resolves now, else as the model wrote it at the first write.
  */
 async function undoneFiles(roots: WorkspaceRoot[], outcomes: RestoreOutcome[]): Promise<UndoneFile[]> {
-  const realRoots = (await resolveWorkspaceRoots(roots)).resolved.map(({ root, realRoot }) => ({
-    name: root.name,
-    path: realRoot,
-  }));
+  const realRoots = await realWorkspaceRoots(roots);
   return outcomes.map(({ realPath, path, ...outcome }) => ({
     path: workspacePath(realRoots, realPath) ?? path,
     ...outcome,

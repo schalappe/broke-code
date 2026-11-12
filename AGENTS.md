@@ -114,7 +114,8 @@ on an error or warning puts a request to fix it there, with its file as a mentio
   records into `RecordedChanges` each change its applier reports `written`, one `RecordedFile` per file, calling its
   `onRecord` with that file after each; `has`, whether a file is still in the set;
   `RecordedChanges.restore`, the per-file restore over the workspace roots and an unsaved-changes port, each file
-  `restored`, `removed`, or `skipped` with its `RestoreRefusal`), the approval seam (`approval.ts`: the request a tool
+  `restored`, `removed`, or `skipped` with its `RestoreRefusal`, as `UndoneFile` in `protocol.ts` plus the file's real
+  path), the approval seam (`approval.ts`: the request a tool
   makes, the decision it gets, the rejection text, and the decisions of the editor side: which change diffs to close,
   the unsaved-editor check over the open documents, the auto-approve setting from its user value), the tool runner (`toolRunner.ts`: the read and write tools over the
   workspace folders, the read tools also over the run's `skillRoots`, each write handed to the applier the host builds
