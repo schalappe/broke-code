@@ -482,6 +482,50 @@ export async function writeWorkspaceFile(
   }
 }
 
+/**
+ * What removing a file did. `alreadyRemoved`: nothing is at the path, so running twice changes nothing. `changed`: the
+ * file holds other text than expected; it stays. `notRemoved`: a disk failure (`cause`) stopped the removal; the file
+ * stays. The check's refusals come back as `locateWriteTarget` gives them; the file stays.
+ */
+export type RemoveOutcome =
+  | { status: "removed" | "alreadyRemoved" | "changed" }
+  | Exclude<WriteTarget, { status: "ok" }>
+  | { status: "notRemoved"; cause: string };
+
+/**
+ * Remove the file at absolute `path` inside `roots` only when it still holds exactly `expected`, with the checks of
+ * `writeWorkspaceFile`'s last check: its folder resolves inside a workspace folder, the file is a regular file and not a
+ * symlink, the open handle is that file, and it holds `expected`, byte for byte. Then the folder is checked to still
+ * lead where it did, and the file is unlinked. Folders above it stay. Never rejects. `seam`: for tests, `afterCheck`
+ * runs between the check and the folder's second look.
+ *
+ * [!]: As for the write, the check reads the file by name, then the unlink goes by name: a write landing between the
+ * two is lost with the file. The window is one `realpath` long.
+ */
+export async function removeWorkspaceFile(
+  roots: WorkspaceRoot[],
+  path: string,
+  expected: string,
+  seam: Pick<WriteSeam, "afterCheck"> = {},
+): Promise<RemoveOutcome> {
+  const checked = await checkWriteTarget(roots, [resolve(path)]);
+  if (checked.status === "missing") return { status: "alreadyRemoved" };
+  if (checked.status !== "ok") return checked;
+  if (checked.before === undefined) return { status: "alreadyRemoved" };
+  if (checked.before !== expected) return { status: "changed" };
+  try {
+    await seam.afterCheck?.();
+    const moved = await folderMoved(checked);
+    if (moved !== undefined) return { status: moved };
+    await unlink(checked.realPath);
+    return { status: "removed" };
+  } catch (error) {
+    // [>]: Removed meanwhile, or its folder with it: what was asked holds.
+    if (MISSING_CODES.has(errorCode(error) ?? "")) return { status: "alreadyRemoved" };
+    return { status: "notRemoved", cause: errorCode(error) ?? String(error) };
+  }
+}
+
 /** Bytes a file name may hold on macOS (APFS, HFS+). */
 const NAME_MAX_BYTES = 255;
 const TEMPORARY_SUFFIX_BYTES = ".broke-code-".length + 12 + ".tmp".length;

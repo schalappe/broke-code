@@ -20,6 +20,7 @@ import {
   compareNames,
   locateWriteTarget,
   readWorkspaceEntry,
+  removeWorkspaceFile,
   truncateLines,
   unwritableText,
   type WorkspaceRoot,
@@ -515,6 +516,81 @@ describe("writeWorkspaceFile while the file changes", () => {
     const remove = () => unlink(join(app.path, "vanishing.txt"));
     expect(await locateWriteTarget([app], "vanishing.txt", { beforeOpen: remove })).toEqual({ status: "missing" });
     expect(existsSync(join(app.path, "vanishing.txt"))).toBe(false);
+  });
+});
+
+describe("removeWorkspaceFile", () => {
+  test("removes a file that holds the expected text, and calls a missing file already removed", async () => {
+    await mkdir(join(app.path, "r1"));
+    await writeFile(join(app.path, "r1", "a.txt"), "made\n");
+    expect(await removeWorkspaceFile([app], join(app.path, "r1", "a.txt"), "made\n")).toEqual({ status: "removed" });
+    expect(await readdir(join(app.path, "r1"))).toEqual([]);
+    expect(await removeWorkspaceFile([app], join(app.path, "r1", "a.txt"), "made\n")).toEqual({
+      status: "alreadyRemoved",
+    });
+    expect(await removeWorkspaceFile([app], join(app.path, "r1", "gone", "a.txt"), "made\n")).toEqual({
+      status: "alreadyRemoved",
+    });
+  });
+
+  test("refuses a file holding other text, a BOM included, and leaves it byte-identical", async () => {
+    await mkdir(join(app.path, "r2"));
+    const file = join(app.path, "r2", "a.txt");
+    await writeFile(file, "\uFEFFmade\n");
+    expect(await removeWorkspaceFile([app], file, "made\n")).toEqual({ status: "changed" });
+    expect(await readFile(file)).toEqual(Buffer.from("\uFEFFmade\n"));
+  });
+
+  test("refuses a symlink inside or out, a folder, and a path outside, leaving each as it is", async () => {
+    await mkdir(join(app.path, "r3", "sub"), { recursive: true });
+    await writeFile(join(app.path, "r3", "real.txt"), "made\n");
+    await symlink(join(app.path, "r3", "real.txt"), join(app.path, "r3", "link.txt"));
+    expect(await removeWorkspaceFile([app], join(app.path, "r3", "link.txt"), "made\n")).toEqual({
+      status: "symlink",
+    });
+    expect(await removeWorkspaceFile([app], join(app.path, "link-out.txt"), "secret\n")).toEqual({
+      status: "outsideWorkspace",
+    });
+    expect(await removeWorkspaceFile([app], join(app.path, "r3", "sub"), "made\n")).toEqual({ status: "folder" });
+    expect(await removeWorkspaceFile([app], join(base, "outside.txt"), "secret\n")).toEqual({
+      status: "outsideWorkspace",
+    });
+    expect((await readdir(join(app.path, "r3"))).sort()).toEqual(["link.txt", "real.txt", "sub"]);
+    expect(await readFile(join(app.path, "r3", "real.txt"), "utf8")).toBe("made\n");
+    expect(await readFile(join(base, "outside.txt"), "utf8")).toBe("secret\n");
+    expect(existsSync(join(app.path, "link-out.txt"))).toBe(true);
+  });
+
+  test("refuses a file whose folder is swapped for a link out after the check, removing nothing", async () => {
+    await mkdir(join(app.path, "r4", "sub"), { recursive: true });
+    await writeFile(join(app.path, "r4", "sub", "a.txt"), "made\n");
+    const outsideDir = join(base, "outside-r4");
+    await mkdir(outsideDir);
+    await writeFile(join(outsideDir, "a.txt"), "made\n");
+    const swap = async () => {
+      await rename(join(app.path, "r4", "sub"), join(app.path, "r4", "sub-moved"));
+      await symlink(outsideDir, join(app.path, "r4", "sub"));
+    };
+    const outcome = await removeWorkspaceFile([app], join(app.path, "r4", "sub", "a.txt"), "made\n", {
+      afterCheck: swap,
+    });
+    expect(outcome).toEqual({ status: "outsideWorkspace" });
+    expect(await readFile(join(outsideDir, "a.txt"), "utf8")).toBe("made\n");
+  });
+
+  test("names the cause when the file cannot be removed, leaving it", async () => {
+    await mkdir(join(app.path, "r5"));
+    await writeFile(join(app.path, "r5", "a.txt"), "made\n");
+    await chmod(join(app.path, "r5"), 0o555);
+    try {
+      expect(await removeWorkspaceFile([app], join(app.path, "r5", "a.txt"), "made\n")).toEqual({
+        status: "notRemoved",
+        cause: "EACCES",
+      });
+    } finally {
+      await chmod(join(app.path, "r5"), 0o755);
+    }
+    expect(await readFile(join(app.path, "r5", "a.txt"), "utf8")).toBe("made\n");
   });
 });
 
