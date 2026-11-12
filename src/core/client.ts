@@ -3,7 +3,8 @@
  * Provider HTTP client: `GET {baseUrl}/models`, streaming `POST {baseUrl}/chat/completions`.
  * Never sends `tools`, never reads `tool_calls` (ADR 0001). Failures returned as typed values, never thrown.
  * Asks for usage (`stream_options`) and reads the counts a reply reports; a model that refuses the field gets one
- * resend without it, remembered in `ProviderSupport`.
+ * resend without it, remembered in `ProviderSupport`, which a completed reply's prompt tokens also teach the model's
+ * characters per token.
  * Only module that knows the reasoning wire shapes: callers see the reasoning and the answer apart.
  * One network path for every request: `http`/`https` requests, with the provider's CA trust (see `tls`).
  */
@@ -13,6 +14,7 @@ import * as https from "node:https";
 import type { LookupFunction } from "node:net";
 import { pipeline, Readable, Transform } from "node:stream";
 import * as zlib from "node:zlib";
+import { charactersOf } from "./limits";
 import { REPLY_MAX_LENGTH, type ReportedUsage } from "./protocol";
 import type { CutOffReason, ProviderError } from "./providerError";
 import type { ProviderSupport } from "./providerSupport";
@@ -110,7 +112,10 @@ export type StreamChatOptions = {
   messages: ChatMessage[];
   /** Abort -> outcome `stopped`, never `cutOff`. */
   signal: AbortSignal;
-  /** Which models take the usage field: read to build the request, taught by its answer. One per extension host. */
+  /**
+   * Which models take the usage field, read to build the request and taught by its answer, and each model's characters
+   * per token, taught by a completed reply's prompt tokens. One per extension host.
+   */
   support: ProviderSupport;
   /** Called with each non-empty piece of the answer, in order. Answer starts at its first non-blank line. */
   onContent: (text: string) => void;
@@ -127,12 +132,18 @@ export type StreamChatOptions = {
  * Reply over `REPLY_MAX_LENGTH`, or one event over the SSE cap -> cut off (`tooLarge`), stream cancelled.
  * Text held back to recognize a split tag is flushed before any outcome returns.
  * The request asks for usage unless the model refuses the field (see `openStream`). A completed reply's outcome carries
- * the last valid usage a chunk reported, whether or not the request asked for it: a proxy may add it by itself.
+ * the last valid usage a chunk reported, whether or not the request asked for it: a proxy may add it by itself. Its
+ * prompt tokens, against the characters of the messages sent, teach the model's ratio (`ProviderSupport.learnRatio`)
+ * before the outcome returns, so every request teaches it alike: a turn's, a summary's, a commit message's. A stopped,
+ * cut, or failed reply teaches nothing.
  */
 export async function streamChat(access: ProviderAccess, options: StreamChatOptions): Promise<ChatOutcome> {
   const splitter = new ReplySplitter(options.onReasoning, options.onContent);
   const outcome = await readReply(access, options, splitter);
   splitter.flush();
+  if (outcome.status === "done" && outcome.usage) {
+    options.support.learnRatio(access.provider, options.model, charactersOf(options.messages), outcome.usage.prompt);
+  }
   return outcome;
 }
 

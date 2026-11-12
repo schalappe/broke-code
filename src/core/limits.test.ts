@@ -3,6 +3,7 @@ import {
   contextOf,
   estimateTokens,
   fillsContext,
+  largestFittingCharacters,
   parseCommandTimeout,
   parseContextSizeInput,
   parseLimits,
@@ -101,12 +102,48 @@ describe("userLimits", () => {
 });
 
 describe("estimateTokens", () => {
-  test("is the characters of every message divided by 4, rounded up", () => {
-    const message = (content: string) => ({ content });
-    expect(estimateTokens([])).toBe(0);
-    expect(estimateTokens([message("abc")])).toBe(1);
-    expect(estimateTokens([message("a".repeat(3000)), message("b".repeat(500))])).toBe(875);
-    expect(estimateTokens([message("a".repeat(3504))])).toBe(876);
+  const message = (content: string) => ({ content });
+
+  test("at ratio 4, is the characters of every message divided by 4, rounded up", () => {
+    expect(estimateTokens([], 4)).toBe(0);
+    expect(estimateTokens([message("abc")], 4)).toBe(1);
+    expect(estimateTokens([message("a".repeat(3000)), message("b".repeat(500))], 4)).toBe(875);
+    expect(estimateTokens([message("a".repeat(3504))], 4)).toBe(876);
+  });
+
+  test("divides by the ratio: 40,000 characters are 10,000 tokens at 4 and 12,500 at 3.2", () => {
+    expect(estimateTokens([message("a".repeat(40_000))], 4)).toBe(10_000);
+    expect(estimateTokens([message("a".repeat(40_000))], 3.2)).toBe(12_500);
+  });
+
+  test("is exact in tenths: 69 characters at 2.3 are 30 tokens", () => {
+    expect(estimateTokens([message("a".repeat(69))], 2.3)).toBe(30);
+  });
+});
+
+describe("largestFittingCharacters", () => {
+  const message = (content: string) => ({ content });
+
+  test("a context of 32,768 tokens (a room of 28,672) fits 114,688, 100,352, 91,750, and 57,344 characters", () => {
+    expect(largestFittingCharacters(32_768, 4)).toBe(114_688);
+    expect(largestFittingCharacters(32_768, 3.5)).toBe(100_352);
+    expect(largestFittingCharacters(32_768, 3.2)).toBe(91_750);
+    expect(largestFittingCharacters(32_768, 2)).toBe(57_344);
+  });
+
+  test("is exact in tenths: a room of 175,000 tokens at 2.3 fits 402,500 characters", () => {
+    expect(largestFittingCharacters(200_000, 2.3)).toBe(402_500);
+  });
+
+  test("at every ratio from 2 to 4, the largest fitting characters fit and one more fills the context", () => {
+    for (let tenths = 20; tenths <= 40; tenths++) {
+      const ratio = tenths / 10;
+      for (const size of [32_768, 100_000, 200_000]) {
+        const characters = largestFittingCharacters(size, ratio);
+        expect(fillsContext(estimateTokens([message("a".repeat(characters))], ratio), size)).toBe(false);
+        expect(fillsContext(estimateTokens([message("a".repeat(characters + 1))], ratio), size)).toBe(true);
+      }
+    }
   });
 });
 

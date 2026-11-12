@@ -1325,3 +1325,55 @@ describe("lateReasoning", () => {
     expect(lateReasoning("Still thinking\n</think")).toBeUndefined();
   });
 });
+
+describe("the learned ratio", () => {
+  /** A system message and a user message of 32,000 characters in all, which a reply reports as `promptTokens`. */
+  const big = [
+    { role: "system" as const, content: "s".repeat(2_000) },
+    { role: "user" as const, content: "u".repeat(30_000) },
+  ];
+  const usageChunk = (promptTokens: number) =>
+    event({ choices: [], usage: { prompt_tokens: promptTokens, completion_tokens: 1 } });
+
+  test("a completed reply's prompt tokens teach its model's ratio, from the characters of every message", async () => {
+    const access = routed("ratio-done", () => sse([delta("Hi", "stop"), usageChunk(10_000), "data: [DONE]\n\n"]));
+    const support = new ProviderSupport();
+    const outcome = await streamChat(access, {
+      model: "m",
+      messages: big,
+      signal: new AbortController().signal,
+      support,
+      onContent: () => {},
+      onReasoning: () => {},
+    });
+    expect(outcome).toEqual({ status: "done", usage: { prompt: 10_000, completion: 1 } });
+    expect(support.ratio(access.provider, "m")).toBe(3.2);
+    expect(support.ratio(access.provider, "other")).toBe(4);
+  });
+
+  test("a stopped or failed reply teaches nothing, whatever usage it carried", async () => {
+    const support = new ProviderSupport();
+    const controller = new AbortController();
+    const stopped = routed("ratio-stopped", () => sse([usageChunk(10_000), delta("Hi")]));
+    await streamChat(stopped, {
+      model: "m",
+      messages: big,
+      signal: controller.signal,
+      support,
+      onContent: () => controller.abort(),
+      onReasoning: () => {},
+    });
+    expect(support.ratio(stopped.provider, "m")).toBe(4);
+    const ended = routed("ratio-ended", () => sse([usageChunk(10_000), delta("Hi")]));
+    const outcome = await streamChat(ended, {
+      model: "m",
+      messages: big,
+      signal: new AbortController().signal,
+      support,
+      onContent: () => {},
+      onReasoning: () => {},
+    });
+    expect(outcome.status).toBe("failed");
+    expect(support.ratio(ended.provider, "m")).toBe(4);
+  });
+});

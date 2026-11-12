@@ -17,8 +17,11 @@ export const KEPT_RECENT_STEPS = 3;
  */
 export const LEFT_OUT_BLOCK = 4;
 
-/** What a request is measured against: the system prompt it is sent with and the model's context size in tokens. */
-export type HistoryBudget = { system: string; contextSize: number };
+/**
+ * What a request is measured against: the system prompt it is sent with, the model's context size in tokens, and the
+ * model's characters per token (`ProviderSupport.ratio`).
+ */
+export type HistoryBudget = { system: string; contextSize: number; ratio: number };
 
 /** The history of a request, without its system message; `leftOut`: tool results replaced by a one-line notice. */
 export type History = { messages: ChatMessage[]; leftOut: number };
@@ -98,7 +101,7 @@ function isSentSummary(entry: ChatEntry): boolean {
  * message (a tool result, a user message whose reply was left out, the summary's message) joins it after a blank line,
  * its text unchanged. `summaryHistory` joins `SUMMARY_REQUEST` the same way.
  *
- * When `budget.system` plus that history fills the context (`fillsContext`), the text of the oldest tool steps is
+ * When `budget.system` plus that history fills the context (`fillsContext`, estimated at `budget.ratio`), the text of the oldest tool steps is
  * replaced by `[result left out to save context: N lines]`, inside the step's `<tool_result>` wrapper only, so a user
  * message joined to it stays whole: the fewest steps that make the request fit, rounded up to a multiple of
  * `LEFT_OUT_BLOCK` and capped at the steps that may be replaced. The estimate counts the request as sent, joins
@@ -106,17 +109,18 @@ function isSentSummary(entry: ChatEntry): boolean {
  * load answers "already loaded" without the body, so the model could not get it back), every undone step, and a result
  * no longer than its replacement line. When the request cannot fit even then, the history goes whole and `leftOut` is
  * 0: nothing is sent, so nothing is left out. Pure and linear in the entries, since the usage display runs it at each
- * streamed delta.
+ * streamed delta: the same entries, system prompt, context size, and ratio always leave the same results out. A lower
+ * ratio leaves as many or more out, never fewer.
  */
 export function toHistory(
   entries: readonly ChatEntry[],
   userText: (entry: ChatEntry & { role: "user" }) => string,
-  { system, contextSize }: HistoryBudget,
+  { system, contextSize, ratio }: HistoryBudget,
 ): History {
   const { messages, steps } = sentMessages(entries, userText);
   const whole = joined(messages);
   let characters = whole.reduce((total, message) => total + message.content.length, system.length);
-  const fits = () => !fillsContext(tokensOfCharacters(characters), contextSize);
+  const fits = () => !fillsContext(tokensOfCharacters(characters, ratio), contextSize);
   if (fits()) return { messages: whole, leftOut: 0 };
 
   let leftOut = 0;
