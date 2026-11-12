@@ -234,12 +234,63 @@ describe("agent turn", () => {
     expect(limit).toContain(">Send<");
   });
 
-  test("a turn halted on a full context says so and names New chat", () => {
+  test("a turn halted on a full context says so and names /compact and New chat", () => {
     const html = renderTurn([
       { role: "assistant", reasoning: "", content: "", status: "halted", haltReason: "contextFull" },
     ]);
-    expect(html).toContain("Stopped: the conversation fills the model&#x27;s context. Start a new chat with New chat.");
+    expect(html).toContain(
+      "Stopped: the conversation fills the model&#x27;s context. Summarize it with /compact, or start a new chat with New chat.",
+    );
     expect(html).not.toContain("Waiting for the reply…");
+  });
+});
+
+describe("summary", () => {
+  const summary = (status: Reply["status"], content = "The goal is x."): ChatEntry => ({
+    role: "assistant",
+    reasoning: "",
+    content,
+    status,
+    summary: true,
+    ...(status === "halted" ? { haltReason: "contextFull" as const } : {}),
+  });
+  const panel = (entries: ChatEntry[]) =>
+    renderToStaticMarkup(<App state={stateWith(true, { entries })} language="en" />);
+
+  test("a done summary renders under its separator, and the entries before it are marked as no longer sent", () => {
+    const html = panel([...hi, summary("done"), { role: "user", content: "Next", mentions: [] }]);
+    expect(html).toContain(
+      '<div class="unsent"><p class="unsent-note">Earlier messages are no longer sent to the model: the summary below replaces them.</p>',
+    );
+    expect(html).toContain('<p class="summary-separator">Conversation summarized</p>');
+    expect(html.indexOf("Hello")).toBeLessThan(html.indexOf("Conversation summarized"));
+    expect(html.indexOf("The goal is x.")).toBeGreaterThan(html.indexOf("Conversation summarized"));
+    // [>]: The summary and what follows it are sent: outside the marked block.
+    expect(html.indexOf("Conversation summarized")).toBeGreaterThan(html.indexOf("</div>", html.indexOf("Hello")));
+    expect(html.match(/class="unsent"/g)).toHaveLength(1);
+  });
+
+  test("a summary in flight says so, and marks nothing yet", () => {
+    const html = panel([...hi, summary("streaming", "The goal")]);
+    expect(html).toContain('<p class="summary-separator">Summarizing the conversation…</p>');
+    expect(html).not.toContain("unsent");
+  });
+
+  test("a failed, stopped, halted, or empty summary says the conversation was not summarized and marks nothing", () => {
+    for (const entry of [
+      summary("failed", ""),
+      summary("stopped", "Part"),
+      summary("halted", ""),
+      summary("done", " "),
+    ]) {
+      const html = panel([...hi, entry]);
+      expect(html).toContain('<p class="summary-separator">Conversation not summarized</p>');
+      expect(html).not.toContain("unsent");
+    }
+    expect(panel([...hi, summary("halted", "")])).toContain(
+      "Not summarized: the conversation does not fit the model&#x27;s context, even with its tool results left out. Start a new chat with New chat.",
+    );
+    expect(panel([...hi, summary("done", "")])).toContain("The model&#x27;s reply held no summary.");
   });
 });
 
@@ -1319,7 +1370,10 @@ describe("slash commands in the composer", () => {
     await withPanel(stateWith(true), async ({ host, type, receive }) => {
       await type("/");
       expect(posted).toEqual([{ type: "querySkills", id: lastSkillQuery() }]);
-      expect(labels(host)).toEqual(["/new", "/model"]);
+      expect(labels(host)).toEqual(["/new", "/model", "/compact"]);
+      expect(host.querySelector("#slash-menu-option-2 .menu-description")?.textContent).toBe(
+        "Summarize the conversation to free context",
+      );
 
       await receive({
         type: "skillSuggestions",
@@ -1330,7 +1384,7 @@ describe("slash commands in the composer", () => {
         ],
         failed: false,
       });
-      expect(labels(host)).toEqual(["/new", "/model", "/grilling", "/notes"]);
+      expect(labels(host)).toEqual(["/new", "/model", "/compact", "/grilling", "/notes"]);
 
       await type("/gr");
       expect(labels(host)).toEqual(["/grilling"]);
@@ -1354,7 +1408,7 @@ describe("slash commands in the composer", () => {
         items: [{ name: "old", description: "Old." }],
         failed: false,
       });
-      expect(labels(host)).toEqual(["/new", "/model"]);
+      expect(labels(host)).toEqual(["/new", "/model", "/compact"]);
     });
   });
 
@@ -1408,7 +1462,7 @@ describe("slash commands in the composer", () => {
         items: [{ name: "old", description: "Old." }],
         failed: false,
       });
-      expect(labels(host)).toEqual(["/new", "/model"]);
+      expect(labels(host)).toEqual(["/new", "/model", "/compact"]);
     });
   });
 
@@ -1416,7 +1470,7 @@ describe("slash commands in the composer", () => {
     await withPanel(stateWith(true), async ({ host, type, receive }) => {
       await type("/");
       await receive({ type: "skillSuggestions", id: lastSkillQuery(), items: [], failed: true });
-      expect(labels(host)).toEqual(["/new", "/model"]);
+      expect(labels(host)).toEqual(["/new", "/model", "/compact"]);
       expect(host.querySelector(".menu-notice")?.textContent).toBe("Could not list the skills");
     });
   });
@@ -1430,7 +1484,7 @@ describe("slash commands in the composer", () => {
         items: [{ name: "kept", description: "Kept." }],
         failed: true,
       });
-      expect(labels(host)).toEqual(["/new", "/model", "/kept"]);
+      expect(labels(host)).toEqual(["/new", "/model", "/compact", "/kept"]);
       expect(host.querySelector(".menu-notice")?.textContent).toBe("Could not list the skills");
     });
   });
@@ -1452,7 +1506,7 @@ describe("slash commands in the composer", () => {
 
       await type("/");
       expect(skillQueries()).toHaveLength(2);
-      expect(labels(host)).toEqual(["/new", "/model"]);
+      expect(labels(host)).toEqual(["/new", "/model", "/compact"]);
       await press("Escape");
       expect(host.querySelector("#slash-menu")).toBeNull();
     });
@@ -1472,6 +1526,16 @@ describe("slash commands in the composer", () => {
       posted.length = 0;
       await press("Enter");
       expect(posted).toEqual([{ type: "newChat" }]);
+      expect(textarea.value).toBe("");
+    });
+  });
+
+  test("sending /compact asks the host for a summary and empties the box", async () => {
+    await withPanel(stateWith(true, { entries: hi }), async ({ textarea, type, press }) => {
+      await type("/compact");
+      posted.length = 0;
+      await press("Enter");
+      expect(posted).toEqual([{ type: "compact" }]);
       expect(textarea.value).toBe("");
     });
   });
@@ -1620,6 +1684,7 @@ describe("composer menus", () => {
     await withPanel(stateWith(true), async ({ host, type, press, receive }) => {
       await type("/");
       await receive({ ...skills, id: lastQuery("querySkills") });
+      await press("ArrowDown");
       await press("ArrowDown");
       await press("ArrowDown");
       expect(selected(host)).toBe("/grilling");

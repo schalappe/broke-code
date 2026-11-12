@@ -216,15 +216,25 @@ export function describeFold(counts: FoldCounts): string {
   return text;
 }
 
-/** Why an agent turn halted, shown after its last step, or on the reply whose request was not sent. */
-export function describeHalt(reason: HaltReason): string {
+/**
+ * Why an agent turn halted, shown after its last step, or on the reply whose request was not sent. `summary`: the
+ * reply is a summary (`/compact`), whose request only a full context halts.
+ */
+export function describeHalt(reason: HaltReason, summary = false): string {
+  if (summary && reason === "contextFull") {
+    return l10n.t(
+      "Not summarized: the conversation does not fit the model's context, even with its tool results left out. Start a new chat with New chat.",
+    );
+  }
   switch (reason) {
     case "malformedCalls":
       return l10n.t("Stopped: the model sent three malformed tool calls in a row.");
     case "stepLimit":
       return l10n.t("Stopped: the agent turn reached its tool step limit.");
     case "contextFull":
-      return l10n.t("Stopped: the conversation fills the model's context. Start a new chat with New chat.");
+      return l10n.t(
+        "Stopped: the conversation fills the model's context. Summarize it with /compact, or start a new chat with New chat.",
+      );
   }
 }
 

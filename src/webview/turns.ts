@@ -19,7 +19,8 @@ const MIN_FOLDED_STEPS = 2;
 
 /**
  * The conversation's entries grouped for rendering, every entry exactly once and in order. A turn runs from a user
- * message to the entry before the next one; it has ended unless it is the last turn and its last entry is a reply in
+ * message to the entry before the next one or the next summary (`/compact`), which is a boundary of its own: never
+ * folded and never a turn's final reply; it has ended unless it is the last turn and its last entry is a reply in
  * flight. An ended turn keeps its last reply and any step after it in view, and folds what lies between its user
  * message and that reply when it holds at least `MIN_FOLDED_STEPS` tool steps. Entries before the first user message,
  * and a turn without a reply, are never folded. Rendering only: the entries themselves are untouched.
@@ -31,7 +32,7 @@ export function foldTurns(entries: ChatEntry[]): ConversationPart[] {
   // turn alone, so every entry is visited a bounded number of times. This runs at every render, streamed deltas included.
   let turnStart = -1;
   for (let index = 0; index <= entries.length; index++) {
-    if (index < entries.length && entries[index]!.role !== "user") continue;
+    if (index < entries.length && !startsTurn(entries[index]!)) continue;
     if (turnStart === -1) pushEntries(parts, 0, index);
     else foldTurn(entries, turnStart, index, index < entries.length || lastEnded, parts);
     turnStart = index;
@@ -51,6 +52,11 @@ function foldTurn(entries: ChatEntry[], start: number, end: number, ended: boole
   } else {
     pushEntries(parts, start, end);
   }
+}
+
+/** A user message, or a summary, which renders alone and is followed by nothing it could fold. */
+function startsTurn(entry: ChatEntry): boolean {
+  return entry.role === "user" || (entry.role === "assistant" && entry.summary === true);
 }
 
 function pushEntries(parts: ConversationPart[], from: number, to: number): void {

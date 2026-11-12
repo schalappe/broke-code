@@ -513,6 +513,44 @@ button.history-open:hover:not(:disabled) {
   overflow-wrap: anywhere;
 }
 
+/*
+ * The entries before the summary the history starts at: still shown, no longer sent. Dimmed as a group under one line
+ * that says so in words, so the state never rests on the dimming alone.
+ */
+.unsent {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bc-space-4);
+}
+
+.unsent > :not(.unsent-note) {
+  opacity: 0.6;
+}
+
+.unsent-note {
+  margin: 0;
+  color: var(--bc-fg-dim);
+  font-size: var(--bc-fs-sm);
+}
+
+/* A summary's separator: small dim words between two drawn rules, across the conversation. */
+.summary-separator {
+  display: flex;
+  align-items: center;
+  gap: var(--bc-space-3);
+  margin: 0;
+  color: var(--bc-fg-dim);
+  font-size: var(--bc-fs-sm);
+}
+
+.summary-separator::before,
+.summary-separator::after {
+  content: "";
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--bc-line);
+}
+
 /* The user's message is a soft filled block; the reply runs flush on the panel itself. */
 .message.user {
   padding: var(--bc-space-3) var(--bc-space-4);

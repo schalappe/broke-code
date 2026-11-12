@@ -534,7 +534,7 @@ export class ChatController {
   /**
    * Queue `text` while a reply is in flight, with its `picked` paths, to be sent as if typed when a turn ends `done`.
    * The webview clears the box before the host answers and its state may lag, so a message not queued goes back to the
-   * box (`returnDraft`), never dropped: exactly a built-in command (`/new`, `/model`), which the webview runs itself, and
+   * box (`returnDraft`), never dropped: exactly a built-in command (`/new`, `/model`, `/compact`), which the webview runs itself, and
    * a message past `MAX_QUEUED_MESSAGES`. With no reply in flight (it ended before the request arrived), the message is
    * sent at once as `send` would, when a turn may start and nothing is queued; otherwise it goes back to the box, so no
    * message waits paused because of a late request. Blank text is dropped, as `send` drops it.
