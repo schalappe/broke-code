@@ -181,3 +181,43 @@ tags do not balance yet, ends the reply at that example: the diff shows the cut 
 **Open.** These models also wrap calls in `<tool_call>` (Gemma) or write `<parameter>` tags (Qwen's native format,
 garbled), and `glm-latest` ends with a plan and no call. Changing the parser for those waits for an eval run against
 the employer's service.
+
+## Amendment (2026-11-12): wrapped calls, results forged before the call, repeated calls
+
+Decided by the maintainer (schalappe) on 2026-11-12, on eval evidence (#58): the bench against `gemma-4-31b-it` served
+by vLLM 0.28 on a rented A100 (`google/gemma-4-31B-it`, BF16, `--max-model-len 32768`), the closest public setup to
+the employer's service. It passed `skill` 6/10 and `command` 9/10, every other scenario 10/10, while the local Ollama
+`gemma4:26b-a4b-it-qat` passes everything.
+
+- Gemma wrapped calls in `<tool_code>` or `<tool_call>`, the live observation of 2026-11-10 reproduced: every failed
+  run started that way, and 8 of the 63 passing runs did too before recovering after the malformed-call message.
+- After that message, Gemma wrote a `<tool_result tool="load_skill">` itself, with an invented folder, before a
+  `read_file` of that folder. The 2026-11-10 cut only acts on a result written after a complete call, so the call ran
+  on the invented path; 3 of the 4 `skill` failures held such a result.
+- One `command` run repeated the same wrapped call for 24 minutes (78,168 characters), until the next request
+  overflowed the context.
+
+**Decision.**
+
+- A wrapper tag, `<tool_call>` or `<tool_code>`, starting a line outside code, whose content starts with a known tool's
+  call, is that call. The block spans the wrapper when its closing tag follows the call; the closing tag is optional.
+  A wrapper around anything else is still "not a known tool". Accepting the native habit costs one rule; refusing it
+  costs a request and, as measured, sends the model off course.
+- A tool result opening the model writes before the reply's first call-shaped block, or in a reply with no call, makes
+  the reply malformed: it is cut where the result opens, so the invented result never reaches the chat or the
+  history, and the model is told that only the extension writes results.
+- While a reply streams, the opening tag of another call (a known tool or a wrapper, starting a line) after a complete
+  call ends the reply there, as a forged result already does. One call runs per reply, so nothing after the first call
+  was ever used.
+
+**Cost, accepted.** A final answer that quotes a raw `<tool_result …>` opening at a line start, outside code, is
+refused once. A `write_file` value holding an unfenced example call, after a complete-looking call whose tags already
+balance, ends the reply there, as for a forged result (2026-11-10).
+
+**Verified (2026-11-12).** With these rules, `gemma-4-31b-it` on vLLM passed 70 of 70 runs in 6 min 32 s; 26 wrapped
+replies in 17 runs were read as calls, and no reply forged a result. The local Ollama bench stayed at 140 of 140
+(`qwen3.8:27b` and `gemma4:26b-a4b-it-qat`, 58 min 23 s). Gemma on vLLM still wrote the placeholder `<tool_name>` of the
+generic call shape 12 times, each time recovering after the malformed-call message.
+
+**Open.** Qwen's garbled `<parameter>` form and GLM's reply ending mid-call wait for their own measurement; GLM on a
+rented GPU is out of budget.
