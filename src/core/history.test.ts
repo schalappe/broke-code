@@ -243,12 +243,25 @@ describe("toHistory", () => {
       [35_000, 3, 4],
       [32_000, 4, 4],
       [30_000, 5, 8],
+      [27_000, 6, 8],
+      [24_000, 7, 8],
       [21_000, 8, 8],
       [18_000, 9, 12],
     ])(
       "context size %d: a smallest fitting count of %d leaves %d out, the oldest first",
-      (contextSize, _, expected) => {
+      (contextSize, smallest, expected) => {
         const entries = bigSteps(15);
+        const whole = toHistory(entries, typed, roomy).messages;
+        const withOldestOut = (count: number) => {
+          let replaced = 0;
+          return whole.map((message, index) =>
+            index > 0 && message.role === "user" && replaced++ < count
+              ? { ...message, content: leftOutContent }
+              : message,
+          );
+        };
+        expect(fits(withOldestOut(smallest - 1), contextSize)).toBe(false);
+        expect(fits(withOldestOut(smallest), contextSize)).toBe(true);
         const { messages, leftOut } = toHistory(entries, typed, { system: SYSTEM, contextSize });
         expect(leftOut).toBe(expected);
         const results = messages.filter((message, index) => index > 0 && message.role === "user");
