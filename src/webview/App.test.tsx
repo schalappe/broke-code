@@ -2795,8 +2795,8 @@ describe("undo changes", () => {
   });
 
   test("words the outcome three ways, naming each file under the reply it undid", () => {
-    const outcome = (files: NonNullable<ChatState["undo"]["outcome"]>["files"], reply?: number) =>
-      html({ ...idle, reply, outcome: { reply: 3, files } });
+    const outcome = (files: NonNullable<ChatState["undo"]["outcome"]>["files"], reply?: number, under = 3) =>
+      html({ ...idle, reply, outcome: { reply: under, files } });
 
     const all = outcome([
       { path: "a.ts", status: "restored" },
@@ -2805,7 +2805,12 @@ describe("undo changes", () => {
     expect(all).toContain("Changes undone.");
     expect(all).toContain('<code class="undo-path">a.ts</code>: restored');
     expect(all).toContain('<code class="undo-path">b.ts</code>: removed, since this turn created it');
+    expect(all).toContain('<div class="undo-outcome" role="status">');
+    expect(all.indexOf("Changes undone.")).toBeGreaterThan(all.indexOf("Done."));
     expect(all.indexOf("Changes undone.")).toBeLessThan(all.indexOf("Other."));
+    const later = outcome([{ path: "a.ts", status: "restored" }], undefined, 5);
+    expect(count(later, "Changes undone.")).toBe(1);
+    expect(later.indexOf("Changes undone.")).toBeGreaterThan(later.indexOf("Other."));
 
     const some = outcome(
       [
@@ -2817,6 +2822,7 @@ describe("undo changes", () => {
     expect(some).toContain("Some changes were not undone. Undo changes again to retry the files skipped.");
     expect(some).toContain('<code class="undo-path">b.ts</code>: skipped, it changed since this turn wrote it');
     expect(some).not.toContain("Changes undone.");
+    expect(some).toContain('<div class="undo-outcome skipped" role="status">');
 
     const none = outcome(
       [
@@ -2826,6 +2832,7 @@ describe("undo changes", () => {
       3,
     );
     expect(none).toContain("No change was undone. Undo changes again to retry the files skipped.");
+    expect(none).toContain('<div class="undo-outcome skipped" role="status">');
     expect(none).toContain('<code class="undo-path">a.ts</code>: skipped, it has unsaved changes in an editor');
     expect(none).toContain('<code class="undo-path">b.ts</code>: skipped, it could not be restored (EACCES)');
   });

@@ -224,6 +224,30 @@ describe("RecordedChanges.restore", () => {
     expect(changes.files).toEqual([]);
   });
 
+  test("names the temporary file a failed restoring write left behind, with its cause", async () => {
+    await mkdir(join(app.path, "r8"));
+    await writeFile(join(app.path, "r8", "a.txt"), "T0\n");
+    const changes = new RecordedChanges();
+    await write(changes, "edit_file", { path: "r8/a.txt", old: "T0", new: "T1" });
+    const lock = () => chmod(join(app.path, "r8"), 0o555);
+    try {
+      expect(await changes.restore([app], noUnsaved, { afterLastCheck: lock })).toEqual([
+        {
+          status: "skipped",
+          reason: "failed",
+          cause: "EACCES",
+          path: "r8/a.txt",
+          realPath: join(realApp, "r8", "a.txt"),
+          leftover: { name: expect.stringMatching(/^\.a\.txt\.broke-code-[0-9a-f]{12}\.tmp$/), cause: "EACCES" },
+        },
+      ]);
+    } finally {
+      await chmod(join(app.path, "r8"), 0o755);
+    }
+    expect(await readFile(join(app.path, "r8", "a.txt"), "utf8")).toBe("T1\n");
+    expect(changes.files).toHaveLength(1);
+  });
+
   test("restoring the same writes twice reports the same files and changes nothing the second time", async () => {
     await mkdir(join(app.path, "r7"));
     await writeFile(join(app.path, "r7", "a.txt"), "T0\n");

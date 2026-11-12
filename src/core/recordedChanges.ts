@@ -13,6 +13,7 @@ import {
   type WorkspaceRoot,
   type WriteFailure,
   type WriteOutcome,
+  type WriteSeam,
   writeWorkspaceFile,
 } from "./workspaceFiles";
 import type { ChangeApplier, WriteApprovalHost } from "./writeTools";
@@ -64,14 +65,18 @@ export class RecordedChanges {
    * counts as restored or removed. A file `host` reports unsaved in an editor, or any other refusal, is skipped
    * untouched (see `RestoreRefusal`). Restored and removed files leave the set; skipped ones stay, so a second run
    * retries only them. Each file holds its old text or the written one, never a mix, so running twice or after a crash
-   * halfway is safe. Never rejects while `host` does not.
+   * halfway is safe. Never rejects while `host` does not. `seam`: for tests, passed to each restoring write.
    */
-  async restore(roots: WorkspaceRoot[], host: Pick<WriteApprovalHost, "hasUnsavedChanges">): Promise<RestoreOutcome[]> {
+  async restore(
+    roots: WorkspaceRoot[],
+    host: Pick<WriteApprovalHost, "hasUnsavedChanges">,
+    seam: WriteSeam = {},
+  ): Promise<RestoreOutcome[]> {
     // [>]: Real roots, so a recorded real path is inside them as written; a root that no longer resolves holds nothing.
     const realRoots = await realWorkspaceRoots(roots);
     const outcomes: RestoreOutcome[] = [];
     for (const file of this.files) {
-      const outcome = await restoreFile(realRoots, file, host);
+      const outcome = await restoreFile(realRoots, file, host, seam);
       // [>]: Only the entry handled: a write recorded meanwhile replaced it and is left for the next run.
       if (outcome.status !== "skipped" && this.byPath.get(file.realPath) === file) this.byPath.delete(file.realPath);
       outcomes.push(outcome);
@@ -84,13 +89,14 @@ async function restoreFile(
   realRoots: WorkspaceRoot[],
   file: RecordedFile,
   host: Pick<WriteApprovalHost, "hasUnsavedChanges">,
+  seam: WriteSeam,
 ): Promise<RestoreOutcome> {
   const { path, realPath } = file;
   if (await host.hasUnsavedChanges(realPath)) return { path, realPath, status: "skipped", reason: "unsaved" };
   if (file.original === undefined) {
     return { path, realPath, ...removeResult(await removeWorkspaceFile(realRoots, realPath, file.written)) };
   }
-  const written = await writeWorkspaceFile(realRoots, realPath, file.written, file.original);
+  const written = await writeWorkspaceFile(realRoots, realPath, file.written, file.original, seam);
   const leftover = written.leftover === undefined ? {} : { leftover: written.leftover };
   return { path, realPath, ...leftover, ...writeResult(written) };
 }
