@@ -604,6 +604,14 @@ its fence is closed or the reply has ended.
   changes. The focus stays in the chat.
 - An empty block's buttons are disabled.
 
+## Quoting an answer
+
+Select text in an answer, and a **Quote** button shows under it. Press it, or press Tab then Enter, to put the selected
+text in the message box as a Markdown quote (each line starts with `> `), followed by a blank line for your question.
+The text is quoted as you see it, without Markdown marks. A quote is added after what the box already holds, and
+nothing is sent until you send it. Quote shows only for an answer's text, not for your messages, tool steps, or the
+model's reasoning.
+
 ## Commit messages
 
 In the Source Control view, the **Generate commit message** button (a sparkle) sits in the title of each git
