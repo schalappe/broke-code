@@ -560,7 +560,8 @@ The token count turns bold from three quarters of the context size, and a line a
 `/compact`, so you see the end coming. If the request still does not fit, the turn stops without sending it. The chat
 then shows one warning line above the message box with **Summarize (/compact)**, and **Send**, **Retry**,
 **Continue**, and **Edit** stay disabled until the conversation fits again: each would stop at once. **New chat** in
-the header still starts over. `/new`, `/model`, and `/compact` still work. With
+the header still starts over. `/new`, `/model`, and `/compact` still work. When even the summary would not fit, the
+warning line says so and offers no **Summarize** button: start a new chat. With
 automatic compaction on, a notice says the next message summarizes the conversation first, and **Send** works as usual
 (see [Summarizing with `/compact`](#summarizing-with-compact)).
 

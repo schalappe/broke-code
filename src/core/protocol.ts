@@ -165,7 +165,8 @@ export type SkillWarning = { path: string; problem: SkillProblem };
  * absent when it reported none, after a change of the conversation shown or of the model, and after a window reload.
  * `full`: the request fills the context even with those results left out (`fillsContext`), so an agent turn would end
  * `halted` on `contextFull` before sending (`halts`), or summarize the conversation first (`compacts`, with
- * `brokeCode.autoCompact` on); absent while it fits.
+ * `brokeCode.autoCompact` on); `summaryHalts` when the summary request (`/compact`'s, automatic or not) fills it too,
+ * so the turn and the summary would both halt before sending; absent while it fits.
  */
 export type ContextUsage = {
   used: number;
@@ -173,7 +174,7 @@ export type ContextUsage = {
   known: boolean;
   leftOut?: number;
   reported?: ReportedUsage;
-  full?: "halts" | "compacts";
+  full?: "halts" | "compacts" | "summaryHalts";
 };
 
 /**

@@ -3050,6 +3050,24 @@ describe("context usage", () => {
     });
   });
 
+  test("a full context even a summary cannot free names New chat only, and Send and Retry stay disabled", async () => {
+    const entries: ChatEntry[] = [
+      { role: "user", content: "Hi", mentions: [] },
+      { role: "assistant", reasoning: "", content: "Hel", status: "stopped" },
+    ];
+    const context = { used: 950, size: 1000, known: true, full: "summaryHalts" as const };
+    await withPanel(stateWith(true, { entries, context }), async ({ host, type, press }) => {
+      expect(host.innerHTML).toContain(
+        '<section class="warning context-full"><p>The conversation fills the model\'s context, even for a summary. Start a new chat with New chat.</p></section>',
+      );
+      expect(host.innerHTML).not.toContain("Summarize (/compact)");
+      expect(host.innerHTML).toContain('disabled="">Retry</button>');
+      await type("one more thing");
+      await press("Enter");
+      expect(posted).toEqual([]);
+    });
+  });
+
   test("a full context the turn summarizes first shows one notice, and Send still sends", async () => {
     const context = { used: 950, size: 1000, known: true, full: "compacts" as const };
     await withPanel(stateWith(true, { context }), async ({ host, type, press }) => {

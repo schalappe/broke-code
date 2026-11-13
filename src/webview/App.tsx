@@ -214,7 +214,7 @@ export function App({
               changedFiles={state.changedFiles}
               // [>]: On a full context that halts, Retry, Continue, Edit, and "Implement in ... mode" would start a turn
               // that ends at once, as a new message would.
-              canAct={sendWouldAct(state) && state.context.full !== "halts"}
+              canAct={sendWouldAct(state) && !turnHalts(state.context)}
               implementIn={state.mode === "plan" ? state.settingMode : undefined}
               hidden={historyOpen}
               replacing={replacingNow !== undefined}
@@ -516,10 +516,16 @@ function isNearlyFull({ used, size }: ContextUsage): boolean {
   return used >= size * NEARLY_FULL;
 }
 
+/** A full context on which a new turn would halt before sending (`ContextUsage.full`), with or without a summary way out. */
+function turnHalts(context: ContextUsage): boolean {
+  return context.full === "halts" || context.full === "summaryHalts";
+}
+
 /**
  * What the panel says about a context near or past its size, over the message box. Full, when a turn would halt on it
  * (`ContextUsage.full`), one warning line and the summary (`/compact`), the one way out that keeps the conversation;
- * New chat stays in the header, and the message box sends nothing else until then. Full, when the turn summarizes
+ * New chat stays in the header, and the message box sends nothing else until then. Full, when even the summary would
+ * halt, one warning line that names New chat, the only way out, and no summary button. Full, when the turn summarizes
  * first (`brokeCode.autoCompact`), one notice line. Nearly full, one notice line that points at the summary before the
  * wall. No live region: a halt is announced as the reply ends, and these lines change with the usage at every delta.
  * `canAct`: Send would act, which the summary needs too.
@@ -528,6 +534,15 @@ function ContextNotice({ context, canAct }: { context: ContextUsage; canAct: boo
   if (context.full === "compacts") {
     return (
       <p className="notice">{l10n.t("The context is full: the next message summarizes the conversation first.")}</p>
+    );
+  }
+  if (context.full === "summaryHalts") {
+    return (
+      <section className="warning context-full">
+        <p>
+          {l10n.t("The conversation fills the model's context, even for a summary. Start a new chat with New chat.")}
+        </p>
+      </section>
     );
   }
   if (context.full === "halts") {
@@ -2258,7 +2273,7 @@ function Composer({
   const canQueue = ready && replying && !state.modePending && state.queue.length < MAX_QUEUED_MESSAGES;
   // [>]: A message would end its turn at once on a full context: only the built-in commands, `/compact` and `/new`
   // among them, still go. The block over the box says why.
-  const contextFull = state.context.full === "halts";
+  const contextFull = turnHalts(state.context);
   const blocked = (draft: string) => contextFull && !builtInCommand(draft);
 
   const clear = () => {

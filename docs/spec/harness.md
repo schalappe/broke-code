@@ -535,12 +535,16 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
   with reason `contextFull`, saved like the other halts; it is never a `ProviderError`, which means a request was sent.
   The usage display (`ChatState.context`) counts the request as it would be sent, and its optional `full` says that
   estimate still fills the context (`fillsContext`): `halts` when the next turn would end `contextFull` before sending,
-  `compacts` when `brokeCode.autoCompact` is on, read from the limits as they are now. With `halts`, the panel shows one
+  `compacts` when `brokeCode.autoCompact` is on, read from the limits as they are now, and `summaryHalts`, whatever the
+  setting, when the summary request (`summaryMessages`, with the instruction files the last send or `/compact` read)
+  fills the context too, so the automatic summary and `/compact` would both halt before sending. With `halts`, the panel shows one
   warning line over the message box ("The conversation fills the model's context.") with "Summarize (/compact)" under it
   (posts `compact`; New chat stays in the header), and Send, Enter, and Send now send no ordinary message; Retry,
   Continue, Edit, and "Implement in ... mode" are disabled too, since each starts a turn that would halt at once. The
   built-in commands still run, and the host checks nothing more, so a lagging panel only costs the halt it would have
-  had. With `compacts`, one notice line says the next message summarizes the conversation first. From three quarters
+  had. With `summaryHalts`, the warning line says "The conversation fills the model's context, even for a summary.
+  Start a new chat with New chat." with no button, and the message box and those buttons are disabled as with
+  `halts`. With `compacts`, one notice line says the next message summarizes the conversation first. From three quarters
   of the size on, or with `full`, the usage takes the full foreground in weight 600, and below `full` one notice line
   says "The context is nearly full: /compact summarizes the conversation to free it." None of these lines is a live
   region: they change with the usage, and a halt is announced as its reply ends. A `contextFull` halt shows in the warning look, not as an ordinary turn ending. Its optional `leftOut`

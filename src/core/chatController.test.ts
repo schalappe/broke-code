@@ -4359,7 +4359,8 @@ describe("ChatController agent turn", () => {
       const { controller, state, sent } = await scripted([{ content: "never sent" }], undefined, undefined, on());
       await controller.send("x".repeat(4000));
       expect(sent()).toHaveLength(0);
-      expect(state().context.full).toBe("compacts");
+      // [>]: No summary can free this context, automatic or `/compact`: the state says both would halt.
+      expect(state().context.full).toBe("summaryHalts");
       expect(state().entries).toEqual([
         { role: "user", content: "x".repeat(4000), mentions: [] },
         { role: "assistant", reasoning: "", content: "", status: "halted", haltReason: "contextFull" },
@@ -4382,6 +4383,8 @@ describe("ChatController agent turn", () => {
         error: { kind: "rejected", status: 500 },
       });
       expect(isReplying(state())).toBe(false);
+      // [>]: The summary request fit: the next message summarizes first again.
+      expect(state().context.full).toBe("compacts");
     });
 
     test("an empty summary ends the turn contextFull", async () => {

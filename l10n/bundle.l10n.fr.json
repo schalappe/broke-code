@@ -321,6 +321,7 @@
   "{0} · {1} messages": "{0} · {1} messages",
   "you answered": "votre réponse",
   "The conversation fills the model's context.": "La discussion remplit le contexte du modèle.",
+  "The conversation fills the model's context, even for a summary. Start a new chat with New chat.": "La discussion remplit le contexte du modèle, même pour un résumé. Commencez une nouvelle discussion avec Nouvelle discussion.",
   "Summarize (/compact)": "Résumer (/compact)",
   "The context is nearly full: /compact summarizes the conversation to free it.": "Le contexte est presque plein : /compact résume la discussion pour le libérer."
 }
