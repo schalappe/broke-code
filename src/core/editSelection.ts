@@ -260,6 +260,43 @@ export function requestPath(scheme: string, path: string, roots: readonly Worksp
   return rest === "" ? basename(path) : rest;
 }
 
+export const EDIT_SELECTION_COMMAND = "broke-code.editSelection";
+
+/**
+ * The presets: commands that run "Edit selection" with a fixed instruction and no input box, by command. Model-facing,
+ * so English whatever the display language.
+ */
+export const EDIT_PRESETS = {
+  "broke-code.refactorSelection":
+    "Refactor this code to make it simpler and easier to read. Keep its behavior and its public names unchanged.",
+  "broke-code.documentSelection":
+    "Add documentation comments to this code, in the documentation style of its language. Change nothing else.",
+  "broke-code.typeSelection":
+    "Add explicit type annotations to this code where the language allows them. Change nothing else.",
+} as const;
+
+/** "Edit selection" and its presets. */
+export type EditCommand = typeof EDIT_SELECTION_COMMAND | keyof typeof EDIT_PRESETS;
+
+/** Every command that runs a `SelectionEditor`: "Edit selection", then the presets. */
+export const EDIT_COMMANDS: readonly EditCommand[] = [
+  EDIT_SELECTION_COMMAND,
+  ...(Object.keys(EDIT_PRESETS) as (keyof typeof EDIT_PRESETS)[]),
+];
+
+/**
+ * The instruction `command` gives `SelectionEditor.run`: `ask` (the input box) for "Edit selection", the preset's
+ * fixed text for a preset, which never calls `ask`.
+ */
+export function editInstruction(
+  command: EditCommand,
+  ask: (document: EditDocument) => Promise<string | undefined>,
+): (document: EditDocument) => Promise<string | undefined> {
+  if (command === EDIT_SELECTION_COMMAND) return ask;
+  const preset = EDIT_PRESETS[command];
+  return async () => preset;
+}
+
 /** The URI scheme of both sides of an edit's diff, not the approval diffs' (`CHANGE_SCHEME`). */
 export const EDIT_SCHEME = "broke-code-edit";
 
@@ -312,10 +349,10 @@ type Run = { document: EditDocument; stop: AbortController; diff?: { id: string;
 type RequestResult = { kind: "reply"; text: string } | { kind: "stopped" } | { kind: "error"; text: ErrorText };
 
 /**
- * The `broke-code.editSelection` command. A run checks the active editor's selection and document, that no run is in
+ * The `broke-code.editSelection` command and its presets. A run checks the active editor's selection and document, that no run is in
  * progress on that document, and the chat's provider and model; then it asks the caller's instruction, checks the
  * budget, sends one streaming request, cleans the reply, and shows it as a diff. The run lasts until Accept
- * (`accept`), Reject (`reject`), the diff's tab closing (`diffClosed`), Cancel, or an error; one run per document.
+ * (`accept`), Reject (`reject`), the diff's tab closing (`diffClosed`), Cancel, or an error; one run per document, whichever command started it.
  * Accept applies one edit to the document, only when the range sent still holds the text sent. `dispose`
  * (deactivation) aborts every request and closes the diffs. Touches no conversation.
  */

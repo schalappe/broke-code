@@ -1,7 +1,7 @@
 # Edit selection
 
 This file specifies the command "broke-code: Edit selection": one request that rewrites the editor's selection, shown
-as a diff to accept or reject. ADR 0007 records the decision behind it; ADR 0004 is the precedent of a request outside
+as a diff to accept or reject, and its three presets. ADR 0007 records the decision behind it; ADR 0004 is the precedent of a request outside
 the chat.
 
 ## Entry points
@@ -9,12 +9,35 @@ the chat.
 - The command `broke-code.editSelection` ("broke-code: Edit selection") is in the Command Palette and in the
   `broke-code` submenu of the editor's context menu. It has no default keybinding.
 - The submenu (`broke-code.editor`, label "broke-code") is the `editor/context` entry, group `broke-code`, shown when
-  `editorHasSelection`. It holds "Add selection to chat" (`broke-code@1`) and "Edit selection" (`broke-code@2`, also
-  `!editorReadonly`). "Add selection to chat" is no longer a direct entry of the context menu
+  `editorHasSelection`. It holds "Add selection to chat" (`broke-code@1`), "Edit selection" (`broke-code@2`, also
+  `!editorReadonly`), and the three presets (`broke-code@3` to `@5`, see Presets). "Add selection to chat" is no longer a direct entry of the context menu
   (`docs/spec/mentions.md`).
 - Accept (`broke-code.acceptEdit`, `$(check)`) and Reject (`broke-code.rejectEdit`, `$(close)`) are in `editor/title`,
   group `navigation`, `when` `resourceScheme == broke-code-edit`: only on an edit's diff tab, never on an ordinary
   editor or a write approval's diff (`broke-code-change`). The Command Palette hides both (`when` `false`).
+
+## Presets
+
+Three commands run the same flow with a fixed instruction and no input box: the same checks, request, cleaning, diff,
+Accept and Reject. `EDIT_PRESETS` (`src/core/editSelection.ts`) maps each command to its instruction, model-facing
+English whatever the display language:
+
+| Command | Title (French) | Instruction |
+|---|---|---|
+| `broke-code.refactorSelection` | Refactor selection (Refactoriser la sélection) | `Refactor this code to make it simpler and easier to read. Keep its behavior and its public names unchanged.` |
+| `broke-code.documentSelection` | Add documentation comments (Ajouter des commentaires de documentation) | `Add documentation comments to this code, in the documentation style of its language. Change nothing else.` |
+| `broke-code.typeSelection` | Add types (Ajouter les types) | `Add explicit type annotations to this code where the language allows them. Change nothing else.` |
+
+- Each is in the Command Palette with the category `broke-code`, where the category leads the title, and in the
+  `broke-code` submenu, where the title shows alone. One command has one title in both places: the context menu does
+  not render a short title. None has a default keybinding.
+- The submenu's five entries carry an explicit order, since VS Code otherwise sorts a group by title, differently in
+  each language: Add selection to chat (`broke-code@1`), Edit selection (`@2`), Refactor selection (`@3`), Add
+  documentation comments (`@4`), Add types (`@5`). The four edit entries are hidden in a read-only editor
+  (`!editorReadonly`).
+- A preset's run is the document's run: a preset and "Edit selection" on the same document refuse each other.
+- The cleaning needs no rule of its own: a fenced example inside a documentation comment is code holding a fence, kept
+  whole.
 
 ## A run
 
@@ -34,9 +57,9 @@ nothing sent:
 3. The provider and model selected in the chat, read now and kept for the run (`ChatModel`, the lookup the commit
    message command shares). None: "Choose a provider and a model in the broke-code chat first.".
 
-Then the instruction, from a function the caller passes to `run`. For this command it is an input box ("Edit
-selection", the file's name in its prompt, `ignoreFocusOut`); Escape or a blank instruction ends the run with nothing
-sent and frees the document. Then the budget, then the request. The document and its selection are the ones read in
+Then the instruction, from a function the caller passes to `run` (`editInstruction`). For "Edit selection" it is an
+input box ("Edit selection", the file's name in its prompt, `ignoreFocusOut`); Escape or a blank instruction ends the
+run with nothing sent and frees the document. For a preset it is the preset's text, and no input box opens. Then the budget, then the request. The document and its selection are the ones read in
 step 1, before the instruction.
 
 ## The request
@@ -114,7 +137,7 @@ pinned (`preview: false`) and takes the focus.
 
 ## One run per document
 
-A run lasts from the command until Accept, Reject, the tab closing, Cancel, or an error. Runs on different documents,
+A run lasts from the command, "Edit selection" or a preset, until Accept, Reject, the tab closing, Cancel, or an error. Runs on different documents,
 and a chat reply in flight, do not interfere. On deactivation or window reload `dispose` aborts the requests and
 closes every edit diff tab, a crashed host's included; nothing is restored after a reload. An unexpected exception is
 logged and shown ("Could not edit the selection.") and frees the document.

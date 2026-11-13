@@ -30,8 +30,9 @@ This file says which file holds which responsibility. Update it when a module ga
   request, and user interface ports), "Edit selection" (`editSelection.ts`: `composeEditRequest`, the request's
   system prompt and the lines around the selection cut to the context threshold, half and half then pooled;
   `cleanEditReply`, the reply's reasoning, one wrapping fence, the re-based indentation, and line breaks;
-  `requestPath`, the document's name in the request; `EDIT_SCHEME`, the scheme of its diff's sides; and
-  `SelectionEditor`, the command over its provider request, document, diff, and user interface ports: the checks in
+  `requestPath`, the document's name in the request; `EDIT_SCHEME`, the scheme of its diff's sides; `EDIT_PRESETS`
+  and `editInstruction`, the three presets' fixed instructions by command and each command's instruction; and
+  `SelectionEditor`, the command and its presets over its provider request, document, diff, and user interface ports: the checks in
   order, the caller's instruction, one run per document, Accept's range check and one edit, Reject, a closed tab,
   and dispose), the chat controller (conversation state, the agent turn loop with its tool runner, instruction reader, and
   skill reader ports, its limits source and step limits, the context budget check, the usage display with the last reported usage (`ContextUsage.reported`), streaming, Stop, saving, reopen, delete,
@@ -158,7 +159,8 @@ This file says which file holds which responsibility. Update it when a module ga
   `DraftQueue` to the view's focus command and `postMessage` (`insertDraft`); `extension.ts` registers `broke-code.addSelectionToChat`,
   `broke-code.fixDiagnostic`, and the code action provider of the quick fix; `commitMessage.ts` registers `broke-code.generateCommitMessage`, its git port over the
   built-in Git extension's API, the repository Quick Pick, the replace question, the progress notification, and the
-  notifications; `editSelection.ts` registers `broke-code.editSelection` and the diff's `broke-code.acceptEdit` and
+  notifications; `editSelection.ts` registers `broke-code.editSelection`, its presets `broke-code.refactorSelection`,
+  `broke-code.documentSelection`, and `broke-code.typeSelection`, and the diff's `broke-code.acceptEdit` and
   `broke-code.rejectEdit`: the active editor read with the writable check, the instruction's input box, the progress
   notification, the diff's content provider of `EDIT_SCHEME`, the closing of its tabs and the watch of
   `tabGroups.onDidChangeTabs` for a tab the user closed, and the edit as one `WorkspaceEdit` on the document's URI).
@@ -187,7 +189,8 @@ This file says which file holds which responsibility. Update it when a module ga
   `describeContextTitle`).
 - `src/l10n.test.ts`: checks that every `l10n.t` message has a French translation and that the
   `package.nls*.json` files match. `src/manifest.test.ts`: checks the manifest's editor menus: the `broke-code`
-  submenu, and Accept and Reject on the edit diff's title bar only.
+  submenu and the order of its five entries, the presets in the Command Palette, and Accept and Reject on the edit
+  diff's title bar only.
 - `l10n/bundle.l10n.fr.json`, `package.nls.json`, `package.nls.fr.json`: French strings for the host and
   webview, and the English and French manifest strings. English messages are the keys of `l10n.t`.
 - `scripts/build.ts`: `bun run build` writes the host bundle (`dist/extension.js`, CommonJS) and the webview

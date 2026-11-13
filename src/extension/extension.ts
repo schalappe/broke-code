@@ -3,7 +3,7 @@
  * Activation entry point: wires settings, API keys, mentions (and the diagnostics `@problems`, the git diffs `@diff`,
  * and the selection `@selection` read), read tools, write tools and commands behind their approval, each turn's
  * written files recorded for "Undo changes" and listed in "Changed files" with their diffs, instruction files, skills, turn limits, file index, saved conversations, chat controller, chat view, `broke-code.setApiKey`,
- * `broke-code.addProvider`, `broke-code.generateCommitMessage`, `broke-code.editSelection`, the notifications of a turn that ended or waits while
+ * `broke-code.addProvider`, `broke-code.generateCommitMessage`, `broke-code.editSelection` and its presets, the notifications of a turn that ended or waits while
  * the chat is not in view, and the editor's entry points into the chat:
  * `broke-code.addSelectionToChat` and the quick fix "Fix with broke-code" (`broke-code.fixDiagnostic`).
  */

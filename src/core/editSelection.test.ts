@@ -4,9 +4,12 @@ import {
   cleanEditReply,
   composeEditRequest,
   EARLIER_NOT_SHOWN,
+  EDIT_SELECTION_COMMAND,
+  type EditCommand,
   type EditDocument,
   type EditedSelection,
   type EditorState,
+  editInstruction,
   LATER_NOT_SHOWN,
   type LiveDocument,
   requestPath,
@@ -560,6 +563,68 @@ describe("SelectionEditor", () => {
     expect(calls.closedAll).toBe(1);
     await editor.run(state(), say("Subtract"));
     expect(calls.requests).toHaveLength(1);
+  });
+
+  test("each preset sends its exact instruction and never asks for one", async () => {
+    const presets: [EditCommand, string][] = [
+      [
+        "broke-code.refactorSelection",
+        "Refactor this code to make it simpler and easier to read. Keep its behavior and its public names unchanged.",
+      ],
+      [
+        "broke-code.documentSelection",
+        "Add documentation comments to this code, in the documentation style of its language. Change nothing else.",
+      ],
+      [
+        "broke-code.typeSelection",
+        "Add explicit type annotations to this code where the language allows them. Change nothing else.",
+      ],
+    ];
+    for (const [command, instruction] of presets) {
+      const { ports, calls } = fakePorts();
+      let asked = 0;
+      const ask = async () => {
+        asked++;
+        return "typed";
+      };
+      await new SelectionEditor(ports, english).run(state(), editInstruction(command, ask));
+      expect(asked).toBe(0);
+      expect(calls.requests).toHaveLength(1);
+      expect(calls.requests[0]?.messages[1]?.content).toEndWith(`Instruction:\n${instruction}`);
+      expect(calls.diffs).toHaveLength(1);
+    }
+  });
+
+  test("Edit selection asks for its instruction", async () => {
+    const { ports, calls } = fakePorts();
+    await new SelectionEditor(ports, english).run(state(), editInstruction(EDIT_SELECTION_COMMAND, say("Subtract")));
+    expect(calls.requests[0]?.messages[1]?.content).toEndWith("Instruction:\nSubtract");
+  });
+
+  test("a preset and Edit selection on the same document refuse each other", async () => {
+    const { ports, calls } = fakePorts({ reply: untilAborted });
+    const editor = new SelectionEditor(ports, english);
+    const preset = editor.run(state(), editInstruction("broke-code.typeSelection", say(undefined)));
+    await Bun.sleep(0);
+    await editor.run(state(), editInstruction(EDIT_SELECTION_COMMAND, say("Subtract")));
+    await editor.run(state(), editInstruction("broke-code.refactorSelection", say(undefined)));
+    expect(calls.errors).toEqual([
+      { message: "An edit is already in progress for a.ts." },
+      { message: "An edit is already in progress for a.ts." },
+    ]);
+    expect(calls.requests).toHaveLength(1);
+    editor.dispose();
+    await preset;
+
+    const { ports: second, calls: secondCalls } = fakePorts({ reply: untilAborted });
+    const other = new SelectionEditor(second, english);
+    const asked = other.run(state(), editInstruction(EDIT_SELECTION_COMMAND, say("Subtract")));
+    await Bun.sleep(0);
+    await other.run(state(), editInstruction("broke-code.documentSelection", say(undefined)));
+    expect(secondCalls.errors).toEqual([{ message: "An edit is already in progress for a.ts." }]);
+    expect(secondCalls.requests).toHaveLength(1);
+    other.dispose();
+    await asked;
   });
 
   test("a diff that opens after dispose is closed at once", async () => {

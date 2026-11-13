@@ -1,7 +1,7 @@
 /**
  * @module editSelection
- * The `broke-code.editSelection` command's host side: the active editor read when the command runs, the instruction's
- * input box, the progress notification, the diff of two read-only virtual documents of `EDIT_SCHEME` with its tab
+ * The host side of `broke-code.editSelection` and its presets: the active editor read when a command runs, the
+ * instruction's input box of "Edit selection", the progress notification, the diff of two read-only virtual documents of `EDIT_SCHEME` with its tab
  * watched for closing, the edit applied through a `WorkspaceEdit`, and the Accept and Reject commands of the diff's
  * title bar, over the core's `SelectionEditor`.
  */
@@ -11,9 +11,11 @@ import { basename } from "node:path";
 import * as vscode from "vscode";
 import { type ChatModel, streamChat } from "../core/client";
 import {
+  EDIT_COMMANDS,
   EDIT_SCHEME,
   type EditDocument,
   type EditorState,
+  editInstruction,
   type LiveDocument,
   requestPath,
   SelectionEditor,
@@ -22,12 +24,11 @@ import {
 import type { ProviderSupport } from "../core/providerSupport";
 import type { WorkspaceRoot } from "../core/workspaceFiles";
 
-export const EDIT_SELECTION_COMMAND = "broke-code.editSelection";
 export const ACCEPT_EDIT_COMMAND = "broke-code.acceptEdit";
 export const REJECT_EDIT_COMMAND = "broke-code.rejectEdit";
 
 /**
- * Register the command, Accept and Reject, the diffs' content provider, and the watch of their tabs. `chatModel`
+ * Register "Edit selection" and its presets, Accept and Reject, the diffs' content provider, and the watch of their tabs. `chatModel`
  * gives the chat's provider and model; `providerSupport` is the chat's memory of each model; `roots` the workspace
  * folders, for the path the request names. The disposable aborts every request and closes the diffs.
  */
@@ -71,7 +72,11 @@ export function registerEditSelectionCommand(
     }
   };
   return vscode.Disposable.from(
-    vscode.commands.registerCommand(EDIT_SELECTION_COMMAND, () => editor.run(() => readEditor(roots), askInstruction)),
+    ...EDIT_COMMANDS.map((command) =>
+      vscode.commands.registerCommand(command, () =>
+        editor.run(() => readEditor(roots), editInstruction(command, askInstruction)),
+      ),
+    ),
     vscode.commands.registerCommand(ACCEPT_EDIT_COMMAND, (target?: unknown) => {
       const id = targetDiff(target);
       return id === undefined ? undefined : editor.accept(id);

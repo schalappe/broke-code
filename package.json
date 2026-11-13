@@ -69,6 +69,21 @@
         "category": "broke-code"
       },
       {
+        "command": "broke-code.refactorSelection",
+        "title": "%command.refactorSelection.title%",
+        "category": "broke-code"
+      },
+      {
+        "command": "broke-code.documentSelection",
+        "title": "%command.documentSelection.title%",
+        "category": "broke-code"
+      },
+      {
+        "command": "broke-code.typeSelection",
+        "title": "%command.typeSelection.title%",
+        "category": "broke-code"
+      },
+      {
         "command": "broke-code.acceptEdit",
         "title": "%command.acceptEdit.title%",
         "category": "broke-code",
@@ -117,6 +132,21 @@
           "command": "broke-code.editSelection",
           "when": "!editorReadonly",
           "group": "broke-code@2"
+        },
+        {
+          "command": "broke-code.refactorSelection",
+          "when": "!editorReadonly",
+          "group": "broke-code@3"
+        },
+        {
+          "command": "broke-code.documentSelection",
+          "when": "!editorReadonly",
+          "group": "broke-code@4"
+        },
+        {
+          "command": "broke-code.typeSelection",
+          "when": "!editorReadonly",
+          "group": "broke-code@5"
         }
       ],
       "editor/title": [

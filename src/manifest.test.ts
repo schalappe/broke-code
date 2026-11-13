@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { EDIT_SCHEME } from "./core/editSelection";
+import { EDIT_PRESETS, EDIT_SCHEME } from "./core/editSelection";
 
 type MenuItem = { command?: string; submenu?: string; when?: string; group?: string };
 type Manifest = {
@@ -23,11 +23,14 @@ describe("the editor's broke-code submenu", () => {
     expect(submenus.find((submenu) => submenu.id === entry?.submenu)?.label).toBe("broke-code");
   });
 
-  test("holds Add selection to chat, then Edit selection, which a read-only editor hides", () => {
+  test("holds Add selection to chat, Edit selection, then its presets, in that order; a read-only editor hides the edits", () => {
     const items = menus[entry?.submenu ?? ""] ?? [];
     expect(items.map((item) => [item.command, item.group?.split("@")[1], item.when])).toEqual([
       ["broke-code.addSelectionToChat", "1", undefined],
       ["broke-code.editSelection", "2", "!editorReadonly"],
+      ["broke-code.refactorSelection", "3", "!editorReadonly"],
+      ["broke-code.documentSelection", "4", "!editorReadonly"],
+      ["broke-code.typeSelection", "5", "!editorReadonly"],
     ]);
     expect(new Set(items.map((item) => item.group?.split("@")[0])).size).toBe(1);
   });
@@ -43,6 +46,15 @@ describe("Edit selection", () => {
     expect(command?.category).toBe("broke-code");
     expect(menus.commandPalette?.some((item) => item.command === "broke-code.editSelection")).toBe(false);
     expect(keybindings.some((binding) => binding.command === "broke-code.editSelection")).toBe(false);
+  });
+
+  test("its presets are in the Command Palette under the broke-code category, with one title each", () => {
+    for (const id of Object.keys(EDIT_PRESETS)) {
+      const command = commands.find((each) => each.command === id);
+      expect(command?.category).toBe("broke-code");
+      expect(command?.title).toMatch(/^%command\.\w+\.title%$/);
+      expect(menus.commandPalette?.some((item) => item.command === id)).toBe(false);
+    }
   });
 
   test("Accept and Reject are hidden from the Command Palette and sit in the title bar of an edit diff only", () => {

@@ -42,7 +42,8 @@ supports them (ADR 0001), so one contract covers the internal service and Ollama
   `/compact`, and automatic compaction are everyday parts of use, not edge cases.
 - The workspace's own conventions: `AGENTS.md` instruction files and Agent Skills under `.agents/skills/`.
 - Entry points outside the chat: the editor's "broke-code" submenu ("Add selection to chat" and "Edit selection", a
-  one-request rewrite of the selection shown as a diff, ADR 0007), the quick fix "Fix with broke-code", and "Generate
+  one-request rewrite of the selection shown as a diff, ADR 0007, with its presets "Refactor selection", "Add
+  documentation comments", and "Add types"), the quick fix "Fix with broke-code", and "Generate
   commit message" in Source Control.
 
 ## Capabilities and Constraints

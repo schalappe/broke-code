@@ -189,8 +189,8 @@ broke-code attaches nothing in these cases, shows the chip in the error color, a
 
 Two entry points fill the chat's message box from the editor, and a third rewrites the selection in place.
 
-When text is selected, the editor's context menu has a **broke-code** submenu with **Add selection to chat** and
-**Edit selection**.
+When text is selected, the editor's context menu has a **broke-code** submenu with **Add selection to chat**, **Edit
+selection**, and its presets **Refactor selection**, **Add documentation comments**, and **Add types**.
 
 The first two send nothing. You read the draft, add to it, and send it yourself. Both open the chat panel, close
 History if it is open, and put the focus in the message box. Both work while a reply runs, since they only edit the
@@ -226,6 +226,17 @@ is saved. It is in the Command Palette and in the editor's broke-code submenu, a
 - The request uses the chat's provider, model, and context size. If the file is long, broke-code sends as many lines
   before and after the selection as fit. If the selection alone does not fit, it sends nothing and says so.
 - One edit runs per document at a time. It works while the chat replies.
+
+Three presets run Edit selection with a fixed instruction and no input box. They are in the Command Palette and in the
+editor's broke-code submenu:
+
+- **broke-code: Refactor selection** makes the code simpler and easier to read, and keeps its behavior and public names.
+- **broke-code: Add documentation comments** adds documentation comments in the style of the file's language, and
+  changes nothing else.
+- **broke-code: Add types** adds explicit type annotations where the language allows them, and changes nothing else.
+
+A preset counts as the document's edit: until it ends, Edit selection and the other presets refuse to start on that
+document, and say so.
 
 ## How the agent works
 
@@ -749,7 +760,7 @@ broke-code collects no telemetry. It contacts only the providers you configure. 
 broke-code sends the staged diff of that repository to the provider selected in the chat. When a message mentions
 `@diff`, broke-code sends the uncommitted changes of the workspace folders with it. When you run "Edit selection",
 broke-code sends the selection, the lines around it, the file's path, and your instruction to the provider selected in
-the chat.
+the chat; a preset sends its own instruction.
 
 ## Credits
 
