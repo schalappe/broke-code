@@ -6,10 +6,12 @@
  * entries and the workspace files after the run, never the wording of the answer beyond the value a scenario asks for.
  */
 
+import { ASK_USER_TOOL } from "../src/core/askUser";
 import { RUN_COMMAND_TOOL } from "../src/core/commands";
 import type { ChatEntry } from "../src/core/protocol";
 import type { ProviderError } from "../src/core/providerError";
 import { READ_TOOLS } from "../src/core/tools";
+import { WRITE_TOOLS } from "../src/core/writeTools";
 
 /**
  * Workspace files by relative POSIX path: a scenario's fixture, or the throwaway copy read back after a run. [!]: A
@@ -65,7 +67,8 @@ export type Verdict = { pass: true } | { pass: false; category: FailureCategory;
  * for a scenario that changes nothing. `check`: what else a turn that ended `done` with the expected workspace must
  * show, from its entries; absent when the workspace says it all. `rejectCommands`: every `run_command` approval is
  * rejected as the user's Reject does, so a command cannot stand in for the tool the scenario measures; absent, each is
- * approved.
+ * approved. `answer`: the bench's reply to every `ask_user` question of the run; absent, `DEFAULT_ANSWER`, so a
+ * scenario that needs no decision keeps measuring what it measured.
  */
 export type Scenario = {
   name: string;
@@ -75,10 +78,17 @@ export type Scenario = {
   writes: WorkspaceFiles;
   check?(entries: readonly ChatEntry[]): Verdict;
   rejectCommands?: true;
+  answer?: string;
 };
+
+/** The bench's reply to a question in a scenario that defines no answer of its own. */
+export const DEFAULT_ANSWER = "Decide yourself.";
 
 /** The tools whose `ok` text is what the model read: a value in it came from a file. */
 const READ_TOOL_NAMES = new Set(READ_TOOLS.map((tool) => tool.name));
+
+/** The tools that change a workspace file. */
+const WRITE_TOOL_NAMES = new Set(WRITE_TOOLS.map((tool) => tool.name));
 
 const ROUTE_SEED = "kestrel-4471-vanta";
 
@@ -432,6 +442,47 @@ export const RANGE_SCENARIO: Scenario = {
   },
 };
 
+const labels = (summary: string, name: string, params: string, body: string) =>
+  [`"""${summary}"""`, "", "", `def ${name}(${params}):`, `    return ${body}`, ""].join("\n");
+const DEPOT_LABELS = "src/depots/labels.py";
+const PARCEL_LABELS = "src/parcels/labels.py";
+const depotLabels = (name: string) => labels("Labels for depot shelves.", name, "depot, shelf", 'f"{depot}-{shelf}"');
+const parcelLabels = (name: string) => labels("Labels for parcels.", name, "parcel, weight", 'f"{parcel}-{weight}"');
+
+/**
+ * Ask before a choice only the user can make: two files define a function of the same name, and nothing in the
+ * workspace or the message favors one; the message asks to rename "the function" by that name. The bench answers with
+ * the file to change. Passes when exactly that rename landed in that file, the other file unchanged, and an `ok`
+ * `ask_user` step came before the first write; a right rename without it is `wrongTool`. Every command is rejected, so
+ * the rename goes through the write tools. Under the bench's `--no-ask-user`, judged on the workspace alone
+ * (`withoutAskUser`).
+ */
+export const ASK_SCENARIO: Scenario = {
+  name: "ask",
+  files: {
+    "README.md": "# Courier\n\nRoutes parcels between depots.\n",
+    [DEPOT_LABELS]: depotLabels("build_label"),
+    [PARCEL_LABELS]: parcelLabels("build_label"),
+  },
+  message: "Rename the function build_label to make_label. Change nothing else.",
+  writes: { [PARCEL_LABELS]: parcelLabels("make_label") },
+  rejectCommands: true,
+  answer: `Rename the one in ${PARCEL_LABELS}.`,
+  check(entries) {
+    const steps = entries.filter((entry) => entry.role === "tool");
+    const firstWrite = steps.findIndex((step) => WRITE_TOOL_NAMES.has(step.name));
+    const before = firstWrite === -1 ? steps : steps.slice(0, firstWrite);
+    if (!before.some((step) => step.name === ASK_USER_TOOL.name && step.status === "ok")) {
+      return {
+        pass: false,
+        category: "wrongTool",
+        detail: `no ask_user before the first write; steps: ${describeSteps(steps)}`,
+      };
+    }
+    return { pass: true };
+  },
+};
+
 /** Every scenario the bench plays, in order. */
 export const SCENARIOS: readonly Scenario[] = [
   READ_SCENARIO,
@@ -442,7 +493,20 @@ export const SCENARIOS: readonly Scenario[] = [
   SLASH_SCENARIO,
   HIDDEN_SCENARIO,
   RANGE_SCENARIO,
+  ASK_SCENARIO,
 ];
+
+/**
+ * `scenarios` as the bench judges them when `ask_user` is not offered: `ask` on the workspace alone, its check
+ * dropped, so the run measures what a model does without the tool; every other scenario as it is.
+ */
+export function withoutAskUser(scenarios: readonly Scenario[]): Scenario[] {
+  return scenarios.map((scenario) => {
+    if (scenario !== ASK_SCENARIO) return scenario;
+    const { check: _, ...workspaceOnly } = scenario;
+    return workspaceOnly;
+  });
+}
 
 /**
  * The verdict of one run of `scenario`: `entries` are the conversation after `send` resolved, `after` the workspace

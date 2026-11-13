@@ -6,6 +6,9 @@
  * and exits 1 when a model is under the bar. A model the server does not list, a server unreachable, or a macOS sandbox
  * that cannot be applied to the models' commands (`sandboxProblem`) exits 1 before any run. Runs locally on demand,
  * never in CI.
+ *
+ * `--no-ask-user` leaves the `ask_user` tool out of every run and judges the `ask` scenario on the workspace alone:
+ * the baseline that shows what the tool changes, `bun run eval --no-ask-user --scenario ask`.
  */
 
 import { rmSync } from "node:fs";
@@ -17,7 +20,15 @@ import { listModels, type ModelListing } from "../src/core/client";
 import { runCommand } from "../src/core/commands";
 import { formatDuration, formatReport, type RunResult } from "./report";
 import { benchCommandEnv, playScenario, type RunOutcome, SANDBOX_EXEC } from "./run";
-import { describeError, judge, SCENARIOS, type Scenario, type Verdict, workspaceChanges } from "./scenarios";
+import {
+  describeError,
+  judge,
+  SCENARIOS,
+  type Scenario,
+  type Verdict,
+  withoutAskUser,
+  workspaceChanges,
+} from "./scenarios";
 
 export const BENCH_MODELS = ["qwen3.8:27b", "gemma4:26b-a4b-it-qat"];
 export const OLLAMA_URL = "http://localhost:11434/v1";
@@ -32,8 +43,9 @@ const MAX_TOOL_STEPS = 10;
  * a model's runs together against the bar of one batch. `scenarios`: those `--scenario` names, repeatable, in the
  * order of `SCENARIOS`, each once, else every scenario. `runs`: `--runs`, else 10. `dump`: `--dump <file>`, a JSON
  * Lines file each run's `dumpLine` is appended to, for reading failed replies and writes. `baseUrl`: `--base-url`,
- * an `http` or `https` URL, trailing slashes dropped, else the local Ollama. Throws on an unknown scenario, a base URL
- * that is not one, and on any other flag.
+ * an `http` or `https` URL, trailing slashes dropped, else the local Ollama. `withoutAskUser`: `--no-ask-user`, under
+ * which `scenarios` judge `ask` on the workspace alone (`withoutAskUser` of `scenarios.ts`). Throws on an unknown
+ * scenario, a base URL that is not one, and on any other flag.
  */
 export function parseBenchArgs(args: string[]): {
   models: string[];
@@ -41,6 +53,7 @@ export function parseBenchArgs(args: string[]): {
   runs: number;
   dump: string | undefined;
   baseUrl: string;
+  withoutAskUser: boolean;
 } {
   const { values } = parseArgs({
     args,
@@ -50,6 +63,7 @@ export function parseBenchArgs(args: string[]): {
       runs: { type: "string" },
       dump: { type: "string" },
       "base-url": { type: "string" },
+      "no-ask-user": { type: "boolean" },
     },
     strict: true,
     allowPositionals: false,
@@ -64,12 +78,15 @@ export function parseBenchArgs(args: string[]): {
     throw new Error(`--scenario takes one of ${names.join(", ")}, not ${JSON.stringify(unknown)}.`);
   }
   const chosen = values.scenario;
-  const scenarios = chosen === undefined ? SCENARIOS : SCENARIOS.filter((scenario) => chosen.includes(scenario.name));
+  const named = chosen === undefined ? SCENARIOS : SCENARIOS.filter((scenario) => chosen.includes(scenario.name));
+  const noAskUser = values["no-ask-user"] === true;
+  const scenarios = noAskUser ? withoutAskUser(named) : named;
   const baseUrl = (values["base-url"] ?? OLLAMA_URL).replace(/\/+$/, "");
   if (!/^https?:\/\/[^/]/.test(baseUrl)) {
     throw new Error(`--base-url takes an http or https URL, not ${JSON.stringify(values["base-url"])}.`);
   }
-  return { models: [...new Set(values.model ?? BENCH_MODELS)], scenarios, runs, dump: values.dump, baseUrl };
+  const models = [...new Set(values.model ?? BENCH_MODELS)];
+  return { models, scenarios, runs, dump: values.dump, baseUrl, withoutAskUser: noAskUser };
 }
 
 /**
@@ -129,7 +146,8 @@ export async function trimIncompleteLine(path: string): Promise<number> {
 /**
  * One run as a line of the dump: its model, scenario, run number from 1, verdict, and whole milliseconds, then its
  * `entries` (tool steps with the arguments of their calls), `planned` (each change handed to the applier, in call
- * order, with its status), and `changes` (the entries that differ from the fixture after the run, see `workspaceChanges`).
+ * order, with its status), and `changes` (the entries that differ from the fixture after the run, see
+ * `workspaceChanges`).
  */
 export function dumpLine(run: {
   model: string;
@@ -154,7 +172,7 @@ export function dumpLine(run: {
 }
 
 async function main(): Promise<number> {
-  const { models, scenarios, runs, dump, baseUrl } = parseBenchArgs(process.argv.slice(2));
+  const { models, scenarios, runs, dump, baseUrl, withoutAskUser } = parseBenchArgs(process.argv.slice(2));
   const apiKey = process.env.BENCH_API_KEY || undefined;
 
   // [!]: Fail closed: a model's command never runs outside the sandbox, so no run starts without it.
@@ -176,7 +194,8 @@ async function main(): Promise<number> {
     if (dropped > 0)
       console.error(`${dump} ended with an incomplete line (${dropped} bytes), removed before appending.`);
   }
-  console.error(`broke-code eval: ${baseUrl}, ${runs} runs per scenario, step limit ${MAX_TOOL_STEPS}.`);
+  const askUser = withoutAskUser ? ", ask_user not offered" : "";
+  console.error(`broke-code eval: ${baseUrl}, ${runs} runs per scenario, step limit ${MAX_TOOL_STEPS}${askUser}.`);
   // [>]: One folder holds every run's workspace copy, so an interrupted bench can remove it too.
   const tmpRoot = await mkdtemp(join(tmpdir(), "broke-code-bench-"));
   process.once("SIGINT", () => {
@@ -190,7 +209,13 @@ async function main(): Promise<number> {
       for (const scenario of scenarios) {
         for (let run = 0; run < runs; run += 1) {
           const runStarted = performance.now();
-          const target = { baseUrl, apiKey, model, maxToolSteps: MAX_TOOL_STEPS };
+          const target = {
+            baseUrl,
+            apiKey,
+            model,
+            maxToolSteps: MAX_TOOL_STEPS,
+            ...(withoutAskUser ? { withoutAskUser: true as const } : {}),
+          };
           const outcome = await playScenario(scenario, target, tmpRoot);
           const verdict = judge(scenario, outcome.entries, outcome.after);
           const ms = performance.now() - runStarted;

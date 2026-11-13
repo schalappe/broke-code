@@ -12,7 +12,7 @@ import {
   sandboxProblem,
   trimIncompleteLine,
 } from "./bench";
-import { CREATE_SCENARIO, SCENARIOS } from "./scenarios";
+import { ASK_SCENARIO, CREATE_SCENARIO, SCENARIOS } from "./scenarios";
 
 describe("parseBenchArgs", () => {
   test("defaults to both models, every scenario, and 10 runs", () => {
@@ -22,6 +22,7 @@ describe("parseBenchArgs", () => {
       runs: 10,
       dump: undefined,
       baseUrl: OLLAMA_URL,
+      withoutAskUser: false,
     });
     expect(BENCH_MODELS).toEqual(["qwen3.8:27b", "gemma4:26b-a4b-it-qat"]);
   });
@@ -33,7 +34,17 @@ describe("parseBenchArgs", () => {
       runs: 3,
       dump: "/tmp/runs.jsonl",
       baseUrl: OLLAMA_URL,
+      withoutAskUser: false,
     });
+  });
+
+  test("with --no-ask-user, leaves the tool out and judges the ask scenario on the workspace alone", () => {
+    const { scenarios, withoutAskUser } = parseBenchArgs(["--no-ask-user", "--scenario", "ask"]);
+    expect(withoutAskUser).toBe(true);
+    expect(scenarios).toHaveLength(1);
+    expect(scenarios[0]).toMatchObject({ name: "ask", files: ASK_SCENARIO.files, writes: ASK_SCENARIO.writes });
+    expect(scenarios[0]?.check).toBeUndefined();
+    expect(parseBenchArgs(["--scenario", "ask"]).scenarios).toEqual([ASK_SCENARIO]);
   });
 
   test("takes another server's base URL, trailing slashes dropped, and refuses anything else", () => {
@@ -58,7 +69,7 @@ describe("parseBenchArgs", () => {
 
   test("refuses a scenario the bench does not hold, naming those it does", () => {
     expect(() => parseBenchArgs(["--scenario", "reed"])).toThrow(
-      '--scenario takes one of read, edit, create, skill, command, slash, hidden, range, not "reed".',
+      '--scenario takes one of read, edit, create, skill, command, slash, hidden, range, ask, not "reed".',
     );
   });
 
