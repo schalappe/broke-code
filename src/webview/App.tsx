@@ -1399,6 +1399,8 @@ function Reasoning({ entry }: { entry: ChatEntry & { role: "assistant" } }) {
  * While a reply is in flight, Send and Enter queue the message instead (`queueMessage`), up to `MAX_QUEUED_MESSAGES`,
  * a built-in command excepted, which stays text in the box; the queue shows under the box (`QueuedMessages`). Queued
  * texts the host returns arrive as `paragraph` drafts, applied like the editor's but without moving the focus.
+ * ArrowUp in a blank box recalls the earlier user messages of the conversation shown, and ArrowDown goes back
+ * (`composerKeyAction`); the box remembers the place recalled until a send, a draft, or another conversation ends it.
  */
 function Composer({
   state,

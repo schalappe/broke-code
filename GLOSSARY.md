@@ -136,7 +136,8 @@ _Avoid_: context item, attachment, reference
 
 **Draft**:
 The text in the chat's message box, not sent yet, with the paths picked in it. "Add selection to chat" and the quick fix
-"Fix with broke-code" edit it from the editor and never send it.
+"Fix with broke-code" edit it from the editor and never send it. In a blank box, ArrowUp recalls the earlier
+messages of the conversation into it, newest first, and ArrowDown goes back.
 _Avoid_: prompt, input
 
 **Skill**:

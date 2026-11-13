@@ -143,7 +143,8 @@ This file says which file holds which responsibility. Update it when a module ga
   button per row posting `openChangeDiff`), and the last undo's outcome (`UndoOutcome`), and the answer's code blocks with Copy and Insert at cursor (`CodeBlock`,
   the `pre` override of the answer's renderer) included. `SuggestionMenu.tsx` is the autocomplete list the `@` and
   `/` menus share, a row with an optional description; `composer.ts` holds the message box's decisions without React
-  (the token at the caret, each menu's rows, what a key does, what picking a `/` row does (`slashPick`), `applyDraft`,
+  (the token at the caret, each menu's rows, what a key does, the recall of earlier messages with ArrowUp and
+  ArrowDown (`RecallPlace`, `recallHolds`), what picking a `/` row does (`slashPick`), `applyDraft`,
   how a host draft (an editor entry point's, or queued texts returned as a `paragraph`) edits the message box's text,
   caret, and picked paths; `editDraft`, the draft Edit puts there; `Replacing` and `stillReplacing`, the replacing
   state and when it ends). The queued messages render under the message box (`QueuedMessages`).
