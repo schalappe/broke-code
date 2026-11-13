@@ -8,13 +8,14 @@ import {
   type ChatMessage,
   type ChatModel,
   type ChatOutcome,
+  collectReply,
   lateReasoning,
   type ProviderAccess,
   type StreamChatOptions,
 } from "./client";
 import { largestFittingCharacters } from "./limits";
 import type { Translator } from "./modelList";
-import { describeProviderError, type ErrorText } from "./providerError";
+import type { ErrorText } from "./providerError";
 import type { ProviderSupport } from "./providerSupport";
 
 export const COMMIT_MESSAGE_PROMPT = [
@@ -303,21 +304,14 @@ export class CommitMessageGenerator {
         },
       };
     }
-    let reply = "";
-    const outcome = await this.ports.stream(selection.access, {
-      model: selection.model,
-      messages: request.messages,
-      signal,
-      support: this.ports.providerSupport,
-      onContent: (text) => {
-        reply += text;
-      },
-      // [>]: Reasoning never reaches the message.
-      onReasoning: () => {},
-    });
-    if (signal.aborted || outcome.status === "stopped") return { kind: "stopped" };
-    if (outcome.status === "failed") return { kind: "error", text: describeProviderError(outcome.error, l10n) };
-    const message = cleanCommitMessage(reply);
+    const reply = await collectReply(
+      this.ports.stream,
+      selection.access,
+      { model: selection.model, messages: request.messages, signal, support: this.ports.providerSupport },
+      l10n,
+    );
+    if (reply.kind !== "reply") return reply;
+    const message = cleanCommitMessage(reply.text);
     if (message === undefined) {
       return { kind: "error", text: { message: l10n.t("The model's reply held no commit message.") } };
     }

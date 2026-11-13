@@ -10,6 +10,7 @@ import {
   type EditedSelection,
   type EditorState,
   editInstruction,
+  isWritableDocument,
   LATER_NOT_SHOWN,
   type LiveDocument,
   requestPath,
@@ -248,6 +249,32 @@ describe("requestPath", () => {
   });
 });
 
+describe("isWritableDocument", () => {
+  const allowed = async () => {};
+  const failing = (code: string) => async () => {
+    throw Object.assign(new Error(code), { code });
+  };
+
+  test("an untitled document is writable without any check", async () => {
+    expect(await isWritableDocument("untitled", false, failing("EACCES"))).toBe(true);
+  });
+
+  test("a file is writable when its file system is not read-only and the user may write it", async () => {
+    expect(await isWritableDocument("file", true, allowed)).toBe(true);
+    expect(await isWritableDocument("file", undefined, allowed)).toBe(true);
+  });
+
+  test("a file on a read-only file system, a file the user may not write, and another scheme are not", async () => {
+    expect(await isWritableDocument("file", false, allowed)).toBe(false);
+    expect(await isWritableDocument("file", true, failing("EACCES"))).toBe(false);
+    expect(await isWritableDocument("output", true, allowed)).toBe(false);
+  });
+
+  test("a file deleted since it was opened is writable", async () => {
+    expect(await isWritableDocument("file", true, failing("ENOENT"))).toBe(true);
+  });
+});
+
 describe("SelectionEditor", () => {
   const english = { t: (message: string, ...args: (string | number | boolean)[]) => format(message, args) };
   const access: ProviderAccess = {
@@ -285,9 +312,11 @@ describe("SelectionEditor", () => {
   function liveDocument(text = original, applied = true) {
     const live = {
       text,
+      closed: false,
       edits: [] as { start: number; end: number; text: string }[],
     };
     const port: LiveDocument = {
+      isClosed: () => live.closed,
       text: () => live.text,
       replace: async (start, end, replacement) => {
         live.edits.push({ start, end, text: replacement });
@@ -300,7 +329,7 @@ describe("SelectionEditor", () => {
 
   /**
    * Ports that record what the flow did. `reply` answers each request; `documents` gives the live document by URI
-   * (absent: gone).
+   * (absent: gone); without `documents`, the live document holds the text the command read.
    */
   function fakePorts(
     options: {
@@ -332,10 +361,8 @@ describe("SelectionEditor", () => {
         calls.cancel = () => cancel.abort();
         return task(cancel.signal);
       },
-      showDiff: async (document, proposed) => {
-        const id = `diff-${calls.diffs.length + 1}`;
+      showDiff: async (id, document, proposed) => {
         calls.diffs.push({ id, document, proposed });
-        return id;
       },
       closeDiff: async (id) => {
         calls.closed.push(id);
@@ -343,7 +370,8 @@ describe("SelectionEditor", () => {
       closeAllDiffs: async () => {
         calls.closedAll++;
       },
-      openDocument: async (document) => options.documents?.get(document.uri),
+      openDocument: async (document) =>
+        options.documents ? options.documents.get(document.uri) : liveDocument(document.text).port,
       showError: (text) => calls.errors.push(text),
     };
     return { ports, calls };
@@ -380,31 +408,144 @@ describe("SelectionEditor", () => {
     const { ports, calls } = fakePorts({ documents: new Map([["file:///work/app/a.ts", port]]) });
     const editor = new SelectionEditor(ports, english);
     await editor.run(state(), say("Subtract"));
-    await editor.accept("diff-1");
+    await editor.accept(calls.diffs[0]!.id);
     expect(live.edits).toEqual([{ start: 21, end: 37, text: "  return a - b;\n" }]);
     expect(live.text).toBe("function add(a, b) {\n  return a - b;\n}\n");
-    expect(calls.closed).toEqual(["diff-1"]);
+    expect(calls.closed).toEqual([calls.diffs[0]!.id]);
     expect(calls.errors).toEqual([]);
   });
 
-  test("Accept edits nothing when the text changed, the selection moved, or the document is gone", async () => {
-    const changed = liveDocument(original.replace("a + b", "a + b + 1"));
-    const moved = liveDocument(`// sum\n${original}`);
-    const cases: Map<string, LiveDocument>[] = [
-      new Map([["file:///work/app/a.ts", changed.port]]),
-      new Map([["file:///work/app/a.ts", moved.port]]),
-      new Map(),
+  test("Accept edits nothing when the text changed, the selection moved, or the document is gone or closed", async () => {
+    const changes: ((live: { text: string; closed: boolean }) => void)[] = [
+      (live) => {
+        live.text = original.replace("a + b", "a + b + 1");
+      },
+      (live) => {
+        live.text = `// sum\n${original}`;
+      },
+      (live) => {
+        live.text = original.replace("function add", "function plus");
+      },
+      (live) => {
+        live.closed = true;
+      },
     ];
-    for (const documents of cases) {
-      const { ports, calls } = fakePorts({ documents });
+    for (const change of changes) {
+      const { live, port } = liveDocument();
+      const { ports, calls } = fakePorts({ documents: new Map([["file:///work/app/a.ts", port]]) });
       const editor = new SelectionEditor(ports, english);
       await editor.run(state(), say("Subtract"));
-      await editor.accept("diff-1");
+      change(live);
+      await editor.accept(calls.diffs[0]!.id);
+      expect(live.edits).toEqual([]);
       expect(calls.errors).toEqual([{ message: "The text changed since the request. Nothing was edited." }]);
-      expect(calls.closed).toEqual(["diff-1"]);
+      expect(calls.closed).toEqual([calls.diffs[0]!.id]);
     }
-    expect(changed.live.edits).toEqual([]);
-    expect(moved.live.edits).toEqual([]);
+
+    const gone = new Map<string, LiveDocument>([["file:///work/app/a.ts", liveDocument().port]]);
+    const { ports, calls } = fakePorts({ documents: gone });
+    const editor = new SelectionEditor(ports, english);
+    await editor.run(state(), say("Subtract"));
+    gone.clear();
+    await editor.accept(calls.diffs[0]!.id);
+    expect(calls.errors).toEqual([{ message: "The text changed since the request. Nothing was edited." }]);
+  });
+
+  test("Accept edits nothing when a line inserted above leaves an identical line at the selection's old offsets", async () => {
+    const text = "foo();\nfoo();\n";
+    const document: EditDocument = { ...fileDocument(), text, start: 7, end: 14 };
+    const { live, port } = liveDocument(text);
+    const { ports, calls } = fakePorts({ reply: answer("bar();"), documents: new Map([[document.uri, port]]) });
+    const editor = new SelectionEditor(ports, english);
+    await editor.run(state(document), say("Rename"));
+    live.text = `baz();\n${text}`;
+    expect(live.text.slice(7, 14)).toBe("foo();\n");
+    await editor.accept(calls.diffs[0]!.id);
+    expect(live.edits).toEqual([]);
+    expect(calls.errors).toEqual([{ message: "The text changed since the request. Nothing was edited." }]);
+  });
+
+  test("Accept edits when only the text after the selection changed", async () => {
+    const { live, port } = liveDocument();
+    const { ports, calls } = fakePorts({ documents: new Map([["file:///work/app/a.ts", port]]) });
+    const editor = new SelectionEditor(ports, english);
+    await editor.run(state(), say("Subtract"));
+    live.text = `${original}// end\n`;
+    await editor.accept(calls.diffs[0]!.id);
+    expect(live.text).toBe("function add(a, b) {\n  return a - b;\n}\n// end\n");
+    expect(calls.errors).toEqual([]);
+  });
+
+  test("text changed up to the selection's end while the instruction was asked sends nothing", async () => {
+    const changes: ((live: { text: string; closed: boolean }) => void)[] = [
+      (live) => {
+        live.text = `// sum\n${original}`;
+      },
+      (live) => {
+        live.text = original.replace("a + b", "a * b");
+      },
+      (live) => {
+        live.closed = true;
+      },
+    ];
+    for (const change of changes) {
+      const { live, port } = liveDocument();
+      const { ports, calls } = fakePorts({ documents: new Map([["file:///work/app/a.ts", port]]) });
+      await new SelectionEditor(ports, english).run(state(), async () => {
+        change(live);
+        return "Subtract";
+      });
+      expect(calls.requests).toEqual([]);
+      expect(calls.diffs).toEqual([]);
+      expect(calls.errors).toEqual([{ message: "The text changed since the request. Nothing was edited." }]);
+    }
+  });
+
+  test("text added after the selection while the instruction was asked is sent and shown on both sides", async () => {
+    const { live, port } = liveDocument();
+    const { ports, calls } = fakePorts({ documents: new Map([["file:///work/app/a.ts", port]]) });
+    await new SelectionEditor(ports, english).run(state(), async () => {
+      live.text = `${original}// end\n`;
+      return "Subtract";
+    });
+    expect(calls.requests[0]?.messages[1]?.content).toContain("<after>\n}\n// end\n</after>");
+    expect(calls.diffs[0]?.document.text).toBe(`${original}// end\n`);
+    expect(calls.diffs[0]?.proposed).toBe("function add(a, b) {\n  return a - b;\n}\n// end\n");
+  });
+
+  test("a selection starting inside a line keeps the reply's first line and re-bases the others", async () => {
+    const text = "if (x) {\n  call(a);\n  call(b);\n}\n";
+    const start = text.indexOf("a);");
+    const document: EditDocument = { ...fileDocument(), text, start, end: text.indexOf("}") };
+    const { ports, calls } = fakePorts({ reply: answer("a, 1);\n    call(b, 1);") });
+    await new SelectionEditor(ports, english).run(state(document), say("Add one"));
+    expect(calls.diffs[0]?.proposed).toBe("if (x) {\n  call(a, 1);\n  call(b, 1);\n}\n");
+  });
+
+  test("a diff closed before it finished opening ends the run", async () => {
+    const { ports, calls } = fakePorts();
+    const editor = new SelectionEditor(ports, english);
+    const show = ports.showDiff;
+    ports.showDiff = async (id, document, proposed) => {
+      await show(id, document, proposed);
+      editor.diffClosed(id);
+    };
+    await editor.run(state(), say("Subtract"));
+    ports.showDiff = show;
+    await editor.run(state(), say("Again"));
+    expect(calls.errors).toEqual([]);
+    expect(calls.diffs).toHaveLength(2);
+  });
+
+  test("a diff that could not close is reported", async () => {
+    const { ports, calls } = fakePorts();
+    ports.closeDiff = async () => {
+      throw new Error("tab gone");
+    };
+    const editor = new SelectionEditor(ports, english);
+    await editor.run(state(), say("Subtract"));
+    await editor.reject(calls.diffs[0]!.id);
+    expect(calls.errors).toEqual([{ message: "Could not close the edit diff.", detail: "Error: tab gone" }]);
   });
 
   test("says so when VS Code reports the edit was not applied", async () => {
@@ -412,10 +553,10 @@ describe("SelectionEditor", () => {
     const { ports, calls } = fakePorts({ documents: new Map([["file:///work/app/a.ts", port]]) });
     const editor = new SelectionEditor(ports, english);
     await editor.run(state(), say("Subtract"));
-    await editor.accept("diff-1");
+    await editor.accept(calls.diffs[0]!.id);
     expect(live.edits).toHaveLength(1);
     expect(calls.errors).toEqual([{ message: "The document could not be edited." }]);
-    expect(calls.closed).toEqual(["diff-1"]);
+    expect(calls.closed).toEqual([calls.diffs[0]!.id]);
   });
 
   test("refuses an empty selection, another scheme, and a read-only file before anything is sent", async () => {
@@ -482,14 +623,14 @@ describe("SelectionEditor", () => {
     const { ports, calls } = fakePorts({ documents: new Map([["file:///work/app/a.ts", port]]) });
     const editor = new SelectionEditor(ports, english);
     await editor.run(state(), say("Subtract"));
-    await editor.reject("diff-1");
-    expect(calls.closed).toEqual(["diff-1"]);
+    await editor.reject(calls.diffs[0]!.id);
+    expect(calls.closed).toEqual([calls.diffs[0]!.id]);
     await editor.run(state(), say("Subtract"));
-    editor.diffClosed("diff-2");
+    editor.diffClosed(calls.diffs[1]!.id);
     await editor.run(state(), say("Subtract"));
     expect(calls.diffs).toHaveLength(3);
     // [>]: A later Accept on a settled diff finds no run: it only closes the tab.
-    await editor.accept("diff-2");
+    await editor.accept(calls.diffs[1]!.id);
     expect(live.edits).toEqual([]);
     expect(calls.errors).toEqual([]);
   });
@@ -631,12 +772,12 @@ describe("SelectionEditor", () => {
     const { ports, calls } = fakePorts();
     const editor = new SelectionEditor(ports, english);
     const show = ports.showDiff;
-    ports.showDiff = async (document, proposed) => {
+    ports.showDiff = async (id, document, proposed) => {
       editor.dispose();
-      return show(document, proposed);
+      await show(id, document, proposed);
     };
     await editor.run(state(), say("Subtract"));
-    expect(calls.closed).toEqual(["diff-1"]);
+    expect(calls.closed).toEqual([calls.diffs[0]!.id]);
   });
 });
 

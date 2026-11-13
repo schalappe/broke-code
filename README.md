@@ -220,7 +220,9 @@ is saved. It is in the Command Palette and in the editor's broke-code submenu, a
 - The rewrite opens in a diff: the document on the left, the document with the rewritten selection on the right.
   **Accept** and **Reject** sit in the diff's title bar. Closing the diff is a Reject.
 - **Accept** changes the document, not the file on disk, and does not save it. One Undo restores it. If you changed the
-  selected text, or the text above moved it, broke-code edits nothing and says so.
+  selected text or anything above it, broke-code edits nothing and says so. Changes below the selection do not block it.
+- If you change the selected text or anything above it while you type the instruction, broke-code sends nothing and
+  says so.
 - broke-code drops the model's reasoning, removes a code block around the code, and sets the indentation to the
   selection's. The model's line breaks become the document's.
 - The request uses the chat's provider, model, and context size. If the file is long, broke-code sends as many lines

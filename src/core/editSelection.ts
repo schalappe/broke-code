@@ -10,13 +10,14 @@ import {
   type ChatMessage,
   type ChatModel,
   type ChatOutcome,
+  collectReply,
   lateReasoning,
   type ProviderAccess,
   type StreamChatOptions,
 } from "./client";
 import { charactersOf, largestFittingCharacters } from "./limits";
 import type { Translator } from "./modelList";
-import { describeProviderError, type ErrorText } from "./providerError";
+import type { ErrorText } from "./providerError";
 import type { ProviderSupport } from "./providerSupport";
 import { isInside, type WorkspaceRoot } from "./workspaceFiles";
 
@@ -35,7 +36,7 @@ export const LATER_NOT_SHOWN = "[Later lines of the file are not shown.]";
 const CONTEXT_LABEL = "read-only context, never part of the answer";
 
 /**
- * The document a run edits, as it was when the command ran. `uri`: the document's URI, which tells two documents apart.
+ * The document a run edits: as the command read it, then as it was when the request was sent. `uri`: the document's URI, which tells two documents apart.
  * `name`: its file name, for the diff's title and the messages. `path`: its name in the request, the path relative to
  * its workspace folder, the file name outside a workspace, `untitled` for an untitled document (`requestPath`).
  * `eol`: the document's line break. `text`: its whole text. `start` and `end`: the primary selection's offsets in
@@ -243,6 +244,14 @@ function isBlank(line: string): boolean {
   return line.trim() === "";
 }
 
+/**
+ * Whether `text` equals `document`'s text from its start through the selection's end: an edit above the selection
+ * moves it even when the old offsets still hold the same characters, and an edit after it changes nothing sent.
+ */
+function holdsSentText(text: string, document: EditDocument): boolean {
+  return text.slice(0, document.end) === document.text.slice(0, document.end);
+}
+
 function toLf(text: string): string {
   return text.replace(/\r\n/g, "\n");
 }
@@ -275,10 +284,8 @@ export const EDIT_PRESETS = {
     "Add explicit type annotations to this code where the language allows them. Change nothing else.",
 } as const;
 
-/** "Edit selection" and its presets. */
 export type EditCommand = typeof EDIT_SELECTION_COMMAND | keyof typeof EDIT_PRESETS;
 
-/** Every command that runs a `SelectionEditor`: "Edit selection", then the presets. */
 export const EDIT_COMMANDS: readonly EditCommand[] = [
   EDIT_SELECTION_COMMAND,
   ...(Object.keys(EDIT_PRESETS) as (keyof typeof EDIT_PRESETS)[]),
@@ -300,7 +307,6 @@ export function editInstruction(
 /** The URI scheme of both sides of an edit's diff, not the approval diffs' (`CHANGE_SCHEME`). */
 export const EDIT_SCHEME = "broke-code-edit";
 
-/** The URI schemes a run edits in. */
 const EDITABLE_SCHEMES: ReadonlySet<string> = new Set(["file", "untitled"]);
 
 /**
@@ -311,11 +317,33 @@ const EDITABLE_SCHEMES: ReadonlySet<string> = new Set(["file", "untitled"]);
 export type EditorState = { scheme: string; writable: boolean; document: EditDocument };
 
 /**
- * The edited document as it is now. `text`: its whole text, read synchronously. `replace`: replaces the text between
- * two offsets in one edit of the document, never of the file on disk and without saving, and resolves to whether
- * VS Code applied it.
+ * Whether a document of `scheme` can be written: an untitled document always; a file when its file system is not
+ * known read-only (`fileSystemWritable`, `undefined` when VS Code does not know) and `checkAccess`, the check that the
+ * user may write the file, resolves. A file deleted since it was opened (`ENOENT`) is writable: its document lives on,
+ * the edit changes it, and saving recreates the file. Other schemes are not.
+ */
+export async function isWritableDocument(
+  scheme: string,
+  fileSystemWritable: boolean | undefined,
+  checkAccess: () => Promise<void>,
+): Promise<boolean> {
+  if (scheme === "untitled") return true;
+  if (scheme !== "file" || fileSystemWritable === false) return false;
+  try {
+    await checkAccess();
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT";
+  }
+}
+
+/**
+ * The edited document as it is now. `isClosed` and `text` read it synchronously; a closed document no longer exists.
+ * `replace`: replaces the text between two offsets in one edit of the document, never of the file on disk and without
+ * saving, and resolves to whether VS Code applied it.
  */
 export type LiveDocument = {
+  isClosed(): boolean;
   text(): string;
   replace(start: number, end: number, text: string): PromiseLike<boolean>;
 };
@@ -324,9 +352,9 @@ export type LiveDocument = {
  * What the command needs from the host. `chatModel`: the chat's provider and model, `undefined` when either is not
  * chosen. `stream`: `streamChat`. `providerSupport`: the memory the chat's requests share; the context is cut at the
  * model's ratio there, and a reply's usage teaches that ratio to the chat. `withProgress`: runs `task` under a
- * cancellable progress notification, whose Cancel aborts the signal it gets. `showDiff`: opens the diff of
- * `document`'s text, left, and `proposed`, right, both read-only, and resolves to its id, which `accept`, `reject`,
- * and `diffClosed` receive. `closeDiff` closes that diff's tab when it is open; `closeAllDiffs` every such tab,
+ * cancellable progress notification, whose Cancel aborts the signal it gets. `showDiff`: opens the diff `id`, a new
+ * id the run gives, of `document`'s text, left, and `proposed`, right, both read-only; `accept`, `reject`, and
+ * `diffClosed` receive that id, `diffClosed` possibly before `showDiff` resolves. `closeDiff` closes that diff's tab when it is open; `closeAllDiffs` every such tab,
  * including those a crashed host left. `openDocument`: the document now, opened again from its URI for a closed file;
  * `undefined` when it no longer exists (a closed untitled document, a deleted file). `showError`: a notification.
  */
@@ -335,31 +363,31 @@ export type SelectionEditPorts = {
   stream(access: ProviderAccess, options: StreamChatOptions): Promise<ChatOutcome>;
   providerSupport: ProviderSupport;
   withProgress<T>(task: (cancelled: AbortSignal) => Promise<T>): Promise<T>;
-  showDiff(document: EditDocument, proposed: string): Promise<string>;
+  showDiff(id: string, document: EditDocument, proposed: string): Promise<void>;
   closeDiff(id: string): Promise<void>;
   closeAllDiffs(): Promise<void>;
   openDocument(document: EditDocument): Promise<LiveDocument | undefined>;
   showError(text: ErrorText): void;
 };
 
-/** A run: its abort, and once its diff shows, the diff's id and the text that replaces the selection. */
+/**
+ * A run: the document as last read, its abort, and once its diff opens, the diff's id and the text that replaces the
+ * selection.
+ */
 type Run = { document: EditDocument; stop: AbortController; diff?: { id: string; replacement: string } };
 
-/** How a run's request ended, inside the progress notification. */
-type RequestResult = { kind: "reply"; text: string } | { kind: "stopped" } | { kind: "error"; text: ErrorText };
-
 /**
- * The `broke-code.editSelection` command and its presets. A run checks the active editor's selection and document, that no run is in
- * progress on that document, and the chat's provider and model; then it asks the caller's instruction, checks the
- * budget, sends one streaming request, cleans the reply, and shows it as a diff. The run lasts until Accept
- * (`accept`), Reject (`reject`), the diff's tab closing (`diffClosed`), Cancel, or an error; one run per document, whichever command started it.
- * Accept applies one edit to the document, only when the range sent still holds the text sent. `dispose`
- * (deactivation) aborts every request and closes the diffs. Touches no conversation.
+ * The `broke-code.editSelection` command and its presets. A run checks the active editor's selection and document,
+ * that no run is in progress on that document, and the chat's provider and model; then it asks the caller's
+ * instruction, reads the document again (its text up to the selection's end must be the one the command read), checks
+ * the budget, sends one streaming request with the document as it is then, cleans the reply, and shows it as a diff.
+ * The run lasts until Accept (`accept`), Reject (`reject`), the diff's tab closing (`diffClosed`), Cancel, or an
+ * error; one run per document, whichever command started it. Accept applies one edit to the document, only when its
+ * text up to the selection's end is still the text sent (`holdsSentText`). `dispose` (deactivation) aborts every
+ * request and closes the diffs. Touches no conversation.
  */
 export class SelectionEditor {
-  /** Runs in progress, by document URI. */
   private readonly runs = new Map<string, Run>();
-  /** Runs whose diff shows, by diff id. */
   private readonly diffs = new Map<string, Run>();
   private disposed = false;
 
@@ -416,8 +444,8 @@ export class SelectionEditor {
   }
 
   /**
-   * Accept on the diff `id`: one edit of the document when the range sent still holds the text sent, else a
-   * notification; the diff closes in every case. A diff with no run (left by a crashed host) only closes.
+   * Accept on the diff `id`: one edit of the document when it still exists and holds the text sent up to the
+   * selection's end, else a notification; the diff closes in every case. A diff with no run (left by a crashed host) only closes.
    */
   async accept(id: string): Promise<void> {
     const run = this.diffs.get(id);
@@ -429,9 +457,8 @@ export class SelectionEditor {
     this.end(run);
     try {
       const live = await this.ports.openDocument(document);
-      const sent = document.text.slice(document.start, document.end);
       // [!]: No await between the comparison and the edit, so nothing can change the document in between.
-      if (!live || live.text().slice(document.start, document.end) !== sent) {
+      if (!live || live.isClosed() || !holdsSentText(live.text(), document)) {
         this.ports.showError({ message: this.l10n.t("The text changed since the request. Nothing was edited.") });
       } else if (!(await live.replace(document.start, document.end, diff.replacement))) {
         this.ports.showError({ message: this.l10n.t("The document could not be edited.") });
@@ -443,7 +470,6 @@ export class SelectionEditor {
     }
   }
 
-  /** Reject on the diff `id`: ends its run, edits nothing, and closes the diff. */
   async reject(id: string): Promise<void> {
     const run = this.diffs.get(id);
     if (run) this.end(run);
@@ -456,12 +482,12 @@ export class SelectionEditor {
     if (run) this.end(run);
   }
 
-  /** Deactivation: abort every request and close every diff; later runs do nothing. */
   dispose(): void {
     this.disposed = true;
     for (const run of this.runs.values()) run.stop.abort();
     this.runs.clear();
     this.diffs.clear();
+    // [>]: Logged only: the extension is deactivating, and a notification would outlive the code that explains it.
     void this.ports
       .closeAllDiffs()
       .then(undefined, (error: unknown) => console.error("broke-code: could not close the edit diffs", error));
@@ -469,15 +495,22 @@ export class SelectionEditor {
 
   private async runOn(run: Run, instruction: (document: EditDocument) => Promise<string | undefined>): Promise<void> {
     const { l10n, ports } = this;
-    const { document, stop } = run;
+    const { stop } = run;
     const model = await ports.chatModel();
     if (stop.signal.aborted) return;
     if (!model) {
       ports.showError({ message: l10n.t("Choose a provider and a model in the broke-code chat first.") });
       return;
     }
-    const asked = (await instruction(document))?.trim();
+    const asked = (await instruction(run.document))?.trim();
     if (stop.signal.aborted || !asked) return;
+    const document = await this.sendTimeDocument(run.document);
+    if (stop.signal.aborted) return;
+    if (!document) {
+      ports.showError({ message: l10n.t("The text changed since the request. Nothing was edited.") });
+      return;
+    }
+    run.document = document;
     const ratio = ports.providerSupport.ratio(model.access.provider, model.model);
     const request = composeEditRequest(document, asked, model.contextSize, ratio);
     if (request.kind === "tooLarge") {
@@ -485,7 +518,17 @@ export class SelectionEditor {
       return;
     }
     const result = await ports.withProgress((cancelled) =>
-      this.request(model, request.messages, AbortSignal.any([stop.signal, cancelled])),
+      collectReply(
+        ports.stream,
+        model.access,
+        {
+          model: model.model,
+          messages: request.messages,
+          signal: AbortSignal.any([stop.signal, cancelled]),
+          support: ports.providerSupport,
+        },
+        l10n,
+      ),
     );
     if (result.kind === "stopped") return;
     if (result.kind === "error") {
@@ -505,31 +548,28 @@ export class SelectionEditor {
       return;
     }
     const proposed = document.text.slice(0, document.start) + replacement + document.text.slice(document.end);
-    const id = await ports.showDiff(document, proposed);
-    if (stop.signal.aborted) {
-      await this.closeDiff(id);
-      return;
-    }
+    // [>]: Registered before it opens, so a tab closed while it opens ends the run.
+    const id = crypto.randomUUID();
     run.diff = { id, replacement };
     this.diffs.set(id, run);
+    try {
+      await ports.showDiff(id, document, proposed);
+    } catch (error) {
+      this.end(run);
+      throw error;
+    }
+    if (stop.signal.aborted) await this.closeDiff(id);
   }
 
-  private async request(model: ChatModel, messages: ChatMessage[], signal: AbortSignal): Promise<RequestResult> {
-    let reply = "";
-    const outcome = await this.ports.stream(model.access, {
-      model: model.model,
-      messages,
-      signal,
-      support: this.ports.providerSupport,
-      onContent: (text) => {
-        reply += text;
-      },
-      // [>]: Reasoning never reaches the edit.
-      onReasoning: () => {},
-    });
-    if (signal.aborted || outcome.status === "stopped") return { kind: "stopped" };
-    if (outcome.status === "failed") return { kind: "error", text: describeProviderError(outcome.error, this.l10n) };
-    return { kind: "reply", text: reply };
+  /**
+   * `document` read again before the request: its current text when that text up to the selection's end is still the
+   * one the command read; `undefined` when the document changed there, closed, or no longer exists.
+   */
+  private async sendTimeDocument(document: EditDocument): Promise<EditDocument | undefined> {
+    const live = await this.ports.openDocument(document);
+    if (!live || live.isClosed()) return undefined;
+    const text = live.text();
+    return holdsSentText(text, document) ? { ...document, text } : undefined;
   }
 
   private end(run: Run): void {
@@ -542,6 +582,7 @@ export class SelectionEditor {
       await this.ports.closeDiff(id);
     } catch (error) {
       console.error("broke-code: could not close the edit diff", error);
+      this.ports.showError({ message: this.l10n.t("Could not close the edit diff."), detail: String(error) });
     }
   }
 

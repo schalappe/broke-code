@@ -15,6 +15,7 @@ import {
 } from "../core/commitMessage";
 import type { ProviderSupport } from "../core/providerSupport";
 import { type GitRepository, lookUpGit } from "./git";
+import { withCancellableProgress } from "./progress";
 
 export const GENERATE_COMMIT_MESSAGE_COMMAND = "broke-code.generateCommitMessage";
 
@@ -39,19 +40,7 @@ export function registerCommitMessageCommand(
       );
       return choice === replace;
     },
-    withProgress: async (task) =>
-      await vscode.window.withProgress(
-        {
-          location: vscode.ProgressLocation.Notification,
-          title: vscode.l10n.t("Generating the commit message…"),
-          cancellable: true,
-        },
-        (_progress, token) => {
-          const cancel = new AbortController();
-          token.onCancellationRequested(() => cancel.abort());
-          return task(cancel.signal);
-        },
-      ),
+    withProgress: (task) => withCancellableProgress(vscode.l10n.t("Generating the commit message…"), task),
     showError: ({ message, detail }) => void vscode.window.showErrorMessage(detail ? `${message} ${detail}` : message),
     showWarning: (message) => void vscode.window.showWarningMessage(message),
   };

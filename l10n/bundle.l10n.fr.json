@@ -282,6 +282,7 @@
   "The selection does not fit the model's context.": "La sélection ne tient pas dans le contexte du modèle.",
   "The model returned no code.": "Le modèle n'a renvoyé aucun code.",
   "Could not edit the selection.": "Impossible de modifier la sélection.",
+  "Could not close the edit diff.": "Impossible de fermer le diff de la modification.",
   "Editing the selection…": "Modification de la sélection…",
   "Edit selection": "Modifier la sélection",
   "Describe the change to make to the selection in {0}.": "Décrivez la modification à apporter à la sélection dans {0}.",

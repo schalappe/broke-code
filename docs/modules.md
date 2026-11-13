@@ -15,7 +15,8 @@ This file says which file holds which responsibility. Update it when a module ga
   (`addProvider.ts`: the Ollama preset, the input boxes' validation, the key then the setting, over ports the host
   fills), the API key shape check, the provider
   HTTP client (`client.ts`: the request body with the usage field, its one resend without it after a 400 or 422, and
-  the reply's reported usage in its outcome), the provider support memory (`providerSupport.ts`: `ProviderSupport`,
+  the reply's reported usage in its outcome; `collectReply`, one reply read whole for the commit message and "Edit
+  selection"), the provider support memory (`providerSupport.ts`: `ProviderSupport`,
   per provider name, base URL, and model, whether the usage field is taken and the characters per token the replies'
   reported usage taught; one instance, made by the host, shared by the chat controller, the commit message, and
   "Edit selection"), the CA trust and certificate error classification (`tls.ts`), the SSE reader, the typed provider
@@ -30,10 +31,12 @@ This file says which file holds which responsibility. Update it when a module ga
   request, and user interface ports), "Edit selection" (`editSelection.ts`: `composeEditRequest`, the request's
   system prompt and the lines around the selection cut to the context threshold, half and half then pooled;
   `cleanEditReply`, the reply's reasoning, one wrapping fence, the re-based indentation, and line breaks;
-  `requestPath`, the document's name in the request; `EDIT_SCHEME`, the scheme of its diff's sides; `EDIT_PRESETS`
+  `requestPath`, the document's name in the request; `isWritableDocument`, the writable check of the active editor's
+  document; `EDIT_SCHEME`, the scheme of its diff's sides; `EDIT_PRESETS`
   and `editInstruction`, the three presets' fixed instructions by command and each command's instruction; and
   `SelectionEditor`, the command and its presets over its provider request, document, diff, and user interface ports: the checks in
-  order, the caller's instruction, one run per document, Accept's range check and one edit, Reject, a closed tab,
+  order, the caller's instruction, the document read again before the request, one run per document, Accept's
+  check of the text through the range's end and one edit, Reject, a closed tab,
   and dispose), the chat controller (conversation state, the agent turn loop with its tool runner, instruction reader, and
   skill reader ports, its limits source and step limits, the context budget check, the usage display with the last reported usage (`ContextUsage.reported`), streaming, Stop, saving, reopen, delete,
   the queue of messages sent while a reply is in flight, with `mayStartTurn`, the one check a send, `/compact`, the
@@ -159,7 +162,7 @@ This file says which file holds which responsibility. Update it when a module ga
   `DraftQueue` to the view's focus command and `postMessage` (`insertDraft`); `extension.ts` registers `broke-code.addSelectionToChat`,
   `broke-code.fixDiagnostic`, and the code action provider of the quick fix; `commitMessage.ts` registers `broke-code.generateCommitMessage`, its git port over the
   built-in Git extension's API, the repository Quick Pick, the replace question, the progress notification, and the
-  notifications; `editSelection.ts` registers `broke-code.editSelection`, its presets `broke-code.refactorSelection`,
+  notifications; `progress.ts` holds the cancellable progress notification both run their request under; `editSelection.ts` registers `broke-code.editSelection`, its presets `broke-code.refactorSelection`,
   `broke-code.documentSelection`, and `broke-code.typeSelection`, and the diff's `broke-code.acceptEdit` and
   `broke-code.rejectEdit`: the active editor read with the writable check, the instruction's input box, the progress
   notification, the diff's content provider of `EDIT_SCHEME`, the closing of its tabs and the watch of

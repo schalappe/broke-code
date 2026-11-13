@@ -22,8 +22,10 @@ Both sides are snapshots: ADR 0002 rejected a live left side for the approval di
 changes under the user is not the one they judged.
 
 Accept edits the open document through the editor, with one `WorkspaceEdit` on the document's URI, never the file on
-disk, without saving: one Undo restores it, and the user's unsaved changes stay. It applies only when the range sent
-still holds the text sent; otherwise nothing is edited and a notification says so. A `file` document closed meanwhile
+disk, without saving: one Undo restores it, and the user's unsaved changes stay. It applies only when the document's
+text from its start through the end of the range sent is still the text sent; otherwise nothing is edited and a
+notification says so. The text is read again when the request is sent, with the same check, so the request and the
+diff show the document as sent. A `file` document closed meanwhile
 is opened again from its URI and compared the same way.
 
 This differs from the agent's writes on purpose. The agent writes files on disk atomically, after an approval, and
@@ -54,5 +56,7 @@ suggested while the user types; the user selects code, runs a command, and write
 - The provider and model lookup (`ChatModel`) is shared by the commit message and this command.
 - A request the provider ended at its length limit is shown like a complete one, as in the chat; the user sees it in
   the diff.
-- The range is checked by its offsets and its text. When an edit above the selection moves it but the old offsets
-  happen to hold the same text (repeated lines), the check passes and Accept replaces that identical text.
+- The range is checked by its offsets and the text from the document's start through its end, so an edit above the
+  selection refuses Accept even when identical text now sits at the old offsets. An edit after the range does not.
+  The check is by text only: a copy of the selected line pasted right above it leaves that text unchanged, cannot be
+  told from a copy pasted below, and Accept edits the first of the two identical lines.

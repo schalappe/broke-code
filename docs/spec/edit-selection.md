@@ -45,9 +45,10 @@ English whatever the display language:
 nothing sent:
 
 1. The active text editor's primary selection and its document, read when the command runs (`readEditor` in
-   `src/extension/editSelection.ts`). No active text editor or an empty selection: "Select the code to edit first.".
+   `src/extension/editSelection.ts`): the text and the selection's offsets together, before the writable check
+   waits. No active text editor or an empty selection: "Select the code to edit first.".
    A document of a scheme other than `file` or `untitled`, a file whose file system is not writable
-   (`workspace.fs.isWritableFileSystem`), or a file the user may not write (`access(W_OK)`): "broke-code can edit a
+   (`workspace.fs.isWritableFileSystem`), or a file the user may not write (`access(W_OK)`, `isWritableDocument`): "broke-code can edit a
    selection only in a writable file or an untitled document.". A file deleted since it was opened counts as
    writable: the edit goes to its document. Other read-only states (a session's read-only editor,
    `files.readonlyInclude`) cannot be read through the editor API: the submenu hides "Edit selection" there, and from
@@ -59,8 +60,13 @@ nothing sent:
 
 Then the instruction, from a function the caller passes to `run` (`editInstruction`). For "Edit selection" it is an
 input box ("Edit selection", the file's name in its prompt, `ignoreFocusOut`); Escape or a blank instruction ends the
-run with nothing sent and frees the document. For a preset it is the preset's text, and no input box opens. Then the budget, then the request. The document and its selection are the ones read in
-step 1, before the instruction.
+run with nothing sent and frees the document. For a preset it is the preset's text, and no input box opens.
+
+Then the document is read again, as Accept reads it (`openDocument`). When it no longer exists or is closed, or its
+text from its start through the selection's end differs from the text read in step 1: "The text changed since the
+request. Nothing was edited.", nothing sent. Otherwise its whole text now is the snapshot the run keeps: the request's
+context, both sides of the diff, and the text Accept compares. The selection keeps the offsets read in step 1. Then
+the budget, then the request.
 
 ## The request
 
@@ -114,19 +120,25 @@ complete one, here as in the chat: it is cleaned and shown like any reply.
 ## The diff
 
 `vscode.diff` opens two read-only virtual documents of the scheme `broke-code-edit` (`EDIT_SCHEME`), served from
-memory by a content provider of their own, not the approval diffs': the document's text as read when the command ran,
-left, and that text with the selection replaced, right. Their paths, `/<id>/original/<name>` and
+memory by a content provider of their own, not the approval diffs': the document's text as sent, left, and that text
+with the selection replaced, right. Their paths, `/<id>/original/<name>` and
 `/<id>/proposed/<name>`, use an id never reused, so a tab a crashed host left never shows a later run's text, and the
 file name gives the diff its language. The title is "{0} (edited selection)" with the file's name. The tab opens
-pinned (`preview: false`) and takes the focus.
+pinned (`preview: false`) and takes the focus. The run gives the diff its id before it opens, so a tab closed while it
+opens ends the run like any closed tab. A diff tab that cannot be closed: "Could not close the edit diff." with the
+error.
 
 - **Accept** reads the document now (`openDocument`): the open document of that URI, or for a `file` document no
   longer open, the document opened again from its URI (`workspace.openTextDocument`). A closed untitled document, or a
   file that cannot be opened, no longer exists. It applies one `WorkspaceEdit` replacing the range sent, by its
   offsets, to the document, never to the file on disk and without saving, so one Undo restores it. It applies only
-  when the document exists and the range sent still holds exactly the text sent, compared with no wait before the
-  edit. Otherwise nothing is edited: "The text changed since the request. Nothing was edited."; an edit above the
-  selection that moves it is such a change. When VS Code answers that the edit was not applied: "The document could
+  when the document exists, is open, and its text from its start through the end of the range sent is exactly the
+  text sent, compared with no wait before the edit; an edit after the range does not count. Otherwise nothing is
+  edited: "The text changed since the request. Nothing was edited."; an edit above the selection that moves it is such
+  a change, even when identical text now sits at the old offsets. The comparison is by text only: a copy of the
+  text just before the range's end, inserted where it leaves the text through that end unchanged (a copy of the
+  selected line pasted right above it), cannot be told from an edit after the range, and Accept edits the first of
+  the identical lines. When VS Code answers that the edit was not applied: "The document could
   not be edited.". In every case the diff tab closes.
 - **Reject** closes the tab and edits nothing. Closing the tab is a Reject: the host watches
   `window.tabGroups.onDidChangeTabs` and `onDidChangeTabGroups` for closed edit diff tabs, and a diff no tab shows any

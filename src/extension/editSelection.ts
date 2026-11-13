@@ -1,8 +1,8 @@
 /**
  * @module editSelection
  * The host side of `broke-code.editSelection` and its presets: the active editor read when a command runs, the
- * instruction's input box of "Edit selection", the progress notification, the diff of two read-only virtual documents of `EDIT_SCHEME` with its tab
- * watched for closing, the edit applied through a `WorkspaceEdit`, and the Accept and Reject commands of the diff's
+ * instruction's input box of "Edit selection", the progress notification, the diff of two read-only virtual documents
+ * of `EDIT_SCHEME` with its tab watched for closing, the edit applied through a `WorkspaceEdit`, and the Accept and Reject commands of the diff's
  * title bar, over the core's `SelectionEditor`.
  */
 import { constants } from "node:fs";
@@ -16,6 +16,7 @@ import {
   type EditDocument,
   type EditorState,
   editInstruction,
+  isWritableDocument,
   type LiveDocument,
   requestPath,
   SelectionEditor,
@@ -23,14 +24,15 @@ import {
 } from "../core/editSelection";
 import type { ProviderSupport } from "../core/providerSupport";
 import type { WorkspaceRoot } from "../core/workspaceFiles";
+import { withCancellableProgress } from "./progress";
 
 export const ACCEPT_EDIT_COMMAND = "broke-code.acceptEdit";
 export const REJECT_EDIT_COMMAND = "broke-code.rejectEdit";
 
 /**
- * Register "Edit selection" and its presets, Accept and Reject, the diffs' content provider, and the watch of their tabs. `chatModel`
- * gives the chat's provider and model; `providerSupport` is the chat's memory of each model; `roots` the workspace
- * folders, for the path the request names. The disposable aborts every request and closes the diffs.
+ * Register "Edit selection" and its presets, Accept and Reject, the diffs' content provider, and the watch of their
+ * tabs. `chatModel` gives the chat's provider and model; `providerSupport` is the chat's memory of each model; `roots`
+ * the workspace folders, for the path the request names. The disposable aborts every request and closes the diffs.
  */
 export function registerEditSelectionCommand(
   chatModel: () => Promise<ChatModel | undefined>,
@@ -42,20 +44,8 @@ export function registerEditSelectionCommand(
     chatModel,
     stream: streamChat,
     providerSupport,
-    withProgress: async (task) =>
-      await vscode.window.withProgress(
-        {
-          location: vscode.ProgressLocation.Notification,
-          title: vscode.l10n.t("Editing the selection…"),
-          cancellable: true,
-        },
-        (_progress, token) => {
-          const cancel = new AbortController();
-          token.onCancellationRequested(() => cancel.abort());
-          return task(cancel.signal);
-        },
-      ),
-    showDiff: (document, proposed) => diffs.show(document, proposed),
+    withProgress: (task) => withCancellableProgress(vscode.l10n.t("Editing the selection…"), task),
+    showDiff: (id, document, proposed) => diffs.show(id, document, proposed),
     closeDiff: (id) => diffs.close(id),
     closeAllDiffs: () => diffs.close(),
     openDocument: liveDocument,
@@ -105,42 +95,30 @@ function askInstruction(document: EditDocument): Promise<string | undefined> {
   );
 }
 
-/** The active text editor's document and primary selection, read now; `undefined` without an active text editor. */
+/**
+ * The active text editor's document and primary selection, read now; `undefined` without an active text editor.
+ * The text and the selection's offsets are read together before the writable check waits, so an edit meanwhile
+ * cannot pair one with the other.
+ */
 async function readEditor(roots: () => WorkspaceRoot[]): Promise<EditorState | undefined> {
   const editor = vscode.window.activeTextEditor;
   if (!editor) return undefined;
   const { document, selection } = editor;
   const { uri } = document;
-  return {
-    scheme: uri.scheme,
-    writable: await isWritable(uri),
-    document: {
-      uri: uri.toString(),
-      name: basename(uri.path),
-      path: requestPath(uri.scheme, uri.fsPath, roots()),
-      languageId: document.languageId,
-      eol: document.eol === vscode.EndOfLine.CRLF ? "\r\n" : "\n",
-      text: document.getText(),
-      start: document.offsetAt(selection.start),
-      end: document.offsetAt(selection.end),
-    },
+  const read: EditDocument = {
+    uri: uri.toString(),
+    name: basename(uri.path),
+    path: requestPath(uri.scheme, uri.fsPath, roots()),
+    languageId: document.languageId,
+    eol: document.eol === vscode.EndOfLine.CRLF ? "\r\n" : "\n",
+    text: document.getText(),
+    start: document.offsetAt(selection.start),
+    end: document.offsetAt(selection.end),
   };
-}
-
-/**
- * Whether the document at `uri` can be written: an untitled document always; a file when its file system is writable
- * and the file's permissions let the user write it. Other schemes are refused by the core whatever this says.
- */
-async function isWritable(uri: vscode.Uri): Promise<boolean> {
-  if (uri.scheme === "untitled") return true;
-  if (uri.scheme !== "file" || vscode.workspace.fs.isWritableFileSystem(uri.scheme) === false) return false;
-  try {
-    await access(uri.fsPath, constants.W_OK);
-    return true;
-  } catch (error) {
-    // [>]: A file deleted since it was opened lives on in its document, which the edit changes; saving recreates it.
-    return (error as NodeJS.ErrnoException).code === "ENOENT";
-  }
+  const writable = await isWritableDocument(uri.scheme, vscode.workspace.fs.isWritableFileSystem(uri.scheme), () =>
+    access(uri.fsPath, constants.W_OK),
+  );
+  return { scheme: uri.scheme, writable, document: read };
 }
 
 /**
@@ -161,8 +139,8 @@ async function liveDocument(document: EditDocument): Promise<LiveDocument | unde
     }
   }
   const live = open;
-  if (live.isClosed) return undefined;
   return {
+    isClosed: () => live.isClosed,
     text: () => live.getText(),
     replace: (start, end, text) => {
       const edit = new vscode.WorkspaceEdit();
@@ -178,7 +156,6 @@ async function liveDocument(document: EditDocument): Promise<LiveDocument | unde
  * text and the file name gives the diff its language.
  */
 class EditDiffs implements vscode.TextDocumentContentProvider, vscode.Disposable {
-  /** Both sides' text, by diff id. */
   private readonly texts = new Map<string, { original: string; proposed: string }>();
   private readonly registration = vscode.workspace.registerTextDocumentContentProvider(EDIT_SCHEME, this);
 
@@ -189,9 +166,8 @@ class EditDiffs implements vscode.TextDocumentContentProvider, vscode.Disposable
     return uri.path.split("/")[2] === "proposed" ? texts.proposed : texts.original;
   }
 
-  /** Open the diff of `document` and `proposed`, titled with the file's name; its id. Rejects when it cannot open. */
-  async show(document: EditDocument, proposed: string): Promise<string> {
-    const id = crypto.randomUUID();
+  /** Open the diff `id` of `document` and `proposed`, titled with the file's name. Rejects when it cannot open. */
+  async show(id: string, document: EditDocument, proposed: string): Promise<void> {
     const side = (name: string) => vscode.Uri.from({ scheme: EDIT_SCHEME, path: `/${id}/${name}/${document.name}` });
     this.texts.set(id, { original: document.text, proposed });
     try {
@@ -203,10 +179,8 @@ class EditDiffs implements vscode.TextDocumentContentProvider, vscode.Disposable
       this.release(id);
       throw error;
     }
-    return id;
   }
 
-  /** Whether a tab still shows the diff `id`. */
   isOpen(id: string): boolean {
     return editTabs().some((tab) => diffIdOf(diffSide(tab)) === id);
   }
@@ -229,12 +203,10 @@ class EditDiffs implements vscode.TextDocumentContentProvider, vscode.Disposable
   }
 }
 
-/** Every tab showing an edit diff. */
 function editTabs(): vscode.Tab[] {
   return vscode.window.tabGroups.all.flatMap((group) => group.tabs).filter((tab) => diffSide(tab) !== undefined);
 }
 
-/** The proposed side of `tab` when it is an edit diff. */
 function diffSide(tab: vscode.Tab): vscode.Uri | undefined {
   const { input } = tab;
   return input instanceof vscode.TabInputTextDiff && input.modified.scheme === EDIT_SCHEME ? input.modified : undefined;

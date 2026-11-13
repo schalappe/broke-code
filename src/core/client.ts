@@ -15,8 +15,9 @@ import type { LookupFunction } from "node:net";
 import { pipeline, Readable, Transform } from "node:stream";
 import * as zlib from "node:zlib";
 import { charactersOf } from "./limits";
+import type { Translator } from "./modelList";
 import { REPLY_MAX_LENGTH, type ReportedUsage } from "./protocol";
-import type { CutOffReason, ProviderError } from "./providerError";
+import { type CutOffReason, describeProviderError, type ErrorText, type ProviderError } from "./providerError";
 import type { ProviderSupport } from "./providerSupport";
 import type { Provider } from "./providers";
 import { readSseData, SseEventTooLargeError } from "./sse";
@@ -129,6 +130,33 @@ export type StreamChatOptions = {
   onReasoning: (text: string) => void;
   network?: NetworkOptions;
 };
+
+/** One reply read whole: its answer, a stop (abort or Cancel), or a provider error in the chat's wording. */
+export type CollectedReply = { kind: "reply"; text: string } | { kind: "stopped" } | { kind: "error"; text: ErrorText };
+
+/**
+ * Send one request through `stream` (`streamChat`, or a test double) and collect its answer whole, for a request
+ * outside the chat; the reasoning is dropped. An aborted `signal` is `stopped` whatever the outcome; a failure is
+ * worded by `describeProviderError`.
+ */
+export async function collectReply(
+  stream: (access: ProviderAccess, options: StreamChatOptions) => Promise<ChatOutcome>,
+  access: ProviderAccess,
+  options: Omit<StreamChatOptions, "onContent" | "onReasoning">,
+  l10n: Translator,
+): Promise<CollectedReply> {
+  let reply = "";
+  const outcome = await stream(access, {
+    ...options,
+    onContent: (text) => {
+      reply += text;
+    },
+    onReasoning: () => {},
+  });
+  if (options.signal.aborted || outcome.status === "stopped") return { kind: "stopped" };
+  if (outcome.status === "failed") return { kind: "error", text: describeProviderError(outcome.error, l10n) };
+  return { kind: "reply", text: reply };
+}
 
 /**
  * Stream chat reply, split into reasoning and answer. Reasoning: `delta.reasoning` (Ollama),
