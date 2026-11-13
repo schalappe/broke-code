@@ -261,6 +261,12 @@ export type ChatState = {
   /** The question the reply in flight waits on; never beside `approval`, since one call runs per reply. */
   question?: PendingQuestion;
   /**
+   * The call of the reply in flight is running: set as the call shows when its tool never asks (`ToolSpec.asks`), and
+   * once its approval is accepted, by the user or auto-approve. False before a tool that asks opens its request, while
+   * a request is open, after a rejection, a cancellation, or an answer, and from the moment the call ends.
+   */
+  callRunning: boolean;
+  /**
    * `plan` while Plan is on in this workspace, else the mode the setting holds; never the one last picked: a failed
    * write leaves it as it was.
    */

@@ -15,6 +15,7 @@ import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { autoApproveWrites, type Decision, type InspectedSetting, type Preview } from "./approval";
+import { ASK_USER_TOOL } from "./askUser";
 import {
   ChatController,
   type ChatPorts,
@@ -7251,5 +7252,128 @@ describe("ChatController turn events", () => {
       expect(state().entries.at(-1)).toMatchObject({ content: "Second.", status: "done" });
       expect(events).toEqual([done, done]);
     });
+  });
+});
+
+describe("ChatController running call", () => {
+  let scriptCount = 0;
+  const readCall = "<read_file>\n<path>a.ts</path>\n</read_file>";
+  const commandCall = "<run_command>\n<command>bun test</command>\n</run_command>";
+  const writeCall = "<write_file>\n<path>a.ts</path>\n<content>new</content>\n</write_file>";
+  const askCall = "<ask_user>\n<question>Which file?</question>\n</ask_user>";
+
+  /**
+   * Runner over the extension's tool specs that asks as their runs do: a command and a write through
+   * `requestApproval`, `ask_user` through `requestAnswer`, a read never; each result is the request's outcome.
+   */
+  const runner: ToolRunner = {
+    tools: [...READ_TOOLS, ...WRITE_TOOLS, RUN_COMMAND_TOOL, ASK_USER_TOOL],
+    run: async (call, context) => {
+      if (call.name === ASK_USER_TOOL.name) {
+        return { status: "ok", text: (await context.requestAnswer({ question: "Which file?", options: [] })).kind };
+      }
+      if (call.name === RUN_COMMAND_TOOL.name) {
+        return {
+          status: "ok",
+          text: (await context.requestApproval({ kind: "command", tool: call.name, summary: "bun test" })).kind,
+        };
+      }
+      if (call.name === "write_file") {
+        return {
+          status: "ok",
+          text: (await context.requestApproval({ kind: "write", tool: call.name, summary: "a.ts" })).kind,
+        };
+      }
+      return { status: "ok", text: "read" };
+    },
+  };
+
+  /**
+   * What a published state says of the reply's call: `shown` (written, not running), `approval`, `question`,
+   * `running`, or the status the reply ended with; `undefined` without a call in flight. `callRunning` set anywhere
+   * else reads `stale`.
+   */
+  function phase(state: ChatState): string | undefined {
+    const last = state.entries.at(-1);
+    const stale = state.callRunning ? "stale" : undefined;
+    if (last?.role !== "assistant") return stale;
+    if (last.status !== "waiting" && last.status !== "streaming") return stale ?? last.status;
+    if (!last.call) return stale;
+    if (state.approval) return stale ?? "approval";
+    if (state.question) return stale ?? "question";
+    return state.callRunning ? "running" : "shown";
+  }
+
+  /**
+   * The phases the controller publishes for a turn whose first reply is `content` and whose second is "Done.", repeats
+   * merged; `settle` acts on the request the call opens, if any.
+   */
+  async function phases(
+    content: string,
+    settle?: (controller: ChatController, state: ChatState) => void,
+    autoApproveWrites?: () => boolean,
+  ): Promise<string[]> {
+    const prefix = `running-${scriptCount++}`;
+    scripts.set(prefix, [{ content }, { content: "Done." }]);
+    const seen: string[] = [];
+    const controller = new ChatController({
+      apiKeys: { get: async () => undefined },
+      workspaceState: memoryStore(),
+      publish: (published) => {
+        const current = phase(published);
+        if (current !== undefined && seen.at(-1) !== current) seen.push(current);
+      },
+      mentions: noMentions,
+      store: new ConversationStore(memoryFiles()),
+      providerSupport: new ProviderSupport(),
+      ...noTools,
+      tools: runner,
+      autoApproveWrites,
+    });
+    const state = () => controller.snapshot;
+    controller.setProviders({
+      providers: [{ name: "Running", baseUrl: `http://localhost:${server.port}/${prefix}/v1` }],
+      skipped: [],
+    });
+    await until(state, (s) => s.model === "m");
+    const sent = controller.send("go");
+    if (settle) {
+      await until(state, (s) => s.approval !== undefined || s.question !== undefined);
+      settle(controller, state());
+    }
+    await sent;
+    return seen;
+  }
+
+  test("a call that never asks runs as it shows", async () => {
+    expect(await phases(readCall)).toEqual(["running", "done"]);
+  });
+
+  test("a command runs only once Run is accepted, in the update that closes the request", async () => {
+    const run = (controller: ChatController, state: ChatState) => controller.approve(state.approval!.id);
+    expect(await phases(commandCall, run)).toEqual(["shown", "approval", "running", "done"]);
+  });
+
+  test("a rejected command never runs", async () => {
+    const reject = (controller: ChatController, state: ChatState) => controller.reject(state.approval!.id);
+    expect(await phases(commandCall, reject)).toEqual(["shown", "approval", "shown", "done"]);
+  });
+
+  test("Stop on an open request never runs the call", async () => {
+    expect(await phases(commandCall, (controller) => controller.stop())).toEqual([
+      "shown",
+      "approval",
+      "shown",
+      "stopped",
+    ]);
+  });
+
+  test("an answered question never reads as running", async () => {
+    const answer = (controller: ChatController, state: ChatState) => controller.answer(state.question!.id, "a.ts");
+    expect(await phases(askCall, answer)).toEqual(["shown", "question", "shown", "done"]);
+  });
+
+  test("an auto-approved write runs without a request", async () => {
+    expect(await phases(writeCall, undefined, () => true)).toEqual(["shown", "running", "done"]);
   });
 });

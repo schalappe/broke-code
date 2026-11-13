@@ -40,6 +40,7 @@ const unsaved = {
   conversations: [],
   listFailed: undefined,
   storageProblem: undefined,
+  callRunning: false,
   context: { used: 0, size: 32768, known: true },
   queue: [],
   undo: { reply: undefined, ranCommand: false, running: false, outcome: undefined },

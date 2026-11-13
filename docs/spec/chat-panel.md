@@ -291,8 +291,10 @@ before, in the same conversation, and says at most one thing:
 
 - a new approval request: "Waiting for your decision: run {command}" or "Waiting for your decision: {tool} on {path}";
 - a new question: "The agent asks: {question}";
-- a call that starts running, waiting on neither a decision nor an answer: "Running {command}" for `run_command`,
-  else "Running {tool} on {argument}" (`mainArgument`), or "Running {tool}" without one;
+- a call that starts running, as the host marks it (`ChatState.callRunning`, `docs/spec/harness.md`): "Running
+  {command}" for `run_command`, else "Running {tool} on {argument}" (`mainArgument`), or "Running {tool}" without
+  one. A call that asks is named only once its approval is accepted, never as it shows nor after Reject, Stop, or an
+  answer to a question;
 - the reply in flight ending: "Reply finished." when it ends `done` without a call, "Stopped", or the halt's reason.
 
 It says nothing for a failed reply (its error block is an alert), a reply that ends on a call (its step follows),

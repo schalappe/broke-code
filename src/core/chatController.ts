@@ -430,6 +430,7 @@ export class ChatController {
       listFailed: undefined,
       storageProblem: undefined,
       context: this.contextUsage(undefined, undefined),
+      callRunning: false,
       // [>]: The setting is read at `modeChanged`, which the host calls at activation as it applies the providers; the
       // constructor reads no setting.
       mode: "ask",
@@ -1056,6 +1057,8 @@ export class ChatController {
           // [>]: The reply stays `streaming` while its call runs, so the turn reads as in flight and a crash meanwhile
           // brings it back stopped.
           run.reply.call = { name, args, start, end };
+          // [>]: A tool that asks runs only once its approval is accepted (`askApproval`), never as its call shows.
+          this.state.callRunning = !tools.find((tool) => tool.name === name)?.asks;
           this.emit();
           void this.save(conversation);
           let approval: StepApproval | undefined;
@@ -1076,6 +1079,7 @@ export class ChatController {
           };
           turn.written = undefined;
           const result = await unlessAborted(this.runTool({ name, args }, context), signal);
+          this.state.callRunning = false;
           if (!result) return settle("stopped");
           step = {
             role: "tool",
@@ -1441,6 +1445,7 @@ export class ChatController {
       signal: abort.signal,
       settle: (status, haltReason) => {
         run.reply.status = status;
+        this.state.callRunning = false;
         if (haltReason !== undefined) run.reply.haltReason = haltReason;
         this.emit();
         void this.save(conversation);
@@ -1541,7 +1546,11 @@ export class ChatController {
   ): Promise<{ decision: Decision; approval?: StepApproval }> {
     if (signal.aborted) return { decision: { kind: "cancel" } };
     // [!]: The one place the setting applies, so it can never accept a command.
-    if (request.kind === "write" && this.readAutoApprove()) return { decision: { kind: "accept" }, approval: "auto" };
+    if (request.kind === "write" && this.readAutoApprove()) {
+      this.state.callRunning = true;
+      this.emit();
+      return { decision: { kind: "accept" }, approval: "auto" };
+    }
     this.refuseSecondRequest();
     const preview = request.preview ? await request.preview() : undefined;
     if (signal.aborted) {
@@ -1555,6 +1564,8 @@ export class ChatController {
         signal.removeEventListener("abort", onAbort);
         this.openApproval = undefined;
         this.state.approval = undefined;
+        // [>]: In the same update as the buttons going away, so no state reads as running after Reject or Stop.
+        this.state.callRunning = decision.kind === "accept";
         this.emit();
         closePreview(preview);
         resolve(decision);
@@ -1563,6 +1574,7 @@ export class ChatController {
       signal.addEventListener("abort", onAbort, { once: true });
       this.openApproval = { id, settle };
       this.state.approval = { id, kind: request.kind, tool: request.tool, summary: request.summary };
+      this.state.callRunning = false;
       this.emit();
       this.reportEvent({ kind: "approvalRequested", request: request.kind, summary: request.summary });
     });
@@ -1593,6 +1605,7 @@ export class ChatController {
       signal.addEventListener("abort", onAbort, { once: true });
       this.openQuestion = { id, settle };
       this.state.question = { id, question: request.question, options: [...request.options] };
+      this.state.callRunning = false;
       this.emit();
     });
   }

@@ -469,17 +469,62 @@ describe("describeAnnouncement", () => {
     expect(describeAnnouncement(state([ask, reply("streaming")]), asked)).toBe("The agent asks: Which file?");
   });
 
-  test("names the call that starts running, once, and none that waits on the user", () => {
-    const flight = state([ask, reply("streaming")]);
-    const read = { name: "read_file", args: { path: "src/a.ts" }, start: 0, end: 4 };
-    const reading = state([ask, reply("streaming", { call: read })]);
-    expect(describeAnnouncement(flight, reading)).toBe("Running read_file on src/a.ts");
-    expect(describeAnnouncement(reading, { ...reading })).toBeUndefined();
+  describe("a call, through the states the controller publishes", () => {
     const run = { name: "run_command", args: { command: "bun test" }, start: 0, end: 4 };
     const approval = { id: 1, kind: "command" as const, tool: "run_command", summary: "bun test" };
-    const deciding = state([ask, reply("streaming", { call: run })], { approval });
-    const running = state([ask, reply("streaming", { call: run })]);
-    expect(describeAnnouncement(deciding, running)).toBe("Running bun test");
+    const step: ChatEntry = { role: "tool", name: "run_command", args: run.args, status: "ok", text: "ok" };
+    const flight = state([ask, reply("streaming")]);
+    /** The call shown, not running: a command asks before it runs. */
+    const shown = state([ask, reply("streaming", { call: run })], { callRunning: false });
+    const deciding = state([ask, reply("streaming", { call: run })], { approval, callRunning: false });
+    /** The step and the next reply, which land in one update. */
+    const stepped = state([ask, reply("done", { call: run }), step, reply("waiting")], { callRunning: false });
+    /** Announcements of each state after the one before it. */
+    const heard = (states: ChatState[]) =>
+      states.slice(1).map((next, index) => describeAnnouncement(states[index]!, next));
+
+    test("a call that never asks is named as it shows, once", () => {
+      const read = { name: "read_file", args: { path: "src/a.ts" }, start: 0, end: 4 };
+      const reading = state([ask, reply("streaming", { call: read })], { callRunning: true });
+      expect(heard([flight, reading, { ...reading }])).toEqual(["Running read_file on src/a.ts", undefined]);
+    });
+
+    test("a command is named once Run is accepted, never before its request opens", () => {
+      const running = state([ask, reply("streaming", { call: run })], { callRunning: true });
+      expect(heard([flight, shown, deciding, running, stepped])).toEqual([
+        undefined,
+        "Waiting for your decision: run bun test",
+        "Running bun test",
+        undefined,
+      ]);
+    });
+
+    test("a rejected command is never named as running", () => {
+      expect(heard([flight, shown, deciding, shown, stepped])).toEqual([
+        undefined,
+        "Waiting for your decision: run bun test",
+        undefined,
+        undefined,
+      ]);
+    });
+
+    test("Stop on an open request says Stopped, never Running", () => {
+      const stopped = state([ask, reply("stopped", { call: run })], { callRunning: false });
+      expect(heard([flight, shown, deciding, shown, stopped])).toEqual([
+        undefined,
+        "Waiting for your decision: run bun test",
+        undefined,
+        "Stopped",
+      ]);
+    });
+
+    test("an answered question is never named as running", () => {
+      const asking = { name: "ask_user", args: { question: "Which file?" }, start: 0, end: 4 };
+      const question = { id: 2, question: "Which file?", options: [] };
+      const asked = state([ask, reply("streaming", { call: asking })], { callRunning: false });
+      const open = state([ask, reply("streaming", { call: asking })], { question, callRunning: false });
+      expect(heard([flight, asked, open, asked])).toEqual([undefined, "The agent asks: Which file?", undefined]);
+    });
   });
 
   test("says how the reply in flight ended", () => {

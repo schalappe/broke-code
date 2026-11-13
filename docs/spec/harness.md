@@ -189,6 +189,12 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
       saved: a record saved meanwhile holds the reply in flight with its call, and reloads `stopped`. When the view is
       hidden and shown again, the question is still open, from the state.
     - A question raises no notification (#101 covers approval requests and turn ends only).
+  - `ChatState.callRunning` says when the call of the reply in flight actually runs. A tool that may ask declares it
+    (`ToolSpec.asks`: `run_command`, `write_file`, `edit_file`, `ask_user`). Its call shows with `callRunning` false,
+    since the request opens after it; `callRunning` turns true only in the update that closes an approval accepted, or
+    when auto-approve accepts a write, and stays false while a request is open and after Reject, Cancel (Stop), or an
+    answer. A tool that never asks runs as its call shows: `callRunning` is true in that same update. It is false
+    again from the update in which the call ends: its step lands, or the reply settles.
   - A write opens the native VS Code diff editor beside the chat, titled with the path: the planned `before` text on
     the left (empty for a new file), the proposed text on the right, both from a content provider. Accept writes with
     the atomic applier below, never through `WorkspaceEdit`; the diff tab closes on Accept, Reject, and Cancel. Closing

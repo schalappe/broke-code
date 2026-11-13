@@ -326,11 +326,14 @@ export function describeAnnouncement(previous: ChatState, next: ChatState): stri
   }
 }
 
-/** The call the reply in flight runs now: written, and waiting on neither a decision nor an answer. */
+/**
+ * The call the reply in flight runs now, as the host marks it (`ChatState.callRunning`): a call that waits on a
+ * decision or an answer, or whose request was rejected, cancelled, or answered, is not running.
+ */
 function runningCall(state: ChatState): ReplyCall | undefined {
   const last = state.entries.at(-1);
   if (last?.role !== "assistant" || (last.status !== "waiting" && last.status !== "streaming")) return undefined;
-  return state.approval || state.question ? undefined : last.call;
+  return state.callRunning ? last.call : undefined;
 }
 
 /** The empty summary's wording with the panel's translator; see `describeEmptySummary` in the core. */
