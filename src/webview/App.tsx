@@ -13,7 +13,7 @@ import {
   useState,
 } from "react";
 import Markdown, { type Components, type ExtraProps } from "react-markdown";
-import { type ConversationSummary, filterConversations } from "../core/conversation";
+import { type ConversationSummary, filterConversations, shownAnswer } from "../core/conversation";
 import { historyStart, isAutomaticSummary, sentEntries } from "../core/history";
 import { type LastTurnActions, lastTurnActions, unrevertedEffects } from "../core/lastTurn";
 import { codeBlockText, FENCE_CLOSED, hasTextAfter, remarkFenceClosed } from "../core/markdownCode";
@@ -806,7 +806,7 @@ function Reply({
   turnActions?: TurnActionsProps;
 }) {
   const { call } = entry;
-  const answer = call ? (entry.content.slice(0, call.start) + entry.content.slice(call.end)).trim() : entry.content;
+  const answer = shownAnswer(entry);
   const inFlight = entry.status === "waiting" || entry.status === "streaming";
   const deciding = inFlight && call !== undefined && step === undefined ? approval : undefined;
   const unfinished: PendingCall["outcome"] = inFlight ? "running" : entry.status === "stopped" ? "stopped" : "noResult";

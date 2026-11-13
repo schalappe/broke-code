@@ -134,6 +134,43 @@ export function filterConversations(conversations: ConversationSummary[], query:
   return conversations.filter((conversation) => conversation.title.toLowerCase().includes(needle));
 }
 
+const EXCERPT_LEAD = 30;
+const EXCERPT_LENGTH = 120;
+
+/**
+ * An assistant entry's answer as the chat shows it: the text before and after its call block, joined and trimmed. A
+ * malformed block has no `call`, so it stays, as the chat shows it.
+ */
+export function shownAnswer(entry: ChatEntry & { role: "assistant" }): string {
+  const { call, content } = entry;
+  return call ? (content.slice(0, call.start) + content.slice(call.end)).trim() : content;
+}
+
+/**
+ * The History content search over one record's entries: the excerpt around the first match of `needle` (a needle of
+ * `searchNeedle`), or `undefined`. Searched, entry by entry: each user message as typed and each assistant entry's
+ * answer as shown (`shownAnswer`), summaries and partial replies included; never tool steps, reasoning, the text the
+ * model received, or an error. Each entry's whitespace runs collapse to one space and it is compared in lower case,
+ * with no accent folding, so a match never spans two entries. The excerpt starts 30 characters (code points) before
+ * the match and holds 120 at most, with "…" at each cut end. Where lower-casing changes a text's length, it may start
+ * a few characters off.
+ */
+export function conversationExcerpt(entries: readonly ChatEntry[], needle: string): string | undefined {
+  for (const entry of entries) {
+    if (entry.role === "tool") continue;
+    const text = (entry.role === "user" ? entry.content : shownAnswer(entry)).replace(/\s+/g, " ").trim();
+    const at = text.toLowerCase().indexOf(needle);
+    if (at < 0) continue;
+    const characters = [...text];
+    const start = Math.max([...text.slice(0, at)].length - EXCERPT_LEAD, 0);
+    const end = start + EXCERPT_LENGTH;
+    const lead = start > 0 ? "…" : "";
+    const tail = end < characters.length ? "…" : "";
+    return `${lead}${characters.slice(start, end).join("")}${tail}`;
+  }
+  return undefined;
+}
+
 /** Summary file of `record`: its row under `version`, the version of the record it describes. */
 export function serializeSummary(record: ConversationRecord): string {
   return JSON.stringify({ version: record.version, ...summarize(record) });

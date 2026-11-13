@@ -399,6 +399,19 @@ export function isQueuePaused(state: ChatState): boolean {
 
 /** Longest menu query the host answers; the webview asks nothing past it. */
 export const MAX_QUERY_LENGTH = 1024;
+/** Fewest characters (code points) a History content search needs. */
+const MIN_NEEDLE_LENGTH = 3;
+
+/**
+ * The History content search's needle for the field's `text`: trimmed, lower case, whitespace runs collapsed to one
+ * space. `searchable`: at least 3 characters and within `MAX_QUERY_LENGTH`, so the protocol accepts it. The webview
+ * sends only a searchable needle, and the host searches only one.
+ */
+export function searchNeedle(text: string): { needle: string; searchable: boolean } {
+  const needle = text.trim().replace(/\s+/g, " ").toLowerCase();
+  const searchable = needle.length <= MAX_QUERY_LENGTH && [...needle].length >= MIN_NEEDLE_LENGTH;
+  return { needle, searchable };
+}
 /** Longest picked mention path accepted. */
 export const MAX_MENTION_PATH_LENGTH = 4096;
 /**

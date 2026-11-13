@@ -6,6 +6,7 @@ import {
   MAX_QUERY_LENGTH,
   parseWebviewMessage,
   REPLY_MAX_LENGTH,
+  searchNeedle,
 } from "./protocol";
 
 describe("parseWebviewMessage", () => {
@@ -291,5 +292,24 @@ describe("chatStateOf", () => {
 
   test("leaves the chat state alone for a draft", () => {
     expect(chatStateOf({ type: "insertDraft", text: "@selection", mode: "caret", picked: [] })).toBeUndefined();
+  });
+});
+
+describe("searchNeedle", () => {
+  test("trims, lower-cases, and collapses whitespace runs to one space", () => {
+    expect(searchNeedle("  Call \t\n SHAPED ")).toEqual({ needle: "call shaped", searchable: true });
+  });
+
+  test("a needle of fewer than 3 characters, counted as code points, is not searchable", () => {
+    expect(searchNeedle(" ab  ")).toEqual({ needle: "ab", searchable: false });
+    expect(searchNeedle("😀😀")).toEqual({ needle: "😀😀", searchable: false });
+    expect(searchNeedle("😀😀😀").searchable).toBe(true);
+    expect(searchNeedle("abc").searchable).toBe(true);
+  });
+
+  test("a needle over the query limit is not searchable", () => {
+    expect(searchNeedle("a".repeat(MAX_QUERY_LENGTH)).searchable).toBe(true);
+    expect(searchNeedle(` ${"a".repeat(MAX_QUERY_LENGTH)} `).searchable).toBe(true);
+    expect(searchNeedle("a".repeat(MAX_QUERY_LENGTH + 1)).searchable).toBe(false);
   });
 });
