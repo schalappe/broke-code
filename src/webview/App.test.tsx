@@ -3321,3 +3321,89 @@ describe("edit the last message", () => {
     }
   });
 });
+
+describe("recall earlier messages", () => {
+  const user = (
+    content: string,
+    mentions: ChatEntry & { role: "user" } extends { mentions: infer M } ? M : never = [],
+  ) => ({ role: "user", content, mentions }) as ChatEntry;
+  const answer: ChatEntry = { role: "assistant", reasoning: "", content: "Done.", status: "done" };
+  const entries = [user("First\nline"), answer, user("Second"), answer];
+  /** Key down in the message box, returning the event so a test sees whether the panel consumed it. */
+  const keyDown = async (textarea: HTMLTextAreaElement, key: string) => {
+    const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+    await act(async () => {
+      textarea.dispatchEvent(event);
+    });
+    return event;
+  };
+  /** ArrowUp is not consumed: the event keeps its default and the box keeps its text. */
+  const expectDefault = async (textarea: HTMLTextAreaElement) => {
+    const before = textarea.value;
+    const event = await keyDown(textarea, "ArrowUp");
+    expect({ prevented: event.defaultPrevented, text: textarea.value }).toEqual({ prevented: false, text: before });
+  };
+
+  test("ArrowUp in an empty box fills it with the newest message, the caret at the end, and posts nothing", async () => {
+    await withPanel(stateWith(true, { entries }), async ({ textarea }) => {
+      const event = await keyDown(textarea, "ArrowUp");
+      expect(event.defaultPrevented).toBe(true);
+      expect(textarea.value).toBe("Second");
+      expect(textarea.selectionStart).toBe("Second".length);
+      expect(textarea.selectionEnd).toBe("Second".length);
+      expect(posted).toEqual([]);
+    });
+  });
+
+  test("a recalled text ending in /<name> or @<path> opens no menu, and the next ArrowUp goes older", async () => {
+    // [>]: `@pro` names the reserved `@problems` row, which shows without a host answer; mentions not read yet.
+    const shown = [user("Oldest"), answer, user("check @pro"), answer, user("/grilling"), answer];
+    await withPanel(stateWith(true, { entries: shown }), async ({ host, textarea }) => {
+      await keyDown(textarea, "ArrowUp");
+      expect(textarea.value).toBe("/grilling");
+      expect(host.querySelector('[role="listbox"]')).toBeNull();
+      await keyDown(textarea, "ArrowUp");
+      expect(textarea.value).toBe("check @pro");
+      expect(host.querySelector('[role="listbox"]')).toBeNull();
+      await keyDown(textarea, "ArrowUp");
+      expect(textarea.value).toBe("Oldest");
+      const queries = posted.filter((message) => (message as { type: string }).type === "queryFiles");
+      expect(queries.length).toBeLessThanOrEqual(1);
+      expect(posted.filter((message) => (message as { type: string }).type !== "queryFiles")).toEqual([]);
+    });
+  });
+
+  test("another conversation shown, and coming back, leaves the text and ends the recall", async () => {
+    await withPanel(stateWith(true, { entries }), async ({ textarea, show }) => {
+      await keyDown(textarea, "ArrowUp");
+      await show(stateWith(true, { entries, conversationId: "other" }));
+      expect(textarea.value).toBe("Second");
+      await expectDefault(textarea);
+      await show(stateWith(true, { entries }));
+      expect(textarea.value).toBe("Second");
+      await expectDefault(textarea);
+    });
+  });
+
+  test("after a recalled message is sent, the same text typed by hand does not recall", async () => {
+    await withPanel(stateWith(true, { entries }), async ({ textarea, click, show, type }) => {
+      await keyDown(textarea, "ArrowUp");
+      await click("Send");
+      expect(posted).toEqual([{ type: "send", text: "Second", mentions: [] }]);
+      expect(textarea.value).toBe("");
+      await show(stateWith(true, { entries: [...entries, user("Second"), answer] }));
+      await type("Second");
+      await expectDefault(textarea);
+    });
+  });
+
+  test("after the box is erased by hand and Edit puts the same message back, ArrowUp does not recall", async () => {
+    await withPanel(stateWith(true, { entries }), async ({ textarea, click, type }) => {
+      await keyDown(textarea, "ArrowUp");
+      await type("");
+      await click("Edit");
+      expect(textarea.value).toBe("Second");
+      await expectDefault(textarea);
+    });
+  });
+});

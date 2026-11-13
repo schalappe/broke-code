@@ -375,6 +375,13 @@ as a message you type, reading its mentions and `/<skill>` now.
 
 The chat does not offer Edit once `/compact` has summarized the conversation after your last message.
 
+### Recall an earlier message
+
+In an empty message box, press ArrowUp to bring back your last message of the conversation, with its file and folder
+mentions. Press ArrowUp again for older messages, and ArrowDown to come back; past your last message, the box empties.
+In a message of several lines, the arrows first move the caret to the first or last line. Once you change the text,
+the arrows move the caret again. Send it as is, or edit it first: it goes as a new message.
+
 ### See what a turn changed
 
 **Changed files** shows under the last reply of the latest turn that wrote a file, above **Undo changes**. It lists

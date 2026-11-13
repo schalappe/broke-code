@@ -1,6 +1,6 @@
 # Chat panel behavior
 
-This file specifies what the chat panel does around a turn: folding, code block actions, queued messages, Retry, Continue, and Edit. `DESIGN.md` holds the look; `docs/spec/harness.md` holds the turn itself.
+This file specifies what the chat panel does around a turn: folding, code block actions, queued messages, Retry, Continue, Edit, and the recall of earlier messages. `DESIGN.md` holds the look; `docs/spec/harness.md` holds the turn itself.
 
 ## Turn folding
 
@@ -174,3 +174,35 @@ This file specifies what the chat panel does around a turn: folding, code block 
   (`giveBack`), as for any send that cannot start a turn; during a reply the message is queued as an ordinary one;
   blank text is dropped. A completed `/compact` summary after the last user entry is kept, so Edit is not offered
   there (maintainer decision). `ChatState` and the record are unchanged.
+
+## Recall of earlier messages
+
+- Recall (#108): in the message box, ArrowUp and ArrowDown walk the user messages of the conversation shown, in the
+  webview only (`composerKeyAction` decides, `Composer` holds the place; no host message, no protocol or record
+  change). The list is every user entry of `ChatState.entries` in order, its text as stored for display (`content`,
+  never the composed text): a message with mentions, a `/<skill> args` message, a Continue entry (its label), messages
+  before a summary, and the message of the turn in flight. Consecutive entries with the same text count once, the
+  newest of them giving the mentions. `/new`, `/model`, `/compact`, a queued message, and a message Edit replaced have
+  no user entry, so they are not in it.
+- Start: ArrowUp with no input method composing, no menu showing rows, no Shift, Alt, Control, or Meta, a collapsed
+  selection, a blank box (whitespace only counts as blank), and a non-empty list puts the newest message in the box,
+  replacing that whitespace. Otherwise, and for ArrowDown in a blank box, the key keeps its default.
+- The recall remembers one thing (`RecallPlace`): the conversation, the index among the entries, and the text of the
+  message recalled. It is in progress while that conversation is shown, the entry at that index is still a user
+  message with that text (`recallHolds`), and the box's text is exactly that text: any edit suspends it, and undoing
+  the edit resumes it. With the same conditions on composition, menu, modifiers, and selection, ArrowUp with the caret
+  on the first line goes to the next older message, and at the oldest is consumed and changes nothing (no wrap);
+  ArrowDown with the caret on the last line goes to the next newer one, and past the newest empties the box. Lines are
+  logical lines, cut at line breaks (wrapped lines are not considered); with the caret elsewhere the arrows move it as
+  usual. Example with `A`, `b1⏎b2`, `C`: ArrowUp gives `C`, then `b1⏎b2`, then moves the caret into `b1`, then gives
+  `A`, then does nothing; ArrowDown gives `b1⏎b2`, `C`, then an empty box.
+- Every recall puts the caret at the end, and replaces the box's picked paths with those Edit computes for the message
+  (`editDraft`), the mentions the entry holds at that moment (the turn in flight may hold none yet: accepted); emptying
+  the box clears them. A text ending on a `/` or `@` token opens no menu (its token is dismissed, as after Edit), so the
+  next ArrowUp still recalls; the file query the box posts for an `@` token at the caret may still go.
+- The place is forgotten for good when the conversation shown changes (coming back does not resume; the text stays
+  as a plain draft), when a send or a built-in command clears the box, when ArrowDown empties it, when a draft is
+  applied (an editor entry point, a returned queued message, Edit), and when the entry at that index is gone or holds
+  another text. Erasing the box by hand does not forget it: ArrowUp in the blank box starts again from the newest
+  message. Sending a recalled message is an ordinary send (mentions read again, a `/<skill>` loaded again, a recalled
+  Continue sent as plain text, queued during a reply); while Edit's replacing state holds, Send still replaces.

@@ -133,8 +133,8 @@ This file specifies mentions (`@file`, `@folder`, and the reserved `@problems`, 
   query, ignoring case (a prefix, as the `/` menu filters), each with its kind marker and a one-line description
   ("Errors and warnings of the workspace files", "Selected text of the active editor"), then the index entries whose path contains the query, ignoring
   case, shorter paths first, then in code order: 20 rows in all (`menuView`). The webview adds the reserved rows
-  itself, so they show before the files answer and when the files cannot be listed. Arrow keys move and wrap, Enter
-  or Tab picks, a click picks, Escape closes; while the menu shows rows, Enter never sends. Picking a reserved row
+  itself, so they show before the files answer and when the files cannot be listed. Arrow keys move and wrap, before the recall of earlier
+  messages (`docs/spec/chat-panel.md`), Enter or Tab picks, a click picks, Escape closes; while the menu shows rows, Enter never sends. Picking a reserved row
   replaces the token with `@<name> ` and records nothing; picking an index entry replaces it with `@<path> ` and
   records the path, `@./<name> ` and `./<name>` for an entry named like a reserved name (`mentionPick`). At send, a picked path counts while its `@<path>` still stands as a whole token in the text, and
   its text is not parsed again, so a path with spaces or backticks is one mention. A backtick in a picked path can

@@ -29,7 +29,7 @@ Most changes touch `src/core/chatController.ts`, `src/core/protocol.ts`, `src/we
 |---|---|
 | Provider HTTP contract, settings, API keys, TLS | `docs/spec/provider.md` |
 | Tool calls, tools, writes, approvals, modes, commands, history, context budget, system prompt | `docs/spec/harness.md` |
-| Turn folding, code block actions, queued messages, Retry, Continue, Edit | `docs/spec/chat-panel.md` |
+| Turn folding, code block actions, queued messages, Retry, Continue, Edit, message recall | `docs/spec/chat-panel.md` |
 | Mentions, the `@` and `/` menus, editor entry points, file index | `docs/spec/mentions.md` |
 | Saved conversations, navigation, History | `docs/spec/conversations.md` |
 | Skill discovery, `load_skill`, `/<name>` | `docs/spec/skills.md` |

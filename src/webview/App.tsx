@@ -53,6 +53,8 @@ import {
   menuView,
   openMenuToken,
   pickedInText,
+  type RecallPlace,
+  recallHolds,
   replaceToken,
   type SkillAnswer,
   type SlashRow,
@@ -1397,6 +1399,8 @@ function Reasoning({ entry }: { entry: ChatEntry & { role: "assistant" } }) {
  * While a reply is in flight, Send and Enter queue the message instead (`queueMessage`), up to `MAX_QUEUED_MESSAGES`,
  * a built-in command excepted, which stays text in the box; the queue shows under the box (`QueuedMessages`). Queued
  * texts the host returns arrive as `paragraph` drafts, applied like the editor's but without moving the focus.
+ * ArrowUp in a blank box recalls the earlier user messages of the conversation shown, and ArrowDown goes back
+ * (`composerKeyAction`); the box remembers the place recalled until a send, a draft, or another conversation ends it.
  */
 function Composer({
   state,
@@ -1426,6 +1430,8 @@ function Composer({
   const [highlighted, setHighlighted] = useState(0);
   /** Token closed with Escape; typing on reopens the menu. */
   const [dismissed, setDismissed] = useState<MenuToken>();
+  /** Place of the message recalled with ArrowUp; forgotten for good once it no longer holds (`recallHolds`). */
+  const [recalled, setRecalled] = useState<RecallPlace>();
   /** Latest file query; an answer counts only for it. */
   const latest = useRef<{ id: number; query: string | undefined }>({ id: 0, query: undefined });
   /** Latest skill query; an answer counts only for it, while its menu stays open. */
@@ -1480,6 +1486,12 @@ function Composer({
     if (slashQuery !== undefined) setHighlighted(0);
   }, [slashQuery]);
 
+  // [>]: Another conversation shown, or the message recalled gone, ends the recall for good: coming back does not
+  // resume it, and the text stays in the box as a plain draft.
+  useEffect(() => {
+    if (recalled && !recallHolds(recalled, state)) setRecalled(undefined);
+  }, [recalled, state]);
+
   const hasToken = token !== undefined;
   useEffect(() => {
     if (!hasToken) setDismissed(undefined);
@@ -1516,6 +1528,7 @@ function Composer({
   useEffect(() => {
     if (drafts.length === 0) return;
     setDraft(drafts.reduce(applyDraft, { text, caret, picked }));
+    setRecalled(undefined);
     takeDrafts(drafts);
     if (!drafts.some(fromEditor)) return;
     input.current?.focus();
@@ -1530,6 +1543,7 @@ function Composer({
     takeEditing();
     const next = applyDraft({ text, caret, picked }, editing);
     setDraft(next);
+    setRecalled(undefined);
     // [>]: A message ending on a mention puts the caret on its token: its menu stays closed until the user types on.
     setDismissed(menuToken(next.text, next.caret, next.picked));
     input.current?.focus();
@@ -1569,7 +1583,10 @@ function Composer({
   // [>]: Only a reply in flight queues; with no model or a mode change pending, Send does nothing either way.
   const canQueue = ready && replying && !state.modePending && state.queue.length < MAX_QUEUED_MESSAGES;
 
-  const clear = () => setDraft({ text: "", caret: 0, picked: [] });
+  const clear = () => {
+    setDraft({ text: "", caret: 0, picked: [] });
+    setRecalled(undefined);
+  };
 
   const run = (command: BuiltInCommand) => {
     if (command === "new") startNewChat();
@@ -1612,8 +1629,19 @@ function Composer({
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    const pressed = { key: event.key, shift: event.shiftKey, composing: event.nativeEvent.isComposing };
-    const action = composerKeyAction(pressed, rows);
+    const pressed = {
+      key: event.key,
+      shift: event.shiftKey,
+      alt: event.altKey,
+      control: event.ctrlKey,
+      meta: event.metaKey,
+      composing: event.nativeEvent.isComposing,
+    };
+    // [!]: The selection is read from the box itself: a caret set by `setSelectionRange` fires no `onSelect`.
+    const { selectionStart, selectionEnd } = event.currentTarget;
+    const { conversationId, entries } = state;
+    const box = { text, selectionStart, selectionEnd, conversationId, entries, recalled };
+    const action = composerKeyAction(pressed, rows, box);
     if (action.type === "none") return;
     event.preventDefault();
     event.stopPropagation();
@@ -1627,6 +1655,14 @@ function Composer({
         return setDismissed(token);
       case "send":
         return send();
+      case "recall":
+        setDraft(action.draft);
+        setRecalled(action.place);
+        // [>]: A text ending on a `/` or `@` token opens no menu, so the next ArrowUp still recalls.
+        setDismissed(menuToken(action.draft.text, action.draft.caret, action.draft.picked));
+        return;
+      case "keep":
+        return;
     }
   };
 
@@ -1662,7 +1698,11 @@ function Composer({
             setText(event.target.value);
             setCaret(event.target.selectionStart);
           }}
-          onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
+          onSelect={(event) => {
+            // [!]: React's `onSelect` also fires on keydown, after the key handler, with the selection the key found.
+            // A draft set by that key (a pick, a recall) waits for its caret: the stale one would close the token.
+            if (nextCaret.current === undefined) setCaret(event.currentTarget.selectionStart);
+          }}
           onFocus={() => setFocused(true)}
           onBlur={() => setFocused(false)}
           onKeyDown={onKeyDown}
