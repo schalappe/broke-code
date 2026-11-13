@@ -3587,6 +3587,25 @@ describe("ChatController agent turn", () => {
       expect(decisions).toEqual([{ kind: "reject" }]);
     });
 
+    test("an ask_user question gets the error result at once: no one can answer it here", async () => {
+      const runner = workspaceToolRunner(
+        () => [{ name: "ws", path: workspaceDir }],
+        { ripgrepCandidates: [] },
+        (roots) => fileApplier(roots),
+        undefined,
+        true,
+      );
+      const askCall = "<ask_user>\n<question>Which file?</question>\n<options>a.ts\nb.ts</options>\n</ask_user>";
+      const { controller, state } = await scripted([{ content: askCall }, { content: "Done." }], runner);
+      await controller.send("rename it");
+      expect(state().approval).toBeUndefined();
+      expect(state().entries.find((entry) => entry.role === "tool")).toMatchObject({
+        name: "ask_user",
+        status: "error",
+        text: "No one can answer a question here.",
+      });
+    });
+
     describe("commands", () => {
       const commandCall = (command: string) => `<run_command>\n<command>\n${command}\n</command>\n</run_command>`;
       const pidFile = () => join(workspaceDir, "command.pid");

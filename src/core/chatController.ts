@@ -11,6 +11,7 @@
  * display carries the counts the last chat request of the conversation shown reported.
  */
 import type { ApprovalRequest, Decision, Preview } from "./approval";
+import type { AnswerRequest, QuestionAnswer } from "./askUser";
 import { type ChatMessage, lateReasoning, listModels, type ProviderAccess, streamChat } from "./client";
 import {
   CONVERSATION_VERSION,
@@ -93,7 +94,9 @@ type ReplyRun = {
  * The request shows in `ChatState.approval` with its preview open until the user decides; Stop, and the navigation
  * that stops the reply, cancel it and close the preview. A write is accepted at once, without a preview, while the
  * auto-approve setting is on; a command always waits. Rejects only when the preview cannot open, or when another
- * request of the run is still open. `skills`: the valid skills the send discovered. `skillRoots`: the real folders of
+ * request of the run is still open. `requestAnswer`: asks the user the `ask_user` question, and settles with the
+ * answer; the controller has no interface for it yet, so it settles at once as `unanswerable`. `skills`: the valid
+ * skills the send discovered. `skillRoots`: the real folders of
  * the skills loaded in the conversation, the ones the read tools may also read, derived at each call (see
  * `loadedSkillRoots`), so a load earlier in the turn counts. `sentSkillRoots`: those of them loaded in the history
  * sent, from the last summary on (see `historyStart`): `load_skill` answers "already loaded" for these only, since the
@@ -104,6 +107,7 @@ type ReplyRun = {
 export type ToolContext = {
   signal: AbortSignal;
   requestApproval: (request: ApprovalRequest) => Promise<Decision>;
+  requestAnswer: (request: AnswerRequest) => Promise<QuestionAnswer>;
   skills: readonly Skill[];
   skillRoots: readonly string[];
   sentSkillRoots: readonly string[];
@@ -1016,6 +1020,7 @@ export class ChatController {
               if (request.kind === "command" && answer.decision.kind === "accept") turn.ranCommand = true;
               return answer.decision;
             },
+            requestAnswer: async () => ({ kind: "unanswerable" }),
             skills: discovery.skills,
             skillRoots: loadedSkillRoots(conversation.entries, discovery.skills),
             sentSkillRoots: loadedSkillRoots(sentEntries(conversation.entries), discovery.skills),

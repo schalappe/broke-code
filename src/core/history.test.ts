@@ -186,6 +186,17 @@ describe("toHistory", () => {
     expect(messages[4]?.content).toBe(wrapped("edit_file: replaced the passage in b.ts.", "edit_file"));
   });
 
+  test("never replaces an ask_user step: the user's answer stays whole while the next oldest steps are left out", () => {
+    const answered = `The user answered: ${lines(100)}`;
+    const entries: ChatEntry[] = [user("go"), answer("call"), step(answered, "ask_user"), ...fiveBigSteps.slice(1)];
+    // [>]: Six results of about 10,000 characters against 42,000: the answer stays, the next two oldest go.
+    const { messages, leftOut } = toHistory(entries, typed, { system: SYSTEM, contextSize: 12_000, ratio: 4 });
+    expect(leftOut).toBe(2);
+    expect(messages[2]?.content).toBe(wrapped(answered, "ask_user"));
+    expect(messages[4]?.content).toBe(wrapped("[result left out to save context: 100 lines]"));
+    expect(messages[6]?.content).toBe(wrapped("[result left out to save context: 100 lines]"));
+  });
+
   test("never replaces an undone step: it keeps its text while older eligible steps are left out", () => {
     const entries: ChatEntry[] = [
       user("go"),

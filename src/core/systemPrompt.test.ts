@@ -90,6 +90,13 @@ describe("composeSystemPrompt", () => {
     expect(composeSystemPrompt([TOOLS[0]!], [], [])).not.toContain(rule);
   });
 
+  test("states when to ask the user only when ask_user is listed", () => {
+    const rule =
+      "- Call ask_user only when the request cannot be carried out without a choice only the user can make, such as which of several matching places to change.";
+    expect(composeSystemPrompt([...TOOLS, toolNamed("ask_user")], [], []).split("# Tools")[0]).toContain(rule);
+    expect(composeSystemPrompt(TOOLS, [], [])).not.toContain(rule);
+  });
+
   test("never shows the format inside a code fence", () => {
     expect(composeSystemPrompt(TOOLS, [], [])).not.toContain("```");
   });

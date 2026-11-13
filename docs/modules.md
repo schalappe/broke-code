@@ -106,10 +106,14 @@ This file says which file holds which responsibility. Update it when a module ga
   `restored`, `removed`, or `skipped` with its `RestoreRefusal`, as `UndoneFile` in `protocol.ts` plus the file's real
   path), the approval seam (`approval.ts`: the request a tool
   makes, the decision it gets, the rejection text, and the decisions of the editor side: which change diffs to close,
-  the unsaved-editor check over the open documents, the auto-approve setting from its user value), the tool runner (`toolRunner.ts`: the read and write tools over the
+  the unsaved-editor check over the open documents, the auto-approve setting from its user value), the question tool
+  (`askUser.ts`: `ASK_USER_TOOL`, `askUser` checks the question and the options and asks the run context's
+  `requestAnswer`, the request beside the approval request; the answer, `unanswerable`, or a cancellation on Stop), the
+  tool runner (`toolRunner.ts`: the read and write tools over the
   workspace folders, the read tools also over the run's `skillRoots`, each write handed to the applier the host builds
-  for the run, `run_command` with the command environment the host passes, read at each call, and `load_skill` over
-  the run's `skills`), the instruction files
+  for the run, `run_command` with the command environment the host passes, read at each call, `load_skill` over
+  the run's `skills`, and `ask_user` only when its caller turns it on, which the eval bench does and the extension does
+  not), the instruction files
   (`instructions.ts`: `~/.agents/AGENTS.md`, then each workspace folder's `AGENTS.md`, under the mention caps), and the
   skills (`skills.ts`: discovery in `~/.agents/skills/` and each workspace folder's `.agents/skills/`, the frontmatter
   subset, validation, precedence, warnings, the line the extension logs at each send; `LOAD_SKILL_TOOL`, `loadSkill`

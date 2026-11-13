@@ -59,6 +59,8 @@ const TOOL_RULES: Record<string, string> = {
   write_file: "- write_file replaces the whole file: give its complete content.",
   run_command:
     "- run_command runs the command with the user's shell, in the workspace folder unless cwd names another, and only once the user approves it: wait for its result. For work over a whole folder tree, such as counting or finding files in every subfolder, one command takes one step where list_files takes one per folder.",
+  ask_user:
+    "- Call ask_user only when the request cannot be carried out without a choice only the user can make, such as which of several matching places to change.",
   load_skill:
     "- Read a loaded skill's files with read_file, list_files, or search by the absolute path the load_skill result gives. A skill folder outside the workspace is read-only.",
 };
@@ -80,11 +82,11 @@ export function offeredTools(tools: readonly ToolSpec[], skills: readonly Skill[
 }
 
 /**
- * The system prompt for `tools`, the `skills` listed to the model, and the `instructions` files, in order. The rules
- * of `write_file`, `edit_file`, `run_command`, and `load_skill` follow the general rules when those tools are listed. Without a listed skill or a
- * file, it ends after the tools. In Plan mode (`mode` `plan`) the role says the agent reads files, and the Plan
- * paragraph follows it; without a mode, or in Ask or Auto-edit, the prompt is the same, byte for byte. `tools` are
- * listed as given: `offeredTools` leaves out those of the mode.
+ * The system prompt for `tools`, the `skills` listed to the model, and the `instructions` files, in order. The rules of
+ * `write_file`, `edit_file`, `run_command`, `ask_user`, and `load_skill` follow the general rules when those tools are
+ * listed. Without a listed skill or a file, it ends after the tools. In Plan mode (`mode` `plan`) the role says the
+ * agent reads files, and the Plan paragraph follows it; without a mode, or in Ask or Auto-edit, the prompt is the same,
+ * byte for byte. `tools` are listed as given: `offeredTools` leaves out those of the mode.
  */
 export function composeSystemPrompt(
   tools: readonly ToolSpec[],
