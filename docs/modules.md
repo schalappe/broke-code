@@ -185,14 +185,16 @@ This file says which file holds which responsibility. Update it when a module ga
   release workflow runs it as a CLI. Its tests sit next to it.
 - `eval/`: the Ollama eval bench (`bun run eval`). `scenarios.ts` holds each scenario (fixture files, an optional
   fixture home folder, message, the files it must write with their exact text, an optional check of a turn that ended
-  `done`) and `judge`, the verdict and failure category of a run, which compares the workspace after the run with the
+  `done`, an optional answer to `ask_user`, `DEFAULT_ANSWER` when absent), `withoutAskUser` (the scenarios judged
+  without the tool: `ask` on the workspace alone), and `judge`, the verdict and failure category of a run, which compares the workspace after the run with the
   fixture plus those writes; `run.ts` plays one run through the `ChatController` ports, with the read and write tools,
-  `run_command`, and `load_skill` over a copy of the fixture under the system temporary directory, each write applied at
-  once by `fileApplier` and recorded for the dump, each command approved at once (rejected instead in a scenario with
+  `run_command`, `load_skill`, and `ask_user` (unless the target leaves it out) over a copy of the fixture under the
+  system temporary directory, each write applied at once by `fileApplier` and recorded for the dump, each question
+  answered at once with the scenario's answer, each command approved at once (rejected instead in a scenario with
   `rejectCommands`, as a user's Reject would) and run with `benchCommandEnv` (the
   allow-listed environment and `sandbox-exec` with `BENCH_SANDBOX_PROFILE` as the launcher, the run's real paths as
   its parameters), and the skills discovered in a copy of the fixture home, never the real one;
-  `report.ts` formats the scores; `bench.ts` is the CLI (`sandboxProblem`, its check before any run), guarded by `import.meta.main` so `bun test` never starts it.
+  `report.ts` formats the scores; `bench.ts` is the CLI (`sandboxProblem`, its check before any run; `--no-ask-user`, the baseline without the tool), guarded by `import.meta.main` so `bun test` never starts it.
   Its unit tests sit next to them and need no Ollama.
 - `media/`: `logo.png` (256 px), the extension icon on Open VSX and the Visual Studio Marketplace (`icon` in
   `package.json`; the registries refuse SVG), rendered from its source `logo.svg` with
