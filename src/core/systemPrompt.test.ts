@@ -92,7 +92,7 @@ describe("composeSystemPrompt", () => {
 
   test("states when to ask the user only when ask_user is listed", () => {
     const rule =
-      "- Call ask_user only when the request cannot be carried out without a choice only the user can make, such as which of several matching places to change.";
+      "- When the request names one thing and several match it, such as two functions with the same name, call ask_user before any write instead of changing them all or picking one yourself; otherwise do not ask.";
     expect(composeSystemPrompt([...TOOLS, toolNamed("ask_user")], [], []).split("# Tools")[0]).toContain(rule);
     expect(composeSystemPrompt(TOOLS, [], [])).not.toContain(rule);
   });

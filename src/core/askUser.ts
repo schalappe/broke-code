@@ -17,7 +17,7 @@ const MAX_OPTION_LENGTH = 200;
 export const ASK_USER_TOOL: ToolSpec = {
   name: TOOL,
   description:
-    "Ask the user one question and wait for the answer. Put the choices in options when there are a few. The result holds the user's answer.",
+    "Ask the user one question and wait for the answer. Use it when the request names one thing and several match it, so only the user can say which; put the choices in options. The result holds the user's answer.",
   args: [
     {
       name: "question",
