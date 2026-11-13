@@ -35,8 +35,9 @@ This file says which file holds which responsibility. Update it when a module ga
   document; `EDIT_SCHEME`, the scheme of its diff's sides; `EDIT_PRESETS`
   and `editInstruction`, the three presets' fixed instructions by command and each command's instruction; and
   `SelectionEditor`, the command and its presets over its provider request, document, diff, and user interface ports: the checks in
-  order, the caller's instruction, the document read again before the request, one run per document, Accept's
-  check of the text through the range's end and one edit, Reject, a closed tab,
+  order, the caller's instruction, the change watch of the document from the read to the run's end, the document read
+  again before the request, one run per document, Accept's check of the watch and of the text through the range's end
+  and one edit, Reject, a closed tab,
   and dispose), the chat controller (conversation state, the agent turn loop with its tool runner, instruction reader, and
   skill reader ports, its limits source and step limits, the context budget check, the usage display with the last reported usage (`ContextUsage.reported`), streaming, Stop, saving, reopen, delete,
   the queue of messages sent while a reply is in flight, with `mayStartTurn`, the one check a send, `/compact`, the
@@ -166,7 +167,7 @@ This file says which file holds which responsibility. Update it when a module ga
   `broke-code.documentSelection`, and `broke-code.typeSelection`, and the diff's `broke-code.acceptEdit` and
   `broke-code.rejectEdit`: the active editor read with the writable check, the instruction's input box, the progress
   notification, the diff's content provider of `EDIT_SCHEME`, the closing of its tabs and the watch of
-  `tabGroups.onDidChangeTabs` for a tab the user closed, and the edit as one `WorkspaceEdit` on the document's URI).
+  `tabGroups.onDidChangeTabs` for a tab the user closed, the change watch over `workspace.onDidChangeTextDocument`, and the edit as one `WorkspaceEdit` on the document's URI).
 - `src/webview/`: the React chat panel and its CSS (`styles.css`: a token layer, then rules that consume it, every color
   from a `--vscode-*` variable; see `DESIGN.md`), the thread that carries a turn's tool steps as nodes, the latest
   user message in the theme's button colors and the earlier ones outlined (`Entry`'s `earlier`), tool step rows, the approval controls, the mode selector after the message box (`ModeSelect`), the turn's actions row (`TurnActions`: Retry, its

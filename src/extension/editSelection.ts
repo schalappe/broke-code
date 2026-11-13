@@ -50,6 +50,11 @@ export function registerEditSelectionCommand(
     closeAllDiffs: () => diffs.close(),
     openDocument: liveDocument,
     showError: ({ message, detail }) => void vscode.window.showErrorMessage(detail ? `${message} ${detail}` : message),
+    watchChanges: (uri, onChange) =>
+      vscode.workspace.onDidChangeTextDocument((event) => {
+        if (event.document.uri.toString() !== uri) return;
+        for (const change of event.contentChanges) onChange(change.rangeOffset);
+      }),
   };
   const editor = new SelectionEditor(ports, vscode.l10n);
   // [>]: A tab moved to another group closes in one and opens in the other: only a diff no tab shows any more ended.
@@ -96,15 +101,18 @@ function askInstruction(document: EditDocument): Promise<string | undefined> {
 }
 
 /**
- * The active text editor's document and primary selection, read now; `undefined` without an active text editor.
- * The text and the selection's offsets are read together before the writable check waits, so an edit meanwhile
- * cannot pair one with the other.
+ * The active text editor's document and primary selection; `undefined` without an active text editor. The text and
+ * the selection's offsets are read together after the writable check waits, with no await after them, so the run's
+ * watch of the document's changes starts before any change can come.
  */
 async function readEditor(roots: () => WorkspaceRoot[]): Promise<EditorState | undefined> {
   const editor = vscode.window.activeTextEditor;
   if (!editor) return undefined;
+  const { uri } = editor.document;
+  const writable = await isWritableDocument(uri.scheme, vscode.workspace.fs.isWritableFileSystem(uri.scheme), () =>
+    access(uri.fsPath, constants.W_OK),
+  );
   const { document, selection } = editor;
-  const { uri } = document;
   const read: EditDocument = {
     uri: uri.toString(),
     name: basename(uri.path),
@@ -115,9 +123,6 @@ async function readEditor(roots: () => WorkspaceRoot[]): Promise<EditorState | u
     start: document.offsetAt(selection.start),
     end: document.offsetAt(selection.end),
   };
-  const writable = await isWritableDocument(uri.scheme, vscode.workspace.fs.isWritableFileSystem(uri.scheme), () =>
-    access(uri.fsPath, constants.W_OK),
-  );
   return { scheme: uri.scheme, writable, document: read };
 }
 

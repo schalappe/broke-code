@@ -205,7 +205,7 @@ _Avoid_: AI commit, commit suggestion, auto-commit
 
 **Edit selection**:
 A rewrite of the editor's selection by the model selected in the chat, in one request, from an instruction the user
-types, or the fixed instruction of a preset: "Refactor selection", "Add documentation comments", "Add types". It shows as a diff with Accept and Reject; Accept edits the open document, without saving, in one Undo, and only while the document's text from its
-start through the end of the selection is still the text that was sent. It is no
+types, or the fixed instruction of a preset: "Refactor selection", "Add documentation comments", "Add types". It shows as a diff with Accept and Reject; Accept edits the open document, without saving, in one Undo, and only when nothing changed at or
+above the end of the selection since the command started. It is no
 agent turn and belongs to no conversation.
 _Avoid_: inline edit, inline completion, quick edit

@@ -245,8 +245,9 @@ function isBlank(line: string): boolean {
 }
 
 /**
- * Whether `text` equals `document`'s text from its start through the selection's end: an edit above the selection
- * moves it even when the old offsets still hold the same characters, and an edit after it changes nothing sent.
+ * Whether `text` equals `document`'s text from its start through the selection's end: an edit after the selection
+ * changes nothing sent. It catches the changes a run's watch cannot see (a file closed, changed on disk, and opened
+ * again); the watch catches an edit that leaves this text identical, such as a copy of the selected line pasted above it.
  */
 function holdsSentText(text: string, document: EditDocument): boolean {
   return text.slice(0, document.end) === document.text.slice(0, document.end);
@@ -357,6 +358,8 @@ export type LiveDocument = {
  * `diffClosed` receive that id, `diffClosed` possibly before `showDiff` resolves. `closeDiff` closes that diff's tab when it is open; `closeAllDiffs` every such tab,
  * including those a crashed host left. `openDocument`: the document now, opened again from its URI for a closed file;
  * `undefined` when it no longer exists (a closed untitled document, a deleted file). `showError`: a notification.
+ * `watchChanges`: calls `onChange` with the start offset of each change to the content of the document `uri`, in the
+ * document as it was before that change, until the returned subscription is disposed.
  */
 export type SelectionEditPorts = {
   chatModel(): Promise<ChatModel | undefined>;
@@ -368,23 +371,31 @@ export type SelectionEditPorts = {
   closeAllDiffs(): Promise<void>;
   openDocument(document: EditDocument): Promise<LiveDocument | undefined>;
   showError(text: ErrorText): void;
+  watchChanges(uri: string, onChange: (offset: number) => void): { dispose(): void };
 };
 
 /**
- * A run: the document as last read, its abort, and once its diff opens, the diff's id and the text that replaces the
- * selection.
+ * A run: the document as last read, its abort, the watch of the document's changes, `changed` once a change started
+ * before the selection's end, and once its diff opens, the diff's id and the text that replaces the selection.
  */
-type Run = { document: EditDocument; stop: AbortController; diff?: { id: string; replacement: string } };
+type Run = {
+  document: EditDocument;
+  stop: AbortController;
+  watch: { dispose(): void };
+  changed: boolean;
+  diff?: { id: string; replacement: string };
+};
 
 /**
  * The `broke-code.editSelection` command and its presets. A run checks the active editor's selection and document,
  * that no run is in progress on that document, and the chat's provider and model; then it asks the caller's
- * instruction, reads the document again (its text up to the selection's end must be the one the command read), checks
- * the budget, sends one streaming request with the document as it is then, cleans the reply, and shows it as a diff.
- * The run lasts until Accept (`accept`), Reject (`reject`), the diff's tab closing (`diffClosed`), Cancel, or an
- * error; one run per document, whichever command started it. Accept applies one edit to the document, only when its
- * text up to the selection's end is still the text sent (`holdsSentText`). `dispose` (deactivation) aborts every
- * request and closes the diffs. Touches no conversation.
+ * instruction, reads the document again, checks the budget, sends one streaming request with the document as it is
+ * then, cleans the reply, and shows it as a diff. From the read of the document to its end, the run watches the
+ * document: a change starting before the selection's end marks it changed. The request is sent, and Accept applies
+ * its one edit, only when the run is not marked changed and the document's text up to the selection's end is still
+ * the one the command read (`holdsSentText`). The run lasts until Accept (`accept`), Reject (`reject`), the diff's tab
+ * closing (`diffClosed`), Cancel, or an error; one run per document, whichever command started it. `dispose`
+ * (deactivation) aborts every request and closes the diffs. Touches no conversation.
  */
 export class SelectionEditor {
   private readonly runs = new Map<string, Run>();
@@ -431,7 +442,11 @@ export class SelectionEditor {
       ports.showError({ message: l10n.t("An edit is already in progress for {0}.", document.name) });
       return;
     }
-    const run: Run = { document, stop: new AbortController() };
+    // [!]: No await since `lookup` read the text, so no change can come before the watch.
+    const run: Run = { document, stop: new AbortController(), watch: { dispose() {} }, changed: false };
+    run.watch = ports.watchChanges(document.uri, (offset) => {
+      if (offset < document.end) run.changed = true;
+    });
     this.runs.set(document.uri, run);
     try {
       await this.runOn(run, instruction);
@@ -444,8 +459,9 @@ export class SelectionEditor {
   }
 
   /**
-   * Accept on the diff `id`: one edit of the document when it still exists and holds the text sent up to the
-   * selection's end, else a notification; the diff closes in every case. A diff with no run (left by a crashed host) only closes.
+   * Accept on the diff `id`: one edit of the document when it still exists, the run saw no change before the
+   * selection's end, and the document holds the text sent up to there, else a notification; the diff closes in every
+   * case. A diff with no run (left by a crashed host) only closes.
    */
   async accept(id: string): Promise<void> {
     const run = this.diffs.get(id);
@@ -454,11 +470,14 @@ export class SelectionEditor {
       return;
     }
     const { document, diff } = run;
-    this.end(run);
+    // [>]: A second Accept, a Reject, or the tab closing while the document opens finds no run.
+    this.diffs.delete(id);
     try {
       const live = await this.ports.openDocument(document);
-      // [!]: No await between the comparison and the edit, so nothing can change the document in between.
-      if (!live || live.isClosed() || !holdsSentText(live.text(), document)) {
+      // [!]: The watch runs until this check, and no await comes between the check and the edit.
+      const unchanged = !!live && !live.isClosed() && !run.changed && holdsSentText(live.text(), document);
+      this.end(run);
+      if (!live || !unchanged) {
         this.ports.showError({ message: this.l10n.t("The text changed since the request. Nothing was edited.") });
       } else if (!(await live.replace(document.start, document.end, diff.replacement))) {
         this.ports.showError({ message: this.l10n.t("The document could not be edited.") });
@@ -466,6 +485,7 @@ export class SelectionEditor {
     } catch (error) {
       this.showUnexpected(error);
     } finally {
+      this.end(run);
       await this.closeDiff(id);
     }
   }
@@ -484,7 +504,10 @@ export class SelectionEditor {
 
   dispose(): void {
     this.disposed = true;
-    for (const run of this.runs.values()) run.stop.abort();
+    for (const run of this.runs.values()) {
+      run.stop.abort();
+      run.watch.dispose();
+    }
     this.runs.clear();
     this.diffs.clear();
     // [>]: Logged only: the extension is deactivating, and a notification would outlive the code that explains it.
@@ -504,7 +527,7 @@ export class SelectionEditor {
     }
     const asked = (await instruction(run.document))?.trim();
     if (stop.signal.aborted || !asked) return;
-    const document = await this.sendTimeDocument(run.document);
+    const document = await this.sendTimeDocument(run);
     if (stop.signal.aborted) return;
     if (!document) {
       ports.showError({ message: l10n.t("The text changed since the request. Nothing was edited.") });
@@ -562,17 +585,21 @@ export class SelectionEditor {
   }
 
   /**
-   * `document` read again before the request: its current text when that text up to the selection's end is still the
-   * one the command read; `undefined` when the document changed there, closed, or no longer exists.
+   * The run's document read again before the request: its current text when the run saw no change before the
+   * selection's end and that text up to there is still the one the command read; `undefined` when the document changed
+   * there, closed, or no longer exists.
    */
-  private async sendTimeDocument(document: EditDocument): Promise<EditDocument | undefined> {
+  private async sendTimeDocument(run: Run): Promise<EditDocument | undefined> {
+    const { document } = run;
     const live = await this.ports.openDocument(document);
-    if (!live || live.isClosed()) return undefined;
+    if (!live || live.isClosed() || run.changed) return undefined;
     const text = live.text();
     return holdsSentText(text, document) ? { ...document, text } : undefined;
   }
 
+  /** Ends `run`: frees its document and its diff, and stops its watch. Safe to call twice. */
   private end(run: Run): void {
+    run.watch.dispose();
     if (this.runs.get(run.document.uri) === run) this.runs.delete(run.document.uri);
     if (run.diff) this.diffs.delete(run.diff.id);
   }

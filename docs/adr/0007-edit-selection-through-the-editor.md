@@ -22,11 +22,15 @@ Both sides are snapshots: ADR 0002 rejected a live left side for the approval di
 changes under the user is not the one they judged.
 
 Accept edits the open document through the editor, with one `WorkspaceEdit` on the document's URI, never the file on
-disk, without saving: one Undo restores it, and the user's unsaved changes stay. It applies only when the document's
-text from its start through the end of the range sent is still the text sent; otherwise nothing is edited and a
-notification says so. The text is read again when the request is sent, with the same check, so the request and the
-diff show the document as sent. A `file` document closed meanwhile
-is opened again from its URI and compared the same way.
+disk, without saving: one Undo restores it, and the user's unsaved changes stay. It applies only when nothing changed
+at or above the end of the selection since the command started; otherwise nothing is edited and a notification says
+so. Two checks enforce that rule. From the moment the command reads the document until the run ends, the run watches
+the document's content changes (`workspace.onDidChangeTextDocument` for its URI): a change whose range starts before
+the selection's end, in the document as it was before that change, marks the run changed; a change starting at or
+after the end does not. And the document's text from its start through the selection's end must still be the text
+read, which covers a file closed, changed on disk, and opened again, whose changes the watch may not see. The text is
+read again when the request is sent, with both checks, so the request and the diff show the document as sent. A
+`file` document closed meanwhile is opened again from its URI and compared the same way.
 
 This differs from the agent's writes on purpose. The agent writes files on disk atomically, after an approval, and
 refuses a file with unsaved changes in an editor (ADR 0002), since an agent turn acts on the workspace and its undo is
@@ -56,7 +60,9 @@ suggested while the user types; the user selects code, runs a command, and write
 - The provider and model lookup (`ChatModel`) is shared by the commit message and this command.
 - A request the provider ended at its length limit is shown like a complete one, as in the chat; the user sees it in
   the diff.
-- The range is checked by its offsets and the text from the document's start through its end, so an edit above the
-  selection refuses Accept even when identical text now sits at the old offsets. An edit after the range does not.
-  The check is by text only: a copy of the selected line pasted right above it leaves that text unchanged, cannot be
-  told from a copy pasted below, and Accept edits the first of the two identical lines.
+- Any edit at or above the selection's end refuses Accept, even one that leaves the text through the end identical,
+  such as a copy of the selected line pasted right above it. An edit after the selection does not. An edit above the
+  selection that is undone before Accept still refuses it: the watch records that a change happened, not whether the
+  text came back. A text comparison alone was rejected because it cannot tell a copy of the selected line pasted above
+  it from one pasted below, and Accept would edit the upper copy.
+- Each run holds one change subscription, disposed when the run ends, whichever way it ends.

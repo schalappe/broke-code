@@ -346,6 +346,12 @@ describe("SelectionEditor", () => {
       closedAll: 0,
       progress: 0,
       cancel: () => {},
+      /** The open subscriptions to a document's changes, by URI. */
+      watches: [] as { uri: string; onChange: (offset: number) => void }[],
+      /** A change of the document `uri` starting at `offset`, as VS Code reports it to each subscription. */
+      change: (uri: string, offset: number) => {
+        for (const watch of calls.watches.filter((each) => each.uri === uri)) watch.onChange(offset);
+      },
     };
     const chatModel = "chatModel" in options ? options.chatModel : { access, model: "qwen", contextSize: 32_768 };
     const ports: SelectionEditPorts = {
@@ -373,6 +379,15 @@ describe("SelectionEditor", () => {
       openDocument: async (document) =>
         options.documents ? options.documents.get(document.uri) : liveDocument(document.text).port,
       showError: (text) => calls.errors.push(text),
+      watchChanges: (uri, onChange) => {
+        const watch = { uri, onChange };
+        calls.watches.push(watch);
+        return {
+          dispose: () => {
+            calls.watches = calls.watches.filter((each) => each !== watch);
+          },
+        };
+      },
     };
     return { ports, calls };
   }
@@ -474,6 +489,121 @@ describe("SelectionEditor", () => {
     await editor.accept(calls.diffs[0]!.id);
     expect(live.text).toBe("function add(a, b) {\n  return a - b;\n}\n// end\n");
     expect(calls.errors).toEqual([]);
+  });
+
+  test("Accept edits nothing when a copy of the selected line was pasted right above it", async () => {
+    const text = "foo();\nfoo();\n";
+    const document: EditDocument = { ...fileDocument(), text, start: 7, end: 14 };
+    const { live, port } = liveDocument(text);
+    const { ports, calls } = fakePorts({ reply: answer("bar();"), documents: new Map([[document.uri, port]]) });
+    const editor = new SelectionEditor(ports, english);
+    await editor.run(state(document), say("Rename"));
+    live.text = `foo();\n${text}`;
+    calls.change(document.uri, 7);
+    expect(live.text.slice(0, 14)).toBe(text);
+    await editor.accept(calls.diffs[0]!.id);
+    expect(live.edits).toEqual([]);
+    expect(calls.errors).toEqual([{ message: "The text changed since the request. Nothing was edited." }]);
+    expect(calls.watches).toEqual([]);
+  });
+
+  test("Accept edits when a change starts at or after the selection's end", async () => {
+    const { live, port } = liveDocument();
+    const { ports, calls } = fakePorts({ documents: new Map([["file:///work/app/a.ts", port]]) });
+    const editor = new SelectionEditor(ports, english);
+    await editor.run(state(), say("Subtract"));
+    live.text = `${original}// end\n`;
+    calls.change("file:///work/app/a.ts", fileDocument().end);
+    calls.change("file:///work/app/a.ts", original.length);
+    calls.change("file:///work/app/other.ts", 0);
+    await editor.accept(calls.diffs[0]!.id);
+    expect(live.text).toBe("function add(a, b) {\n  return a - b;\n}\n// end\n");
+    expect(calls.errors).toEqual([]);
+  });
+
+  test("a copy of the selected line pasted above it while the instruction was asked sends nothing", async () => {
+    const text = "foo();\nfoo();\n";
+    const document: EditDocument = { ...fileDocument(), text, start: 7, end: 14 };
+    const { live, port } = liveDocument(text);
+    const { ports, calls } = fakePorts({ documents: new Map([[document.uri, port]]) });
+    await new SelectionEditor(ports, english).run(state(document), async () => {
+      live.text = `foo();\n${text}`;
+      calls.change(document.uri, 7);
+      return "Rename";
+    });
+    expect(calls.requests).toEqual([]);
+    expect(calls.errors).toEqual([{ message: "The text changed since the request. Nothing was edited." }]);
+    expect(calls.watches).toEqual([]);
+  });
+
+  test("a run watches its document's changes from the start and stops on every end", async () => {
+    const uri = "file:///work/app/a.ts";
+    const watched = (calls: { watches: { uri: string }[] }) => calls.watches.map((watch) => watch.uri);
+
+    const accepted = fakePorts();
+    const acceptor = new SelectionEditor(accepted.ports, english);
+    await acceptor.run(state(), say("Subtract"));
+    expect(watched(accepted.calls)).toEqual([uri]);
+    await acceptor.accept(accepted.calls.diffs[0]!.id);
+    expect(watched(accepted.calls)).toEqual([]);
+
+    const rejected = fakePorts();
+    const rejector = new SelectionEditor(rejected.ports, english);
+    await rejector.run(state(), say("Subtract"));
+    await rejector.reject(rejected.calls.diffs[0]!.id);
+    expect(watched(rejected.calls)).toEqual([]);
+    await rejector.run(state(), say("Subtract"));
+    rejector.diffClosed(rejected.calls.diffs[1]!.id);
+    expect(watched(rejected.calls)).toEqual([]);
+
+    const asked = fakePorts();
+    let watchingWhileAsked: string[] = [];
+    await new SelectionEditor(asked.ports, english).run(state(), async () => {
+      watchingWhileAsked = watched(asked.calls);
+      return undefined;
+    });
+    expect(watchingWhileAsked).toEqual([uri]);
+    expect(watched(asked.calls)).toEqual([]);
+
+    const refused = fakePorts();
+    await new SelectionEditor(refused.ports, english).run(state(), async () => {
+      refused.calls.change(uri, 0);
+      return "Subtract";
+    });
+    expect(refused.calls.errors).toEqual([{ message: "The text changed since the request. Nothing was edited." }]);
+    expect(watched(refused.calls)).toEqual([]);
+
+    const cancelled = fakePorts({ reply: untilAborted });
+    const running = new SelectionEditor(cancelled.ports, english).run(state(), say("Subtract"));
+    await Bun.sleep(0);
+    cancelled.calls.cancel();
+    await running;
+    expect(watched(cancelled.calls)).toEqual([]);
+
+    const failed = fakePorts({
+      reply: async () => ({ status: "failed", error: { kind: "cutOff", provider: "Ollama", reason: "ended" } }),
+    });
+    await new SelectionEditor(failed.ports, english).run(state(), say("Subtract"));
+    expect(watched(failed.calls)).toEqual([]);
+
+    const disposed = fakePorts();
+    const both = new SelectionEditor(disposed.ports, english);
+    await both.run(state(), say("Subtract"));
+    const inFlight = fakePorts({ reply: untilAborted });
+    const flying = new SelectionEditor(inFlight.ports, english);
+    const pending = flying.run(state(), say("Subtract"));
+    await Bun.sleep(0);
+    both.dispose();
+    flying.dispose();
+    await pending;
+    expect(watched(disposed.calls)).toEqual([]);
+    expect(watched(inFlight.calls)).toEqual([]);
+
+    const busy = fakePorts();
+    const twice = new SelectionEditor(busy.ports, english);
+    await twice.run(state(), say("Subtract"));
+    await twice.run(state(), say("Again"));
+    expect(watched(busy.calls)).toEqual([uri]);
   });
 
   test("text changed up to the selection's end while the instruction was asked sends nothing", async () => {

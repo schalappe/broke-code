@@ -45,8 +45,8 @@ English whatever the display language:
 nothing sent:
 
 1. The active text editor's primary selection and its document, read when the command runs (`readEditor` in
-   `src/extension/editSelection.ts`): the text and the selection's offsets together, before the writable check
-   waits. No active text editor or an empty selection: "Select the code to edit first.".
+   `src/extension/editSelection.ts`): the text and the selection's offsets together, after the writable check
+   waits, with no wait after them, so the run's change watch starts before any change can come. No active text editor or an empty selection: "Select the code to edit first.".
    A document of a scheme other than `file` or `untitled`, a file whose file system is not writable
    (`workspace.fs.isWritableFileSystem`), or a file the user may not write (`access(W_OK)`, `isWritableDocument`): "broke-code can edit a
    selection only in a writable file or an untitled document.". A file deleted since it was opened counts as
@@ -54,7 +54,7 @@ nothing sent:
    `files.readonlyInclude`) cannot be read through the editor API: the submenu hides "Edit selection" there, and from
    the Command Palette the run proceeds; VS Code decides what happens to the edit at Accept.
 2. A run in progress on the document, by URI: "An edit is already in progress for {0}.". The document is taken from
-   here until the run ends.
+   here until the run ends, and the run starts watching it (see "The change watch").
 3. The provider and model selected in the chat, read now and kept for the run (`ChatModel`, the lookup the commit
    message command shares). None: "Choose a provider and a model in the broke-code chat first.".
 
@@ -62,11 +62,23 @@ Then the instruction, from a function the caller passes to `run` (`editInstructi
 input box ("Edit selection", the file's name in its prompt, `ignoreFocusOut`); Escape or a blank instruction ends the
 run with nothing sent and frees the document. For a preset it is the preset's text, and no input box opens.
 
-Then the document is read again, as Accept reads it (`openDocument`). When it no longer exists or is closed, or its
-text from its start through the selection's end differs from the text read in step 1: "The text changed since the
-request. Nothing was edited.", nothing sent. Otherwise its whole text now is the snapshot the run keeps: the request's
+Then the document is read again, as Accept reads it (`openDocument`). When it no longer exists or is closed, the
+change watch saw a change before the selection's end, or its text from its start through the selection's end differs
+from the text read in step 1: "The text changed since the request. Nothing was edited.", nothing sent. Otherwise its whole text now is the snapshot the run keeps: the request's
 context, both sides of the diff, and the text Accept compares. The selection keeps the offsets read in step 1. Then
 the budget, then the request.
+
+## The change watch
+
+The edit applies only when nothing changed at or above the end of the selection since the command started. From
+step 2 until the run ends, the run subscribes to the document's content changes (the `watchChanges` port; the host
+maps `workspace.onDidChangeTextDocument` for the document's URI, each `contentChanges[].rangeOffset`). A change whose
+range starts before the selection's end, in the document as it was before that change, marks the run changed, and the
+mark stays: undoing the change does not clear it. A change starting at or after the selection's end does not count,
+and it does not move the selection. Changes to the diff's own virtual documents are of another URI and do not count.
+The text comparison stays beside the watch: it covers a `file` document closed, changed on disk, and opened again,
+whose changes the watch may not see. The subscription is disposed when the run ends, whichever way it ends (Accept,
+Reject, the tab closing, Cancel, an error, a refusal, `dispose`).
 
 ## The request
 
@@ -132,14 +144,12 @@ error.
   longer open, the document opened again from its URI (`workspace.openTextDocument`). A closed untitled document, or a
   file that cannot be opened, no longer exists. It applies one `WorkspaceEdit` replacing the range sent, by its
   offsets, to the document, never to the file on disk and without saving, so one Undo restores it. It applies only
-  when the document exists, is open, and its text from its start through the end of the range sent is exactly the
-  text sent, compared with no wait before the edit; an edit after the range does not count. Otherwise nothing is
-  edited: "The text changed since the request. Nothing was edited."; an edit above the selection that moves it is such
-  a change, even when identical text now sits at the old offsets. The comparison is by text only: a copy of the
-  text just before the range's end, inserted where it leaves the text through that end unchanged (a copy of the
-  selected line pasted right above it), cannot be told from an edit after the range, and Accept edits the first of
-  the identical lines. When VS Code answers that the edit was not applied: "The document could
-  not be edited.". In every case the diff tab closes.
+  when the document exists, is open, the change watch saw no change before the selection's end, and its text from
+  its start through the end of the range sent is exactly the text sent, checked with no wait before the edit; an edit
+  after the range does not count. Otherwise nothing is edited: "The text changed since the request. Nothing was
+  edited."; an edit above the selection is such a change, even one that leaves the text through its end identical
+  (a copy of the selected line pasted right above it). The watch runs until that check. When VS Code answers that
+  the edit was not applied: "The document could not be edited.". In every case the diff tab closes.
 - **Reject** closes the tab and edits nothing. Closing the tab is a Reject: the host watches
   `window.tabGroups.onDidChangeTabs` and `onDidChangeTabGroups` for closed edit diff tabs, and a diff no tab shows any
   more ends its run (a tab moved to another group still shows it).
