@@ -77,7 +77,14 @@ export function describeProviderError(error: ProviderError, l10n: Translator): E
     case "internal":
       return { message: l10n.t("An unexpected internal error ended the reply."), detail: error.message };
     case "unreachable":
-      return { message: l10n.t("Cannot reach {0} at {1}.", error.provider, error.baseUrl), detail: error.cause };
+      return {
+        message: l10n.t(
+          "Cannot reach {0} at {1}. Check its base URL, your network or VPN, and the http.proxy setting.",
+          error.provider,
+          error.baseUrl,
+        ),
+        detail: error.cause,
+      };
     case "certificate":
       return {
         message: l10n.t(

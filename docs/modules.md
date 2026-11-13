@@ -163,7 +163,7 @@ This file says which file holds which responsibility. Update it when a module ga
   controller's listed conversations, opens the
   Quick Pick of `chooseModel`, runs `insertCode` over the active text editor, shows a failed mode write, sets the
   palette commands' context keys from each published state (`ChatContextKeys`), and wires the
-  `DraftQueue` to the view's focus command and `postMessage` (`insertDraft`); `extension.ts` registers `broke-code.addSelectionToChat`,
+  `DraftQueue` to the view's focus command and `postMessage` (`insertDraft`); `extension.ts` registers `broke-code.focusChat`, `broke-code.addSelectionToChat`,
   `broke-code.fixDiagnostic`, the chat's palette commands (`CHAT_COMMANDS`), and the code action provider of the quick fix; `commitMessage.ts` registers `broke-code.generateCommitMessage`, its git port over the
   built-in Git extension's API, the repository Quick Pick, the replace question, the progress notification, and the
   notifications; `progress.ts` holds the cancellable progress notification both run their request under; `editSelection.ts` registers `broke-code.editSelection`, its presets `broke-code.refactorSelection`,

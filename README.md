@@ -53,7 +53,7 @@ Palette, or click its button in the chat panel. It offers two choices.
 
 - **Ollama on this machine** adds `ollama` at `http://localhost:11434/v1`, with no key. If a provider named `ollama`
   already exists, the command selects it instead. Start Ollama first. broke-code does not check that it is running, and
-  when it cannot reach Ollama, the chat shows the usual error with Retry.
+  when it cannot reach Ollama, the chat shows the usual error, with **Open provider settings** and Retry.
 - **Other OpenAI-compatible service** asks for a name, the base URL, and the API key. The base URL ends in the
   service's version path, such as `/v1`. You can leave the key empty.
 
@@ -333,7 +333,12 @@ reports a command as an error if it exits with a code other than 0 or gets kille
 
 You can decide from the keyboard too. The Command Palette has **broke-code: Accept the proposed change**, **Run the
 proposed command**, **Reject the proposed change or command**, **Show the proposed change**, **Stop the reply**, and
-**New chat**. Each shows only when its button would. You can bind them in Keyboard Shortcuts.
+**New chat**. Each shows only when its button would. You can bind them in Keyboard Shortcuts. **⌃⌘B** shows the chat
+and puts the focus in the message box (**broke-code: Focus the message box**, which you can rebind).
+
+While a reply is in flight, **Escape** in an empty message box stops it, like **Stop**. With a menu open, Escape
+closes the menu; with text in the box, it does nothing, so a draft never stops a turn. Under **Accept**/**Run** and
+**Reject**, a dim line names their keys.
 
 In the chat, **⌘Enter** accepts the change or runs the command, and **⌘Backspace** rejects it. They work while the
 focus is in the chat but not in a field with text in it, so they never take over your typing; an empty message box
@@ -375,7 +380,8 @@ result, or the exit code for a command. Click the row to see the result the mode
 
 Once an agent turn ends, its steps fold under one row above the final answer that says what they did, such as "Read 3
 files, changed 1 file, ran 1 command, 1 failed (run_command)". The failed part comes last, in the error color, and
-names each tool that failed, so a failure never hides in the closed row even when the answer claims success. Files
+names each tool that failed, so a failure never hides in the closed row even when the answer claims success. A step
+that failed or that you rejected counts only there: "changed 1 file" means a file changed. Files
 count once however the model spelled their path (`a.ts`,
 `./a.ts`), but not across letter case or an absolute against a relative path; changed files and commands are always
 named, and the rest add up as "other steps". The row wraps in a narrow panel.
@@ -397,7 +403,8 @@ for an empty reply, which counts as a malformed call. The chat shows the malform
 editor font with its line breaks, between the text around it.
 
 You can keep typing while a turn runs. **Send** (or Enter) then queues the message under the message box instead of
-sending it, up to 10 messages. If the queue cannot take a message, the message goes back to the message box.
+sending it, up to 10 messages. Past about three, the queued messages scroll in their own box, so the conversation keeps
+its room. If the queue cannot take a message, the message goes back to the message box.
 
 When the turn ends with the model's answer, the first queued message goes out as if you had just sent it. broke-code
 reads its mentions and loads its `/<skill>` at that point, and uses the provider, model, and mode of that moment. The
@@ -406,7 +413,7 @@ message out of the queue and puts it back in the message box, after what you are
 meanwhile.
 
 When a turn ends any other way (**Stop**, a failure, a limit), broke-code sends nothing more. The panel says the queue
-is paused, and **Send now** on the first message sends it. A message you send yourself while the queue is paused goes
+is paused and why, and **Send now** on the first message sends it. A message you send yourself while the queue is paused goes
 first, and the queue resumes when its turn ends with an answer.
 
 **New chat**, `/new`, opening another conversation, and deleting the one shown put every queued message back in the
@@ -554,7 +561,7 @@ broke-code always sends these whole:
 - a result shorter than that line.
 
 The chat and the saved conversation keep every result whole. Only the request changes. While the next request leaves
-results out, the panel says how many under the header, and the usage counts the request as broke-code would send it.
+results out, the panel says how many in the line above the message box, and the usage counts the request as broke-code would send it.
 
 The token count turns bold from three quarters of the context size, and a line above the message box suggests
 `/compact`, so you see the end coming. If the request still does not fit, the turn stops without sending it. The chat

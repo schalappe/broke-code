@@ -181,8 +181,10 @@ between its regions: header, notices, the conversation (or History in its place)
 - Whitespace separates turns: 12px between entries, 8px more above a user's message; the replies and tool steps of
   one turn sit 4px apart, and so do a folded turn's row and its final reply. Opened, the fold lays its entries out in
   a column of its own with the same spacing, 4px under its row.
-- Long content never widens the panel: a path or a title on one line is cut with an ellipsis; a message, a command,
-  and a chip wrap anywhere; a folded turn's row wraps between words; a code block, a step result, and a table scroll
+- Long content never widens the panel: a path or a title on one line is cut with an ellipsis, and a step row's path
+  keeps ten characters at least, its status going to a line of its own at the right instead; a Changed files path
+  wraps only between its folder and file names, each atomic (`.path-segment`), and keeps its longest name whole, "created"
+  and the counts going under it when they do not fit; inside a name only when one is wider than the row; a message, a command, and a chip wrap anywhere; a folded turn's row wraps between words; a code block, a step result, and a table scroll
   inside themselves.
 - The header is a running head over one rule (`--bc-line`): the pickers take the first line whole, since a model id
   is long and the one thing to read there: the model takes the room and the provider shrinks to what is left; with
@@ -214,7 +216,8 @@ conversation: 4px down, 12px of blur, in `--bc-shadow`.
 
 Three radii: 4px for controls and small tokens (buttons, fields, chips, inline code, menu rows), 6px for blocks (code
 blocks, alerts, the decision block, the menu, History rows), 10px for the two large blocks (the message box, a
-user's message). Borders and rules are 1px. No colored side stripe.
+user's message). Borders and rules are 1px. No colored side stripe. The file and folder markers (`.kind`) round their
+1px corners to read as a page at 0.7em: a drawing, not a radius of the scale.
 
 ## Components
 
@@ -253,7 +256,9 @@ on its own line, then the selector at the left and the buttons at the right. The
 focus.
 
 The mode selector is a native select one size down (`--bc-fs-sm`), "Ask", "Auto-edit", or "Plan", its tooltip saying
-what the mode does. It shows the mode the host holds (Plan from the workspace, the others from the setting): a pick
+what the mode does. Away from Ask, the same sentence also shows as a dim line one size down (`--bc-fs-xs`) at the end of
+the composer's field, on its own row, and describes the selector (`aria-describedby`): a mode that writes without
+asking, or never writes, is never only a word in a selector. It shows the mode the host holds (Plan from the workspace, the others from the setting): a pick
 shows only once the host has applied it, and a failed write leaves it as it was, with the error in a notification. Disabled (half opacity) while a reply is in flight, like the
 pickers, and while a mode change is being written, when Send is disabled too (Enter sends nothing). The reasoning
 effort picker follows it, drawn the same way: both set the next turn, so the header keeps its line for the model.
@@ -264,8 +269,11 @@ Under the message box, outside its field: one row per queued message, in order, 
 radius 6px, one size down. The text is cut to one line with an ellipsis (its tooltip holds it whole), then Edit and
 Remove at the right; below 340px the text takes up to two lines of its own, then an ellipsis, and the buttons wrap
 under it at the right, since three buttons beside it left a few letters; while the queue is paused, the first row leads its actions with Send now, disabled when Send
-would not act. Above the rows, a notice line says "The queue is paused." when no reply is in flight, and another
-"The queue is full: 10 messages at most." at the cap. Nothing went wrong in either case, so no block.
+would not act. Above the rows, a notice line says the queue is paused, why, and that Send now sends the next message, when no reply
+is in flight, and another
+"The queue is full: 10 messages at most." at the cap. Nothing went wrong in either case, so no block. Past about three
+rows (20% of the panel's height) the rows scroll in their own box, and the conversation keeps a third of the panel at
+least, so a long queue never pushes a waiting decision out of view.
 
 ### The conversation
 
@@ -274,8 +282,10 @@ would not act. Above the rows, a notice line says "The queue is paused." when no
   (`--bc-accent-line`) on the panel, its text in the foreground, so the question in progress is the one filled block.
   Its chips sit under the text: a path in the editor font on `--bc-fill-strong`, then its status in dim text; a
   failed chip is drawn in the error color. On the latest message a chip has no fill, so its text keeps the message's
-  contrast, and is outlined in a tint of the text (`--bc-accent-chip`), with its status and marker in that text's color, and a failed or neutral chip takes the panel's ground back, where
-  its own color reads. A chip that found
+  contrast, and is outlined in a tint of the text (`--bc-accent-chip`), with its status and marker in that text's color. A failed chip takes the panel's ground back, where
+  its error color reads; a neutral one keeps the message's text color and no fill, its edge dashed, so it is quieter
+  than an attached chip, never louder. When a chip runs out of width, its status wraps under the path, so a short path
+  such as `@problems` never breaks. A chip that found
   nothing to attach without failing (`@problems` with no error or warning, `@diff` with no change) is neutral: no fill
   and dim text, its edge kept for high contrast, its status in words. A `@diff` whose source is absent or off (no
   repository, git not available) is failed, not neutral, and so is a partial `@diff`, some folders read and some
@@ -291,7 +301,9 @@ would not act. Above the rows, a notice line says "The queue is paused." when no
   closed, wrapped, never cut, so a long one never pushes the row past the panel. In a row, the argument gives way
   before the status (`.step-arg` shrinks first), so a status is cut last. A block of code or a step result that scrolls sideways
   shows a thin bar in the theme's slider color.
-- The decision block's Accept or Run and Reject name their keys, ⌘Enter and ⌘Backspace, in their tooltip.
+- The decision block's Accept or Run and Reject name their keys, ⌘Enter and ⌘Backspace, in their tooltip, and a dim
+  line under them in `--bc-inverse-dim`, one size down, says them in words (`.approval-keys`, hidden from screen
+  readers, which read `aria-keyshortcuts`): a tooltip is never seen from the keyboard.
 - Code block of a reply: once its text is final, its frame (`.code-block`: `--bc-fill`, `--bc-edge`, radius 6px)
   holds the code, which scrolls inside itself, with Copy and Insert at cursor (`.code-actions`) laid over its top right
   corner, 4px in. They take no room, so a block at rest is its code alone. A block still growing renders as a bare
@@ -418,13 +430,15 @@ Each kind of state has one look, distinct from the others at a glance:
 | State | Look |
 | --- | --- |
 | Loading (waiting for the reply, thinking, tool running, models loading, History's "Searching…", text still streaming) | Dim steady text; a line of its own leads with a dot that breathes; while an answer's text arrives, the dot alone breathes on a line after it (`.streaming-mark`, not read aloud); and a running step's node breathes. The pickers and the mode selector are disabled. While a mode change is being written, the mode selector and Send are disabled, with no other sign: the write takes a moment. While an undo runs, its button reads "Undoing changes…" and is disabled, and so is Send. |
-| Empty (no provider, new conversation, empty History, no History row left by the search) | One dim line, centered in the room it has; a link under it when there is something to do. No provider: Add provider (primary) and the Open provider settings link side by side under it. |
-| Notice (older tool results left out of the next request, the queue paused or full, an undo that put every file back) | One small dim line. Nothing went wrong, so no block. An unknown context size is the header's Set context size link instead. |
+| Empty (no provider, new conversation, empty History, no History row left by the search) | One dim line, centered in the room it has; a link under it when there is something to do. No provider: a second dim line says what a provider is (an OpenAI-compatible service, its base URL, a key if it asks for one), then Add provider (primary) and the Open provider settings link side by side under it. |
+| Notice (older tool results left out of the next request, the queue paused or full, an undo that put every file back) | One small dim line, wrapped to avoid a lone last word (`text-wrap: pretty`). Nothing went wrong, so no block. The left-out count sits over the message box, before the nearly-full sentence when both apply, so the context speaks in one place. An unknown context size is the header's Set context size link instead. |
 | Warning (skipped providers and skills, an undo that skipped files, conversations History could not search, a full context) | A block on the theme's warning fill; under skipped providers, Add provider (secondary) below the block, only while a valid provider exists: without one, the empty state's Add provider is the panel's only one. |
-| Error (models unavailable, failed reply, storage and listing problems, an undo that failed unexpectedly) | A block on the theme's error fill: the message, its technical detail in the editor font and the block's own text color (a dim tint fell under 4.5:1 on the light error fill), then its actions. |
+| Error (models unavailable, failed reply, storage and listing problems, an undo that failed unexpectedly) | A block on the theme's error fill: the message, its technical detail in the editor font and the block's own text color (a dim tint fell under 4.5:1 on the light error fill), then its actions. Open provider settings is a link there, as everywhere, offered where the fix is a setting: a
+certificate, a CA file, or an unreachable provider, whose message names the base URL, the network or VPN, and
+`http.proxy`. |
 | Failed step or chip | The error color on the status text; no block. |
 | Waiting for a decision or an answer | The decision block, in negative, on the thread's solid node. |
-| Turn ending (Stopped, halted) | A short rule, then small dim text. A halt on a full context is a warning block instead (`p.warning`): every new message would end the same way until the user acts. Over the message box, one warning line, "The conversation fills the model's context.", with "Summarize (/compact)" under it, secondary (`.warning.context-full`); New chat stays in the header only. From three quarters of the size, one notice line there points at `/compact`. |
+| Turn ending (Stopped, halted) | A short rule, then small dim text, a halt on a full context included: it is a past ending, and the warning over the message box says while the context is still full, so it shows once. Over the message box, one warning line, "The conversation fills the model's context.", with "Summarize (/compact)" under it, secondary (`.warning.context-full`); New chat stays in the header only. From three quarters of the size, one notice line there points at `/compact`. |
 | Folded turn (an ended turn of two steps or more) | One small dim row on a double-ring node: what the steps did ("Read 3 files, changed 1 file, ran 1 command"), "N steps" for a fold of other steps only, then the failed and rejected counts in words, then the chevron; it wraps, never cut. |
 | Replacing (Edit on the last message) | The last turn as a group under one line in the full foreground saying that sending replaces it, with Cancel; not dimmed. |
 | Summarized (a summary, and the entries it replaces) | A separator of dim words between two rules above the summary; the entries before it as a group under one dim line saying they are no longer sent, not dimmed; the turn's message an automatic summary quotes with a dim line saying it is still sent. |

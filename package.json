@@ -32,6 +32,12 @@
         }
       ]
     },
+    "keybindings": [
+      {
+        "command": "broke-code.focusChat",
+        "key": "ctrl+cmd+b"
+      }
+    ],
     "views": {
       "broke-code": [
         {
@@ -128,6 +134,11 @@
       {
         "command": "broke-code.newChat",
         "title": "%command.newChat.title%",
+        "category": "broke-code"
+      },
+      {
+        "command": "broke-code.focusChat",
+        "title": "%command.focusChat.title%",
         "category": "broke-code"
       }
     ],

@@ -191,14 +191,22 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
     palette only when that button would: the host sets the context keys `broke-code.approval` (`write`, `command`, or
     `none`), `broke-code.replying`, and `broke-code.hasEntries` from each published state, a key only when its value
     changes. Accept acts on a write only and Run on a command only; a command with nothing to act on does nothing,
-    since the palette may lag the state. None has a default keybinding; the user may bind them.
+    since the palette may lag the state. None has a default keybinding; the user may bind them. ⌃⌘B runs "broke-code: Focus
+    the message box" (`broke-code.focusChat`), the one default keybinding of the extension: it shows the chat and puts
+    the focus in the message box through an empty draft of mode `focus` (`DraftInsert`), which changes no text, since
+    the view's own "Focus on Chat View" focuses the webview and nothing inside it (seen live).
+  - In the panel, a bare Escape in an empty message box while a reply is in flight stops it, as Stop does
+    (`composerKeyAction`), unless a menu is open, which it closes instead; with text in the box it does nothing, so a
+    draft, or a second Escape after a menu closed on a token, never stops a turn. Stop names the key in its tooltip and
+    `aria-keyshortcuts`.
   - In the panel, ⌘Enter accepts or runs and ⌘Backspace rejects the request open (maintainer decision, 2026-11-13),
     handled by the webview, since only it knows which of its fields has the focus: with no other modifier, not
     repeated, not while composing (IME), and only while the focus is not in a field holding text (the message box
     left empty counts as empty, since the focus rests there while a request waits, and hands the two keys on instead
     of treating ⌘Enter as Enter; in the reason field the keys keep their editing meaning, and with a draft in the
     message box ⌘Enter sends or queues it as Enter does). A key clicks the decision block's own button, so a rejection carries the
-    reason typed. The buttons name their key in their tooltip and `aria-keyshortcuts`. Accepted risk: ⌘Enter in an
+    reason typed. The buttons name their key in their tooltip and `aria-keyshortcuts`, and a dim line under them says
+    the keys in words ("⌘Enter accepts, ⌘Backspace rejects"), hidden from screen readers, which read the attribute. Accepted risk: ⌘Enter in an
     empty message box while a request is open accepts it.
   - The run context carries a second kind of request beside it, `ToolContext.requestAnswer`, the question of
     `ask_user` (Body tool calls, above; ADR 0002, addenda of 2026-11-13). It approves nothing: it brings back the
@@ -547,9 +555,12 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
   `halts`. With `compacts`, one notice line says the next message summarizes the conversation first. From three quarters
   of the size on, or with `full`, the usage takes the full foreground in weight 600, and below `full` one notice line
   says "The context is nearly full: /compact summarizes the conversation to free it." None of these lines is a live
-  region: they change with the usage, and a halt is announced as its reply ends. A `contextFull` halt shows in the warning look, not as an ordinary turn ending. Its optional `leftOut`
-  counts the results left out; while it is set, the panel shows "N older tool results are left out of the request to save
-  context." in the place and look of the unknown-size notice, derived from the state, never saved or sent. Its
+  region: they change with the usage, and a halt is announced as its reply ends. A `contextFull` halt ends its reply as
+  the other halts do, an ordinary mark: it is a past ending, and the warning over the message box says while the context
+  is still full, so the warning shows once. Its optional `leftOut` counts the results left out; while it is set, the
+  line over the message box says "N older tool results are left out of the request to save context.", before the
+  nearly-full sentence when both apply, so the context speaks in one place; derived from the state, never saved or
+  sent. Its
   optional `reported` holds the counts the last chat request of the conversation shown reported (a turn's request or
   a summary request; the commit message's never reaches the chat's state, see `docs/spec/provider.md`), which the
   header's tooltip shows. While a request is in flight it keeps the counts of the request before it; when the request

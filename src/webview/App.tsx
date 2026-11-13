@@ -178,9 +178,6 @@ export function App({
       />
       {!configured && <EmptyState />}
       <Warnings state={state} />
-      {state.model !== undefined && state.context.leftOut !== undefined && (
-        <LeftOutNotice count={state.context.leftOut} />
-      )}
       {state.listFailed && <TextBlock text={describeListFailure(state.listFailed)} />}
       {state.storageProblem && <TextBlock text={describeStorageProblem(state.storageProblem)} />}
       {state.models.status === "failed" && (
@@ -293,6 +290,7 @@ export function EmptyState() {
   return (
     <section className="empty">
       <p>{l10n.t("No provider is configured.")}</p>
+      <p>{l10n.t("A provider is an OpenAI-compatible service: its base URL, and an API key if it asks for one.")}</p>
       <div className="actions">
         <button type="button" onClick={() => post({ type: "addProvider" })}>
           {l10n.t("Add provider")}
@@ -491,22 +489,18 @@ export function SetContextSize({ model }: { model: string }) {
 }
 
 /** The next request leaves `count` older tool results out to fit the context; derived from the state, never saved. */
-function LeftOutNotice({ count }: { count: number }) {
-  return (
-    <p className="notice" role="status">
-      {count === 1
-        ? l10n.t("1 older tool result is left out of the request to save context.")
-        : l10n.t("{0} older tool results are left out of the request to save context.", count)}
-    </p>
-  );
+function describeLeftOut(count: number): string {
+  return count === 1
+    ? l10n.t("1 older tool result is left out of the request to save context.")
+    : l10n.t("{0} older tool results are left out of the request to save context.", count);
 }
 
-/** The share of the context from which the usage takes the warning color: some room is still left for a reply. */
+/** The share of the context from which the usage is set in bold: some room is still left for a reply. */
 const NEARLY_FULL = 3 / 4;
 
 /**
- * The usage's look: the warning color once the next request nears the context size, and once it fills it; the share
- * itself is in words, so the color is never the only cue.
+ * The usage's look: bold once the next request nears the context size, and once it fills it; the share itself is in
+ * words, so the weight is never the only cue.
  */
 function usageClass(context: ContextUsage): string {
   return context.full || isNearlyFull(context) ? "usage nearly-full" : "usage";
@@ -527,10 +521,12 @@ function turnHalts(context: ContextUsage): boolean {
  * New chat stays in the header, and the message box sends nothing else until then. Full, when even the summary would
  * halt, one warning line that names New chat, the only way out, and no summary button. Full, when the turn summarizes
  * first (`brokeCode.autoCompact`), one notice line. Nearly full, one notice line that points at the summary before the
- * wall. No live region: a halt is announced as the reply ends, and these lines change with the usage at every delta.
- * `canAct`: Send would act, which the summary needs too.
+ * wall. Older tool results left out (`ContextUsage.leftOut`) lead the notice line, or make one of their own, so the
+ * context speaks in one place. No live region: a halt is announced as the reply ends, and these lines change with the
+ * usage at every delta. `canAct`: Send would act, which the summary needs too.
  */
 function ContextNotice({ context, canAct }: { context: ContextUsage; canAct: boolean }) {
+  const leftOut = context.leftOut === undefined ? undefined : describeLeftOut(context.leftOut);
   if (context.full === "compacts") {
     return (
       <p className="notice">{l10n.t("The context is full: the next message summarizes the conversation first.")}</p>
@@ -555,10 +551,12 @@ function ContextNotice({ context, canAct }: { context: ContextUsage; canAct: boo
       </section>
     );
   }
-  if (!isNearlyFull(context)) return null;
-  return (
-    <p className="notice">{l10n.t("The context is nearly full: /compact summarizes the conversation to free it.")}</p>
-  );
+  const nearlyFull = isNearlyFull(context)
+    ? l10n.t("The context is nearly full: /compact summarizes the conversation to free it.")
+    : undefined;
+  const lines = [leftOut, nearlyFull].filter((line) => line !== undefined);
+  if (lines.length === 0) return null;
+  return <p className="notice">{lines.join(" ")}</p>;
 }
 
 /** Alert with a message and its optional technical detail. */
@@ -581,8 +579,8 @@ function ErrorBlock({ error, retry }: { error: ProviderError; retry?: () => void
             {l10n.t("Set API key")}
           </button>
         )}
-        {(error.kind === "certificate" || error.kind === "caFileInvalid") && (
-          <button type="button" onClick={() => post({ type: "openSettings" })}>
+        {(error.kind === "certificate" || error.kind === "caFileInvalid" || error.kind === "unreachable") && (
+          <button type="button" className="link" onClick={() => post({ type: "openSettings" })}>
             {l10n.t("Open provider settings")}
           </button>
         )}
@@ -1207,14 +1205,11 @@ function Reply({
         </p>
       )}
       {entry.status === "stopped" && <p className="mark">{l10n.t("Stopped")}</p>}
-      {entry.status === "halted" &&
-        entry.haltReason &&
-        // [>]: A full context is no ordinary ending: every new message would end the same way until the user acts.
-        (entry.haltReason === "contextFull" ? (
-          <p className="warning">{describeHalt(entry.haltReason, entry.summary)}</p>
-        ) : (
-          <p className="mark">{describeHalt(entry.haltReason, entry.summary)}</p>
-        ))}
+      {/* [>]: Every halt, a full context's included, is a past ending: the block over the message box says while the
+      context is still full, with its way out, so the warning shows once. */}
+      {entry.status === "halted" && entry.haltReason && (
+        <p className="mark">{describeHalt(entry.haltReason, entry.summary)}</p>
+      )}
       {entry.summary && entry.status === "done" && entry.content.trim() === "" && (
         <p className="mark">{describeEmptySummary()}</p>
       )}
@@ -1357,6 +1352,22 @@ function TurnActions({ turnActions, undo }: { turnActions?: TurnActionsProps; un
 }
 
 /**
+ * `path` as one unbreakable piece per folder and file name, its "/" kept at the end of each, with a line break
+ * opportunity between them: a long path wraps between its folders, never inside a name (even at a hyphen), unless one
+ * name alone is wider than the row (`.path-segment`).
+ */
+function breakAfterSlashes(path: string): ReactNode {
+  const segments = path.split("/");
+  return segments.map((segment, index) => (
+    // biome-ignore lint/suspicious/noArrayIndexKey: the segments of one path never move.
+    <Fragment key={index}>
+      {index > 0 && <wbr />}
+      <span className="path-segment">{index < segments.length - 1 ? `${segment}/` : segment}</span>
+    </Fragment>
+  ));
+}
+
+/**
  * "Changed files": one row per file the held turn created or edited, its path in the editor font, then "created" or
  * "edited" and its line counts. Each row is a button that opens the file's diff in the editor, which keeps the focus
  * where it is.
@@ -1373,7 +1384,7 @@ function ChangedFiles({ files }: { files: ChangedFile[] }) {
               className="changed-file"
               onClick={() => post({ type: "openChangeDiff", path: file.path })}
             >
-              <code className="changed-path">{file.path}</code>
+              <code className="changed-path">{breakAfterSlashes(file.path)}</code>
               <span className="changed-kind">{file.kind === "created" ? l10n.t("created") : l10n.t("edited")}</span>
               <span className="changed-counts">{`+${file.added} \u2212${file.removed}`}</span>
             </button>
@@ -1786,6 +1797,11 @@ export function ApprovalControls({
           {l10n.t("Reject")}
         </button>
       </div>
+      {/* [>]: The keys in words, where the decision is: a tooltip is never seen from the keyboard. Hidden from screen
+      readers, which read `aria-keyshortcuts` on the buttons. */}
+      <p className="approval-keys" aria-hidden="true">
+        {command ? l10n.t("⌘Enter runs, ⌘Backspace rejects") : l10n.t("⌘Enter accepts, ⌘Backspace rejects")}
+      </p>
     </fieldset>
   );
 }
@@ -2340,7 +2356,7 @@ function Composer({
     // [!]: The selection is read from the box itself: a caret set by `setSelectionRange` fires no `onSelect`.
     const { selectionStart, selectionEnd } = event.currentTarget;
     const { conversationId, entries } = state;
-    const box = { text, selectionStart, selectionEnd, conversationId, entries, recalled };
+    const box = { text, selectionStart, selectionEnd, conversationId, entries, recalled, replying };
     const action = composerKeyAction(pressed, rows, box);
     if (action.type === "none") return;
     event.preventDefault();
@@ -2359,6 +2375,8 @@ function Composer({
         return setDismissed(token);
       case "send":
         return send();
+      case "stop":
+        return post({ type: "stop" });
       case "recall":
         setDraft(action.draft);
         setRecalled(action.place);
@@ -2390,9 +2408,7 @@ function Composer({
           rows={3}
           value={text}
           placeholder={
-            ready
-              ? l10n.t("Ask anything. Enter to send, Shift+Enter for a new line.")
-              : l10n.t("Choose a model to start.")
+            ready ? l10n.t("Describe a task. @ attaches a file, / runs a command.") : l10n.t("Choose a model to start.")
           }
           aria-label={l10n.t("Message")}
           aria-autocomplete="list"
@@ -2412,7 +2428,7 @@ function Composer({
           onKeyDown={onKeyDown}
         />
         {/* [!]: After the message box, so Shift+Tab from it still reaches an open request's controls first. */}
-        <ModeSelect mode={state.mode} disabled={replying || state.modePending} />
+        <ModeSelect mode={state.mode} disabled={replying || state.modePending} hintId={MODE_HINT_ID} />
         {state.model !== undefined && <EffortSelect state={state} replying={replying} />}
         {/* [>]: During a reply Send queues, so it stays beside Stop, secondary: Stop is the region's primary button. */}
         <button
@@ -2424,10 +2440,16 @@ function Composer({
           {l10n.t("Send")}
         </button>
         {replying && (
-          <button type="button" onClick={() => post({ type: "stop" })}>
+          <button
+            type="button"
+            title={l10n.t("Stop (Escape)")}
+            aria-keyshortcuts="Escape"
+            onClick={() => post({ type: "stop" })}
+          >
             {l10n.t("Stop")}
           </button>
         )}
+        <ModeHint mode={state.mode} id={MODE_HINT_ID} />
       </footer>
       {state.queue.length > 0 && <QueuedMessages state={state} canSend={canSend && !contextFull} edit={edit} />}
     </>
@@ -2454,7 +2476,9 @@ function QueuedMessages({
     <section className="queue" aria-label={l10n.t("Queued messages")}>
       {paused && (
         <p className="notice" role="status">
-          {l10n.t("The queue is paused.")}
+          {l10n.t(
+            "The queue is paused: it moves on only after a turn that completes. Send now sends the next message.",
+          )}
         </p>
       )}
       {state.queue.length >= MAX_QUEUED_MESSAGES && (
@@ -2497,22 +2521,45 @@ function QueuedMessages({
   );
 }
 
+/** What each mode does to the next turn, in the selector's tooltip and, away from Ask, in a line under it. */
+function describeMode(mode: Mode): string {
+  switch (mode) {
+    case "ask":
+      return l10n.t("Each change waits for Accept or Reject.");
+    case "autoEdit":
+      return l10n.t("Changes are written without asking. Commands still wait for Run.");
+    case "plan":
+      return l10n.t("The agent reads files and answers with a plan. It changes no file and runs no command.");
+  }
+}
+
+const MODE_HINT_ID = "mode-hint";
+
+/**
+ * The line under the composer that says what Auto-edit or Plan does, so a mode that writes without asking, or never
+ * writes, is never only a word in a selector. Nothing in Ask, the default, where each change asks anyway.
+ */
+function ModeHint({ mode, id }: { mode: Mode; id: string }) {
+  if (mode === "ask") return null;
+  return (
+    <p className="mode-hint" id={id}>
+      {describeMode(mode)}
+    </p>
+  );
+}
+
 /**
  * Ask, Auto-edit, or Plan, as the host reads them: Plan from the workspace, the others from the setting. Controlled by
  * the state, so a pick shows only once the host has applied it; a failed write leaves the mode as it was.
  */
-function ModeSelect({ mode, disabled }: { mode: Mode; disabled: boolean }) {
+function ModeSelect({ mode, disabled, hintId }: { mode: Mode; disabled: boolean; hintId: string }) {
   const labels: Record<Mode, string> = { ask: l10n.t("Ask"), autoEdit: l10n.t("Auto-edit"), plan: l10n.t("Plan") };
-  const hints: Record<Mode, string> = {
-    ask: l10n.t("Each change waits for Accept or Reject."),
-    autoEdit: l10n.t("Changes are written without asking. Commands still wait for Run."),
-    plan: l10n.t("The agent reads files and answers with a plan. It changes no file and runs no command."),
-  };
   return (
     <select
       className="mode"
       aria-label={l10n.t("Mode")}
-      title={hints[mode]}
+      aria-describedby={mode === "ask" ? undefined : hintId}
+      title={describeMode(mode)}
       value={mode}
       disabled={disabled}
       onChange={(event) => {
