@@ -50,6 +50,9 @@ export type ConversationRecord = {
 /** A row of the history list. */
 export type ConversationSummary = { id: string; title: string; updatedAt: number };
 
+/** A conversation whose messages hold a History search, and the excerpt around its first match. */
+export type ConversationMatch = { id: string; excerpt: string };
+
 export type ParsedConversation = { ok: true; record: ConversationRecord } | { ok: false; reason: string };
 
 const ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
