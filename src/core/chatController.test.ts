@@ -6243,13 +6243,15 @@ describe("ChatController undo", () => {
       const second = controller.send("second");
       await until(state, (s) => isReplying(s));
       expect(state().changedFiles).toEqual([]);
+      // [>]: Waits for the second write's step to end, not for its file on disk: the turn records the write after the
+      // file lands, and a Stop between the two would leave the first turn's rows.
       await until(
-        () => ({ ...state(), model: text("b.txt") }),
-        (s) => s.model === "b1\nb2\n",
+        state,
+        (s) => s.entries.filter((entry) => entry.role === "tool" && entry.status === "ok").length === 2,
       );
+      expect(text("b.txt")).toBe("b1\nb2\n");
       controller.stop();
       await second;
-      await until(state, (s) => s.changedFiles.length > 0);
       expect(state().changedFiles).toEqual([{ path: "b.txt", kind: "edited", added: 2, removed: 1 }]);
     });
 
