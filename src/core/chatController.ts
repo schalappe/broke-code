@@ -38,9 +38,11 @@ import {
   type ContextUsage,
   type DraftInsert,
   type HaltReason,
+  isReasoningEffort,
   isReplying,
   MAX_QUEUED_MESSAGES,
   type Mode,
+  type ReasoningEffort,
   type ReplyStatus,
   type ReportedUsage,
   type ShownEntries,
@@ -222,12 +224,22 @@ const LAST_CHOICE_KEY = "brokeCode.lastChoice";
  * cleared without a provider, and Plan must survive both.
  */
 const PLAN_KEY = "brokeCode.plan";
+/**
+ * Reasoning effort picked per provider and model, keyed by `effortKey`. A pair on Default has no entry. A key of its
+ * own, as Plan: the provider and model choice is rewritten whole.
+ */
+const REASONING_EFFORTS_KEY = "brokeCode.reasoningEfforts";
 /** Id of the conversation shown, reopened at the next window load. */
 const CURRENT_CONVERSATION_KEY = "brokeCode.currentConversation";
 /** Shortest time between two saves of a streaming reply. */
 const SAVE_INTERVAL_MS = 500;
 
 type LastChoice = { provider: string; model?: string };
+
+/** Unambiguous whatever characters the names hold. */
+function effortKey(provider: string, model: string): string {
+  return JSON.stringify([provider, model]);
+}
 
 /**
  * An agent turn as "Undo changes" sees it. `conversation`: the one it was sent in. `changes`: the files its writes
@@ -411,6 +423,7 @@ export class ChatController {
       provider: undefined,
       models: { status: "noProvider" },
       model: undefined,
+      reasoningEffort: undefined,
       conversationId: this.conversation.id,
       entries: this.conversation.entries,
       conversations: [],
@@ -530,12 +543,42 @@ export class ChatController {
   }
 
   /**
-   * Set or reset the selected model. The reported usage goes with it, even when the model is the same: it belonged to
-   * the request before, which a new listing or a provider change makes stale.
+   * Pick the reasoning effort of the selected provider and model (`undefined`: Default), used from the next request,
+   * a commit message's and an edit's included. Ignored while a reply is in flight, like a model pick.
+   */
+  selectReasoningEffort(effort: ReasoningEffort | undefined): void {
+    const { provider, model } = this.state;
+    if (isReplying(this.state) || provider === undefined || model === undefined) return;
+    this.state.reasoningEffort = effort;
+    const { [effortKey(provider, model)]: _previous, ...others } = this.rememberedEfforts();
+    const efforts = effort === undefined ? others : { ...others, [effortKey(provider, model)]: effort };
+    this.workspaceState.update(REASONING_EFFORTS_KEY, efforts).then(undefined, (error: unknown) => {
+      // [>]: Losing it only costs a re-pick next session -> log, don't interrupt chat.
+      console.error("broke-code: could not remember the reasoning effort", error);
+    });
+    this.emit();
+  }
+
+  /**
+   * Set or reset the selected model, with the reasoning effort remembered for it. The reported usage goes with it,
+   * even when the model is the same: it belonged to the request before, which a new listing or a provider change
+   * makes stale.
    */
   private setModel(model: string | undefined): void {
     this.state.model = model;
+    const { provider } = this.state;
+    const remembered =
+      provider === undefined || model === undefined ? undefined : this.rememberedEfforts()[effortKey(provider, model)];
+    this.state.reasoningEffort = isReasoningEffort(remembered) ? remembered : undefined;
     this.reported = undefined;
+  }
+
+  /** The stored efforts; anything else under the key (another version's shape, a hand edit) reads as none. */
+  private rememberedEfforts(): Record<string, unknown> {
+    const stored = this.workspaceState.get<unknown>(REASONING_EFFORTS_KEY);
+    return typeof stored === "object" && stored !== null && !Array.isArray(stored)
+      ? (stored as Record<string, unknown>)
+      : {};
   }
 
   /**
@@ -1302,6 +1345,7 @@ export class ChatController {
       streamChat(access, {
         model,
         messages,
+        reasoningEffort: this.state.reasoningEffort,
         signal: AbortSignal.any([signal, cut.signal]),
         support: this.providerSupport,
         onContent: delta("content"),

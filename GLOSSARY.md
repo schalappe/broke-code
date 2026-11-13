@@ -119,6 +119,11 @@ The text a model writes before its answer to work the problem out, shown collaps
 to the model, and never read for body tool calls.
 _Avoid_: thoughts, chain of thought, thinking
 
+**Reasoning effort**:
+How much reasoning the user asks the selected model for (Low, Medium, or High), sent as `reasoning_effort`, or
+Default, which sends nothing and leaves it to the provider. Picked in the panel header, remembered per model.
+_Avoid_: thinking budget, effort level
+
 **Code block**:
 A block of code in an assistant answer's Markdown, fenced or indented. Once its text is final it has Copy and Insert
 at cursor, which take its code without the fence lines and its final line break. The call block, a tool step's result,

@@ -30,6 +30,19 @@ describe("parseWebviewMessage", () => {
     expect(parseWebviewMessage({ type: "setApiKey", provider: "P" })).toEqual({ type: "setApiKey", provider: "P" });
   });
 
+  test("accepts a known reasoning effort or none, and refuses any other", () => {
+    expect(parseWebviewMessage({ type: "selectReasoningEffort", effort: "medium" })).toEqual({
+      type: "selectReasoningEffort",
+      effort: "medium",
+    });
+    expect(parseWebviewMessage({ type: "selectReasoningEffort" })).toEqual({
+      type: "selectReasoningEffort",
+      effort: undefined,
+    });
+    expect(parseWebviewMessage({ type: "selectReasoningEffort", effort: "max" })).toBeUndefined();
+    expect(parseWebviewMessage({ type: "selectReasoningEffort", effort: null })).toBeUndefined();
+  });
+
   test("accepts a changed file's diff request for a non-empty path within the mention path limit", () => {
     expect(parseWebviewMessage({ type: "openChangeDiff", path: "src/a.ts", extra: 1 })).toEqual({
       type: "openChangeDiff",
@@ -307,6 +320,7 @@ describe("chatStateOf", () => {
     provider: undefined,
     models: { status: "noProvider" },
     model: undefined,
+    reasoningEffort: undefined,
     conversationId: "0b0d4c1e-8f9a-4c3b-9d2e-1a2b3c4d5e6f",
     entries: [],
     conversations: [],

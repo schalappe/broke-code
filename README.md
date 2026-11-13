@@ -78,6 +78,16 @@ broke-code follows VS Code's proxy settings. It never follows an HTTP redirect, 
 that gets no response within 300 seconds fails as unreachable. broke-code cuts off a reply that sends nothing for 300
 seconds.
 
+## Reasoning effort
+
+Next to the model picker, the panel header has a reasoning effort picker: **Default effort**, **Low effort**,
+**Medium effort**, or **High effort**. Low, Medium, and High send `reasoning_effort` with every request to that model,
+from the chat, a commit message, and **Edit selection**. Default sends nothing and leaves the choice to the provider.
+broke-code remembers your pick for each model of each provider, in this workspace.
+
+The model decides what an effort changes, and some ignore it. If the provider answers with an error, pick Default
+again.
+
 ## Corporate or self-signed certificates
 
 broke-code trusts the certificates your system trusts. A provider may use a certificate signed by a corporate or
