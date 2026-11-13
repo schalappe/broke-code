@@ -1,5 +1,9 @@
 import { describe, expect, spyOn, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { type ConversationRecord, newConversationId } from "./conversation";
+import { directoryFiles } from "./conversationFiles";
 import { memoryFiles } from "./conversationFixture";
 import { ConversationStore } from "./conversationStore";
 
@@ -608,5 +612,37 @@ describe("ConversationStore.search", () => {
     expect(answer?.items).toHaveLength(50);
     expect(recordReads(files, [records[50]?.id ?? ""])).toBe(0);
     expect(files.files).toEqual(before);
+  });
+});
+
+describe("ConversationStore.search timing", () => {
+  test("finds a word of an answer across 20 records of about 1 MB on disk in under a second", async () => {
+    const root = await mkdtemp(join(tmpdir(), "broke-code-search-"));
+    try {
+      const store = new ConversationStore(directoryFiles(root));
+      const result = "const value = readTheFile(path);\n".repeat(600);
+      const records: ConversationRecord[] = Array.from({ length: 20 }, (_, index) => {
+        const saved = record(1000 + index, `question ${index}`);
+        const steps = Array.from({ length: 50 }, () => [
+          { role: "assistant" as const, reasoning: "Thinking.", content: "Reading the next file.", status: "done" as const },
+          { role: "tool" as const, name: "read_file", args: { path: "a.ts" }, status: "ok" as const, text: result },
+        ]).flat();
+        const last = index === 0 ? "The quarantined module moved." : "Done.";
+        const answer = { role: "assistant" as const, reasoning: "", content: last, status: "done" as const };
+        return { ...saved, entries: [...saved.entries, ...steps, answer] };
+      });
+      for (const saved of records) await store.save(saved);
+      const ids = records.map((saved) => saved.id).reverse();
+
+      const started = performance.now();
+      const answer = await store.search(ids, "quarantined");
+      const elapsed = performance.now() - started;
+      console.log(`search over 20 records of about 1 MB: ${elapsed.toFixed(1)} ms`);
+
+      expect(answer?.items).toEqual([{ id: records[0]?.id ?? "", excerpt: "The quarantined module moved." }]);
+      expect(elapsed).toBeLessThan(1000);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
