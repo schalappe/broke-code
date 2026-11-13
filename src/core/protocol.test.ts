@@ -326,6 +326,7 @@ describe("chatStateOf", () => {
     conversations: [],
     listFailed: undefined,
     storageProblem: undefined,
+    callRunning: false,
     context: { used: 0, size: 32768, known: false },
     mode: "ask",
     settingMode: "ask",

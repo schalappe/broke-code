@@ -8,12 +8,14 @@ import { MASK, maskCode } from "./markdownCode";
 /**
  * A tool as the model sees it. `args`: in the order the call shape and the system prompt list them. `oneLine`: the
  * value cannot hold a line break (a path, a name, a ripgrep pattern), so the parser drops every leading and trailing
- * one, whatever the other side holds.
+ * one, whatever the other side holds. `asks`: the tool may ask the user before it acts, through an approval or a
+ * question (`ToolContext`), so its call runs only once an approval is accepted; never sent to the model.
  */
 export type ToolSpec = {
   name: string;
   description: string;
   args: { name: string; required: boolean; oneLine?: boolean; description: string }[];
+  asks?: true;
 };
 
 /**

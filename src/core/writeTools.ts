@@ -57,6 +57,7 @@ export const WRITE_TOOLS: ToolSpec[] = [
       },
       { name: "content", required: true, description: "The whole new content of the file, as raw text." },
     ],
+    asks: true,
   },
   {
     name: "edit_file",
@@ -76,6 +77,7 @@ export const WRITE_TOOLS: ToolSpec[] = [
       },
       { name: "new", required: true, description: "The text that replaces the passage." },
     ],
+    asks: true,
   },
 ];
 

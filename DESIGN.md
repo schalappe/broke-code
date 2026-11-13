@@ -81,7 +81,6 @@ It must print nothing.
 | `--bc-rule` | 16% of the foreground | Hairlines. |
 | `--bc-fill` | 6% of the foreground | A surface a shade off the panel: a code block, a command, a queued message. |
 | `--bc-fill-strong` | 11% of the foreground | One step stronger: inline code, chips, a hovered or pressed secondary button. |
-| `--bc-unsent-opacity` | 0.6 (1 in high contrast) | The entries no longer sent to the model after a summary, and the turn Edit replaces. |
 
 ### Role tokens
 
@@ -140,9 +139,6 @@ high-contrast theme defines `--vscode-contrastBorder` and `--vscode-contrastActi
   button, the decision block, a rule) becomes the contrast border in high contrast.
 - In high contrast an error and a warning block share the same border and no fill, so their text takes the status
   color (`--bc-error-text`, `--bc-warning-text`); elsewhere the fill says it and the text stays the foreground.
-- In high contrast the entries no longer sent after a summary, and the turn Edit replaces, are not dimmed
-  (`--bc-unsent-opacity` is 1): faded text would fall under the theme's contrast, and the line above them says it in
-  words.
 
 Two controls are buttons in the markup and not to the eye, so they get no box, in high contrast either (maintainer
 decision): a link button (`button.link`), which is underlined at rest in every theme, and a History row's title
@@ -317,8 +313,8 @@ would not act. Above the rows, a notice line says "The queue is paused." when no
   message and everything after it sit in one group (`.replacing`) under a line of their own (`.replacing-head`): the
   words "Sending replaces this message and its replies.", one size down in the full foreground, since they say what
   Send will do, plus Retry's warning about the files and commands not reverted when it applies, then Cancel at the
-  right, wrapping when narrow. The entries are dimmed like those no longer sent (`--bc-unsent-opacity`), the line and
-  Cancel are not, and Edit goes while the mark shows. Not a modal: Send is the consent.
+  right, wrapping when narrow. The entries are not dimmed, in any theme: faded text
+  falls under 4.5:1, and the line says it. Edit goes while the mark shows. Not a modal: Send is the consent.
 - Undo changes' outcome: the last undo's outcome sits under the reply it undid (`.undo-outcome`), in
   words, one line per file with its path, status, and reason, each path (and a temporary file left behind) in the
   editor font (`.undo-path`) and the rest in the UI font: a notice ("Changes undone.") when every file is back, a
@@ -333,12 +329,12 @@ would not act. Above the rows, a notice line says "The queue is paused." when no
   `+2 −1` at the right in the editor font, dim, with tabular figures (`.changed-counts`), the change in signs and
   numbers, never in color. A row takes the list's hover fill (`--bc-row-hover`, `--bc-edge-active` in high contrast)
   and the focus ring inside its edge; a click opens the file's diff in the editor and moves no focus in the panel.
-- No longer sent: the entries before the summary the history starts at sit in one group (`.unsent`), each at 60%
-  opacity (`--bc-unsent-opacity`), under one small dim line that says so in words ("Earlier messages are no longer
-  sent to the model: the summary below replaces them."), so the state never rests on the dimming alone. A
-  high-contrast theme sets the token to 1: faded text would fall under the theme's contrast, and the line already says
-  it. After an automatic summary, the turn's message its request quotes stays in the group at full opacity
-  (`.still-sent`), followed by its own small dim line, "Still sent with the summary".
+- No longer sent: the entries before the summary the history starts at sit in one group (`.unsent`), under one
+  small dim line that says so in words ("Earlier messages are no longer sent to the model: the summary below replaces
+  them."). They are not dimmed, in any theme (maintainer decision, 2026-11-13): at 60% opacity body text fell to about
+  3:1 and dim text to about 2.3:1 on Default Light Modern, and the user rereads these entries. The line and the
+  summary separator under them carry the state. After an automatic summary, the turn's message its request quotes
+  stays in the group (`.still-sent`), followed by its own small dim line, "Still sent with the summary".
 
 ### The decision block
 
@@ -374,7 +370,7 @@ Each kind of state has one look, distinct from the others at a glance:
 
 | State | Look |
 | --- | --- |
-| Loading (waiting for the reply, thinking, tool running, models loading, History's "Searching…") | Dim text that breathes; a line of its own leads with a dot. The pickers and the mode selector are disabled. While a mode change is being written, the mode selector and Send are disabled, with no other sign: the write takes a moment. While an undo runs, its button reads "Undoing changes…" and is disabled, and so is Send. |
+| Loading (waiting for the reply, thinking, tool running, models loading, History's "Searching…") | Dim steady text; a line of its own leads with a dot that breathes, and a running step's node breathes. The pickers and the mode selector are disabled. While a mode change is being written, the mode selector and Send are disabled, with no other sign: the write takes a moment. While an undo runs, its button reads "Undoing changes…" and is disabled, and so is Send. |
 | Empty (no provider, new conversation, empty History, no History row left by the search) | One dim line, centered in the room it has; a link under it when there is something to do. No provider: Add provider (primary) and the Open provider settings link side by side under it. |
 | Notice (unknown context size, older tool results left out of the next request, the queue paused or full, an undo that put every file back) | One small dim line, with a link when there is something to do (Set context size). Nothing went wrong, so no block. |
 | Warning (skipped providers and skills, an undo that skipped files, conversations History could not search) | A block on the theme's warning fill; under skipped providers, Add provider (secondary) below the block, only while a valid provider exists: without one, the empty state's Add provider is the panel's only one. |
@@ -383,13 +379,14 @@ Each kind of state has one look, distinct from the others at a glance:
 | Waiting for a decision or an answer | The decision block, in negative, on the thread's solid node. |
 | Turn ending (Stopped, halted) | A short rule, then small dim text. |
 | Folded turn (an ended turn of two steps or more) | One small dim row on a double-ring node: what the steps did ("Read 3 files, edited 1 file, ran 1 command"), "N steps" for a fold of other steps only, then the failed and rejected counts in words, then the chevron; it wraps, never cut. |
-| Replacing (Edit on the last message) | The last turn dimmed as a group under one line in the full foreground saying that sending replaces it, with Cancel; not dimmed in high contrast. |
-| Summarized (a summary, and the entries it replaces) | A separator of dim words between two rules above the summary; the entries before it dimmed as a group under one dim line saying they are no longer sent (not dimmed in high contrast); the turn's message an automatic summary quotes undimmed, with a dim line saying it is still sent. |
+| Replacing (Edit on the last message) | The last turn as a group under one line in the full foreground saying that sending replaces it, with Cancel; not dimmed. |
+| Summarized (a summary, and the entries it replaces) | A separator of dim words between two rules above the summary; the entries before it as a group under one dim line saying they are no longer sent, not dimmed; the turn's message an automatic summary quotes with a dim line saying it is still sent. |
 
 ### Motion
 
-Small, and never needed to understand a state: the breathing of a loading text (opacity, 1.6s), the turn of a
-chevron and the color change of a button (0.12s, ease-out). Two tokens carry it: `--bc-breathe`, the animation's name, and `--bc-fast`,
+Small, and never needed to understand a state: the breathing of a loading mark (opacity, 1.6s), the turn of a
+chevron and the color change of a button (0.12s, ease-out). Only the mark breathes, the dot that leads a loading line
+or a running step's node; the loading text stays steady, since at the low point of the breath it fell under 2:1. Two tokens carry it: `--bc-breathe`, the animation's name, and `--bc-fast`,
 the duration of a transition. The reveal of controls shown on hover or focus (a code block's header) fades their
 opacity over `--bc-fast`. Under `prefers-reduced-motion: reduce`, and when VS Code sets `vscode-reduce-motion` on
 `body`, they become `none` and `0s`, so new motion that reads them stops there too.
@@ -437,6 +434,13 @@ opacity over `--bc-fast`. Under `prefers-reduced-motion: reduce`, and when VS Co
   visible focus there, so it must differ from its neighbours in every theme.
 - The message box takes the focus back when a reply ends, unless History is open: the focus then stays where the user
   has it, so a key meant for the History search never edits or sends the message.
+- Since the focus never moves to say what happened, one polite live region says it (`.announcer`, `role="status"`):
+  mounted with the panel and kept, out of sight (clipped to 1px), each announcement a new child so a repeated text is
+  read again. It says a call that waits for a decision with its tool and argument ("Waiting for your decision: run bun
+  test"), a question the agent asks, a call that starts running ("Running read_file on src/a.ts", "Running bun test"),
+  and how the reply in flight ended ("Reply finished.", "Stopped", a halt's
+  reason), and Copy's outcome. A failed reply says nothing there: its error block is an alert. A step row's own
+  "running…" and "waiting for your decision" are not live regions, so nothing is read twice.
 
 ## Do's and Don'ts
 

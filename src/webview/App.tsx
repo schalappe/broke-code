@@ -4,8 +4,10 @@ import {
   createContext,
   Fragment,
   type KeyboardEvent,
+  memo,
   type ReactNode,
   type Ref,
+  useCallback,
   useContext,
   useEffect,
   useLayoutEffect,
@@ -76,6 +78,7 @@ import {
 } from "./composer";
 import { moveHighlight, optionId, SuggestionMenu } from "./SuggestionMenu";
 import {
+  describeAnnouncement,
   describeContextTitle,
   describeContextUsage,
   describeEmptySummary,
@@ -128,6 +131,7 @@ export function App({
   /** Text Quote read from an answer until the message box has applied it, once. */
   const [quoting, setQuoting] = useState<string>();
   const replacingNow = replacing && stillReplacing(replacing, state) ? replacing : undefined;
+  const { spoken, announce } = useAnnouncer(state);
 
   // [>]: Once it fails, the state ends for good: a later snapshot that matches again (a Retry ending on as many
   // entries) must not bring the mark back.
@@ -149,6 +153,7 @@ export function App({
   }, [drafts, composerShown, takeDrafts]);
   return (
     <main className="panel">
+      <Announcer spoken={spoken} />
       {/* Saved conversations are local: History works without a provider; only the composer needs one. */}
       <Header
         state={state}
@@ -185,21 +190,23 @@ export function App({
         // unmounted, while History shows, so the reason typed for an open approval, or the answer typed to an open
         // question, survives.
         <QuoteTarget.Provider value={composerShown ? setQuoting : undefined}>
-          <Conversation
-            key={state.conversationId}
-            conversationId={state.conversationId}
-            entries={state.entries}
-            approval={state.approval}
-            question={state.question}
-            undo={state.undo}
-            changedFiles={state.changedFiles}
-            canAct={sendWouldAct(state)}
-            implementIn={state.mode === "plan" ? state.settingMode : undefined}
-            hidden={historyOpen}
-            replacing={replacingNow !== undefined}
-            edit={edit}
-            cancelEdit={() => setReplacing(undefined)}
-          />
+          <Announce.Provider value={announce}>
+            <Conversation
+              key={state.conversationId}
+              conversationId={state.conversationId}
+              entries={state.entries}
+              approval={state.approval}
+              question={state.question}
+              undo={state.undo}
+              changedFiles={state.changedFiles}
+              canAct={sendWouldAct(state)}
+              implementIn={state.mode === "plan" ? state.settingMode : undefined}
+              hidden={historyOpen}
+              replacing={replacingNow !== undefined}
+              edit={edit}
+              cancelEdit={() => setReplacing(undefined)}
+            />
+          </Announce.Provider>
         </QuoteTarget.Provider>
       )}
       {composerShown && (
@@ -222,6 +229,42 @@ export function App({
     </main>
   );
 }
+
+/** The last thing the live region said; `count` tells two equal texts apart, so the second is heard too. */
+type Spoken = { count: number; text: string };
+
+/**
+ * The panel's announcements: what changed between two states posted by the host (`describeAnnouncement`), and what a
+ * control reports through `announce`, such as Copy's outcome. The first state says nothing, nor does a state posted
+ * again unchanged.
+ */
+function useAnnouncer(state: ChatState): { spoken: Spoken | undefined; announce: (text: string) => void } {
+  const [spoken, setSpoken] = useState<Spoken>();
+  const announce = useCallback((text: string) => setSpoken((last) => ({ count: (last?.count ?? 0) + 1, text })), []);
+  const shown = useRef(state);
+  useEffect(() => {
+    const text = describeAnnouncement(shown.current, state);
+    shown.current = state;
+    if (text !== undefined) announce(text);
+  }, [state, announce]);
+  return { spoken, announce };
+}
+
+/**
+ * The live region a screen reader hears, never seen: mounted with the panel and kept, since a region added with its text
+ * already in it is often not read. Each announcement is a new child, an addition the reader reads even when the text
+ * repeats. Polite: it waits for the reader to finish, and it moves no focus (DESIGN.md, "Keyboard and focus").
+ */
+function Announcer({ spoken }: { spoken: Spoken | undefined }) {
+  return (
+    <p className="announcer" role="status">
+      {spoken && <span key={spoken.count}>{spoken.text}</span>}
+    </p>
+  );
+}
+
+/** Says a control's outcome through the panel's live region; nothing outside the panel. */
+const Announce = createContext<(text: string) => void>(() => {});
 
 /** A draft from an editor entry point, which closes History and focuses the box; queued texts returned do neither. */
 function fromEditor(draft: DraftInsert): boolean {
@@ -660,7 +703,7 @@ export function ConversationList({
  * reply (`lastTurnActions`), enabled when `canAct` (Send would act). `implementIn`: Plan is on, and this is the mode
  * it leaves for, so the final answer (`hasFinalAnswer`) also offers "Implement in ... mode". `hidden`: History shows
  * instead. Edit sits under the last turn's user message when Retry is offered, enabled when `canAct`, and calls `edit`;
- * while `replacing`, it goes, and the last turn (that message and every entry after it) sits in one dimmed group under
+ * while `replacing`, it goes, and the last turn (that message and every entry after it) sits in one group under
  * the line saying that sending replaces it, with Retry's warning when the removal leaves files or commands behind, and
  * Cancel (`cancelEdit`), which gives the focus back to Edit, since the button it was on goes.
  */
@@ -759,7 +802,7 @@ function Conversation({
   };
 
   // [>]: Derived, never stored: the entries before the summary the history starts at are no longer sent, except the
-  // turn's message an automatic summary quotes word for word, which stays at full opacity and says so. A summary is a
+  // turn's message an automatic summary quotes word for word, which says so in a line of its own. A summary is a
   // fold boundary, so no fold straddles it, and a user message is never folded.
   const start = historyStart(entries);
   // [>]: `sentEntries` leads with the quoted message when there is one, else with the entry the history starts at.
@@ -1211,11 +1254,7 @@ function Answer({ answer, ended }: { answer: string; ended: boolean }) {
     <>
       {/* [>]: The Markdown rules of the stylesheet apply inside this block only, never to the rows and blocks beside it. */}
       <div className="answer" ref={block}>
-        <AnswerSource.Provider value={{ source: answer, ended }}>
-          <Markdown components={ANSWER_COMPONENTS} remarkPlugins={ANSWER_PLUGINS}>
-            {answer}
-          </Markdown>
-        </AnswerSource.Provider>
+        <AnswerMarkdown source={answer} ended={ended} />
       </div>
       {/* [!]: Before the reply's tool step and approval, so nothing focusable comes between those and the message box. */}
       {selected && (
@@ -1252,6 +1291,20 @@ function holdsSelection(block: Element, row: Element | null, selection: Selectio
  * into; `ended`, the reply is no longer in flight, so its text is final.
  */
 const AnswerSource = createContext<{ source: string; ended: boolean }>({ source: "", ended: false });
+
+/**
+ * The answer's Markdown, drawn again only when its text or `ended` changes. The host posts the whole state on every
+ * streamed delta, so without this each delta parsed every earlier answer of the conversation again.
+ */
+const AnswerMarkdown = memo(function AnswerMarkdown({ source, ended }: { source: string; ended: boolean }) {
+  return (
+    <AnswerSource.Provider value={{ source, ended }}>
+      <Markdown components={ANSWER_COMPONENTS} remarkPlugins={ANSWER_PLUGINS}>
+        {source}
+      </Markdown>
+    </AnswerSource.Provider>
+  );
+});
 
 /** How long Copy shows its outcome in place of its label. */
 const COPY_FEEDBACK_MS = 2000;
@@ -1294,6 +1347,7 @@ function textOf(node: { value?: unknown; children?: unknown[] }): string {
  */
 function CodeActions({ text }: { text: string }) {
   const [copied, setCopied] = useState<"copied" | "failed">();
+  const announce = useContext(Announce);
   const reset = useRef<ReturnType<typeof setTimeout>>(undefined);
   useEffect(() => () => clearTimeout(reset.current), []);
   const copy = async () => {
@@ -1306,6 +1360,8 @@ function CodeActions({ text }: { text: string }) {
     }
     clearTimeout(reset.current);
     setCopied(outcome);
+    // [>]: A label changed in place is rarely read, so the outcome is also announced.
+    announce(outcome === "copied" ? l10n.t("Copied") : l10n.t("Copy failed"));
     reset.current = setTimeout(() => setCopied(undefined), COPY_FEEDBACK_MS);
   };
   return (
@@ -1346,11 +1402,11 @@ function ToolStep(props: { result: ChatEntry & { role: "tool" } } | PendingCall)
         <div className={stepRowClass(call.name)}>
           <StepHead name={call.name} args={call.args} />
           {outcome === "running" ? (
-            <span className="step-status loading" role="status">
-              {l10n.t("running…")}
-            </span>
+            // [>]: Not a live region: the panel's announcer says which tool runs, and on what.
+            <span className="step-status loading">{l10n.t("running…")}</span>
           ) : outcome === "deciding" || outcome === "asking" ? (
-            <span className="step-status" role="status">
+            // [>]: Not a live region: the panel's announcer says what waits, with the tool and its argument.
+            <span className="step-status waiting">
               {outcome === "deciding" ? l10n.t("waiting for your decision") : l10n.t("waiting for your answer")}
             </span>
           ) : (

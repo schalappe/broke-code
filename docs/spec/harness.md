@@ -189,6 +189,12 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
       saved: a record saved meanwhile holds the reply in flight with its call, and reloads `stopped`. When the view is
       hidden and shown again, the question is still open, from the state.
     - A question raises no notification (#101 covers approval requests and turn ends only).
+  - `ChatState.callRunning` says when the call of the reply in flight actually runs. A tool that may ask declares it
+    (`ToolSpec.asks`: `run_command`, `write_file`, `edit_file`, `ask_user`). Its call shows with `callRunning` false,
+    since the request opens after it; `callRunning` turns true only in the update that closes an approval accepted, or
+    when auto-approve accepts a write, and stays false while a request is open and after Reject, Cancel (Stop), or an
+    answer. A tool that never asks runs as its call shows: `callRunning` is true in that same update. It is false
+    again from the update in which the call ends: its step lands, or the reply settles.
   - A write opens the native VS Code diff editor beside the chat, titled with the path: the planned `before` text on
     the left (empty for a new file), the proposed text on the right, both from a content provider. Accept writes with
     the atomic applier below, never through `WorkspaceEdit`; the diff tab closes on Accept, Reject, and Cancel. Closing
@@ -563,8 +569,8 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
   back empty (only whitespace) changes nothing and is never sent; its error shows as for any reply, and a `done` empty
   one says "The model's reply held no summary.". The leave-out rule, its last 3 steps, and the usage display count
   only what is sent, so after a summary the header's usage drops. Entries before it stay in the record and the chat,
-  dimmed as one group under the line "Earlier messages are no longer sent to the model: the summary below replaces
-  them.", derived from the entries, never stored; a high-contrast theme drops the dimming, since the line says it. The record keeps version 2: `summary` is an optional field of the
+  as one group under the line "Earlier messages are no longer sent to the model: the summary below replaces
+  them.", derived from the entries, never stored. The group is not dimmed, so it stays readable; the line says it. The record keeps version 2: `summary` is an optional field of the
   assistant entry (ADR 0003's rule); an older build shows the summary as an ordinary answer and resends the whole
   history, which is harmless. The `contextFull` halt of an agent turn names `/compact` beside New chat.
 - Automatic compaction (#91): `brokeCode.autoCompact` (boolean, default false, `application` scope, read from
@@ -592,7 +598,7 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
   or stopped automatic summary has nothing after it and reads as a manual one, which changes nothing, since neither is
   sent. Its separator says "Conversation summarized automatically" once sent ("Summarizing the conversation…" and
   "Conversation not summarized" as for `/compact`). The turn's message the request quotes sits in the group before
-  the summary but is not dimmed: it shows at full opacity with the dim line "Still sent with the summary" (maintainer
+  the summary and shows with the dim line "Still sent with the summary" (maintainer
   decision, 2026-11-12), derived from the entries (`sentEntries`), never stored.
 
 ## System prompt

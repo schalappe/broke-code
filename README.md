@@ -570,7 +570,7 @@ of each workspace folder, when they exist. It reads each file under the same lim
 To ask the model for a summary of the conversation, send `/compact` alone or pick it in the `/` menu. The summary
 covers the goal, the decisions, the files read or changed, and what remains to do. It streams in the chat under a
 **Conversation summarized** separator. From then on, each request sends the summary in place of everything before it,
-so the usage in the header drops. The earlier messages stay in the chat and in the saved conversation, dimmed under a
+so the usage in the header drops. The earlier messages stay in the chat and in the saved conversation, under a
 line that says broke-code no longer sends them.
 
 To keep the summary request small, broke-code leaves out every tool result it can, the most recent included. So the
@@ -592,7 +592,7 @@ your **user** settings. It is off by default, since it adds a request you did no
 With it on, a turn's next request may not fit even with older tool results left out. broke-code then asks the model for
 the same summary, shows it under a **Conversation summarized automatically** separator, and the turn goes on. The next
 request sends the summary, then your message of that turn word for word, so the model still has your request in front
-of it. That message stays undimmed above the summary, marked **Still sent with the summary**.
+of it. That message stays above the summary, marked **Still sent with the summary**.
 
 The summary is not a tool step and does not count toward the step limit. **Stop** ends it like any reply, and
 broke-code queues the messages you send while it runs. A turn summarizes at most once per request. The turn stops as

@@ -52,7 +52,7 @@ This file specifies what the chat panel does around a turn: folding, code block 
   rows, reasoning, and user messages are not Markdown and get no controls. The block's text is its code as rendered,
   without the fence lines and its final line break; an empty block's buttons are disabled. Copy writes it with the
   webview's `navigator.clipboard` and shows "Copied", or "Copy failed" when the write is refused, in the button's
-  place for 2 seconds. Insert at cursor posts `insertCode { text }` (dropped unless `text` is a string of at most
+  place for 2 seconds, and says the same through the panel's live region (see "Announcements"). Insert at cursor posts `insertCode { text }` (dropped unless `text` is a string of at most
   `REPLY_MAX_LENGTH` characters, since a block cannot be longer than its reply); the host replaces every selection of
   `window.activeTextEditor` with it, inserting at each caret, in one `editor.edit`, so one Undo restores it. No active
   text editor, an edit the editor refuses (a read-only document, such as the write approval's diff), and an edit that
@@ -234,7 +234,7 @@ This file specifies what the chat panel does around a turn: folding, code block 
   is lost there too, and the host keeps nothing in step). While it holds, Edit goes, and the last turn (that message and
   every entry after it) renders in one group (`.replacing`) under the line "Sending replaces this message and its
   replies.", with Retry's warning added when Retry would ask (`unrevertedEffects`, or "Undo changes" offered for the
-  turn), and Cancel, dimmed like the entries no longer sent (not in high contrast). That line is the confirmation; Send
+  turn), and Cancel. The group is not dimmed, like the entries no longer sent. That line is the confirmation; Send
   is the consent (no extra click, scouting decision). It ends, removing nothing, on Cancel (the box keeps its text,
   the focus goes back to Edit), and for good once `stillReplacing` fails: another conversation shown, another entries
   count, a reply in flight, or Edit no longer offered; it is lost with the box's text when the panel is hidden or the
@@ -282,3 +282,20 @@ This file specifies what the chat panel does around a turn: folding, code block 
   or holds another text. Erasing the box by hand does not forget it: ArrowUp in the blank box starts again from the newest
   message. Sending a recalled message is an ordinary send (mentions read again, a `/<skill>` loaded again, a recalled
   Continue sent as plain text, queued during a reply); while Edit's replacing state holds, Send still replaces.
+
+## Announcements
+
+The focus never moves to report a change (DESIGN.md, "Keyboard and focus"), so the panel keeps one polite live region
+for screen readers. `describeAnnouncement` (`src/webview/text.ts`) compares each state the host posts with the one
+before, in the same conversation, and says at most one thing:
+
+- a new approval request: "Waiting for your decision: run {command}" or "Waiting for your decision: {tool} on {path}";
+- a new question: "The agent asks: {question}";
+- a call that starts running, as the host marks it (`ChatState.callRunning`, `docs/spec/harness.md`): "Running
+  {command}" for `run_command`, else "Running {tool} on {argument}" (`mainArgument`), or "Running {tool}" without
+  one. A call that asks is named only once its approval is accepted, never as it shows nor after Reject, Stop, or an
+  answer to a question;
+- the reply in flight ending: "Reply finished." when it ends `done` without a call, "Stopped", or the halt's reason.
+
+It says nothing for a failed reply (its error block is an alert), a reply that ends on a call (its step follows),
+another conversation shown, or the first state. Copy adds its outcome, "Copied" or "Copy failed".

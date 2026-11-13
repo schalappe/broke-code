@@ -40,6 +40,7 @@ const unsaved = {
   conversations: [],
   listFailed: undefined,
   storageProblem: undefined,
+  callRunning: false,
   context: { used: 0, size: 32768, known: true },
   queue: [],
   undo: { reply: undefined, ranCommand: false, running: false, outcome: undefined },
@@ -331,7 +332,7 @@ describe("summary", () => {
     const still = html.indexOf('class="still-sent"');
     expect(html.indexOf("Fix it")).toBeGreaterThan(still);
     expect(html.indexOf("Still sent with the summary")).toBeGreaterThan(html.indexOf("Fix it"));
-    // [>]: The earlier turn is not quoted: it stays outside the still-sent block, dimmed with the rest.
+    // [>]: The earlier turn is not quoted: it stays outside the still-sent block, with the rest.
     expect(html.indexOf(">Hi<")).toBeGreaterThan(html.indexOf('class="unsent"'));
     expect(html.indexOf(">Hi<")).toBeLessThan(still);
     // [>]: After `/compact`, nothing before the summary is sent.
@@ -3028,6 +3029,7 @@ describe("code block actions", () => {
       try {
         await click("Copy");
         expect(labels(host)).toEqual(["Copy failed", "Insert at cursor"]);
+        expect(host.querySelector(".announcer")?.textContent).toBe("Copy failed");
         await act(async () => jest.advanceTimersByTime(2100));
         expect(labels(host)).toEqual(["Copy", "Insert at cursor"]);
       } finally {
@@ -4143,6 +4145,32 @@ describe("quote a selection of an answer", () => {
         textarea.dispatchEvent(event);
       });
       expect({ prevented: event.defaultPrevented, text: textarea.value }).toEqual({ prevented: false, text: "Second" });
+    });
+  });
+});
+
+describe("live region", () => {
+  const ask: ChatEntry = { role: "user", content: "Fix it", mentions: [] };
+  const reply = (status: "streaming" | "done"): ChatEntry => ({
+    role: "assistant",
+    reasoning: "",
+    content: "Ok",
+    status,
+  });
+
+  test("is mounted empty, then says the decision that waits and how the reply ended, moving no focus", async () => {
+    const flight = stateWith(true, { entries: [ask, reply("streaming")] });
+    await withPanel(flight, async ({ host, textarea, show }) => {
+      const region = host.querySelector(".announcer");
+      expect(region?.getAttribute("role")).toBe("status");
+      expect(region?.textContent).toBe("");
+      textarea.focus();
+      await show({ ...flight, approval: { id: 1, kind: "command", tool: "run_command", summary: "bun test" } });
+      expect(host.querySelector(".announcer")).toBe(region);
+      expect(region?.textContent).toBe("Waiting for your decision: run bun test");
+      expect(document.activeElement).toBe(textarea);
+      await show(stateWith(true, { entries: [ask, reply("done")] }));
+      expect(region?.textContent).toBe("Reply finished.");
     });
   });
 });

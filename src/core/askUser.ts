@@ -31,6 +31,7 @@ export const ASK_USER_TOOL: ToolSpec = {
         "The possible answers, one per line, at most 6 of up to 200 characters each. Leave it out for an open question.",
     },
   ],
+  asks: true,
 };
 
 /** A question as the user sees it: `question` trimmed, `options` trimmed, without blanks or repeats, maybe none. */
