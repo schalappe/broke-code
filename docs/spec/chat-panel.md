@@ -32,7 +32,7 @@ This file specifies what the chat panel does around a turn: folding, code block 
   and ", K rejected" (`approval` `rejected`) when not zero; one failed step is named by its tool, "1 failed (search)". A fold of other steps alone says "N steps". The first letter
   is upper case: "Read 3 files, changed 1 file, ran 1 command"; in French the number comes first ("3 fichiers lus, 1
   fichier modifié, 1 commande exécutée"). The row wraps in a narrow panel; it is never cut. The conversation follows its bottom while the user is within 24px of
-  it, and a user message added to it (sent from the message box or the queue) brings the view back to the bottom.
+  it, and a user message added to it (sent from the message box, including a send that replaces the last turn through Edit, or from the queue) brings the view back to the bottom.
   Scrolled up, a row stays at the bottom of the view (`.jump-row`, sticky): "Jump to latest", or, while the reply waits
   on the user, what it waits on, in the live region's words ("Waiting for your decision: edit_file on src/a.ts", "The
   agent asks: ..."; `describeWaiting`). It appears only on the user's own scroll and never takes the focus; a click

@@ -128,6 +128,7 @@ export function App({
   const [historyOpen, setHistoryOpen] = useState(false);
   const historyButton = useRef<HTMLButtonElement>(null);
   const [replacing, setReplacing] = useState<ShownEntries>();
+  const [replacementsSent, setReplacementsSent] = useState(0);
   /** Edit's draft until the message box has applied it, once: a composer mounted later never applies it again. */
   const [editing, setEditing] = useState<DraftInsert>();
   /** Text Quote read from an answer until the message box has applied it, once. */
@@ -205,6 +206,7 @@ export function App({
               implementIn={state.mode === "plan" ? state.settingMode : undefined}
               hidden={historyOpen}
               replacing={replacingNow !== undefined}
+              replacementsSent={replacementsSent}
               edit={edit}
               cancelEdit={() => setReplacing(undefined)}
             />
@@ -222,6 +224,7 @@ export function App({
           quoting={quoting}
           takeQuoting={() => setQuoting(undefined)}
           replaces={replacingNow}
+          sentReplacement={() => setReplacementsSent((count) => count + 1)}
           startNewChat={() => {
             setHistoryOpen(false);
             post({ type: "newChat" });
@@ -765,6 +768,7 @@ function Conversation({
   implementIn,
   hidden,
   replacing,
+  replacementsSent,
   edit,
   cancelEdit,
 }: {
@@ -778,6 +782,7 @@ function Conversation({
   implementIn?: SettingMode;
   hidden: boolean;
   replacing: boolean;
+  replacementsSent: number;
   edit: (entry: ChatEntry & { role: "user" }) => void;
   cancelEdit: () => void;
 }) {
@@ -811,9 +816,12 @@ function Conversation({
   // A message the user sends, typed or from the queue, takes them back to the bottom, where its reply comes.
   const latestUser = entries.findLastIndex((shown) => shown.role === "user");
   const seenUser = useRef(latestUser);
+  const seenReplacements = useRef(replacementsSent);
   useLayoutEffect(() => {
-    const sent = latestUser > seenUser.current;
+    // [>]: Sending through Edit replaces the last user entry at the same index, so only the host's count shows it.
+    const sent = latestUser > seenUser.current || replacementsSent > seenReplacements.current;
     seenUser.current = latestUser;
+    seenReplacements.current = replacementsSent;
     if (!pinned && !sent) return;
     end.current?.scrollIntoView({ block: "end" });
     if (!pinned) setPinned(true);
@@ -1931,6 +1939,7 @@ function Composer({
   quoting,
   takeQuoting = () => {},
   replaces,
+  sentReplacement = () => {},
 }: {
   state: ChatState;
   historyOpen: boolean;
@@ -1942,6 +1951,7 @@ function Composer({
   quoting?: string;
   takeQuoting?: () => void;
   replaces?: ShownEntries;
+  sentReplacement?: () => void;
 }) {
   const [text, setText] = useState("");
   const [caret, setCaret] = useState(0);
@@ -2151,6 +2161,7 @@ function Composer({
     const mentions = pickedInText(picked, text);
     // [>]: Only a send replaces: a queued message waits behind a reply, which ended the replacing state.
     post(type === "send" && replaces !== undefined ? { type, text, mentions, replaces } : { type, text, mentions });
+    if (type === "send" && replaces !== undefined) sentReplacement();
     clear();
   };
 

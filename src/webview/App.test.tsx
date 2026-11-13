@@ -4024,6 +4024,29 @@ describe("edit the last message", () => {
     });
   });
 
+  test("sending an edited last message takes a scrolled-up user back to the bottom", async () => {
+    const { act } = await import("react");
+    await withPanel(stateWith(true, { entries }), async (panel) => {
+      const list = panel.host.querySelector<HTMLElement>("section.conversation");
+      if (!list) throw new Error("no conversation");
+      Object.defineProperties(list, {
+        scrollHeight: { configurable: true, value: 1000 },
+        clientHeight: { configurable: true, value: 200 },
+        scrollTop: { configurable: true, writable: true, value: 0 },
+      });
+      await act(async () => list.dispatchEvent(new Event("scroll")));
+      expect(panel.host.querySelector("button.jump")).not.toBeNull();
+      await panel.click("Edit");
+      await panel.click("Send");
+      await panel.show(
+        stateWith(true, {
+          entries: [first, firstReply, { role: "user", content: "Fixed", mentions: [] }, reply("waiting")],
+        }),
+      );
+      expect(panel.host.querySelector("button.jump")).toBeNull();
+    });
+  });
+
   test("another conversation, another entries count, or a reply starting ends the replacing state", async () => {
     const others: [string, Partial<ChatState>][] = [
       ["conversation", { entries, conversationId: "other" }],
