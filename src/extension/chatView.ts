@@ -69,6 +69,11 @@ export class ChatView implements vscode.WebviewViewProvider {
     });
   }
 
+  /** Whether the chat view is visible now; `false` for a view never opened in this window. */
+  get visible(): boolean {
+    return this.view?.visible === true;
+  }
+
   publish(state: ChatState): void {
     if (this.ready) this.post({ type: "state", state });
   }

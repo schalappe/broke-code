@@ -73,6 +73,7 @@ import { moveHighlight, optionId, SuggestionMenu } from "./SuggestionMenu";
 import {
   describeContextTitle,
   describeContextUsage,
+  describeEmptySummary,
   describeFold,
   describeHalt,
   describeListFailure,
@@ -926,7 +927,7 @@ function Reply({
         <p className="mark">{describeHalt(entry.haltReason, entry.summary)}</p>
       )}
       {entry.summary && entry.status === "done" && entry.content.trim() === "" && (
-        <p className="mark">{l10n.t("The model's reply held no summary.")}</p>
+        <p className="mark">{describeEmptySummary()}</p>
       )}
       {entry.error && <ErrorBlock error={entry.error} />}
       {changedFiles && <ChangedFiles files={changedFiles} />}
