@@ -488,7 +488,12 @@ describe("ConversationStore", () => {
 });
 
 describe("ConversationStore.search", () => {
-  const reply = (text: string) => ({ role: "assistant" as const, reasoning: "", content: text, status: "done" as const });
+  const reply = (text: string) => ({
+    role: "assistant" as const,
+    reasoning: "",
+    content: text,
+    status: "done" as const,
+  });
   /** A record whose first message is `title` and whose answer is `answer`. */
   function conversation(updatedAt: number, title: string, answer: string): ConversationRecord {
     const saved = record(updatedAt, title);
@@ -624,7 +629,12 @@ describe("ConversationStore.search timing", () => {
       const records: ConversationRecord[] = Array.from({ length: 20 }, (_, index) => {
         const saved = record(1000 + index, `question ${index}`);
         const steps = Array.from({ length: 50 }, () => [
-          { role: "assistant" as const, reasoning: "Thinking.", content: "Reading the next file.", status: "done" as const },
+          {
+            role: "assistant" as const,
+            reasoning: "Thinking.",
+            content: "Reading the next file.",
+            status: "done" as const,
+          },
           { role: "tool" as const, name: "read_file", args: { path: "a.ts" }, status: "ok" as const, text: result },
         ]).flat();
         const last = index === 0 ? "The quarantined module moved." : "Done.";

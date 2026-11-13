@@ -1960,22 +1960,46 @@ describe("history filter", () => {
   ];
   const saved = stateWith(true, { conversations });
   const filterField = (host: HTMLElement) =>
-    host.querySelector<HTMLInputElement>('input[aria-label="Filter by title"]');
+    host.querySelector<HTMLInputElement>('input[aria-label="Search conversations"]');
   const titles = (host: HTMLElement) => [...host.querySelectorAll(".history-title")].map((title) => title.textContent);
   const historyButton = (host: HTMLElement) =>
     [...host.querySelectorAll("button")].find((element) => element.textContent === "History");
 
-  /** Open History over `state` and hand `run` the filter field. */
+  /** Open History over `state` and hand `run` the search field, with fake timers for the search's wait. */
   function withHistory(state: ChatState, run: (panel: Panel, field: HTMLInputElement) => Promise<void>) {
     return withPanel(state, async (panel) => {
       await panel.click("History");
       const field = filterField(panel.host);
-      if (!field) throw new Error("no filter field");
-      await run(panel, field);
+      if (!field) throw new Error("no search field");
+      jest.useFakeTimers();
+      try {
+        await run(panel, field);
+      } finally {
+        jest.useRealTimers();
+      }
     });
   }
+  /** The content searches posted so far. */
+  const searches = () =>
+    posted.filter((message) => (message as { type: string }).type === "searchConversations") as {
+      type: "searchConversations";
+      query: string;
+      id: number;
+    }[];
+  const lastSearchId = () => searches().at(-1)?.id ?? -1;
+  const advance = (ms: number) => act(async () => jest.advanceTimersByTime(ms));
+  const answer = (panel: Panel, items: { id: string; excerpt: string }[], unreadableCount = 0, id = lastSearchId()) =>
+    panel.receive({ type: "conversationMatches", id, items, unreadableCount });
+  /** Each row's title and excerpt, in order; `undefined` for a row without an excerpt. */
+  const rows = (host: HTMLElement) =>
+    [...host.querySelectorAll(".history-rows li")].map((row) => [
+      row.querySelector(".history-title")?.textContent,
+      row.querySelector(".history-excerpt")?.textContent,
+    ]);
+  const historyText = (host: HTMLElement) => host.querySelector(".history")?.textContent ?? "";
+  const warning = (host: HTMLElement) => host.querySelector(".history .warnings")?.textContent;
 
-  test("shows a text field labelled Filter by title above the rows, and none without a conversation", () => {
+  test("shows a text field labelled Search conversations above the rows, and none without a conversation", () => {
     const list = (rows: typeof conversations) =>
       renderToStaticMarkup(
         <ConversationList
@@ -1988,8 +2012,10 @@ describe("history filter", () => {
         />,
       );
     const html = list(conversations);
-    expect(html).toMatch(/<input type="text"[^>]*placeholder="Filter by title"[^>]*aria-label="Filter by title"/);
-    expect(html.indexOf("Filter by title")).toBeLessThan(html.indexOf("<ul"));
+    expect(html).toMatch(
+      /<input type="text"[^>]*placeholder="Search conversations"[^>]*aria-label="Search conversations"/,
+    );
+    expect(html.indexOf("Search conversations")).toBeLessThan(html.indexOf("<ul"));
     const empty = list([]);
     expect(empty).toContain("No past conversations.");
     expect(empty).not.toContain("<input");
@@ -2008,6 +2034,8 @@ describe("history filter", () => {
       expect(panel.host.querySelector(".history li.current")?.textContent).toContain("Fix the parser");
       await panel.fill(field, "deploy");
       expect(titles(panel.host)).toEqual([]);
+      await advance(300);
+      await answer(panel, []);
       expect(panel.host.querySelector(".history")?.textContent).toContain("No match");
       await panel.fill(field, "");
       expect(titles(panel.host)).toEqual(["Fix the parser", "Release notes", "Parse the logs"]);
@@ -2095,6 +2123,200 @@ describe("history filter", () => {
       historyButton(panel.host)?.focus();
       await panel.show(replied);
       expect(document.activeElement).toBe(panel.textarea);
+    });
+  });
+
+  test("fewer than 3 characters post no search", async () => {
+    await withHistory(saved, async (panel, field) => {
+      await panel.fill(field, " a  b");
+      await panel.fill(field, "ab");
+      await advance(1000);
+      expect(searches()).toEqual([]);
+      expect(historyText(panel.host)).toContain("No match");
+      expect(historyText(panel.host)).not.toContain("Searching…");
+    });
+  });
+
+  test("3 characters post one search 300 ms after the last change, whose query is the needle", async () => {
+    await withHistory(saved, async (panel, field) => {
+      await panel.fill(field, " LeX  er ");
+      await advance(299);
+      expect(searches()).toEqual([]);
+      await advance(1);
+      expect(searches()).toEqual([{ type: "searchConversations", query: "lex er", id: lastSearchId() }]);
+      await advance(1000);
+      expect(searches()).toHaveLength(1);
+    });
+  });
+
+  test("two needle changes within 300 ms post one search, for the last needle", async () => {
+    await withHistory(saved, async (panel, field) => {
+      await panel.fill(field, "lex");
+      await advance(200);
+      await panel.fill(field, "lexer");
+      await advance(299);
+      expect(searches()).toEqual([]);
+      await advance(1);
+      expect(searches().map((search) => search.query)).toEqual(["lexer"]);
+    });
+  });
+
+  test("a change that leaves the needle the same does not restart the wait", async () => {
+    await withHistory(saved, async (panel, field) => {
+      await panel.fill(field, "abc");
+      await advance(200);
+      await panel.fill(field, "ABC ");
+      await advance(100);
+      expect(searches().map((search) => search.query)).toEqual(["abc"]);
+      await advance(1000);
+      expect(searches()).toHaveLength(1);
+    });
+  });
+
+  test("a needle over the query limit posts no search and shows no Searching…", async () => {
+    await withHistory(saved, async (panel, field) => {
+      await panel.fill(field, "z".repeat(1025));
+      expect(historyText(panel.host)).not.toContain("Searching…");
+      expect(historyText(panel.host)).toContain("No match");
+      await advance(1000);
+      expect(searches()).toEqual([]);
+    });
+  });
+
+  test("Searching… shows while a search is awaited with no title row, and nothing more with title rows", async () => {
+    await withHistory(saved, async (panel, field) => {
+      await panel.fill(field, "deploy");
+      expect(panel.host.querySelector(".history p.loading")?.textContent).toBe("Searching…");
+      expect(historyText(panel.host)).not.toContain("No match");
+      await advance(300);
+      expect(historyText(panel.host)).toContain("Searching…");
+      await panel.fill(field, "parse");
+      expect(titles(panel.host)).toEqual(["Fix the parser", "Parse the logs"]);
+      expect(historyText(panel.host)).not.toContain("Searching…");
+    });
+  });
+
+  test("No match shows once the answer comes with nothing", async () => {
+    await withHistory(saved, async (panel, field) => {
+      await panel.fill(field, "deploy");
+      await advance(300);
+      await answer(panel, []);
+      expect(historyText(panel.host)).toContain("No match");
+      expect(historyText(panel.host)).not.toContain("Searching…");
+      expect(warning(panel.host)).toBeUndefined();
+    });
+  });
+
+  test("title rows come first without excerpt, then content rows in the list's order with theirs", async () => {
+    await withHistory(saved, async (panel, field) => {
+      await panel.fill(field, "parser");
+      await advance(300);
+      await answer(panel, [
+        { id: THIRD_ID, excerpt: "…the parser logs" },
+        { id: CONVERSATION_ID, excerpt: "Fix the parser" },
+        { id: OTHER_ID, excerpt: "the parser release" },
+      ]);
+      expect(rows(panel.host)).toEqual([
+        ["Fix the parser", undefined],
+        ["Release notes", "the parser release"],
+        ["Parse the logs", "…the parser logs"],
+      ]);
+      expect(historyText(panel.host)).not.toContain("Searching…");
+    });
+  });
+
+  test("content rows show only for conversations still listed", async () => {
+    await withHistory(saved, async (panel, field) => {
+      await panel.fill(field, "lexer");
+      await advance(300);
+      await answer(panel, [{ id: OTHER_ID, excerpt: "the lexer" }]);
+      await panel.show(stateWith(true, { conversations: conversations.filter(({ id }) => id !== OTHER_ID) }));
+      expect(rows(panel.host)).toEqual([]);
+      expect(historyText(panel.host)).toContain("No match");
+      expect(searches()).toHaveLength(1);
+    });
+  });
+
+  test("Enter opens the first row shown, a content row when no title matches", async () => {
+    await withHistory(saved, async (panel, field) => {
+      await panel.fill(field, "lexer");
+      await advance(300);
+      await answer(panel, [
+        { id: OTHER_ID, excerpt: "the lexer" },
+        { id: THIRD_ID, excerpt: "a lexer" },
+      ]);
+      await panel.press("Enter", field);
+      expect(posted.at(-1)).toEqual({ type: "openConversation", id: OTHER_ID });
+    });
+  });
+
+  test("the unreadable count shows as a warning, singular or plural, with rows or with No match", async () => {
+    await withHistory(saved, async (panel, field) => {
+      await panel.fill(field, "lexer");
+      await advance(300);
+      await answer(panel, [{ id: OTHER_ID, excerpt: "the lexer" }], 1);
+      expect(warning(panel.host)).toBe("1 conversation could not be searched");
+      expect(rows(panel.host)).toEqual([["Release notes", "the lexer"]]);
+      const html = panel.host.querySelector(".history")?.innerHTML ?? "";
+      expect(html.indexOf("warnings")).toBeGreaterThan(html.indexOf("<input"));
+      expect(html.indexOf("warnings")).toBeLessThan(html.indexOf("history-rows"));
+      await panel.fill(field, "lexers");
+      await advance(300);
+      await answer(panel, [], 3);
+      expect(warning(panel.host)).toBe("3 conversations could not be searched");
+      expect(historyText(panel.host)).toContain("No match");
+    });
+  });
+
+  test("a needle change removes the earlier answer's rows and count at once", async () => {
+    await withHistory(saved, async (panel, field) => {
+      await panel.fill(field, "lexer");
+      await advance(300);
+      await answer(panel, [{ id: OTHER_ID, excerpt: "the lexer" }], 2);
+      await panel.fill(field, "lexers");
+      expect(rows(panel.host)).toEqual([]);
+      expect(warning(panel.host)).toBeUndefined();
+      expect(historyText(panel.host)).toContain("Searching…");
+      await panel.fill(field, "lexer");
+      expect(rows(panel.host)).toEqual([]);
+      expect(historyText(panel.host)).toContain("Searching…");
+    });
+  });
+
+  test("an answer to an older search is ignored", async () => {
+    await withHistory(saved, async (panel, field) => {
+      await panel.fill(field, "lexer");
+      await advance(300);
+      const older = lastSearchId();
+      await panel.fill(field, "lexers");
+      await advance(300);
+      await answer(panel, [{ id: OTHER_ID, excerpt: "the lexer" }], 1, older);
+      expect(rows(panel.host)).toEqual([]);
+      expect(historyText(panel.host)).toContain("Searching…");
+      await answer(panel, [{ id: THIRD_ID, excerpt: "lexers" }]);
+      expect(rows(panel.host)).toEqual([["Parse the logs", "lexers"]]);
+    });
+  });
+
+  test("the answer to abc that comes after the field went back to ab is ignored", async () => {
+    await withHistory(saved, async (panel, field) => {
+      await panel.fill(field, "abc");
+      await advance(300);
+      await panel.fill(field, "ab");
+      await answer(panel, [{ id: OTHER_ID, excerpt: "abc" }], 1);
+      expect(rows(panel.host)).toEqual([]);
+      expect(warning(panel.host)).toBeUndefined();
+      expect(historyText(panel.host)).toContain("No match");
+    });
+  });
+
+  test("closing History before 300 ms posts no search", async () => {
+    await withHistory(saved, async (panel, field) => {
+      await panel.fill(field, "lexer");
+      await advance(200);
+      await panel.click("History");
+      await advance(1000);
+      expect(searches()).toEqual([]);
     });
   });
 

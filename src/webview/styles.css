@@ -457,7 +457,13 @@ button:focus-visible {
   text-align: center;
 }
 
-.history ul {
+/* "Searching…" takes "No match"'s place, in the Loading look. */
+p.history-searching {
+  justify-content: center;
+  padding: var(--bc-space-5) 0;
+}
+
+.history-rows {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
@@ -469,7 +475,7 @@ button:focus-visible {
   list-style: none;
 }
 
-.history li {
+.history-rows li {
   display: flex;
   gap: var(--bc-space-3);
   align-items: center;
@@ -483,16 +489,16 @@ button:focus-visible {
  * A row's title is a button without a box, since the row is what the eye reads; so is a link. In high contrast the
  * row takes the active edge when hovered (dashed) and when its title has the keyboard focus (solid).
  */
-.history li:hover {
+.history-rows li:hover {
   background: var(--bc-row-hover);
   outline: 1px dashed var(--bc-edge-active);
 }
 
-.history li:has(.history-open:focus-visible) {
+.history-rows li:has(.history-open:focus-visible) {
   outline: 1px solid var(--bc-edge-active);
 }
 
-.history li.current {
+.history-rows li.current {
   background: var(--bc-row-current);
   outline: 1px solid var(--bc-edge-active);
 }
@@ -521,7 +527,17 @@ button.history-open:hover:not(:disabled) {
   white-space: nowrap;
 }
 
-.history li.current .history-title {
+/* The excerpt of a row found by its messages: plain text on one line, under the title. */
+.history-excerpt {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--bc-fg-dim);
+  font-size: var(--bc-fs-sm);
+}
+
+.history-rows li.current .history-title {
   font-weight: 600;
 }
 

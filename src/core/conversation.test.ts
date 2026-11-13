@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import type { ChatEntry } from "./protocol";
 import {
   type ConversationRecord,
   conversationExcerpt,
@@ -14,6 +13,7 @@ import {
   serializeSummary,
   summarize,
 } from "./conversation";
+import type { ChatEntry } from "./protocol";
 
 const ID = "0b0d4c1e-8f9a-4c3b-9d2e-1a2b3c4d5e6f";
 

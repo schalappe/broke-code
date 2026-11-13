@@ -4,10 +4,10 @@
  */
 import * as vscode from "vscode";
 import type { ChatController } from "../core/chatController";
+import type { ConversationSearchAnswer } from "../core/conversationStore";
 import { DraftQueue } from "../core/draftQueue";
 import type { FileQueryAnswer } from "../core/fileIndex";
 import { insertCode } from "../core/insertCode";
-import type { ConversationSearchAnswer } from "../core/conversationStore";
 import { chooseModel } from "../core/modelList";
 import { type ChatState, type DraftInsert, type HostMessage, parseWebviewMessage } from "../core/protocol";
 import { answerSkillQuery, type SkillDiscovery } from "../core/skills";
