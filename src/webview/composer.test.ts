@@ -14,6 +14,7 @@ import {
   menuView,
   openMenuToken,
   pickedInText,
+  pickKeepsToken,
   quoteDraft,
   recallHolds,
   replaceToken,
@@ -105,6 +106,23 @@ describe("mentionPick", () => {
     expect(mentionPick({ path: "problems", kind: "problems" })).toEqual({ text: "@problems " });
     expect(mentionPick({ path: "diff", kind: "diff" })).toEqual({ text: "@diff " });
     expect(mentionPick({ path: "selection", kind: "selection" })).toEqual({ text: "@selection " });
+  });
+});
+
+describe("pickKeepsToken", () => {
+  const at = (query: string) => ({ trigger: "@" as const, start: 0, query });
+
+  test("holds when the token already is what the row inserts, so Enter sends", () => {
+    expect(pickKeepsToken(file("src/a.ts"), at("src/a.ts"))).toBe(true);
+    expect(pickKeepsToken({ path: "src/", kind: "folder" }, at("src/"))).toBe(true);
+    expect(pickKeepsToken({ path: "diff", kind: "diff" }, at("diff"))).toBe(true);
+  });
+
+  test("fails for a partial path, another case, a reserved name the row turns into ./<name>, and a / token", () => {
+    expect(pickKeepsToken(file("src/a.ts"), at("src/a"))).toBe(false);
+    expect(pickKeepsToken(file("src/a.ts"), at("SRC/a.ts"))).toBe(false);
+    expect(pickKeepsToken(file("problems"), at("problems"))).toBe(false);
+    expect(pickKeepsToken(file("src/a.ts"), { trigger: "/", start: 0, query: "src/a.ts" })).toBe(false);
   });
 });
 

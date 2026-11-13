@@ -19,8 +19,8 @@ export type KindCount = { shown: number; steps: number };
 export type FoldCounts = {
   steps: number;
   failed: number;
-  /** The tool of the failed step, its name or "malformed call", when exactly one failed: the row names it. */
-  failedTool?: string;
+  /** The tools of the failed steps, each once, in the order they first failed: the row names them. */
+  failedTools: string[];
   rejected: number;
   kinds: Record<StepKind, KindCount>;
   otherSteps: number;
@@ -90,7 +90,7 @@ function inFlight(entry: ChatEntry | undefined): boolean {
 
 /** The tool steps among `entries` from `from` up to `to` (excluded), in one pass. */
 function countSteps(entries: ChatEntry[], from: number, to: number): FoldCounts {
-  const counts: FoldCounts = { steps: 0, failed: 0, rejected: 0, kinds: emptyKinds(), otherSteps: 0 };
+  const counts: FoldCounts = { steps: 0, failed: 0, failedTools: [], rejected: 0, kinds: emptyKinds(), otherSteps: 0 };
   const paths = { read: new Set<string>(), listed: new Set<string>(), edited: new Set<string>() };
   for (let index = from; index < to; index++) {
     const entry = entries[index]!;
@@ -99,7 +99,7 @@ function countSteps(entries: ChatEntry[], from: number, to: number): FoldCounts 
     if (entry.approval === "rejected") counts.rejected++;
     else if (entry.status !== "ok") {
       counts.failed++;
-      counts.failedTool = counts.failed === 1 ? entry.name : undefined;
+      if (!counts.failedTools.includes(entry.name)) counts.failedTools.push(entry.name);
     }
     const kind = stepKind(entry);
     if (kind === undefined) {

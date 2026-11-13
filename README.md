@@ -119,7 +119,8 @@ Type `@` in the message box to attach a workspace file or folder. A menu lists u
 - Then come the files and folders whose path contains what you type, ignoring case, shortest paths first. Folders end
   with `/`.
 
-Move with the arrow keys, pick with Enter, Tab, or a click, and close the menu with Escape. A picked path goes into the
+Move with the arrow keys, pick with Enter, Tab, or a click, and close the menu with Escape. If you typed the whole path
+of the highlighted row, Enter sends the message instead of picking it again. A picked path goes into the
 message as `@<path>`, spaces included. You can also type `@path` yourself. A typed path ends at the first space. An `@`
 inside code, between backticks or in a fenced block, opens no menu and attaches nothing.
 
@@ -279,7 +280,8 @@ the model why.
 When the model asks to change a file, the editor opens a diff beside the chat, titled with the path. The left side
 shows the file as the model planned to change it, and the right side shows the proposed text. The chat shows
 **Accept** and **Reject** under the call, with an optional reason, and the lines the change adds and removes. If you
-close the diff, **Show change** opens it again.
+close the diff, **Show change** opens it again. Only the buttons decide: pressing Enter in the reason field does
+nothing, so a note you type is never sent as a rejection by accident.
 
 - **Accept** writes the change and closes the diff. The write is atomic, so the file holds either its old text or the
   new one, even after a crash.
@@ -372,7 +374,9 @@ search pattern, the whole command, or the first line of a question), and whether
 result, or the exit code for a command. Click the row to see the result the model received.
 
 Once an agent turn ends, its steps fold under one row above the final answer that says what they did, such as "Read 3
-files, changed 1 file, ran 1 command, 1 failed". Files count once however the model spelled their path (`a.ts`,
+files, changed 1 file, ran 1 command, 1 failed (run_command)". The failed part comes last, in the error color, and
+names each tool that failed, so a failure never hides in the closed row even when the answer claims success. Files
+count once however the model spelled their path (`a.ts`,
 `./a.ts`), but not across letter case or an absolute against a relative path; changed files and commands are always
 named, and the rest add up as "other steps". The row wraps in a narrow panel.
 The answer then sits right under your message. Click the row to see the steps again. If you scrolled up to read, your
@@ -389,7 +393,8 @@ The agent turn ends when the model answers with text and no tool call. It also e
   asks you to start a new chat.
 
 broke-code sends a malformed call back to the model with what is wrong, so the model can try again. It does the same
-for an empty reply, which counts as a malformed call.
+for an empty reply, which counts as a malformed call. The chat shows the malformed call as the model wrote it, in the
+editor font with its line breaks, between the text around it.
 
 You can keep typing while a turn runs. **Send** (or Enter) then queues the message under the message box instead of
 sending it, up to 10 messages. If the queue cannot take a message, the message goes back to the message box.
@@ -551,9 +556,13 @@ broke-code always sends these whole:
 The chat and the saved conversation keep every result whole. Only the request changes. While the next request leaves
 results out, the panel says how many under the header, and the usage counts the request as broke-code would send it.
 
-If the request still does not fit, the turn stops without sending it. The chat asks you to summarize the conversation
-with `/compact`, or to start a new chat with **New chat**. With automatic compaction on, the turn summarizes the
-conversation instead (see [Summarizing with `/compact`](#summarizing-with-compact)).
+The token count turns bold from three quarters of the context size, and a line above the message box suggests
+`/compact`, so you see the end coming. If the request still does not fit, the turn stops without sending it. The chat
+then shows one warning line above the message box with **Summarize (/compact)**, and **Send**, **Retry**,
+**Continue**, and **Edit** stay disabled until the conversation fits again: each would stop at once. **New chat** in
+the header still starts over. `/new`, `/model`, and `/compact` still work. With
+automatic compaction on, a notice says the next message summarizes the conversation first, and **Send** works as usual
+(see [Summarizing with `/compact`](#summarizing-with-compact)).
 
 LLM services do not report a model's context size. broke-code reads it from the `brokeCode.contextSizes` table in
 your **user** settings, by model name as the provider lists it. A model absent from the table uses 32,768 tokens, and
@@ -675,8 +684,8 @@ usage like the rest of the instructions.
 
 ## Slash commands
 
-Type `/` at the start of the message box to open a menu of commands. It lists `/new`, `/model`, and `/compact`, then
-each of your skills with its description. The menu keeps the commands whose name starts with what you type after `/`,
+Type `/` at the start of the message box to open a menu of commands. It lists `/new`, `/model`, and `/compact`, then,
+under a **Skills** heading, each of your skills with its description. The menu keeps the commands whose name starts with what you type after `/`,
 ignoring case. Move with the arrow keys, pick with Enter, Tab, or a click, and close the menu with Escape.
 
 Picking `/new`, `/model`, or `/compact` runs it at once. Picking a skill puts `/<name> ` in the message box, so you can
@@ -746,8 +755,9 @@ Command Palette does the same for the only repository open, or for the one you p
 ## Past conversations
 
 broke-code saves each conversation of a workspace, so closing or reloading the window keeps it. **History** in the
-panel header lists the workspace's conversations, newest first. Each row shows the conversation's first message and the
-date of its last change, and the chat marks the one shown. Click a conversation to reopen it and continue where you
+panel header lists the workspace's conversations, newest first. Each row shows the conversation's first message, on
+up to two lines, then the date and time of its last change and how many messages it holds, and the chat marks the one
+shown. A conversation saved by an older version shows its count once it is saved again. Click a conversation to reopen it and continue where you
 left off. To delete one, point at its row and click **Delete**, then **Confirm delete**. **Cancel** keeps it. A
 deleted conversation cannot be brought back.
 

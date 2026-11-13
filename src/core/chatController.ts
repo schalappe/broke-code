@@ -1108,6 +1108,7 @@ export class ChatController {
           // [!]: A result the model invented never reaches the chat or the history, or the model would read it back
           // as true on the next request.
           if (parsed.forged) run.reply.content = run.reply.content.slice(0, parsed.start);
+          else if (parsed.end > parsed.start) run.reply.malformedCall = { start: parsed.start, end: parsed.end };
           step = {
             role: "tool",
             name: malformedToolName(run.reply.content, parsed),
@@ -1996,11 +1997,14 @@ export class ChatController {
     const ratio = this.ratioOf(provider, model);
     const budget = { system: this.systemPrompt, contextSize: context.size, ratio };
     const { messages, leftOut } = this.requestMessages(this.conversation, budget);
+    const used = estimateTokens(messages, ratio);
+    const full = fillsContext(used, context.size) ? (this.limits.autoCompact ? "compacts" : "halts") : undefined;
     return {
-      used: estimateTokens(messages, ratio),
+      used,
       ...context,
       ...(leftOut > 0 ? { leftOut } : {}),
       ...(this.reported ? { reported: this.reported } : {}),
+      ...(full ? { full } : {}),
     };
   }
 

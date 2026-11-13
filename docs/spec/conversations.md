@@ -5,7 +5,10 @@ This file specifies how conversations are saved, listed, pruned, and reopened, a
 - Conversations are saved per workspace, as two JSON files per conversation in the extension's per-workspace storage
   directory (`ExtensionContext.storageUri`), never in the memento: the memento serializes every key on each update
   and VS Code warns from about 500 KB. The record `<id>.json` holds the conversation; the summary
-  `<id>.summary.json` holds `{ version, id, title, updatedAt }` only, `version` being the record's, so a valid summary
+  `<id>.summary.json` holds `{ version, id, title, updatedAt, messages }` only, `version` being the record's and
+  `messages` the count of user entries, which History shows after the date ("Nov 8, 2026, 12:00 PM · 3 messages"); a
+  summary written before the count was kept has none and is still valid, its row showing the date alone until the next
+  save, so a valid summary
   spares the list parsing a record that may reach megabytes. A write goes to a uniquely named temporary file, flushed
   to disk, then a `rename(2)` over the final one with `node:fs`, never `workspace.fs`: its rename with overwrite
   deletes the destination first, so a crash between the two steps would lose the conversation. The first listing

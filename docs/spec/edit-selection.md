@@ -12,7 +12,7 @@ the chat.
   `editorHasSelection`. It holds "Add selection to chat" (`broke-code@1`), "Edit selection" (`broke-code@2`, also
   `!editorReadonly`), and the three presets (`broke-code@3` to `@5`, see Presets). "Add selection to chat" is no longer a direct entry of the context menu
   (`docs/spec/mentions.md`).
-- Accept (`broke-code.acceptEdit`, `$(check)`) and Reject (`broke-code.rejectEdit`, `$(close)`) are in `editor/title`,
+- "Accept edit" (`broke-code.acceptEdit`, `$(check)`) and "Reject edit" (`broke-code.rejectEdit`, `$(close)`) are in `editor/title`,
   group `navigation`, `when` `resourceScheme == broke-code-edit`: only on an edit's diff tab, never on an ordinary
   editor or a write approval's diff (`broke-code-change`). The Command Palette hides both (`when` `false`).
 

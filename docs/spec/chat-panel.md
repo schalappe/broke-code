@@ -28,10 +28,13 @@ This file specifies what the chat panel does around a turn: folding, code block 
   `/a.ts` and `a.ts`, or two letter cases are two. A `list_files` without a path, `.`, and `./` are the workspace root.
   The row names at most three kinds: edited (written "changed N files", the word of "Changed files") and ran whenever not zero, the places left to read, listed, searched, and
   loaded by largest number shown (a tie to the earlier one), written in that fixed order; then "N other steps", the
-  other steps plus the steps of every kind not named; then ", M failed" (status `error` or `malformed`, not rejected)
-  and ", K rejected" (`approval` `rejected`) when not zero; one failed step is named by its tool, "1 failed (search)". A fold of other steps alone says "N steps". The first letter
-  is upper case: "Read 3 files, changed 1 file, ran 1 command"; in French the number comes first ("3 fichiers lus, 1
-  fichier modifié, 1 commande exécutée"). The row wraps in a narrow panel; it is never cut. The conversation follows its bottom while the user is within 24px of
+  other steps plus the steps of every kind not named; then ", K rejected" (`approval` `rejected`) when not zero. A fold
+  of other steps alone says "N steps". The first letter is upper case: "Read 3 files, changed 1 file, ran 1 command";
+  in French the number comes first ("3 fichiers lus, 1 fichier modifié, 1 commande exécutée"). Last, apart
+  (`describeFold`'s `failed`), the failed steps (status `error` or `malformed`, not rejected) when not zero, with the
+  tools that failed, each once in the order it first failed (`FoldCounts.failedTools`; a malformed call's tag name):
+  "1 failed (search)", "2 failed (run_command, edit_file)". That part is in the error color, and the row's node is an
+  error ring (`.turn-fold-row.failed`), since the final reply may claim a success a failed step contradicts. The row wraps in a narrow panel; it is never cut. The conversation follows its bottom while the user is within 24px of
   it, and a user message added to it (sent from the message box, including a send that replaces the last turn through Edit, or from the queue) brings the view back to the bottom.
   Scrolled up, a row stays at the bottom of the view (`.jump-row`, sticky): "Jump to latest", or, while the reply waits
   on the user, what it waits on, in the live region's words ("Waiting for your decision: edit_file on src/a.ts", "The
@@ -110,7 +113,9 @@ This file specifies what the chat panel does around a turn: folding, code block 
   `docs/spec/harness.md` ("Approvals, modes, ...").
 - The row shows the tool name, the first line of the question (`mainArgument`: the `question` argument trimmed, whatever
   order the model wrote the arguments in, and nothing when it has none), and "waiting for your answer". The block then
-  shows the question in full with its line breaks, one button per option in the order given, then a free-text field
+  shows the question in full with its line breaks, a span between two backticks on one line as inline code
+  (`splitInlineCode`; no other Markdown, so the model's line breaks stay), one button per option in the order given,
+  then a free-text field
   ("Your answer") with an Answer button. A question without options shows the field and Answer only.
 - An option click posts `answer { id, text }` with that option's text. Answer, and Enter in the field (not while an
   IME composes), post it with the field's text, trimmed; neither posts while the field is empty after trimming, and
@@ -122,7 +127,8 @@ This file specifies what the chat panel does around a turn: folding, code block 
   question starts with an empty field, and when the view is hidden and shown again the question is still open but the
   text typed and not yet sent is lost, like an unsent approval reason.
 - While the question is open, its row names the tool only, since the question shows whole under it. Once answered,
-  the step is an ordinary row: the first line of the question, then `ok` and the result's size; the
+  the step is an ordinary row: the first line of the question, then "you answered", the answer on a line of its own
+  under the row (`stepNote`); the
   expanded row shows the result, `The user answered: <text>`. A folded turn counts an `ask_user` step among the "other
   steps", and History's content search does not search tool results, so an answer is not found by it (both accepted,
   #143).
@@ -299,7 +305,8 @@ for screen readers. `describeAnnouncement` (`src/webview/text.ts`) compares each
 before, in the same conversation, and says at most one thing:
 
 - a new approval request: "Waiting for your decision: run {command}" or "Waiting for your decision: {tool} on {path}";
-- a new question: "The agent asks: {question}";
+- a new question: "The agent asks: {question}", then the count of its options when it has any ("(1 option)", "(3
+  options)"), since the reader hears nothing of its buttons until reaching them (the jump row says the question alone);
 - a call that starts running, as the host marks it (`ChatState.callRunning`, `docs/spec/harness.md`): "Running
   {command}" for `run_command`, else "Running {tool} on {argument}" (`mainArgument`), or "Running {tool}" without
   one. A call that asks is named only once its approval is accepted, never as it shows nor after Reject, Stop, or an

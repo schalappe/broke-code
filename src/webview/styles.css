@@ -62,7 +62,9 @@
   --bc-link: var(--vscode-textLink-foreground);
   --bc-link-active: var(--vscode-textLink-activeForeground, var(--bc-link));
   --bc-code-fg: var(--vscode-textPreformat-foreground, var(--bc-fg));
-  --bc-error: var(--vscode-errorForeground);
+  /* The theme's error color drawn 40% toward the foreground: Light Modern's own fell to 3.2:1 as small text on the
+     panel. Still read as the error color in every theme; marks take it too, so a state has one color. */
+  --bc-error: color-mix(in srgb, var(--vscode-errorForeground) 60%, var(--vscode-foreground));
   --bc-warning: var(--vscode-editorWarning-foreground);
 
   /* Each control and surface below takes the color the theme gives that exact job. */
@@ -91,6 +93,10 @@
   --bc-inverse-well: color-mix(in srgb, var(--vscode-sideBar-background) 14%, transparent);
   --bc-inverse-hover: color-mix(in srgb, var(--vscode-sideBar-background) 16%, transparent);
   --bc-inverse-line: color-mix(in srgb, var(--vscode-sideBar-background) 45%, transparent);
+  /* The thumb of a thin scroll bar, where a block scrolls sideways. */
+  --bc-slider: var(--vscode-scrollbarSlider-background, var(--bc-line));
+  /* Secondary text on the decision block, such as a placeholder: the block's dim, as --bc-fg-dim is the panel's. */
+  --bc-inverse-dim: color-mix(in srgb, var(--vscode-sideBar-background) 72%, transparent);
   --bc-inverse-button-hover: color-mix(in srgb, var(--vscode-sideBar-background) 86%, var(--vscode-foreground));
 
   --bc-warning-fill: var(--vscode-inputValidation-warningBackground);
@@ -222,6 +228,13 @@ button:disabled {
   cursor: default;
 }
 
+/* A disabled primary button drops the theme's button fill, so at rest it never reads as the region's live action. */
+button:disabled:not(.secondary, .link) {
+  color: var(--bc-fg);
+  background: transparent;
+  border-color: var(--bc-line);
+}
+
 /* A secondary action is a hairline box on the panel itself. */
 button.secondary {
   color: var(--bc-fg);
@@ -318,6 +331,11 @@ button:focus-visible {
   flex: 1 1 auto;
 }
 
+/* Disabled during a reply, the model id is still what the user reads there: it keeps the pickers' dim, not half of it. */
+.pickers .model-picker:disabled {
+  opacity: 1;
+}
+
 .pickers select:hover:not(:disabled),
 .pickers select:focus-visible {
   color: var(--bc-select-fg);
@@ -333,6 +351,12 @@ button:focus-visible {
   font-size: var(--bc-fs-xs);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+/* Near or past the context size: the full foreground and weight 600, the share in words beside it, never color alone. */
+.usage.nearly-full {
+  color: var(--bc-fg);
+  font-weight: 600;
 }
 
 .actions {
@@ -389,6 +413,7 @@ button:focus-visible {
 }
 
 .warnings,
+.warning,
 .error {
   padding: var(--bc-space-3) var(--bc-space-4);
   border: 1px solid var(--bc-edge);
@@ -408,6 +433,32 @@ button:focus-visible {
   font-size: var(--bc-fs-sm);
 }
 
+/* One warning on its own: a full context, said where the turn ended and over the message box with its ways out. */
+.warning {
+  margin: 0;
+  color: var(--bc-warning-text);
+  background: var(--bc-warning-fill);
+  border: 1px solid var(--bc-warning-edge);
+  font-size: var(--bc-fs-sm);
+}
+
+.message .warning {
+  margin-top: var(--bc-space-3);
+}
+
+.warning p {
+  margin: 0;
+}
+
+/* The full context over the message box: one line, then the summary under it. At side-bar widths the two never fit on
+   one line, so they always stack, the same at every width. */
+.warning.context-full {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--bc-space-2);
+}
+
 .error {
   background: var(--bc-error-fill);
   border-color: var(--bc-error-edge);
@@ -418,9 +469,11 @@ button:focus-visible {
   color: var(--bc-error-text);
 }
 
+/* The detail keeps the block's text color: the editor font already sets it apart, and a dim tint on a light error
+   fill fell under 4.5:1. */
 .error .detail {
   margin: var(--bc-space-2) 0 0;
-  color: var(--bc-fg-dim);
+  color: var(--bc-error-text);
   font-family: var(--bc-mono);
   font-size: var(--bc-fs-mono);
   white-space: pre-wrap;
@@ -585,11 +638,15 @@ button.history-open:hover:not(:disabled) {
   background: none;
 }
 
+/* Two lines at most, so a narrow panel still shows most of a title; past them, cut with an ellipsis. */
 .history-title {
+  display: -webkit-box;
   max-width: 100%;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
 }
 
 /* The excerpt of a row found by its messages: plain text on one line, under the title. */
@@ -975,13 +1032,14 @@ button.jump.waiting {
 }
 
 .answer pre,
-.step-result {
+.step-result,
+.malformed-block {
   margin: 0 0 0.75em;
   padding: var(--bc-space-3) var(--bc-space-4);
   overflow-x: auto;
   /* A thin bar in the theme's slider color: a block that scrolls sideways says so without a heavy track. */
   scrollbar-width: thin;
-  scrollbar-color: var(--vscode-scrollbarSlider-background, var(--bc-line)) transparent;
+  scrollbar-color: var(--bc-slider) transparent;
   background: var(--bc-fill);
   border: 1px solid var(--bc-edge);
   border-radius: var(--bc-radius);
@@ -1048,8 +1106,16 @@ button.code-action:hover:not(:disabled) {
   border-color: var(--bc-line-active);
 }
 
+/* A call the parser could not read, as the model wrote it: code, its line breaks kept, wrapped rather than scrolled. */
+.malformed-block {
+  margin: var(--bc-space-1) 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .step-result code,
-.answer pre code {
+.answer pre code,
+pre.malformed-block code {
   padding: 0;
   font-family: var(--bc-mono);
   font-size: var(--bc-fs-mono);
@@ -1196,6 +1262,17 @@ p.loading::before {
   flex: none;
   width: var(--bc-mark);
   height: var(--bc-mark);
+  background: var(--bc-fg-dim);
+  border-radius: 50%;
+  animation: var(--bc-breathe) 1.6s ease-in-out infinite;
+}
+
+/* Text still arriving: the loading dot, breathing, on a line of its own after the text. */
+.streaming-mark {
+  display: block;
+  width: var(--bc-mark);
+  height: var(--bc-mark);
+  margin-top: var(--bc-space-2);
   background: var(--bc-fg-dim);
   border-radius: 50%;
   animation: var(--bc-breathe) 1.6s ease-in-out infinite;
@@ -1362,7 +1439,7 @@ button.changed-file:focus-visible {
 
 .undo-outcome .detail {
   margin: var(--bc-space-2) 0 0;
-  color: var(--bc-fg-dim);
+  color: inherit;
   font-family: var(--bc-mono);
   font-size: var(--bc-fs-mono);
   white-space: pre-wrap;
@@ -1456,6 +1533,17 @@ summary.step-row:hover,
   margin-top: var(--bc-space-2);
 }
 
+/* What failed, last on the row and in the error color, its tools named in words. */
+.fold-failed {
+  color: var(--bc-error);
+}
+
+/* A fold holding a failed step: its double ring (see "Thread") in the error color. Set on the row only, so the nodes
+   of the steps inside keep their own colors. */
+.turn-fold-row.failed {
+  --node-ring: var(--bc-error);
+}
+
 /* ---------- Thread ---------- */
 
 /*
@@ -1514,7 +1602,7 @@ summary.step-row:hover,
 .turn-fold > summary::before {
   box-shadow:
     0 0 0 2px var(--bc-bg),
-    0 0 0 3px var(--bc-fg-dim);
+    0 0 0 3px var(--node-ring, var(--bc-fg-dim));
 }
 
 /* A node: a ring on the line, level with its row's first line. The panel's color inside it hides the line. */
@@ -1535,7 +1623,7 @@ summary.step-row:hover,
   width: var(--bc-node);
   height: var(--bc-node);
   background: var(--bc-bg);
-  border: 1px solid var(--bc-fg-dim);
+  border: 1px solid var(--node-ring, var(--bc-fg-dim));
   border-radius: 50%;
 }
 
@@ -1588,6 +1676,8 @@ div.step-row:has(.step-status.loading)::before {
 }
 
 .step-arg {
+  /* The path gives way first: a status is cut last. */
+  flex: 0 100 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1633,6 +1723,20 @@ div.step-row:has(.step-status.loading)::before {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--bc-error);
+}
+
+/* The rejection the user typed, or the answer they gave: their own words under the row, wrapped, never cut. */
+.step-note {
+  margin: calc(-1 * var(--bc-space-1)) 0 var(--bc-space-2);
+  color: var(--bc-fg-dim);
+  font-size: var(--bc-fs-sm);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+/* A rejection is no failure, but the reply after it may claim the change was made: the full foreground, not dim. */
+.step-status.rejected {
+  color: var(--bc-fg);
 }
 
 .step .step-result {
@@ -1717,11 +1821,25 @@ div.step-row:has(.step-status.loading)::before {
   border: none;
 }
 
+/* The reason is optional and secondary: no fill, an outline in the block's tint like Reject's, so Accept or Run stays
+   the block's weightiest control. */
 .approval-reason {
   flex: 1 1 9em;
   min-width: 0;
   padding: var(--bc-space-1) var(--bc-space-2);
+  color: var(--bc-bg);
+  caret-color: var(--bc-bg);
+  background: transparent;
+  border-color: var(--bc-inverse-line);
   font-size: var(--bc-fs-sm);
+}
+
+.approval-reason::placeholder {
+  color: var(--bc-inverse-dim);
+}
+
+.approval-reason:focus-visible {
+  outline-color: var(--bc-bg);
 }
 
 /* A write's line counts, then Show change: the size of what Accept writes, and the way back to its diff. On the
@@ -1761,6 +1879,17 @@ div.step-row:has(.step-status.loading)::before {
   margin: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+/* Inline code the model wrote in backticks, in the editor font on the block's own well. */
+p.question-text code {
+  padding: 0 var(--bc-space-1);
+  /* The block's own text color: the webview's default code color is drawn for the panel's ground, not this one. */
+  color: inherit;
+  background: var(--bc-inverse-well);
+  border-radius: var(--bc-radius-sm);
+  font-family: var(--bc-mono);
+  font-size: var(--bc-fs-mono);
 }
 
 /* One option per line at the block's width, so a long option wraps whole and each is a full-width target. */
@@ -1906,6 +2035,29 @@ button.next-step {
   font-size: var(--bc-fs-sm);
 }
 
+/* In a narrow panel the buttons would leave the text a few letters: the text takes its own line, the buttons go under it
+   at the right. */
+@media (max-width: 340px) {
+  .queue li {
+    flex-wrap: wrap;
+    row-gap: var(--bc-space-1);
+  }
+
+  .queued-text {
+    display: -webkit-box;
+    flex-basis: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+  }
+
+  .queue li .actions {
+    margin-left: auto;
+  }
+}
+
 /* ---------- Mention and slash menus ---------- */
 
 /* Overlay the conversation right above the composer, so the composer never moves. */
@@ -1982,6 +2134,15 @@ button.next-step {
 .menu [role="option"].highlighted .kind {
   color: inherit;
   border-color: currentColor;
+}
+
+/* A small dim heading over the first skill: the built-in commands above it, the workspace's skills under it. */
+.menu-group {
+  margin-top: var(--bc-space-2);
+  padding: var(--bc-space-2) var(--bc-space-3) var(--bc-space-1);
+  border-top: 1px solid var(--bc-line);
+  color: var(--bc-fg-dim);
+  font-size: var(--bc-fs-xs);
 }
 
 .menu-notice {

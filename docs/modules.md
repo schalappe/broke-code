@@ -191,10 +191,11 @@ This file says which file holds which responsibility. Update it when a module ga
   the latest answer), merged into title rows then content rows with their excerpt.
   `Root.tsx` is the panel's root: it posts `ready`, renders each state, and queues the `insertDraft` drafts for the
   message box; `main.tsx` mounts it. `turns.ts` groups the entries for rendering without React (`foldTurns`: each entry once,
-  an ended turn's fold and its step counts by kind, one pass, paths cleaned lexically, a summary a boundary of its own), and `text.ts` words the fold's row (`describeFold`, a row that may wrap), the step row
+  an ended turn's fold and its step counts by kind, one pass, paths cleaned lexically, a summary a boundary of its own), and `text.ts` words the fold's row (`describeFold`, a row that may wrap, its failed part apart with the failed tools), the step row
   (`mainArgument`, a `read_file` range after its path; `describeToolStep`, "undone" included), and the undo's outcome (`describeUndoOutcome`, `describeUndoneFile`, each path a part of its own for the editor font,
   `describeUndoFailure`), and the header's usage line and its tooltip with the reported usage (`describeContextUsage`,
-  `describeContextTitle`).
+  `describeContextTitle`), a History row's date and message count (`describeRowDetails`), and a question's inline code
+  (`splitInlineCode`).
 - `src/l10n.test.ts`: checks that every `l10n.t` message has a French translation and that the
   `package.nls*.json` files match. `src/manifest.test.ts`: checks the manifest's editor menus: the `broke-code`
   submenu and the order of its five entries, the presets in the Command Palette, and Accept and Reject on the edit

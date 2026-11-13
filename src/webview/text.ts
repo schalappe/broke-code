@@ -5,6 +5,7 @@
  * conversations, and what the live region announces.
  */
 import * as l10n from "@vscode/l10n";
+import type { ConversationSummary } from "../core/conversation";
 import { resultLineCount } from "../core/history";
 import type { MentionResult } from "../core/mentions";
 import type {
@@ -206,14 +207,8 @@ export function mainArgument(name: string, args: Record<string, string>): string
  */
 export function describeToolStep(step: ChatEntry & { role: "tool" }): string {
   if (step.status === "malformed") return step.text.split("\n")[0] ?? "";
-  if (step.approval === "rejected") {
-    // [>]: The result's second line is the reason the user typed (`rejectionText`), when there is one.
-    const reason = step.text.split("\n")[1]?.trim();
-    return reason ? l10n.t("rejected by you: {0}", reason) : l10n.t("rejected by you");
-  }
-  // [>]: An answered question shows what the user picked, which is what the row is read for.
-  const answer = step.name === "ask_user" && step.status === "ok" ? /^The user answered: (.*)$/m.exec(step.text) : null;
-  if (answer?.[1]) return l10n.t("you answered: {0}", answer[1]);
+  if (step.approval === "rejected") return l10n.t("rejected by you");
+  if (stepNote(step) !== undefined) return l10n.t("you answered");
   const ending = step.name === "run_command" ? describeCommandEnding(step.text) : undefined;
   if (ending !== undefined) return l10n.t("{0}, {1}", ending, describeLines(resultLineCount(step.text)));
   const size = stepSize(step);
@@ -221,6 +216,17 @@ export function describeToolStep(step: ChatEntry & { role: "tool" }): string {
   const status = step.status === "ok" ? ok : l10n.t("error, {0}", describeLines(resultLineCount(step.text)));
   const approved = step.approval === "auto" ? l10n.t("auto-approved, {0}", status) : status;
   return step.undone ? l10n.t("undone, {0}", approved) : approved;
+}
+
+/**
+ * The words the user gave a step, shown on a line of their own under its row, so a long one never pushes the row
+ * past the panel: the reason typed with a rejection (the result's second line, `rejectionText`), or the answer to an
+ * `ask_user` question. `undefined` when there are none.
+ */
+export function stepNote(step: ChatEntry & { role: "tool" }): string | undefined {
+  if (step.approval === "rejected") return step.text.split("\n")[1]?.trim() || undefined;
+  if (step.name !== "ask_user" || step.status !== "ok") return undefined;
+  return /^The user answered: (.*)$/m.exec(step.text)?.[1] || undefined;
 }
 
 /** The tools whose step counts the lines it changed, not the lines of its result. */
@@ -272,12 +278,15 @@ const MAX_NAMED_KINDS = 3;
 const ALWAYS_NAMED: readonly StepKind[] = ["edited", "ran"];
 
 /**
- * The row of a folded turn, in words: at most three kinds, "edited" and "ran" always among them when not zero and the
- * places left to the kinds with the largest number shown (a tie to the earlier kind), written in the order of
- * `STEP_KINDS`; then the other steps, which add the steps of every kind not named; then the failed and the rejected
- * ones when there are any. A fold of other steps alone says "N steps". The row may wrap; it is never cut.
+ * The row of a folded turn, in words: `done` says what the steps did, `failed` which of them failed, if any.
+ * `done` names at most three kinds, "edited" and "ran" always among them when not zero and the places left to the kinds
+ * with the largest number shown (a tie to the earlier kind), written in the order of `STEP_KINDS`; then the other
+ * steps, which add the steps of every kind not named; then the rejected ones when there are any. A fold of other steps
+ * alone says "N steps". `failed` counts the failed steps and names their tools, each once ("2 failed (run_command,
+ * edit_file)"); the row shows it last, in the error color, so a failure never hides among the counts. The row may
+ * wrap; it is never cut.
  */
-export function describeFold(counts: FoldCounts): string {
+export function describeFold(counts: FoldCounts): { done: string; failed?: string } {
   const present = STEP_KINDS.filter((kind) => counts.kinds[kind].steps > 0);
   const named = new Set(present.filter((kind) => ALWAYS_NAMED.includes(kind)));
   const byNumber = present
@@ -289,14 +298,16 @@ export function describeFold(counts: FoldCounts): string {
   const other = byNumber.slice(places).reduce((sum, kind) => sum + counts.kinds[kind].steps, counts.otherSteps);
   if (parts.length === 0) parts.push(l10n.t("{0} steps", counts.steps));
   else if (other > 0) parts.push(other === 1 ? l10n.t("1 other step") : l10n.t("{0} other steps", other));
-  if (counts.failed === 1)
-    parts.push(counts.failedTool ? l10n.t("1 failed ({0})", counts.failedTool) : l10n.t("1 failed"));
-  else if (counts.failed > 1) parts.push(l10n.t("{0} failed", counts.failed));
   if (counts.rejected > 0) {
     parts.push(counts.rejected === 1 ? l10n.t("1 rejected") : l10n.t("{0} rejected", counts.rejected));
   }
   const text = parts.reduce((joined, part) => l10n.t("{0}, {1}", joined, part));
-  return text.charAt(0).toUpperCase() + text.slice(1);
+  const done = text.charAt(0).toUpperCase() + text.slice(1);
+  if (counts.failed === 0) return { done };
+  const tools = counts.failedTools.join(", ");
+  const failed =
+    counts.failed === 1 ? l10n.t("1 failed ({0})", tools) : l10n.t("{0} failed ({1})", counts.failed, tools);
+  return { done, failed };
 }
 
 /** What the steps of `kind` did, `shown` their number in the unit of the kind. */
@@ -315,6 +326,22 @@ function describeKind(kind: StepKind, shown: number): string {
     case "ran":
       return shown === 1 ? l10n.t("ran 1 command") : l10n.t("ran {0} commands", shown);
   }
+}
+
+/**
+ * `text` cut into plain parts and inline code, a span between two backticks on one line: a question the agent asks is
+ * plain text, line breaks kept, but models write paths and names in backticks there as in an answer.
+ */
+export function splitInlineCode(text: string): { text: string; code: boolean }[] {
+  const parts: { text: string; code: boolean }[] = [];
+  let from = 0;
+  for (const match of text.matchAll(/`([^`\n]+)`/g)) {
+    if (match.index > from) parts.push({ text: text.slice(from, match.index), code: false });
+    parts.push({ text: match[1]!, code: true });
+    from = match.index + match[0].length;
+  }
+  if (from < text.length) parts.push({ text: text.slice(from), code: false });
+  return parts;
 }
 
 /** Halt wording with the panel's translator; see `describeHalt` in the core. */
@@ -336,6 +363,17 @@ export function describeWaiting({ approval, question }: Pick<ChatState, "approva
 }
 
 /**
+ * A new question as the live region says it: the question, then how many options it offers, since the reader hears
+ * nothing of the block's buttons until they reach them.
+ */
+function describeQuestion({ question, options }: NonNullable<ChatState["question"]>): string {
+  if (options.length === 0) return l10n.t("The agent asks: {0}", question);
+  return options.length === 1
+    ? l10n.t("The agent asks: {0} (1 option)", question)
+    : l10n.t("The agent asks: {0} ({1} options)", question, options.length);
+}
+
+/**
  * What the panel's live region says when the host posts `next` after `previous`, or `undefined` when nothing worth a
  * word changed: a call that waits for the user's decision, a question the agent asks, a call that starts running, or
  * the end of the reply in flight.
@@ -347,7 +385,7 @@ export function describeAnnouncement(previous: ChatState, next: ChatState): stri
   if (previous.conversationId !== next.conversationId) return undefined;
   const { approval, question } = next;
   const waiting = approval ? approval.id !== previous.approval?.id : question && question.id !== previous.question?.id;
-  if (waiting) return describeWaiting(next);
+  if (waiting) return approval ? describeWaiting(next) : question && describeQuestion(question);
   const call = runningCall(next);
   if (call && !runningCall(previous)) {
     if (call.name === "run_command" && call.args.command !== undefined) return l10n.t("Running {0}", call.args.command);
@@ -503,6 +541,13 @@ export function formatConversationDate(time: number, language: string): string {
     // [>]: A tag Intl rejects (RangeError) still gets a readable date.
     return new Intl.DateTimeFormat(undefined, options).format(time);
   }
+}
+
+/** The line under a History row's title: its date and time, then how many messages it holds, when known. */
+export function describeRowDetails({ updatedAt, messages }: ConversationSummary, language: string): string {
+  const date = formatConversationDate(updatedAt, language);
+  if (messages === undefined) return date;
+  return messages === 1 ? l10n.t("{0} · 1 message", date) : l10n.t("{0} · {1} messages", date, messages);
 }
 
 export function describeListFailure(failure: { cause: string }): ErrorText {

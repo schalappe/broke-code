@@ -33,6 +33,9 @@ export type HaltReason = "malformedCalls" | "stepLimit" | "contextFull";
 /** The body tool call a reply's answer holds: tool name, raw argument values, and where its block sits in `content`. */
 export type ReplyCall = { name: string; args: Record<string, string>; start: number; end: number };
 
+/** Where a block sits in a reply's `content`: from `start` up to `end` (excluded), in UTF-16 code units. */
+export type TextRange = { start: number; end: number };
+
 /**
  * `ok` and `error`: what the tool returned. `malformed`: the reply's call could not be read; `text` is the message
  * sent back to the model, and `name` is the tag name the block opens with, a known tool or not, or `unknown` when
@@ -84,8 +87,10 @@ export type ChatEntry =
   /**
    * `reasoning`: text the model writes before its answer, shown collapsed, never sent back. `content`: the whole
    * answer, its call block included, so the history resends exactly what the model wrote; the chat hides the block by
-   * `call`'s range. `haltReason`: set exactly when `status` is `halted`. `summary`: the reply to `/compact`, a summary
-   * of the conversation before it; once it ends `done` with text, the history sent starts at it (`historyStart`).
+   * `call`'s range. `malformedCall`: where the block of a call that could not be read sits in `content`, which keeps
+   * it, so the chat shows it as written, in the editor font; absent for a forged result, an empty answer, and a record
+   * saved before it was kept. `haltReason`: set exactly when `status` is `halted`. `summary`: the reply to `/compact`, a
+   * summary of the conversation before it; once it ends `done` with text, the history sent starts at it (`historyStart`).
    */
   | {
       role: "assistant";
@@ -94,6 +99,7 @@ export type ChatEntry =
       status: ReplyStatus;
       error?: ProviderError;
       call?: ReplyCall;
+      malformedCall?: TextRange;
       haltReason?: HaltReason;
       summary?: true;
     }
@@ -157,8 +163,18 @@ export type SkillWarning = { path: string; problem: SkillProblem };
  * request leaves out to fit the context (see `toHistory`), present only when there are any; the panel shows a notice.
  * `reported`: the usage the last chat request of the conversation shown reported, kept while the next one is in flight;
  * absent when it reported none, after a change of the conversation shown or of the model, and after a window reload.
+ * `full`: the request fills the context even with those results left out (`fillsContext`), so an agent turn would end
+ * `halted` on `contextFull` before sending (`halts`), or summarize the conversation first (`compacts`, with
+ * `brokeCode.autoCompact` on); absent while it fits.
  */
-export type ContextUsage = { used: number; size: number; known: boolean; leftOut?: number; reported?: ReportedUsage };
+export type ContextUsage = {
+  used: number;
+  size: number;
+  known: boolean;
+  leftOut?: number;
+  reported?: ReportedUsage;
+  full?: "halts" | "compacts";
+};
 
 /**
  * The token counts a provider reported for one reply (`usage.prompt_tokens`, `usage.completion_tokens`): what the
