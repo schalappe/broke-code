@@ -87,7 +87,6 @@ export const DEFAULT_ANSWER = "Decide yourself.";
 /** The tools whose `ok` text is what the model read: a value in it came from a file. */
 const READ_TOOL_NAMES = new Set(READ_TOOLS.map((tool) => tool.name));
 
-/** The tools that change a workspace file. */
 const WRITE_TOOL_NAMES = new Set(WRITE_TOOLS.map((tool) => tool.name));
 
 const ROUTE_SEED = "kestrel-4471-vanta";

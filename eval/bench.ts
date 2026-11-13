@@ -19,7 +19,7 @@ import { parseArgs } from "node:util";
 import { listModels, type ModelListing } from "../src/core/client";
 import { runCommand } from "../src/core/commands";
 import { formatDuration, formatReport, type RunResult } from "./report";
-import { benchCommandEnv, playScenario, type RunOutcome, SANDBOX_EXEC } from "./run";
+import { benchCommandEnv, playScenario, type RunOutcome, type RunTarget, SANDBOX_EXEC } from "./run";
 import {
   describeError,
   judge,
@@ -171,8 +171,29 @@ export function dumpLine(run: {
   return `${JSON.stringify(line)}\n`;
 }
 
+/**
+ * The target each run of `model` plays on, from the parsed command line: the bench's step limit, and `ask_user` left
+ * out under `--no-ask-user`.
+ */
+export function benchTarget(
+  options: { baseUrl: string; withoutAskUser: boolean },
+  model: string,
+  apiKey: string | undefined,
+): RunTarget {
+  const target: RunTarget = { baseUrl: options.baseUrl, apiKey, model, maxToolSteps: MAX_TOOL_STEPS };
+  if (options.withoutAskUser) target.withoutAskUser = true;
+  return target;
+}
+
+/** The line the bench starts with, so a log tells a baseline without `ask_user` from a run with it. */
+export function startLine(options: { baseUrl: string; runs: number; withoutAskUser: boolean }): string {
+  const askUser = options.withoutAskUser ? ", ask_user not offered" : "";
+  return `broke-code eval: ${options.baseUrl}, ${options.runs} runs per scenario, step limit ${MAX_TOOL_STEPS}${askUser}.`;
+}
+
 async function main(): Promise<number> {
-  const { models, scenarios, runs, dump, baseUrl, withoutAskUser } = parseBenchArgs(process.argv.slice(2));
+  const options = parseBenchArgs(process.argv.slice(2));
+  const { models, scenarios, runs, dump, baseUrl } = options;
   const apiKey = process.env.BENCH_API_KEY || undefined;
 
   // [!]: Fail closed: a model's command never runs outside the sandbox, so no run starts without it.
@@ -194,8 +215,7 @@ async function main(): Promise<number> {
     if (dropped > 0)
       console.error(`${dump} ended with an incomplete line (${dropped} bytes), removed before appending.`);
   }
-  const askUser = withoutAskUser ? ", ask_user not offered" : "";
-  console.error(`broke-code eval: ${baseUrl}, ${runs} runs per scenario, step limit ${MAX_TOOL_STEPS}${askUser}.`);
+  console.error(startLine(options));
   // [>]: One folder holds every run's workspace copy, so an interrupted bench can remove it too.
   const tmpRoot = await mkdtemp(join(tmpdir(), "broke-code-bench-"));
   process.once("SIGINT", () => {
@@ -209,14 +229,7 @@ async function main(): Promise<number> {
       for (const scenario of scenarios) {
         for (let run = 0; run < runs; run += 1) {
           const runStarted = performance.now();
-          const target = {
-            baseUrl,
-            apiKey,
-            model,
-            maxToolSteps: MAX_TOOL_STEPS,
-            ...(withoutAskUser ? { withoutAskUser: true as const } : {}),
-          };
-          const outcome = await playScenario(scenario, target, tmpRoot);
+          const outcome = await playScenario(scenario, benchTarget(options, model, apiKey), tmpRoot);
           const verdict = judge(scenario, outcome.entries, outcome.after);
           const ms = performance.now() - runStarted;
           results.push({ model, scenario: scenario.name, run, verdict, ms });
