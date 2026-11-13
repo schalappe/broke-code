@@ -34,12 +34,16 @@ This file says which file holds which responsibility. Update it when a module ga
   left sides' text, the existence check, the error wording, an open cancelled when its file is closed meanwhile;
   `BEFORE_TURN_SCHEME`, their left side's scheme; `closeTurnDiffs`, which tabs to close), the conversation record
   (`conversation.ts`: version 2, its validation on load, title, id, the summary file's shape, `filterConversations`, the
-  History filter), its store
+  History title filter, `shownAnswer`, an answer as the chat shows it, and `conversationExcerpt`, History's content match
+  of one record and its excerpt), its store
   (`conversationStore.ts`: a record and a summary file per conversation, the list from the summaries, reads, writes,
-  and deletes in call order), and the store's file access (`conversationFiles.ts`:
+  and deletes in call order, and `search`, History's content search: one record read at a time through the queue,
+  stopped by a newer search, unreadable records counted; `answerConversationSearch`, the host's answer to it, an
+  unexpected failure logged and counted), and the store's file access (`conversationFiles.ts`:
   the file port, and its implementation over a local directory with `node:fs`: missing versus failed, regular files
   only, atomic writes, leftover temporary files), the dialog queue, the host-webview message
-  protocol and its validation (and `sendWouldAct`, the panel's one "Send would act" check; `send`'s optional
+  protocol and its validation (and `sendWouldAct`, the panel's one "Send would act" check; `searchNeedle`, History's
+  content search needle and whether it is searchable; `send`'s optional
   `replaces`, and `retry` and `continueTurn`, each carrying `ShownEntries`, the conversation and entries count the
   panel showed), the model list (`modelList.ts`: `emptyModelsLabel`, why the list is empty, for the
   header's select and the Quick Pick; `modelChoices`, the rows `/model` opens; `chooseModel`, the `/model` pick over a
@@ -128,7 +132,9 @@ This file says which file holds which responsibility. Update it when a module ga
   `brokeCode.autoApproveWrites` values it feeds the core decisions, and `writeAutoApproveWrites`, the user value the
   mode selector writes), the "Changed files" diffs in `turnDiffs.ts` (`registerTurnDiffs`: the core `TurnDiffs` over
   `vscode.diff`, `stat`, the tabs, and the error notifications, and the content provider of its left sides), the instruction reader and the skill reader from the home folder and the workspace folders, the latter logging the
-  skills of each send, and the same discovery, unlogged, for the `/` menu's `querySkills`; `chatView.ts` opens the
+  skills of each send, and the same discovery, unlogged, for the `/` menu's `querySkills`; `chatView.ts` answers
+  History's `searchConversations` through the action `extension.ts` binds to `answerConversationSearch` over the
+  controller's listed conversations, opens the
   Quick Pick of `chooseModel`, runs `insertCode` over the active text editor, shows a failed mode write, and wires the
   `DraftQueue` to the view's focus command and `postMessage` (`insertDraft`); `extension.ts` registers `broke-code.addSelectionToChat`,
   `broke-code.fixDiagnostic`, and the code action provider of the quick fix; `commitMessage.ts` registers `broke-code.generateCommitMessage`, its git port over the
@@ -148,7 +154,9 @@ This file says which file holds which responsibility. Update it when a module ga
   ArrowDown (`RecallPlace`, `recallHolds`), what picking a `/` row does (`slashPick`), `applyDraft`,
   how a host draft (an editor entry point's, or queued texts returned as a `paragraph`) edits the message box's text,
   caret, and picked paths; `editDraft`, the draft Edit puts there; `quoteDraft`, what Quote puts there; `Replacing` and `stillReplacing`, the replacing
-  state and when it ends). The queued messages render under the message box (`QueuedMessages`).
+  state and when it ends). The queued messages render under the message box (`QueuedMessages`). History is
+  `ConversationList`: the title filter, then the content search (`useContentSearch`: the 300 ms wait, the request id,
+  the latest answer), merged into title rows then content rows with their excerpt.
   `Root.tsx` is the panel's root: it posts `ready`, renders each state, and queues the `insertDraft` drafts for the
   message box; `main.tsx` mounts it. `turns.ts` groups the entries for rendering without React (`foldTurns`: each entry once,
   an ended turn's fold and its step counts by kind, one pass, paths cleaned lexically, a summary a boundary of its own), and `text.ts` words the fold's row (`describeFold`, a row that may wrap), the step row

@@ -11,7 +11,7 @@ import * as vscode from "vscode";
 import { ChatController, type InstructionReader, type SkillReader } from "../core/chatController";
 import { type CommandEnv, commandShell, killRunningCommands } from "../core/commands";
 import { directoryFiles } from "../core/conversationFiles";
-import { ConversationStore } from "../core/conversationStore";
+import { answerConversationSearch, ConversationStore } from "../core/conversationStore";
 import { readInstructionFiles } from "../core/instructions";
 import { contextOf } from "../core/limits";
 import { mentionReader } from "../core/mentionReader";
@@ -106,6 +106,11 @@ export function activate(context: vscode.ExtensionContext): void {
     setContextSize: askContextSize,
     queryFiles: (query) => fileIndex.query(query),
     querySkills: discoverSkills,
+    // [!]: The host's own listed conversations, never ids from the webview.
+    searchConversations: (id, query, post) => {
+      const ids = controller.snapshot.conversations.map((conversation) => conversation.id);
+      return answerConversationSearch(conversations, { id, ids, query }, post);
+    },
     addProvider: () => addProvider(),
   });
 

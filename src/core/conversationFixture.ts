@@ -1,7 +1,7 @@
 /**
  * @module conversationFixture
  * In-memory `ConversationFiles` for tests: a map of file name to text, read counts per name, and hooks to fail or hold
- * a write and to hold a remove.
+ * a write and to hold a read or a remove.
  */
 import type { ConversationFiles } from "./conversationFiles";
 
@@ -15,6 +15,8 @@ export type MemoryFiles = ConversationFiles & {
   holdWrites: Promise<void> | undefined;
   /** While set, each remove waits for this promise before it lands. */
   holdRemoves: Promise<void> | undefined;
+  /** While set, each read waits for this promise before it returns; counted when asked. */
+  holdReads: Promise<void> | undefined;
 };
 
 export function memoryFiles(initial: Record<string, string> = {}): MemoryFiles {
@@ -26,9 +28,12 @@ export function memoryFiles(initial: Record<string, string> = {}): MemoryFiles {
     failWrites: undefined,
     holdWrites: undefined,
     holdRemoves: undefined,
+    holdReads: undefined,
     names: async () => [...files.keys()],
     read: async (name) => {
       reads.set(name, (reads.get(name) ?? 0) + 1);
+      const hold = memory.holdReads;
+      if (hold) await hold;
       return files.get(name);
     },
     write: async (name, text) => {

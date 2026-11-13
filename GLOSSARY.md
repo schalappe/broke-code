@@ -95,6 +95,11 @@ One thread of messages in the chat panel, saved per workspace and listed in its 
 one.
 _Avoid_: session, thread, task, history item
 
+**Excerpt**:
+The line of a conversation's text that History shows under a row found by its messages rather than its title: the
+text around the first match, at most 120 characters, with "…" at each cut end, as plain text.
+_Avoid_: snippet, preview, extract
+
 **Reasoning**:
 The text a model writes before its answer to work the problem out, shown collapsed in the chat, never sent back
 to the model, and never read for body tool calls.

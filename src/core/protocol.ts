@@ -3,7 +3,7 @@
  * Messages between extension host and chat webview, and their validation at the host boundary. Host owns state;
  * webview renders snapshots.
  */
-import { type ConversationSummary, isConversationId } from "./conversation";
+import { type ConversationMatch, type ConversationSummary, isConversationId } from "./conversation";
 import type { MentionResult } from "./mentions";
 import type { ProviderError } from "./providerError";
 import type { SkippedProvider } from "./providers";
@@ -289,6 +289,12 @@ export type HostMessage =
    */
   | { type: "skillSuggestions"; id: number; items: SlashCommand[]; failed: boolean }
   /**
+   * Answer to the `searchConversations` of the same `id`: every listed conversation whose messages hold the query, in
+   * the list's order, each with its excerpt. `unreadableCount`: records left out because they could not be read or
+   * were invalid; a record deleted meanwhile is not counted.
+   */
+  | { type: "conversationMatches"; id: number; items: ConversationMatch[]; unreadableCount: number }
+  /**
    * "Add selection to chat" or "Fix with broke-code": edit the draft, close History, and focus the message box. Posted
    * once, after `init`.
    */
@@ -323,6 +329,11 @@ export type WebviewMessage =
   | { type: "queryFiles"; query: string; id: number }
   /** Ask once per `/` menu opening for the skills; the webview filters them as the user types. `id`: as `queryFiles`. */
   | { type: "querySkills"; id: number }
+  /**
+   * Search the messages of the listed conversations for `query`, a needle (`searchNeedle`). `id`: as `queryFiles`; the
+   * host answers only the latest search and stops the reads of an older one.
+   */
+  | { type: "searchConversations"; query: string; id: number }
   /** `/model`: open the editor's model list over the selected provider's models; a pick goes as `selectModel`. */
   | { type: "chooseModel" }
   /** `/compact`: summarize the conversation shown; later requests send the summary in place of what came before. */
@@ -388,6 +399,19 @@ export function isQueuePaused(state: ChatState): boolean {
 
 /** Longest menu query the host answers; the webview asks nothing past it. */
 export const MAX_QUERY_LENGTH = 1024;
+/** Fewest characters (code points) a History content search needs. */
+const MIN_NEEDLE_LENGTH = 3;
+
+/**
+ * The History content search's needle for the field's `text`: trimmed, lower case, whitespace runs collapsed to one
+ * space. `searchable`: at least 3 characters and within `MAX_QUERY_LENGTH`, so the protocol accepts it. The webview
+ * sends only a searchable needle, and the host searches only one.
+ */
+export function searchNeedle(text: string): { needle: string; searchable: boolean } {
+  const needle = text.trim().replace(/\s+/g, " ").toLowerCase();
+  const searchable = needle.length <= MAX_QUERY_LENGTH && [...needle].length >= MIN_NEEDLE_LENGTH;
+  return { needle, searchable };
+}
 /** Longest picked mention path accepted. */
 export const MAX_MENTION_PATH_LENGTH = 4096;
 /**
@@ -460,6 +484,12 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | undefined {
     }
     case "querySkills":
       return isRequestId(message.id) ? { type: "querySkills", id: message.id } : undefined;
+    case "searchConversations": {
+      const query = text("query");
+      const id = message.id;
+      if (query === undefined || query.length > MAX_QUERY_LENGTH || !isRequestId(id)) return undefined;
+      return { type: "searchConversations", query, id };
+    }
     case "approve":
       return isRequestId(message.id) ? { type: "approve", id: message.id } : undefined;
     case "reject": {

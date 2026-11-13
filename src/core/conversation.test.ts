@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   type ConversationRecord,
+  conversationExcerpt,
   conversationsOverLimit,
   conversationTitle,
   filterConversations,
@@ -12,6 +13,7 @@ import {
   serializeSummary,
   summarize,
 } from "./conversation";
+import type { ChatEntry } from "./protocol";
 
 const ID = "0b0d4c1e-8f9a-4c3b-9d2e-1a2b3c4d5e6f";
 
@@ -502,5 +504,100 @@ describe("history filter", () => {
 
   test("no title containing the query keeps no row", () => {
     expect(ids("deploy")).toEqual([]);
+  });
+});
+
+describe("history content search", () => {
+  const user = (content: string, modelText = content) => ({ role: "user" as const, content, mentions: [], modelText });
+  const answer = (content: string, extra: Partial<ChatEntry & { role: "assistant" }> = {}) => ({
+    role: "assistant" as const,
+    reasoning: "",
+    content,
+    status: "done" as const,
+    ...extra,
+  });
+  const excerpt = (entries: ConversationRecord["entries"], needle: string) => conversationExcerpt(entries, needle);
+
+  test("a query found only in an answer gives an excerpt of that answer", () => {
+    const entries = [user("How does it work?"), answer("The parser reads the first block.")];
+    expect(excerpt(entries, "parser reads")).toBe("The parser reads the first block.");
+  });
+
+  test("gives the example's excerpt: 30 characters before the match, whitespace collapsed", () => {
+    const entries = [answer("First line.\n\nThe parser reads the first call-shaped block and stops there.")];
+    expect(excerpt(entries, "call-shaped")).toBe("…e. The parser reads the first call-shaped block and stops there.");
+  });
+
+  test("finds a user message as typed, not the text the model received for its mentions", () => {
+    const entries = [user("explain @a.ts", "explain @a.ts\n\n@a.ts (file)\nconst secretValue = 1;")];
+    expect(excerpt(entries, "explain")).toBe("explain @a.ts");
+    expect(excerpt(entries, "secretvalue")).toBeUndefined();
+  });
+
+  test("never finds a tool result, a tool step's arguments, reasoning, or the call block", () => {
+    const content = "Let me look.\n<read_file>\n<path>notes.md</path>\n</read_file>";
+    const entries: ConversationRecord["entries"] = [
+      user("Look"),
+      answer(content, {
+        reasoning: "I should check the hidden plan.",
+        call: { name: "read_file", args: { path: "notes.md" }, start: 13, end: content.length },
+      }),
+      { role: "tool", name: "read_file", args: { path: "notes.md" }, status: "ok", text: "deploy steps inside" },
+    ];
+    expect(excerpt(entries, "hidden plan")).toBeUndefined();
+    expect(excerpt(entries, "deploy steps")).toBeUndefined();
+    expect(excerpt(entries, "notes.md")).toBeUndefined();
+    expect(excerpt(entries, "read_file")).toBeUndefined();
+    expect(excerpt(entries, "let me look")).toBe("Let me look.");
+  });
+
+  test("never finds an error text", () => {
+    const error = { kind: "unreachable" as const, provider: "P", baseUrl: "http://x", cause: "connection refused" };
+    const entries = [answer("", { status: "failed", error })];
+    expect(excerpt(entries, "refused")).toBeUndefined();
+  });
+
+  test("finds a summary and the partial text of a failed reply", () => {
+    const entries = [
+      answer("Summary: we renamed the parser.", { summary: true }),
+      answer("Half an explanation of the lexer", { status: "failed" }),
+    ];
+    expect(excerpt(entries, "renamed")).toBe("Summary: we renamed the parser.");
+    expect(excerpt(entries, "the lexer")).toBe("Half an explanation of the lexer");
+  });
+
+  test("ignores whitespace runs and letter case, but not accents", () => {
+    const entries = [answer("The  Résumé\tof\n the RELEASE")];
+    expect(excerpt(entries, "résumé of the release")).toBe("The Résumé of the RELEASE");
+    expect(excerpt(entries, "resume")).toBeUndefined();
+  });
+
+  test("a match never spans two entries", () => {
+    const entries = [user("open the"), answer("parser file")];
+    expect(excerpt(entries, "the parser")).toBeUndefined();
+  });
+
+  test("the excerpt comes from the first entry that matches", () => {
+    const entries = [user("fix the parser"), answer("the parser is fixed")];
+    expect(excerpt(entries, "parser")).toBe("fix the parser");
+  });
+
+  test("a match at the start has no leading mark", () => {
+    expect(excerpt([answer("parser first, then more")], "parser")).toBe("parser first, then more");
+  });
+
+  test("a text of 200 characters matched at its start gives its first 120 characters and a mark", () => {
+    const text = `needle ${"x".repeat(193)}`;
+    expect(excerpt([answer(text)], "needle")).toBe(`${text.slice(0, 120)}…`);
+  });
+
+  test("a match in the middle of a long text gives a mark, 120 characters, and a mark", () => {
+    const text = `${"a".repeat(100)}needle${"b".repeat(200)}`;
+    expect(excerpt([answer(text)], "needle")).toBe(`…${"a".repeat(30)}needle${"b".repeat(84)}…`);
+  });
+
+  test("counts characters as code points", () => {
+    const text = `${"😀".repeat(40)}needle`;
+    expect(excerpt([answer(text)], "needle")).toBe(`…${"😀".repeat(30)}needle`);
   });
 });

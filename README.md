@@ -653,8 +653,11 @@ panel header lists the workspace's conversations, newest first. Each row shows t
 date of its last change, and the chat marks the one shown. Click a conversation to reopen it and continue where you
 left off, or click **Delete** to delete it.
 
-To find a conversation, type in **Filter by title** at the top of History. The list keeps the conversations whose
-title holds that text, ignoring case. Enter opens the first one listed. Escape clears the field, then closes History.
+To find a conversation, type in **Search conversations** at the top of History. The conversations whose title holds
+that text, ignoring case, show at once. From 3 characters, broke-code also searches your messages and the agent's
+answers (not tool results or reasoning) and adds the conversations found there, each with an excerpt of the match
+under its title. When some conversations cannot be read, a warning says how many could not be searched. Enter opens
+the first one listed. Escape clears the field, then closes History.
 
 **New chat** starts a new conversation and keeps the previous one in the list. History also works without a provider,
 but sending a message needs one. A workspace keeps its 50 most recent conversations, and broke-code deletes older ones.

@@ -13,7 +13,12 @@ import {
   useState,
 } from "react";
 import Markdown, { type Components, type ExtraProps } from "react-markdown";
-import { type ConversationSummary, filterConversations } from "../core/conversation";
+import {
+  type ConversationMatch,
+  type ConversationSummary,
+  filterConversations,
+  shownAnswer,
+} from "../core/conversation";
 import { historyStart, isAutomaticSummary, sentEntries } from "../core/history";
 import { type LastTurnActions, lastTurnActions, unrevertedEffects } from "../core/lastTurn";
 import { codeBlockText, FENCE_CLOSED, hasTextAfter, remarkFenceClosed } from "../core/markdownCode";
@@ -34,6 +39,7 @@ import {
   type QueuedMessage,
   type ReplyCall,
   type ShownEntries,
+  searchNeedle,
   sendWouldAct,
   type UndoState,
 } from "../core/protocol";
@@ -410,7 +416,7 @@ function ErrorBlock({ error, retry }: { error: ProviderError; retry?: () => void
 /**
  * History list wired to the host: a pick closes it and asks to open that conversation, even the one shown, since a
  * pending open may be about to replace it; the controller skips an open of the conversation shown when it runs.
- * Delete deletes. `dismiss`: Escape in an empty filter field, which closes History and focuses its toggle.
+ * Delete deletes. `dismiss`: Escape in an empty search field, which closes History and focuses its toggle.
  */
 export function HistoryPanel({
   state,
@@ -438,12 +444,73 @@ export function HistoryPanel({
   );
 }
 
+/** How long a searchable needle must stay the same before History asks the host to search the conversations. */
+const SEARCH_WAIT_MS = 300;
+
 /**
- * Saved conversations of the workspace, in the order given (newest first), under a filter field when there is one.
- * A row's title reopens it; the one shown is marked `aria-current`. Mounted only while History is open, so the filter
- * starts empty at each opening and takes the focus then (a focus move DESIGN.md allows); it keeps its text while
- * the list changes. In the field, Enter opens the first row listed; Escape clears the text, or calls `onDismiss` when
- * there is none.
+ * Last content search request id, for the whole panel: History unmounts when closed, so an id kept per mount would be
+ * reused by the next opening and take a late answer to the earlier one.
+ */
+let lastSearchId = 0;
+
+/** The host's answer to the content search the webview asked last. */
+type ContentAnswer = { items: ConversationMatch[]; unreadableCount: number };
+
+/**
+ * History's content search for the field's `query`. Once its needle (`searchNeedle`) is searchable and has stayed the
+ * same for 300 ms, asks the host to search the conversations. Each change of the needle takes a new request id and
+ * drops the earlier answer at once, so only an answer to the latest needle shows; unmounting cancels the wait.
+ * `changeQuery` must carry every change of the field, so the drop lands in the same render as the new text.
+ */
+function useContentSearch(): {
+  query: string;
+  changeQuery: (next: string) => void;
+  answer: ContentAnswer | undefined;
+  awaited: boolean;
+} {
+  const [query, setQuery] = useState("");
+  const [answer, setAnswer] = useState<ContentAnswer>();
+  // [>]: -1 is no request id, so no answer counts before this opening's first needle change.
+  const latest = useRef({ id: -1, needle: "" });
+  const { needle, searchable } = searchNeedle(query);
+
+  const changeQuery = (next: string) => {
+    setQuery(next);
+    const nextNeedle = searchNeedle(next).needle;
+    if (nextNeedle === latest.current.needle) return;
+    lastSearchId += 1;
+    latest.current = { id: lastSearchId, needle: nextNeedle };
+    setAnswer(undefined);
+  };
+
+  useEffect(() => {
+    if (!searchable) return;
+    const { id } = latest.current;
+    const timer = setTimeout(() => post({ type: "searchConversations", query: needle, id }), SEARCH_WAIT_MS);
+    return () => clearTimeout(timer);
+  }, [needle, searchable]);
+
+  useEffect(() => {
+    const onMessage = (event: MessageEvent<HostMessage>) => {
+      const message = event.data;
+      if (message.type !== "conversationMatches" || message.id !== latest.current.id) return;
+      setAnswer({ items: message.items, unreadableCount: message.unreadableCount });
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
+
+  return { query, changeQuery, answer, awaited: searchable && answer === undefined };
+}
+
+/**
+ * Saved conversations of the workspace, in the order given (newest first), under a search field when there is one.
+ * The rows whose title holds the field's text (`filterConversations`) come first, at once; then the rows the host's
+ * content search found and the title did not, in the order given, each with its excerpt (`useContentSearch`). A row's
+ * title reopens it; the one shown is marked `aria-current`. Mounted only while History is open, so the field starts
+ * empty at each opening and takes the focus then (a focus move DESIGN.md allows); it keeps its text while the list
+ * changes. In the field, Enter opens the first row shown; Escape clears the text, or calls `onDismiss` when there is
+ * none.
  */
 export function ConversationList({
   conversations,
@@ -460,7 +527,7 @@ export function ConversationList({
   onDelete: (id: string) => void;
   onDismiss: () => void;
 }) {
-  const [query, setQuery] = useState("");
+  const { query, changeQuery, answer, awaited } = useContentSearch();
   const field = useRef<HTMLInputElement>(null);
   // [>]: On mount only: a field that shows later, when a first conversation is saved, never takes the focus.
   useEffect(() => field.current?.focus(), []);
@@ -472,7 +539,12 @@ export function ConversationList({
       </section>
     );
   }
-  const listed = filterConversations(conversations, query);
+  const byTitle = filterConversations(conversations, query);
+  const titled = new Set(byTitle.map((conversation) => conversation.id));
+  const excerpts = new Map(answer?.items.map((item) => [item.id, item.excerpt]));
+  const byContent = conversations.filter(({ id }) => excerpts.has(id) && !titled.has(id));
+  const listed = [...byTitle, ...byContent];
+  const unreadable = answer?.unreadableCount ?? 0;
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.nativeEvent.isComposing) return;
     if (event.key === "Enter") {
@@ -481,7 +553,7 @@ export function ConversationList({
     } else if (event.key === "Escape") {
       event.preventDefault();
       if (query === "") onDismiss();
-      else setQuery("");
+      else changeQuery("");
     }
   };
   return (
@@ -491,15 +563,30 @@ export function ConversationList({
         type="text"
         className="history-filter"
         value={query}
-        placeholder={l10n.t("Filter by title")}
-        aria-label={l10n.t("Filter by title")}
-        onChange={(event) => setQuery(event.target.value)}
+        placeholder={l10n.t("Search conversations")}
+        aria-label={l10n.t("Search conversations")}
+        onChange={(event) => changeQuery(event.target.value)}
         onKeyDown={onKeyDown}
       />
+      {unreadable > 0 && (
+        <ul className="warnings" role="status">
+          <li>
+            {unreadable === 1
+              ? l10n.t("1 conversation could not be searched")
+              : l10n.t("{0} conversations could not be searched", unreadable)}
+          </li>
+        </ul>
+      )}
       {listed.length === 0 ? (
-        <p className="history-none">{l10n.t("No match")}</p>
+        awaited ? (
+          <p className="loading history-searching" role="status">
+            {l10n.t("Searching…")}
+          </p>
+        ) : (
+          <p className="history-none">{l10n.t("No match")}</p>
+        )
       ) : (
-        <ul>
+        <ul className="history-rows">
           {listed.map((conversation) => {
             const current = conversation.id === currentId;
             return (
@@ -511,6 +598,9 @@ export function ConversationList({
                   onClick={() => onOpen(conversation.id)}
                 >
                   <span className="history-title">{conversation.title}</span>
+                  {!titled.has(conversation.id) && excerpts.has(conversation.id) && (
+                    <span className="history-excerpt">{excerpts.get(conversation.id)}</span>
+                  )}
                   <span className="history-date">{formatConversationDate(conversation.updatedAt, language)}</span>
                 </button>
                 <button type="button" className="secondary" onClick={() => onDelete(conversation.id)}>
@@ -806,7 +896,7 @@ function Reply({
   turnActions?: TurnActionsProps;
 }) {
   const { call } = entry;
-  const answer = call ? (entry.content.slice(0, call.start) + entry.content.slice(call.end)).trim() : entry.content;
+  const answer = shownAnswer(entry);
   const inFlight = entry.status === "waiting" || entry.status === "streaming";
   const deciding = inFlight && call !== undefined && step === undefined ? approval : undefined;
   const unfinished: PendingCall["outcome"] = inFlight ? "running" : entry.status === "stopped" ? "stopped" : "noResult";
@@ -1470,7 +1560,7 @@ function Reasoning({ entry }: { entry: ChatEntry & { role: "assistant" } }) {
  * Picking a built-in row, or sending exactly `/new`, `/model`, or `/compact`, runs it when Send would act (`startNewChat`,
  * the editor's model list through `chooseModel`, or the summary request `compact`) and empties the box; otherwise, or with text after the token, the pick
  * inserts `/<name> `. When a reply ends, the message box takes the focus, unless History is open (`historyOpen`): the
- * focus then stays where the user has it, so typing keeps going to the History filter. `drafts` from the editor are
+ * focus then stays where the user has it, so typing keeps going to the History search. `drafts` from the editor are
  * applied in order (`applyDraft`), whatever the reply's state, then taken, and the message box takes the focus.
  * While a reply is in flight, Send and Enter queue the message instead (`queueMessage`), up to `MAX_QUEUED_MESSAGES`,
  * a built-in command excepted, which stays text in the box; the queue shows under the box (`QueuedMessages`). Queued

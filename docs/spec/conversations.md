@@ -1,6 +1,6 @@
 # Conversations, navigation, and History
 
-This file specifies how conversations are saved, listed, pruned, and reopened, and how History filters them.
+This file specifies how conversations are saved, listed, pruned, and reopened, and how History searches them.
 
 - Conversations are saved per workspace, as two JSON files per conversation in the extension's per-workspace storage
   directory (`ExtensionContext.storageUri`), never in the memento: the memento serializes every key on each update
@@ -71,13 +71,48 @@ This file specifies how conversations are saved, listed, pruned, and reopened, a
   the provider or model. History works without a provider: past conversations can be read, reopened, and deleted; only
   the composer needs one. Without a folder or workspace open, there is no storage directory: the conversation stays in
   memory and the list is empty. A failed save, delete, listing, or open is logged and shown in the panel.
-- History has a text field "Filter by title" above its rows, shown when at least one conversation is listed; it stays
-  in place while the rows scroll. It keeps the rows whose title contains its text (`filterConversations`: the query
-  trimmed, lowercase on both sides, a substring, no accent folding, order kept; a blank query keeps all), and says "No
-  match" when none is left. It filters in the webview over the listed titles (cut to 60 characters): no host message,
-  no record read. Opening History focuses it (the first focus move DESIGN.md allows). Enter opens the first row listed,
-  as a click on it does, and does nothing with no row or while an input method composes. Escape clears a non-empty
-  field; in an empty one it closes History and focuses the History button. A reply that ends while History is open
-  leaves the focus where it is, instead of moving it to the message box. Its text lives in the list mounted while
-  History is open, so every close clears it; a list change (a delete, a save) is filtered with the same text. The
-  listing-failure notice shows whatever the filter.
+- History has a text field "Search conversations" above its rows, shown when at least one conversation is listed; it
+  stays in place while the rows scroll. It searches the titles and the messages of the listed conversations.
+  - By title, at once, in the webview: the rows whose title contains the text (`filterConversations`: the text
+    trimmed, lowercase on both sides, a substring, no accent folding, order kept; a blank text keeps all), over the
+    listed titles (cut to 60 characters).
+  - By content, through the host. The needle (`searchNeedle`) is the text trimmed, in lower case, its whitespace runs
+    collapsed to one space; it is searchable at 3 characters (code points) or more and at most `MAX_QUERY_LENGTH`
+    (1,024 UTF-16 units). Once a searchable needle has stayed the same for 300 ms, the webview posts
+    `searchConversations { id, query }`, `query` being the needle. The request id advances at each change of the
+    needle, searchable or not; a change that leaves it the same (a trailing space, a letter case) neither restarts the
+    wait nor sends anything. Each change of the needle drops the earlier answer's rows and count at once, and the
+    webview drops an answer whose id is not its latest. Closing History cancels the wait. There is no cancel message.
+  - The host (`ConversationStore.search`) searches its own listed conversations, newest first, the 50 first only,
+    never ids from the webview, and ignores a query that is not searchable. Per record, entry by entry, it searches
+    each user message as typed and each assistant entry's answer as the chat shows it (`shownAnswer`: the text
+    around the call block, joined and trimmed; a malformed block the chat shows, a summary, and the partial text of
+    a failed or stopped reply count). Tool steps (arguments and results), reasoning, the text the model received for
+    mentions and skills, and error texts are never searched. Each entry's whitespace runs collapse to one space and it
+    is compared in lower case, as a substring, with no accent folding, so a match never spans two entries; the
+    Markdown source is searched (`bold text` does not find `**bold** text`). A matching record gives one excerpt, from
+    its first matching entry (`conversationExcerpt`): the collapsed text from 30 characters (code points) before the
+    match, 120 characters at most, with "…" at each cut end; where lower-casing changes a text's length, it may start
+    a few characters off. Records are read one at a time through the store's queue, each read queued when the one
+    before has ended, so a save waits behind one read of a search at most. A newer search stops an older one's
+    remaining reads, and the older one gets no answer. The answer `conversationMatches { id, items, unreadableCount }`
+    holds every matching conversation in the list's order, whatever its title, each with its excerpt. A record whose
+    read fails, or that is invalid or of an unknown version, is left out and counted in `unreadableCount`; one gone
+    meanwhile (deleted or pruned) is left out and not counted. Neither is a listing failure, and a search writes
+    nothing. An unexpected failure of the search itself (`answerConversationSearch`) is logged and answered with no
+    row and every conversation it would have searched counted, so the panel never waits forever or claims no match. The conversation shown is searched as saved, so during a reply the disk can be one save interval behind.
+  - The rows: those matching by title first, without an excerpt, even when their messages match too; then those
+    matching by content only, in the list's order, each with its excerpt as plain text on one line, never rendered as
+    Markdown, without a highlight. The answer is crossed with the list as it is now, so a conversation deleted since
+    shows no row, and a list change (a save, a delete) sends no new search. While a search is awaited (from the change
+    to a searchable needle until its answer) and no row matches by title, "Searching…" stands where "No match" would;
+    "No match" shows when no row is listed and no search is awaited. When the answer counts unreadable records, a
+    warning between the field and the rows says "1 conversation could not be searched" or "N conversations could not
+    be searched", with the rows or with "No match".
+
+  Opening History focuses the field (the first focus move DESIGN.md allows). Enter opens the first row shown, as a
+  click on it does, and does nothing with no row or while an input method composes. Escape clears a non-empty field;
+  in an empty one it closes History and focuses the History button. A reply that ends while History is open leaves
+  the focus where it is, instead of moving it to the message box. Its text lives in the list mounted while History is
+  open, so every close clears it; a list change (a delete, a save) is filtered by title with the same text. The
+  listing-failure notice shows whatever the field holds.
