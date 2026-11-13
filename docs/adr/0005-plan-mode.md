@@ -103,3 +103,21 @@ selector's way out is unchanged: it still writes the setting first when its valu
 Considered and rejected: a choice of mode at the click (a second selector, and a setting write that can fail between
 leaving Plan and sending); carrying the label's mode in the message and applying it to the turn (writes would stop
 following the setting, against ADR 0002); saving the plan to a file (out of scope).
+
+## Addendum (2026-11-13): Plan also offers `ask_user`
+
+The title says Plan offers the read tools only. Since #143 the extension offers `ask_user` (ADR 0002, addendum of
+2026-11-13), and a Plan turn offers it too, with its rule: `PLAN_BLOCKED_TOOLS` still holds `write_file`,
+`edit_file`, and `run_command` only. Plan's promise is that no file changes and no command runs, and a question
+changes nothing: it brings back text from the user, like a read brings back text from a file. A plan that depends on
+which of two things the user meant is better asked than guessed.
+
+- The refused-call step is unchanged: it still covers the three tools Plan leaves out, and `ask_user` is an ordinary
+  call in Plan.
+- The Plan role sentence and the "Plan mode" paragraph are left as they are, although the role speaks of reading
+  files only. The eval bench passes no mode, so no eval measures a Plan prompt, and rewording it was out of scope
+  (#143). Accepted: the role and the tool list disagree by one tool, which the tool's own description and rule cover.
+- A core test pins that the runner's switch offers the tool in Ask, Auto-edit, and Plan.
+
+Considered and rejected: leaving `ask_user` out of Plan (a second tool list to keep in step, and Plan is where an
+ambiguous request costs the least to settle before any change).

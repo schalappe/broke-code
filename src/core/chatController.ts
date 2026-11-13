@@ -95,10 +95,10 @@ type ReplyRun = {
  * that stops the reply, cancel it and close the preview. A write is accepted at once, without a preview, while the
  * auto-approve setting is on; a command always waits. Rejects only when the preview cannot open, or when another
  * request of the run is still open. `requestAnswer`: asks the user the `ask_user` question, and settles with the
- * answer; the controller has no interface for it yet, so it settles at once as `unanswerable`. `skills`: the valid
- * skills the send discovered. `skillRoots`: the real folders of
- * the skills loaded in the conversation, the ones the read tools may also read, derived at each call (see
- * `loadedSkillRoots`), so a load earlier in the turn counts. `sentSkillRoots`: those of them loaded in the history
+ * answer. The question shows in `ChatState.question` until the user answers; Stop, and the navigation that stops the
+ * reply, cancel it. Rejects only when another request of the run is still open. `skills`: the valid skills the send
+ * discovered. `skillRoots`: the real folders of the skills loaded in the conversation, the ones the read tools may
+ * also read, derived at each call (see `loadedSkillRoots`), so a load earlier in the turn counts. `sentSkillRoots`: those of them loaded in the history
  * sent, from the last summary on (see `historyStart`): `load_skill` answers "already loaded" for these only, since the
  * text of an earlier load is no longer sent. `changes`: the turn's record of written files, which the host's applier
  * records into (`recordingApplier`) so "Undo changes" can restore them; an applier that ignores it (the eval's) makes
@@ -296,10 +296,15 @@ export class ChatController {
   private listingId = 0;
   /** Last id given to a queued message. */
   private queuedId = 0;
-  /** Bumped per approval request shown; a decision counts only for the request open. */
-  private approvalId = 0;
+  /**
+   * Bumped per approval request or question shown, so no two requests share an id; a decision or an answer counts only
+   * for the request open.
+   */
+  private requestId = 0;
   /** The approval request open, mirrored in `ChatState.approval`, and how to settle it. */
   private openApproval: { id: number; settle: (decision: Decision) => void } | undefined;
+  /** The question open, mirrored in `ChatState.question`, and how to settle it. Never beside `openApproval`. */
+  private openQuestion: { id: number; settle: (answer: QuestionAnswer) => void } | undefined;
   /**
    * Navigation (restore, New chat, open, delete, pruning) runs one operation at a time, in request order, so the
    * conversation shown is always the result of the last request and never one deleted or pruned before it. The
@@ -643,7 +648,7 @@ export class ChatController {
    * the reply fails, or Stop. Limits: the step limit, three malformed calls in a row, and the context budget, checked
    * before each request, the first included: the oldest tool results are left out of a request that would fill the
    * model's context (see `toHistory`), and one that fills it even so is never sent. The
-   * turn reads the settings and Plan once, when it starts: in Plan it offers the read tools only, and a call to a tool
+   * turn reads the settings and Plan once, when it starts: in Plan it offers no tool that writes or runs a command, and a call to a tool
    * Plan leaves out gets an `error` step saying so, counted toward the step limit like any step. The webview clears the
    * box before the host answers and its state may lag, so a message that cannot start a turn now is never dropped: while
    * a reply is in flight it goes through `queueMessage` (a turn the queue started after a stale `done`), and otherwise
@@ -1020,7 +1025,7 @@ export class ChatController {
               if (request.kind === "command" && answer.decision.kind === "accept") turn.ranCommand = true;
               return answer.decision;
             },
-            requestAnswer: async () => ({ kind: "unanswerable" }),
+            requestAnswer: (request) => this.askQuestion(request, signal),
             skills: discovery.skills,
             skillRoots: loadedSkillRoots(conversation.entries, discovery.skills),
             sentSkillRoots: loadedSkillRoots(sentEntries(conversation.entries), discovery.skills),
@@ -1493,13 +1498,13 @@ export class ChatController {
     if (signal.aborted) return { decision: { kind: "cancel" } };
     // [!]: The one place the setting applies, so it can never accept a command.
     if (request.kind === "write" && this.readAutoApprove()) return { decision: { kind: "accept" }, approval: "auto" };
-    if (this.openApproval) throw new Error("another approval request is still open");
+    this.refuseSecondRequest();
     const preview = request.preview ? await request.preview() : undefined;
     if (signal.aborted) {
       closePreview(preview);
       return { decision: { kind: "cancel" } };
     }
-    const id = ++this.approvalId;
+    const id = ++this.requestId;
     const decision = await new Promise<Decision>((resolve) => {
       // [>]: Cleared and published at once, also on Stop, so no state after the stop still shows the buttons.
       const settle = (decision: Decision) => {
@@ -1520,6 +1525,38 @@ export class ChatController {
     const approval: StepApproval | undefined =
       decision.kind === "accept" ? "accepted" : decision.kind === "reject" ? "rejected" : undefined;
     return { decision, ...(approval ? { approval } : {}) };
+  }
+
+  /**
+   * Answer the `ask_user` question `request` of the call running under `signal`: it shows in `ChatState.question`
+   * until the user answers or `signal` aborts, which cancels it. Nothing is reported to the events port: a question
+   * raises no notification.
+   */
+  private async askQuestion(request: AnswerRequest, signal: AbortSignal): Promise<QuestionAnswer> {
+    if (signal.aborted) return { kind: "cancel" };
+    this.refuseSecondRequest();
+    const id = ++this.requestId;
+    return new Promise<QuestionAnswer>((resolve) => {
+      // [>]: Cleared and published at once, also on Stop, so no state after the stop still shows the question.
+      const settle = (answer: QuestionAnswer) => {
+        signal.removeEventListener("abort", onAbort);
+        this.openQuestion = undefined;
+        this.state.question = undefined;
+        this.emit();
+        resolve(answer);
+      };
+      const onAbort = () => settle({ kind: "cancel" });
+      signal.addEventListener("abort", onAbort, { once: true });
+      this.openQuestion = { id, settle };
+      this.state.question = { id, question: request.question, options: [...request.options] };
+      this.emit();
+    });
+  }
+
+  /** At most one request is open at a time, an approval or a question: one call runs per reply, and it asks once. */
+  private refuseSecondRequest(): void {
+    if (this.openApproval) throw new Error("another approval request is still open");
+    if (this.openQuestion) throw new Error("a question is still open");
   }
 
   /** The auto-approve setting; a reader that throws despite its contract means off, logged. */
@@ -1545,6 +1582,14 @@ export class ChatController {
     if (this.openApproval?.id !== id) return;
     const trimmed = reason?.trim();
     this.openApproval.settle(trimmed ? { kind: "reject", reason: trimmed } : { kind: "reject" });
+  }
+
+  /**
+   * The user answers question `id` with `text`, an option's or typed, as the protocol checked it (trimmed, not empty).
+   * Ignored unless it is the question open.
+   */
+  answer(id: number, text: string): void {
+    if (this.openQuestion?.id === id) this.openQuestion.settle({ kind: "answer", text });
   }
 
   stop(): void {

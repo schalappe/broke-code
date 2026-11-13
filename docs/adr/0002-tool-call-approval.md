@@ -129,15 +129,35 @@ an error notification says so, since the diff editor would show it as an empty f
 `ask_user` (#142) asks the user one question inside a turn and gives the answer to the model. It approves nothing, so
 it does not reuse `requestApproval`, whose answers are Accept, Reject, and Cancel: the run context gains a second kind
 of request beside it, `ToolContext.requestAnswer`, which takes the question and its options and settles with the
-answer text, `unanswerable` (no one can answer where the turn runs), or a cancellation.
+answer text or a cancellation.
 
 - The wait follows this record's rules: it is a wait inside the tool run, the reply stays `streaming`, the result is
   an ordinary tool step that counts toward the step limit, and an abort of the turn cancels it at once, also while
   the request is being made, so Stop stays instant.
 - Who answers is the caller's business, as for approvals. The eval bench answers by wrapping the run context, as it
-  decides command approvals. The controller's own request has no interface behind it yet and settles at once as
-  `unanswerable`; the extension does not offer the tool, through the runner's `offerAskUser` switch, until the panel
-  can answer (#143).
+  decides command approvals. In the extension the controller answers, with what the user answers in the chat (#143,
+  below); the runner offers the tool only where its `offerAskUser` switch is on, which the extension and the bench
+  turn on. #142 shipped the tool to the bench alone, with a controller request that settled at once as
+  `unanswerable`; #143 removed that third answer with its last producer.
 - The tool was kept on eval evidence: without it, both bench models passed 0 of 10 runs of the `ask` scenario,
   renaming without asking which function was meant; with it, 10/10 on both, and the other eight scenarios kept 10/10
   (`docs/eval.md`, pull request #147).
+
+The panel's rules (#143) mirror the approval's, so the two requests cannot diverge on what Stop or a late click does:
+
+- The open question is state, not an entry: `ChatState.question` holds its id, its text, and its options, the chat
+  renders the question block from it where the decision block renders, and nothing of it is saved. A record saved
+  meanwhile holds the reply in flight, which reloads `stopped`.
+- At most one request is open at a time, an approval or a question, and both take their ids from one counter, so an
+  id never names two requests. A second request while one is open is refused, and the open one stays.
+- The webview answers with `answer { id, text }`, checked at the protocol boundary like `reject`, with a cap the
+  reason never had: trimmed, not empty, at most 4,000 UTF-16 units. The controller ignores an answer whose id is not
+  the open question's. An option's text is sent as typed text is: the model reads one kind of answer.
+- Stop, New chat, opening or deleting a conversation, and deactivation cancel the question as they cancel an
+  approval, and the reply ends `stopped` with no step.
+- A message sent from the message box meanwhile is queued, never taken as the answer: the reply is in flight, and one
+  rule for the message box during a request is simpler than two.
+- The focus does not move when the question opens, for the reason it does not when an approval opens: a key pressed
+  at that moment must not pick an answer.
+- No notification is raised for a question (#101 covers approval requests and turn ends), and the tool's description
+  and rule are the ones #142 measured, so no eval run was needed.

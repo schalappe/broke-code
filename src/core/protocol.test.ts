@@ -191,6 +191,34 @@ describe("parseWebviewMessage", () => {
       expect(parseWebviewMessage({ type: "reject", id: 3, reason })).toBeUndefined();
     }
   });
+  test("accepts an answer by its question id, trimmed, up to 4,000 UTF-16 units after trimming", () => {
+    expect(parseWebviewMessage({ type: "answer", id: 3, text: "  src/a.ts \n" })).toEqual({
+      type: "answer",
+      id: 3,
+      text: "src/a.ts",
+    });
+    const longest = "a".repeat(4000);
+    expect(parseWebviewMessage({ type: "answer", id: 3, text: longest })).toEqual({
+      type: "answer",
+      id: 3,
+      text: longest,
+    });
+    expect(parseWebviewMessage({ type: "answer", id: 3, text: ` ${longest} ` })).toEqual({
+      type: "answer",
+      id: 3,
+      text: longest,
+    });
+  });
+
+  test("rejects an answer that is empty, blank, over 4,000 UTF-16 units, not text, or without a valid id", () => {
+    for (const text of ["", "   ", " \n\t ", "a".repeat(4001), undefined, 3, ["a"]]) {
+      expect(parseWebviewMessage({ type: "answer", id: 3, text })).toBeUndefined();
+    }
+    for (const id of [undefined, "3", 1.5, -1, Number.NaN]) {
+      expect(parseWebviewMessage({ type: "answer", id, text: "src/a.ts" })).toBeUndefined();
+    }
+  });
+
   test("accepts an insert of a code block's text up to the reply length cap, the empty text included", () => {
     expect(parseWebviewMessage({ type: "insertCode", text: "a\nb" })).toEqual({ type: "insertCode", text: "a\nb" });
     expect(parseWebviewMessage({ type: "insertCode", text: "" })).toEqual({ type: "insertCode", text: "" });

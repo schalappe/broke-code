@@ -37,10 +37,10 @@ export const ASK_USER_TOOL: ToolSpec = {
 export type AnswerRequest = { question: string; options: string[] };
 
 /**
- * The answer to a question request. `answer`: the text the user gave. `unanswerable`: no one can answer where the turn
- * runs. `cancel`: Stop, navigation, or deactivation ended the request.
+ * The answer to a question request. `answer`: the text the user gave. `cancel`: Stop, navigation, or deactivation
+ * ended the request.
  */
-export type QuestionAnswer = { kind: "answer"; text: string } | { kind: "unanswerable" } | { kind: "cancel" };
+export type QuestionAnswer = { kind: "answer"; text: string } | { kind: "cancel" };
 
 /**
  * Run the model's `ask_user` `call`: check the question and the options, then ask once through
@@ -65,8 +65,6 @@ export async function askUser(
   switch (answer.kind) {
     case "cancel":
       return stopped(TOOL);
-    case "unanswerable":
-      return { status: "error", text: "No one can answer a question here." };
     case "answer":
       return { status: "ok", text: `The user answered: ${answer.text}` };
   }

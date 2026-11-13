@@ -67,13 +67,15 @@ export function activate(context: vscode.ExtensionContext): void {
   });
   // [!]: Every write goes through `approvalApplier`: no build writes without a click unless the user setting says so.
   // Every command waits for Run: the runner asks before it spawns, and no setting accepts a command. Each write that
-  // reaches the disk is recorded into its turn's changes, for "Undo changes".
+  // reaches the disk is recorded into its turn's changes, for "Undo changes". `ask_user` is offered: the chat shows
+  // its question and the controller sends the user's answer back.
   const tools = workspaceToolRunner(
     workspaceRoots,
     toolEnv,
     (roots, { requestApproval, changes }) =>
       approvalApplier(recordingApplier(fileApplier(roots), changes), writeHost, requestApproval),
     commandEnv,
+    true,
   );
   const instructions: InstructionReader = { read: () => readInstructionFiles(homedir(), workspaceRoots()) };
   const discoverSkills = () => readSkills(homedir(), workspaceRoots());

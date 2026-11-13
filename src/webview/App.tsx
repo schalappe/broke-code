@@ -32,10 +32,12 @@ import {
   isMode,
   isQueuePaused,
   isReplying,
+  MAX_ANSWER_LENGTH,
   MAX_QUEUED_MESSAGES,
   MODES,
   type Mode,
   type PendingApproval,
+  type PendingQuestion,
   type QueuedMessage,
   type ReplyCall,
   type ShownEntries,
@@ -177,13 +179,15 @@ export function App({
       {/* Without providers, an earlier conversation stays readable and a reply in flight keeps its Stop. */}
       {(configured || state.entries.length > 0) && (
         // [>]: Keyed by conversation: another one starts with fresh scroll and collapsed reasoning blocks. Hidden, not
-        // unmounted, while History shows, so the reason typed for an open approval survives.
+        // unmounted, while History shows, so the reason typed for an open approval, or the answer typed to an open
+        // question, survives.
         <QuoteTarget.Provider value={composerShown ? setQuoting : undefined}>
           <Conversation
             key={state.conversationId}
             conversationId={state.conversationId}
             entries={state.entries}
             approval={state.approval}
+            question={state.question}
             undo={state.undo}
             changedFiles={state.changedFiles}
             canAct={sendWouldAct(state)}
@@ -618,7 +622,8 @@ export function ConversationList({
 }
 
 /**
- * `approval`: the request open, shown on the last reply, the one in flight. `undo`: "Undo changes", shown under the
+ * `approval` and `question`: the request open, an approval or a question, shown on the last reply, the one in flight.
+ * `undo`: "Undo changes", shown under the
  * reply it names, with "Changed files" (`changedFiles`), and the last undo's outcome under the reply it undid. Retry and Continue show under the last turn's
  * reply (`lastTurnActions`), enabled when `canAct` (Send would act). `implementIn`: Plan is on, and this is the mode
  * it leaves for, so the final answer (`hasFinalAnswer`) also offers "Implement in ... mode". `hidden`: History shows
@@ -631,6 +636,7 @@ function Conversation({
   conversationId,
   entries,
   approval,
+  question,
   undo,
   changedFiles,
   canAct,
@@ -643,6 +649,7 @@ function Conversation({
   conversationId: string;
   entries: ChatEntry[];
   approval?: PendingApproval;
+  question?: PendingQuestion;
   undo: UndoState;
   changedFiles: ChangedFile[];
   canAct: boolean;
@@ -699,6 +706,7 @@ function Conversation({
         previous={entries[index - 1]}
         next={entries[index + 1]}
         approval={index === entries.length - 1 ? approval : undefined}
+        question={index === entries.length - 1 ? question : undefined}
         undo={index === undo.reply && !replying ? undo : undefined}
         changedFiles={index === undo.reply && !replying && changedFiles.length > 0 ? changedFiles : undefined}
         undone={index === undo.outcome?.reply ? undo.outcome : undefined}
@@ -809,8 +817,8 @@ function Conversation({
 }
 
 /**
- * One entry of the conversation, with its neighbours: a tool step shows inside the reply before it. `approval`: the
- * request open, given to the last entry only. `undo`, `changedFiles`, and `undone`: "Undo changes", "Changed files",
+ * One entry of the conversation, with its neighbours: a tool step shows inside the reply before it. `approval` and
+ * `question`: the request open, given to the last entry only. `undo`, `changedFiles`, and `undone`: "Undo changes", "Changed files",
  * and the last undo's files, given to the reply they belong to. `turnActions`: Retry and Continue, given to the last turn's reply. `earlier`: a user
  * message a later one follows, which keeps only the outline of the latest one's block.
  */
@@ -820,6 +828,7 @@ function Entry({
   previous,
   next,
   approval,
+  question,
   undo,
   changedFiles,
   undone,
@@ -830,6 +839,7 @@ function Entry({
   previous?: ChatEntry;
   next?: ChatEntry;
   approval?: PendingApproval;
+  question?: PendingQuestion;
   undo?: UndoState;
   changedFiles?: ChangedFile[];
   undone?: UndoOutcomeState;
@@ -850,6 +860,7 @@ function Entry({
           <Reply
             entry={entry}
             approval={approval}
+            question={question}
             undo={undo}
             changedFiles={changedFiles}
             undone={undone}
@@ -861,6 +872,7 @@ function Entry({
           entry={entry}
           step={next?.role === "tool" ? next : undefined}
           approval={approval}
+          question={question}
           undo={undo}
           changedFiles={changedFiles}
           undone={undone}
@@ -879,8 +891,8 @@ function Entry({
 
 /**
  * One reply of an agent turn: its reasoning, its answer as Markdown less its call block, the row of its tool step
- * (`step`: the entry after it), the decision its call waits on (`approval`, the request open, given while this is the
- * last reply), in one `decision` block with the call's row, how the turn ended when it ended here, the files the held
+ * (`step`: the entry after it), the decision or the answer its call waits on (`approval` or `question`, the request
+ * open, given while this is the last reply), in one `decision` block with the call's row, how the turn ended when it ended here, the files the held
  * turn changed (`changedFiles`), what the last undo did (`undone`), then one row of the turn's actions: Retry and Continue (`turnActions`) when this is the last turn's
  * reply, and "Undo changes" (`undo`) when this is the last reply of the turn whose writes are held.
  */
@@ -888,6 +900,7 @@ function Reply({
   entry,
   step,
   approval,
+  question,
   undo,
   changedFiles,
   undone,
@@ -896,6 +909,7 @@ function Reply({
   entry: ChatEntry & { role: "assistant" };
   step?: ChatEntry & { role: "tool" };
   approval?: PendingApproval;
+  question?: PendingQuestion;
   undo?: UndoState;
   changedFiles?: ChangedFile[];
   undone?: UndoOutcomeState;
@@ -904,7 +918,9 @@ function Reply({
   const { call } = entry;
   const answer = shownAnswer(entry);
   const inFlight = entry.status === "waiting" || entry.status === "streaming";
-  const deciding = inFlight && call !== undefined && step === undefined ? approval : undefined;
+  const waitsOnUser = inFlight && call !== undefined && step === undefined;
+  const deciding = waitsOnUser ? approval : undefined;
+  const asked = waitsOnUser ? question : undefined;
   const unfinished: PendingCall["outcome"] = inFlight ? "running" : entry.status === "stopped" ? "stopped" : "noResult";
   return (
     <div className="message assistant">
@@ -918,6 +934,13 @@ function Reply({
           <ToolStep call={call} outcome="deciding" />
           {/* [>]: Keyed by request, so a new request starts with an empty reason. */}
           <Approval key={deciding.id} approval={deciding} />
+        </div>
+      ) : asked && call ? (
+        // [>]: The same block as a decision: a question also holds the turn until the user acts.
+        <div className="decision">
+          <ToolStep call={call} outcome="asking" />
+          {/* [>]: Keyed by question, so a new question starts with an empty field. */}
+          <Question key={asked.id} question={asked} />
         </div>
       ) : (
         call && <ToolStep call={call} outcome={unfinished} />
@@ -1272,10 +1295,10 @@ function CodeActions({ text }: { text: string }) {
 
 /**
  * A call whose step was never recorded. `running`: its tool runs now. `deciding`: it waits for the user's Accept or
- * Reject. `stopped`: Stop came while it ran, so its result was dropped; the tool may have finished. `noResult`: the
+ * Reject. `asking`: it waits for the user's answer to its question. `stopped`: Stop came while it ran, so its result was dropped; the tool may have finished. `noResult`: the
  * turn ended otherwise before a result came.
  */
-type PendingCall = { call: ReplyCall; outcome: "running" | "deciding" | "stopped" | "noResult" };
+type PendingCall = { call: ReplyCall; outcome: "running" | "deciding" | "asking" | "stopped" | "noResult" };
 
 /**
  * A compact tool step row: tool name, main argument, and the result's status and size. The result text, or a
@@ -1294,9 +1317,9 @@ function ToolStep(props: { result: ChatEntry & { role: "tool" } } | PendingCall)
             <span className="step-status loading" role="status">
               {l10n.t("running…")}
             </span>
-          ) : outcome === "deciding" ? (
+          ) : outcome === "deciding" || outcome === "asking" ? (
             <span className="step-status" role="status">
-              {l10n.t("waiting for your decision")}
+              {outcome === "deciding" ? l10n.t("waiting for your decision") : l10n.t("waiting for your answer")}
             </span>
           ) : (
             <span className="step-status">
@@ -1383,6 +1406,71 @@ export function ApprovalControls({
         </button>
         <button type="button" className="secondary" onClick={reject}>
           {l10n.t("Reject")}
+        </button>
+      </div>
+    </fieldset>
+  );
+}
+
+/** The open question's controls, holding the answer typed until the user sends it. */
+function Question({ question }: { question: PendingQuestion }) {
+  const [text, setText] = useState("");
+  return <QuestionControls question={question} text={text} setText={setText} />;
+}
+
+/**
+ * `question` in full, one button per option in the model's order, then the field and Answer, in the DOM as on screen.
+ * An option answers with its text; Answer, or Enter in the field, with the field's `text`, trimmed, and neither while
+ * it is blank. Each answer carries the question's id, so the host ignores one for a question already closed.
+ */
+export function QuestionControls({
+  question,
+  text,
+  setText,
+}: {
+  question: PendingQuestion;
+  text: string;
+  setText: (text: string) => void;
+}) {
+  const { id } = question;
+  const typed = text.trim();
+  const answer = () => {
+    if (typed !== "") post({ type: "answer", id, text: typed });
+  };
+  return (
+    <fieldset className="question" aria-label={l10n.t("Answer the agent's question")}>
+      <p className="question-text">{question.question}</p>
+      {question.options.length > 0 && (
+        <div className="question-options">
+          {question.options.map((option) => (
+            <button
+              key={option}
+              type="button"
+              className="secondary question-option"
+              onClick={() => post({ type: "answer", id, text: option })}
+            >
+              {option}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="actions">
+        <input
+          type="text"
+          className="question-field"
+          value={text}
+          maxLength={MAX_ANSWER_LENGTH}
+          placeholder={l10n.t("Your answer")}
+          aria-label={l10n.t("Your answer")}
+          onChange={(event) => setText(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+            event.preventDefault();
+            answer();
+          }}
+        />
+        <button type="button" disabled={typed === ""} onClick={answer}>
+          {l10n.t("Answer")}
         </button>
       </div>
     </fieldset>

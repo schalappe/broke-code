@@ -54,6 +54,13 @@ export type StepApproval = "accepted" | "rejected" | "auto";
 export type PendingApproval = { id: number; kind: "write" | "command"; tool: string; summary: string };
 
 /**
+ * The `ask_user` question open in the chat, which the reply in flight waits on. `id`: the question's, carried by the
+ * answer, so an answer for a question no longer open is ignored. `question`: its text, in full. `options`: the answers
+ * the model proposes, in its order, maybe none; the user may always type another.
+ */
+export type PendingQuestion = { id: number; question: string; options: string[] };
+
+/**
  * The skill a user message loads with `/<name>`: `loaded` when its text reached the model, `failed` when its `SKILL.md`
  * could not be read at send, and the model got a notice instead.
  */
@@ -150,7 +157,7 @@ export type ReportedUsage = { prompt: number; completion: number };
 
 /**
  * What an agent turn may do: `ask` waits for Accept or Reject on each write, `autoEdit` accepts writes at once, both
- * derived from the user value of `brokeCode.autoApproveWrites`; `plan` offers the read tools only, kept per workspace
+ * derived from the user value of `brokeCode.autoApproveWrites`; `plan` offers the read tools and `ask_user` only, kept per workspace
  * and winning over the setting while on. Commands wait for Run in every mode that offers them.
  */
 export const MODES = ["ask", "autoEdit", "plan"] as const;
@@ -238,6 +245,8 @@ export type ChatState = {
   context: ContextUsage;
   /** The approval request the reply in flight waits on; at most one, since one call runs per reply. */
   approval?: PendingApproval;
+  /** The question the reply in flight waits on; never beside `approval`, since one call runs per reply. */
+  question?: PendingQuestion;
   /**
    * `plan` while Plan is on in this workspace, else the mode the setting holds; never the one last picked: a failed
    * write leaves it as it was.
@@ -357,6 +366,8 @@ export type WebviewMessage =
   /** The user's decision on approval request `id` (`ChatState.approval`); `reason`: optional, as typed. */
   | { type: "approve"; id: number }
   | { type: "reject"; id: number; reason?: string }
+  /** The user's answer to question `id` (`ChatState.question`); `text`: trimmed, never empty (`MAX_ANSWER_LENGTH`). */
+  | { type: "answer"; id: number; text: string }
   /** Insert at cursor: replace every selection of the active text editor with a code block's `text`. */
   | { type: "insertCode"; text: string }
   /**
@@ -422,6 +433,8 @@ export function searchNeedle(text: string): { needle: string; searchable: boolea
   const searchable = needle.length <= MAX_QUERY_LENGTH && [...needle].length >= MIN_NEEDLE_LENGTH;
   return { needle, searchable };
 }
+/** UTF-16 units an answer to a question may hold once trimmed; the panel's field stops typing there. */
+export const MAX_ANSWER_LENGTH = 4000;
 /** Longest picked mention path accepted. */
 export const MAX_MENTION_PATH_LENGTH = 4096;
 /**
@@ -506,6 +519,11 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | undefined {
       const { id, reason } = message;
       if (!isRequestId(id) || (reason !== undefined && typeof reason !== "string")) return undefined;
       return reason === undefined ? { type: "reject", id } : { type: "reject", id, reason };
+    }
+    case "answer": {
+      const value = text("text")?.trim();
+      if (!isRequestId(message.id) || !value || value.length > MAX_ANSWER_LENGTH) return undefined;
+      return { type: "answer", id: message.id, text: value };
     }
     case "insertCode": {
       const value = text("text");

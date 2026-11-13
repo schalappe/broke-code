@@ -7,7 +7,7 @@ import type { ToolContext } from "./chatController";
 import { type CommandEnv, RUN_COMMAND_TOOL } from "./commands";
 import { RecordedChanges } from "./recordedChanges";
 import { LOAD_SKILL_TOOL } from "./skills";
-import { offeredTools, type Skill } from "./systemPrompt";
+import { composeSystemPrompt, offeredTools, type Skill } from "./systemPrompt";
 import { workspaceToolRunner } from "./toolRunner";
 import { READ_TOOLS } from "./tools";
 import type { WorkspaceRoot } from "./workspaceFiles";
@@ -67,11 +67,15 @@ describe("workspaceToolRunner", () => {
     expect(runner.tools).toEqual([...READ_TOOLS, ...WRITE_TOOLS, RUN_COMMAND_TOOL, LOAD_SKILL_TOOL]);
   });
 
-  test("with ask_user on, lists it after load_skill and offers it in Ask and in Plan", () => {
+  test("with ask_user on, lists it after load_skill and offers it in Ask, Auto-edit, and Plan", () => {
     const { runner } = recordingRunner(() => ({ shell: "/bin/sh", timeoutMs: 10_000 }), true);
     expect(runner.tools).toEqual([...READ_TOOLS, ...WRITE_TOOLS, RUN_COMMAND_TOOL, LOAD_SKILL_TOOL, ASK_USER_TOOL]);
-    for (const mode of ["ask", "plan"] as const) {
-      expect(offeredTools(runner.tools, [], mode)).toContainEqual(ASK_USER_TOOL);
+    for (const mode of ["ask", "autoEdit", "plan"] as const) {
+      const offered = offeredTools(runner.tools, [], mode);
+      expect(offered).toContainEqual(ASK_USER_TOOL);
+      const prompt = composeSystemPrompt(offered, [], [], mode);
+      expect(prompt).toContain("## ask_user\n\nAsk the user one question and wait for the answer.");
+      expect(prompt).toContain("call ask_user to ask which before any write");
     }
   });
 

@@ -48,9 +48,9 @@ supports them (ADR 0001), so one contract covers the internal service and Ollama
 
 ## Capabilities and Constraints
 
-- Tools: `read_file`, `list_files`, `search`, `write_file`, `edit_file`, `run_command`, `load_skill`.
+- Tools: `read_file`, `list_files`, `search`, `write_file`, `edit_file`, `run_command`, `load_skill`, `ask_user`.
 - Three modes of one agent: Ask (each write waits for Accept or Reject), Auto-edit (writes are accepted at once),
-  Plan (read tools only). A command always waits for Run (ADR 0002, ADR 0005).
+  Plan (the read tools and `ask_user` only). A command always waits for Run (ADR 0002, ADR 0005).
 - The way back: "Undo changes" for a turn's writes, Retry, Continue, and Edit on the last turn.
 - Mentions (`@file`, `@folder`, `@problems`, `@diff`, `@selection`), slash commands (`/new`, `/model`, `/compact`,
   skills), queued messages, saved conversations per workspace with History.
