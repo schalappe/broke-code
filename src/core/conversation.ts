@@ -124,9 +124,9 @@ export function summarize(record: ConversationRecord): ConversationSummary {
 }
 
 /**
- * The History filter: rows whose title contains `query`, trimmed, ignoring case, in the order given; every row for a
- * blank query. Compared as the `@` and `/` menus do: lowercase on both sides, no accent folding. Only the title is
- * searched, so a title cut to 60 characters matches on that part only.
+ * The History title filter: rows whose title contains `query`, trimmed, ignoring case, in the order given; every row
+ * for a blank query. Compared as the `@` and `/` menus do: lowercase on both sides, no accent folding. Only the title
+ * is searched, so a title cut to 60 characters matches on that part only.
  */
 export function filterConversations(conversations: ConversationSummary[], query: string): ConversationSummary[] {
   const needle = query.trim().toLowerCase();

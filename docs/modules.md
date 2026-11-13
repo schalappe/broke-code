@@ -34,12 +34,15 @@ This file says which file holds which responsibility. Update it when a module ga
   left sides' text, the existence check, the error wording, an open cancelled when its file is closed meanwhile;
   `BEFORE_TURN_SCHEME`, their left side's scheme; `closeTurnDiffs`, which tabs to close), the conversation record
   (`conversation.ts`: version 2, its validation on load, title, id, the summary file's shape, `filterConversations`, the
-  History filter), its store
+  History title filter, `shownAnswer`, an answer as the chat shows it, and `conversationExcerpt`, History's content match
+  of one record and its excerpt), its store
   (`conversationStore.ts`: a record and a summary file per conversation, the list from the summaries, reads, writes,
-  and deletes in call order), and the store's file access (`conversationFiles.ts`:
+  and deletes in call order, and `search`, History's content search: one record read at a time through the queue,
+  stopped by a newer search, unreadable records counted), and the store's file access (`conversationFiles.ts`:
   the file port, and its implementation over a local directory with `node:fs`: missing versus failed, regular files
   only, atomic writes, leftover temporary files), the dialog queue, the host-webview message
-  protocol and its validation (and `sendWouldAct`, the panel's one "Send would act" check; `send`'s optional
+  protocol and its validation (and `sendWouldAct`, the panel's one "Send would act" check; `searchNeedle`, History's
+  content search needle and whether it is searchable; `send`'s optional
   `replaces`, and `retry` and `continueTurn`, each carrying `ShownEntries`, the conversation and entries count the
   panel showed), the model list (`modelList.ts`: `emptyModelsLabel`, why the list is empty, for the
   header's select and the Quick Pick; `modelChoices`, the rows `/model` opens; `chooseModel`, the `/model` pick over a

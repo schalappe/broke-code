@@ -352,10 +352,13 @@ the panel's color. A focus ring on its buttons is the panel's color.
 
 - The `@` and `/` menus overlay the conversation above the message box. The highlighted row takes the theme's active
   selection, or `--bc-fill-strong` where the theme has none, and `--bc-edge-active` in high contrast.
-- History: the filter field ("Filter by title") on top, at full width, then one row per conversation, title over
-  date, Delete at the right. Only the rows scroll; the field stays in place. The current row has a fill, a title in
-  weight 600, and `--bc-edge-active` in high contrast. With no conversation saved, History shows its empty line and
-  no field; with no row left by the filter, "No match" as one dim centered line under the field.
+- History: the search field ("Search conversations") on top, at full width, then one row per conversation, title over
+  date, Delete at the right. A row found by its messages only carries its excerpt between title and date: one line,
+  dim, one size down, cut with an ellipsis, plain text without a highlight. Only the rows scroll; the field stays in
+  place. The current row has a fill, a title in weight 600, and `--bc-edge-active` in high contrast. With no
+  conversation saved, History shows its empty line and no field; with no row left, "No match" as one dim centered
+  line under the field, or "Searching…" in its place, in the Loading look, while a content search is awaited. The
+  count of conversations that could not be searched is a warning block between the field and the rows.
 
 ### States
 
@@ -363,10 +366,10 @@ Each kind of state has one look, distinct from the others at a glance:
 
 | State | Look |
 | --- | --- |
-| Loading (waiting for the reply, thinking, tool running, models loading) | Dim text that breathes; a line of its own leads with a dot. The pickers and the mode selector are disabled. While a mode change is being written, the mode selector and Send are disabled, with no other sign: the write takes a moment. While an undo runs, its button reads "Undoing changes…" and is disabled, and so is Send. |
-| Empty (no provider, new conversation, empty History, no History row left by the filter) | One dim line, centered in the room it has; a link under it when there is something to do. No provider: Add provider (primary) and the Open provider settings link side by side under it. |
+| Loading (waiting for the reply, thinking, tool running, models loading, History's "Searching…") | Dim text that breathes; a line of its own leads with a dot. The pickers and the mode selector are disabled. While a mode change is being written, the mode selector and Send are disabled, with no other sign: the write takes a moment. While an undo runs, its button reads "Undoing changes…" and is disabled, and so is Send. |
+| Empty (no provider, new conversation, empty History, no History row left by the search) | One dim line, centered in the room it has; a link under it when there is something to do. No provider: Add provider (primary) and the Open provider settings link side by side under it. |
 | Notice (unknown context size, older tool results left out of the next request, the queue paused or full, an undo that put every file back) | One small dim line, with a link when there is something to do (Set context size). Nothing went wrong, so no block. |
-| Warning (skipped providers and skills, an undo that skipped files) | A block on the theme's warning fill; under skipped providers, Add provider (secondary) below the block, only while a valid provider exists: without one, the empty state's Add provider is the panel's only one. |
+| Warning (skipped providers and skills, an undo that skipped files, conversations History could not search) | A block on the theme's warning fill; under skipped providers, Add provider (secondary) below the block, only while a valid provider exists: without one, the empty state's Add provider is the panel's only one. |
 | Error (models unavailable, failed reply, storage and listing problems, an undo that failed unexpectedly) | A block on the theme's error fill: the message, its technical detail in the editor font, then its actions. |
 | Failed step or chip | The error color on the status text; no block. |
 | Waiting for a decision | The decision block, in negative, on the thread's solid node. |
@@ -397,8 +400,8 @@ opacity over `--bc-fast`. Under `prefers-reduced-motion: reduce`, and when VS Co
   of ours. Folding at turn end moves no focus.
 - Focus never moves on its own. When an approval request opens, the focused element stays focused, so a key pressed
   at that moment cannot accept a write or run a command. A webview test pins this. Written exceptions: opening
-  History moves the focus into its filter field, since the user asked for History and no approval control sits
-  there. Escape in an empty filter field closes History and gives the focus back to the History button. And a draft
+  History moves the focus into its search field, since the user asked for History and no approval control sits
+  there. Escape in an empty search field closes History and gives the focus back to the History button. And a draft
   from the editor ("Add selection to chat", the quick fix "Fix with broke-code") closes History and moves the focus
   into the message box, since the user asked for it from the editor and the message box sends nothing on its own. The
   workbench may focus the panel just after the draft did, leaving nothing focused inside it; until the user clicks or
@@ -422,7 +425,7 @@ opacity over `--bc-fast`. Under `prefers-reduced-motion: reduce`, and when VS Co
 - The `@` and `/` menus keep the focus in the message box (`aria-activedescendant`); the highlighted row is the
   visible focus there, so it must differ from its neighbours in every theme.
 - The message box takes the focus back when a reply ends, unless History is open: the focus then stays where the user
-  has it, so a key meant for the History filter never edits or sends the message.
+  has it, so a key meant for the History search never edits or sends the message.
 
 ## Do's and Don'ts
 

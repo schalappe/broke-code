@@ -436,7 +436,7 @@ button:focus-visible {
 
 /* ---------- History ---------- */
 
-/* Fills the conversation's place while open. The rows scroll under the filter field, which stays in place. */
+/* Fills the conversation's place while open. The rows scroll under the search field, which stays in place. */
 .history {
   flex: 1 1 auto;
   min-height: 0;

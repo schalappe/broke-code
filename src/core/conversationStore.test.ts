@@ -512,7 +512,7 @@ describe("ConversationStore.search", () => {
     return { files, store };
   }
 
-  test("returns every conversation whose messages match, in the order given, one matching by title included", async () => {
+  test("returns every conversation whose messages match, in order, one matching by title included", async () => {
     const byTitle = conversation(3000, "the parser bug", "fixed it");
     const other = conversation(2000, "release notes", "nothing here");
     const byAnswer = conversation(1000, "question", "The parser reads blocks.");

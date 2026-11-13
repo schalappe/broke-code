@@ -23,7 +23,7 @@ export type ChatViewActions = {
   queryFiles: (query: string) => Promise<FileQueryAnswer>;
   /** The skills a send would discover, for the `/` menu; no log line, since nothing is sent. */
   querySkills: () => Promise<SkillDiscovery>;
-  /** History's content search over the listed conversations; `undefined` when not answered (see `ConversationStore.search`). */
+  /** History's content search over the listed conversations; `undefined` when unanswered (`ConversationStore.search`). */
   searchConversations: (query: string) => Promise<ConversationSearchAnswer | undefined>;
   /** "broke-code: Add provider"; shows its own failures and never rejects. */
   addProvider: () => Promise<void>;

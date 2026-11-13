@@ -2107,11 +2107,11 @@ describe("history filter", () => {
     entries: [question, { role: "assistant", reasoning: "", content: "Hello", status: "done" }],
   });
 
-  test("a reply that ends while History is open leaves the focus in the filter field", async () => {
+  test("a reply that ends while History is open leaves the focus in the search field", async () => {
     await withPanel(streaming, async (panel) => {
       await panel.click("History");
       const field = filterField(panel.host);
-      if (!field) throw new Error("no filter field");
+      if (!field) throw new Error("no search field");
       await panel.fill(field, "notes");
       await panel.show(replied);
       expect(document.activeElement).toBe(field);

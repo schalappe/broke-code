@@ -416,7 +416,7 @@ function ErrorBlock({ error, retry }: { error: ProviderError; retry?: () => void
 /**
  * History list wired to the host: a pick closes it and asks to open that conversation, even the one shown, since a
  * pending open may be about to replace it; the controller skips an open of the conversation shown when it runs.
- * Delete deletes. `dismiss`: Escape in an empty filter field, which closes History and focuses its toggle.
+ * Delete deletes. `dismiss`: Escape in an empty search field, which closes History and focuses its toggle.
  */
 export function HistoryPanel({
   state,
@@ -1552,7 +1552,7 @@ function Reasoning({ entry }: { entry: ChatEntry & { role: "assistant" } }) {
  * Picking a built-in row, or sending exactly `/new`, `/model`, or `/compact`, runs it when Send would act (`startNewChat`,
  * the editor's model list through `chooseModel`, or the summary request `compact`) and empties the box; otherwise, or with text after the token, the pick
  * inserts `/<name> `. When a reply ends, the message box takes the focus, unless History is open (`historyOpen`): the
- * focus then stays where the user has it, so typing keeps going to the History filter. `drafts` from the editor are
+ * focus then stays where the user has it, so typing keeps going to the History search. `drafts` from the editor are
  * applied in order (`applyDraft`), whatever the reply's state, then taken, and the message box takes the focus.
  * While a reply is in flight, Send and Enter queue the message instead (`queueMessage`), up to `MAX_QUEUED_MESSAGES`,
  * a built-in command excepted, which stays text in the box; the queue shows under the box (`QueuedMessages`). Queued
