@@ -656,7 +656,8 @@ left off, or click **Delete** to delete it.
 To find a conversation, type in **Search conversations** at the top of History. The conversations whose title holds
 that text, ignoring case, show at once. From 3 characters, broke-code also searches your messages and the agent's
 answers (not tool results or reasoning) and adds the conversations found there, each with an excerpt of the match
-under its title. Enter opens the first one listed. Escape clears the field, then closes History.
+under its title. When some conversations cannot be read, a warning says how many could not be searched. Enter opens
+the first one listed. Escape clears the field, then closes History.
 
 **New chat** starts a new conversation and keeps the previous one in the list. History also works without a provider,
 but sending a message needs one. A workspace keeps its 50 most recent conversations, and broke-code deletes older ones.
