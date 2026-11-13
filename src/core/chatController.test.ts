@@ -2440,6 +2440,18 @@ describe("ChatController agent turn", () => {
       );
     });
 
+    test("implementPlan runs its turn outside Plan, and Plan stays left when that turn fails", async () => {
+      const { controller, state, sent } = await planned([{ content: "The plan." }, "fail"]);
+      await controller.send("plan it");
+      await controller.implementPlan(shown(state), "Implement the plan above.");
+
+      expect(state().mode).toBe("ask");
+      expect(state().entries.map((entry) => entry.role)).toEqual(["user", "assistant", "user", "assistant"]);
+      expect(state().entries.at(-1)).toMatchObject({ status: "failed" });
+      expect(sent()[1]!.messages[0]!.content).toBe(composeSystemPrompt(ALL_TOOLS, [], []));
+      expect(sent()[1]!.messages.at(-1)).toEqual({ role: "user", content: "Implement the plan above." });
+    });
+
     test("a turn reads the mode once, at its start: a mode change waits for the next send", async () => {
       let release: () => void = () => {};
       const runner: ToolRunner = {
@@ -4746,6 +4758,25 @@ describe("ChatController mode", () => {
     expect(state().mode).toBe("ask");
   });
 
+  test("the state names the mode the setting holds, also while Plan is on, and follows each change of it", async () => {
+    const setting: InspectedSetting = {};
+    const { controller, state } = await withSetting(setting);
+    expect(state().settingMode).toBe("ask");
+    await controller.setMode("plan");
+    expect(state()).toMatchObject({ mode: "plan", settingMode: "ask" });
+
+    setting.globalValue = true;
+    controller.modeChanged();
+    expect(state()).toMatchObject({ mode: "plan", settingMode: "autoEdit" });
+
+    setting.globalValue = false;
+    controller.modeChanged();
+    expect(state()).toMatchObject({ mode: "plan", settingMode: "ask" });
+
+    expect(await controller.setMode("autoEdit")).toEqual({ kind: "written" });
+    expect(state()).toMatchObject({ mode: "autoEdit", settingMode: "autoEdit" });
+  });
+
   test("ignores a workspace value of the setting", async () => {
     const { state } = await withSetting({ workspaceValue: true, workspaceFolderValue: true });
     expect(state().mode).toBe("ask");
@@ -4933,6 +4964,170 @@ describe("ChatController mode", () => {
       expect(state().mode).toBe("autoEdit");
       expect(state().entries).toEqual([]);
       expect((requests.get("a") ?? []).length).toBe(requestsBefore);
+    });
+
+    describe("implementPlan", () => {
+      const IMPLEMENT = "Implement the plan above.";
+      type Request = { messages: { role: string; content: string }[] };
+      const sentRequests = () => (requests.get("a") ?? []) as Request[];
+
+      /** Send `text` and let its reply end `done` on the answer "Partial end". */
+      async function answered(controller: ChatController, state: () => ChatState, text: string) {
+        const turn = controller.send(text);
+        await until(state, (s) => contentOf(s.entries.at(-1)) === "Partial ");
+        finishReply();
+        await turn;
+      }
+
+      /** A controller in Plan whose conversation ends on the `done` answer of one Plan turn. */
+      async function planAnswered(setting: InspectedSetting, options: Parameters<typeof withSetting>[1] = {}) {
+        const made = await withSetting(setting, options);
+        await made.controller.setMode("plan");
+        await answered(made.controller, made.state, "Plan it");
+        return made;
+      }
+
+      for (const [name, setting, left] of [
+        ["Ask", {}, "ask"],
+        ["Auto-edit", { globalValue: true }, "autoEdit"],
+      ] as const) {
+        test(`leaves Plan for ${name}, writes no setting, and starts one turn asking to implement the plan`, async () => {
+          const workspaceState = memoryStore();
+          const { controller, state, written } = await planAnswered({ ...setting }, { workspaceState });
+          expect(workspaceState.get("brokeCode.plan")).toBe(true);
+          const before = sentRequests().length;
+
+          const turn = controller.implementPlan(shown(state), "Implémente le plan ci-dessus.");
+          await until(state, (s) => s.entries.length === 4 && contentOf(s.entries.at(-1)) === "Partial ");
+
+          expect(state().mode).toBe(left);
+          expect(written).toEqual([]);
+          expect(workspaceState.get("brokeCode.plan")).toBeUndefined();
+          expect(state().entries[2]).toEqual({ role: "user", content: "Implémente le plan ci-dessus.", mentions: [] });
+          const request = sentRequests().at(-1)!;
+          expect(request.messages[0]).toEqual(SYSTEM);
+          expect(request.messages.slice(1)).toEqual([
+            { role: "user", content: "Plan it" },
+            { role: "assistant", content: "Partial end" },
+            { role: "user", content: IMPLEMENT },
+          ]);
+
+          await controller.implementPlan(shown(state), "Implement the plan above.");
+          expect(state().entries).toHaveLength(4);
+          finishReply();
+          await turn;
+          await controller.implementPlan(shown(state), "Implement the plan above.");
+          expect(state().entries).toHaveLength(4);
+          expect(sentRequests()).toHaveLength(before + 1);
+          expect(written).toEqual([]);
+        });
+      }
+
+      test("with a memento whose write rejects, Plan is still left and the turn still starts", async () => {
+        const logged = spyOn(console, "error").mockImplementation(() => {});
+        try {
+          const failing: ChoiceStore = {
+            get: () => undefined,
+            update: async () => {
+              throw new Error("disk full");
+            },
+          };
+          const { controller, state } = await planAnswered({}, { workspaceState: failing });
+          expect(state().mode).toBe("plan");
+          const before = sentRequests().length;
+
+          const turn = controller.implementPlan(shown(state), IMPLEMENT);
+          await until(state, (s) => s.entries.length === 4 && contentOf(s.entries.at(-1)) === "Partial ");
+          expect(state().mode).toBe("ask");
+          expect(sentRequests()).toHaveLength(before + 1);
+          expect(sentRequests().at(-1)!.messages.at(-1)).toEqual({ role: "user", content: IMPLEMENT });
+          finishReply();
+          await turn;
+          expect(state().mode).toBe("ask");
+        } finally {
+          logged.mockRestore();
+        }
+      });
+
+      test("does nothing outside Plan", async () => {
+        const { controller, state } = await withSetting({});
+        await answered(controller, state, "Plan it");
+        const before = sentRequests().length;
+        await controller.implementPlan(shown(state), IMPLEMENT);
+        expect(state().entries).toHaveLength(2);
+        expect(state().mode).toBe("ask");
+        expect(sentRequests()).toHaveLength(before);
+      });
+
+      test("does nothing during a reply", async () => {
+        const { controller, state } = await planAnswered({});
+        const turn = controller.send("Refine it");
+        await until(state, (s) => s.entries.length === 4 && contentOf(s.entries.at(-1)) === "Partial ");
+        const before = sentRequests().length;
+        await controller.implementPlan(shown(state), IMPLEMENT);
+        expect(state().entries).toHaveLength(4);
+        expect(state().mode).toBe("plan");
+        expect(sentRequests()).toHaveLength(before);
+        finishReply();
+        await turn;
+      });
+
+      test("does nothing while a mode write is pending", async () => {
+        const workspaceState = memoryStore();
+        const { controller, state, pendingWrites, releaseWrite } = await planAnswered(
+          {},
+          { workspaceState, deferWrites: true },
+        );
+        const before = sentRequests().length;
+        const picked = controller.setMode("autoEdit");
+        await until(state, () => pendingWrites.length === 1);
+        await controller.implementPlan(shown(state), IMPLEMENT);
+        expect(state().entries).toHaveLength(2);
+        expect(state().mode).toBe("plan");
+        expect(workspaceState.get("brokeCode.plan")).toBe(true);
+        releaseWrite();
+        await picked;
+        expect(sentRequests()).toHaveLength(before);
+      });
+
+      test("does nothing with no model chosen", async () => {
+        const { controller, state } = await planAnswered({});
+        const before = sentRequests().length;
+        controller.setProviders({ providers: [], skipped: [] });
+        expect(state().model).toBeUndefined();
+        await controller.implementPlan(shown(state), IMPLEMENT);
+        expect(state().entries).toHaveLength(2);
+        expect(state().mode).toBe("plan");
+        expect(sentRequests()).toHaveLength(before);
+      });
+
+      test("does nothing when the entries shown are no longer the conversation's", async () => {
+        const { controller, state } = await planAnswered({});
+        const before = sentRequests().length;
+        await controller.implementPlan(shown(state, 1), IMPLEMENT);
+        await controller.implementPlan({ conversationId: newConversationId(), entries: 2 }, IMPLEMENT);
+        expect(state().entries).toHaveLength(2);
+        expect(state().mode).toBe("plan");
+        expect(sentRequests()).toHaveLength(before);
+      });
+
+      test("does nothing when the conversation does not end on a final answer", async () => {
+        const { controller, state } = await withSetting({});
+        await controller.setMode("plan");
+        await controller.implementPlan(shown(state), IMPLEMENT);
+        expect(state().entries).toEqual([]);
+
+        const turn = controller.send("Plan it");
+        await until(state, (s) => contentOf(s.entries.at(-1)) === "Partial ");
+        controller.stop();
+        await turn;
+        expect(state().entries.at(-1)).toMatchObject({ status: "stopped" });
+        const before = sentRequests().length;
+        await controller.implementPlan(shown(state), IMPLEMENT);
+        expect(state().entries).toHaveLength(2);
+        expect(state().mode).toBe("plan");
+        expect(sentRequests()).toHaveLength(before);
+      });
     });
 
     test("a send while a mode write is pending, then New chat: nothing lands in the new conversation", async () => {
@@ -5854,6 +6049,26 @@ describe("ChatController undo", () => {
     expect(text("a.txt")).toBe("a0\n");
   });
 
+  test("implementPlan is ignored while an undo runs", async () => {
+    writeFileSync(file("a.txt"), "a0\n");
+    let open: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const { controller, state } = await undoable([{ content: writeCall("a.txt", "a1") }, { content: "First." }], {
+      restoreGate: () => gate,
+    });
+    await controller.send("first");
+    await controller.setMode("plan");
+    const undo = controller.undoChanges();
+    expect(state().undo.running).toBe(true);
+    await controller.implementPlan(shown(state, 4), "Implement the plan above.");
+    expect(state().entries).toHaveLength(4);
+    expect(state().mode).toBe("plan");
+    open();
+    await undo;
+  });
+
   test("a file with unsaved editor changes is skipped and stays held", async () => {
     writeFileSync(file("a.txt"), "old\n");
     const { controller, state, unsaved } = await undoable([
@@ -6484,6 +6699,21 @@ describe("ChatController turn events", () => {
       await controller.send("go");
       expect(events).toEqual([done]);
       expect(statuses).toMatchObject([{ role: "assistant", content: "Done.", status: "done" }]);
+    });
+
+    test("an implementPlan turn that ends done reports one event, as any turn does", async () => {
+      const { controller, state, events } = await observed([{ content: "The plan." }, { content: "Implemented." }]);
+      await controller.setMode("plan");
+      await controller.send("Plan it");
+      expect(state().mode).toBe("plan");
+      events.length = 0;
+
+      const { conversationId, entries } = state();
+      await controller.implementPlan({ conversationId, entries: entries.length }, "Implement the plan above.");
+
+      expect(state().mode).not.toBe("plan");
+      expect(state().entries.at(-1)).toMatchObject({ role: "assistant", content: "Implemented.", status: "done" });
+      expect(events).toEqual([done]);
     });
 
     test("a turn that fails reports one event with its failure", async () => {

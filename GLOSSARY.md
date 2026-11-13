@@ -30,6 +30,11 @@ written and commands run by the removed steps stay as they are, so the chat asks
 under the last reply while no `/compact` summary follows the last user message.
 _Avoid_: regenerate, redo, rerun
 
+**Final answer**:
+The last entry of a conversation when it is a reply that is not a summary, ended `done`, and holds text. While Plan is
+on, it carries the "Implement in ... mode" button (see **Mode**).
+_Avoid_: last reply, plan entry
+
 **Continue**:
 A new user message, shown as "Continue", that asks the model to carry on from where its last agent turn stopped:
 offered after **Stop**, the step limit, or three malformed calls, never after a context-full stop. It removes nothing.
@@ -79,7 +84,9 @@ What an agent turn may do, shown and picked in the message box: **Ask** waits fo
 **Auto-edit** approves writes without asking; **Plan** offers the read tools only, so the model answers with a plan and
 nothing is written or run. Ask and Auto-edit are the user setting `brokeCode.autoApproveWrites`, so they apply to every
 window; Plan is kept per workspace and wins over the setting while on. A turn reads Plan when it starts. Commands wait
-for Run in every mode that offers them.
+for Run in every mode that offers them. Under a plan's **final answer**, "Implement in Ask mode" or "Implement in
+Auto-edit mode" leaves Plan for the mode the setting holds, without writing the setting, and sends "Implement the plan
+above."
 _Avoid_: agent mode, approval mode, permission mode
 
 **Queued message**:

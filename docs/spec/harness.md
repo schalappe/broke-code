@@ -191,6 +191,17 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
     (`failed`). A failed memento write is logged only, as for `brokeCode.lastChoice`: Plan applies for the session
     and is lost at the next load. Plan is not part of a conversation: reopening one changes no mode. While leaving Plan
     writes the setting, the mode change is pending as above, and no send or other pick is taken.
+  - Leaving Plan from a plan's answer (#102, ADR 0005, addendum of 2026-11-13): `ChatState.settingMode` is always
+    present and names the mode the setting holds, `ask` or `autoEdit`, whatever `mode` says; `modeChanged` reads both,
+    so it follows each change of the setting while Plan is on. `ChatController.implementPlan(shown, label)` is the
+    second way out of Plan: it clears the Plan key without writing `brokeCode.autoApproveWrites`, so nothing pends
+    and the mode becomes the one the setting holds, then starts an ordinary turn (`TurnStart` `continue`) whose user
+    entry shows `label` and whose model text is `IMPLEMENT_PLAN_TEXT` (`Implement the plan above.`), with no mention
+    and the provider, model, and limits of that moment. Writes of that turn follow the setting as it stands when each
+    runs. It acts only when the entries shown are the conversation's (`ShownEntries`), Plan is on, `mayStartTurn`
+    passes, and `hasFinalAnswer(entries)` holds; otherwise it does nothing: Plan stays on and nothing is sent. A
+    failed memento write is logged only: Plan is still left for the session and the send goes. Plan stays left when
+    the turn fails. The button and the predicate are specified in `docs/spec/chat-panel.md`.
   - "Undo changes" (#93, ADR 0002, 2026-11-12): neither the editor's Undo nor Local History sees an accepted write,
     which goes to disk outside the editor, so the chat offers the way back. Each agent turn gets a `RecordedChanges`
     (`ToolContext.changes`, set per call like `requestApproval`); the host's applier records into it. The controller

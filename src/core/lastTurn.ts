@@ -1,7 +1,8 @@
 /**
  * @module lastTurn
  * Retry and Continue on the last turn of a conversation: whether the entries offer them, where they show, and what
- * removing a turn's entries would leave behind on disk. No `node:` or `vscode` import: the webview loads it, so the
+ * removing a turn's entries would leave behind on disk. Also whether the conversation ends on a final answer, which
+ * "Implement in ... mode" needs. No `node:` or `vscode` import: the webview loads it, so the
  * panel and the controller decide from the same entries.
  */
 
@@ -48,6 +49,20 @@ export function lastTurnActions(entries: readonly ChatEntry[]): LastTurnActions 
 }
 
 type Assistant = ChatEntry & { role: "assistant" };
+
+/** What "Implement in ... mode" sends the model, in English whatever the display language, as Continue does. */
+export const IMPLEMENT_PLAN_TEXT = "Implement the plan above.";
+
+/**
+ * Whether the conversation ends on its final answer: its last entry is a reply that is not a summary, ended `done`,
+ * and holds text. False during a reply, after a turn that failed, was stopped, or halted, and right after `/compact`,
+ * whose summary is then the last entry. The one check of the panel's "Implement in ... mode" button and of
+ * `ChatController.implementPlan`; whether Plan is on and Send would act are the caller's checks.
+ */
+export function hasFinalAnswer(entries: readonly ChatEntry[]): boolean {
+  const last = entries.at(-1);
+  return last?.role === "assistant" && last.summary !== true && last.status === "done" && last.content.trim() !== "";
+}
 
 /**
  * What removing the entries from index `from` on leaves on disk, since a removal reverts nothing: `writes`, the write

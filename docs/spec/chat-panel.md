@@ -1,6 +1,6 @@
 # Chat panel behavior
 
-This file specifies what the chat panel does around a turn: folding, code block actions, Quote, queued messages, Retry, Continue, Edit, and the recall of earlier messages. `DESIGN.md` holds the look; `docs/spec/harness.md` holds the turn itself.
+This file specifies what the chat panel does around a turn: folding, code block actions, Quote, queued messages, Retry, Continue, "Implement in ... mode", Edit, and the recall of earlier messages. `DESIGN.md` holds the look; `docs/spec/harness.md` holds the turn itself.
 
 ## Turn folding
 
@@ -180,6 +180,24 @@ This file specifies what the chat panel does around a turn: folding, code block 
   compared as their JSON text while the confirmation is open, since unrelated posts resend the whole state), drops the
   confirmation (scouting decision, 2026-11-12: in the chat, no native modal). Accepted gap: a command whose step Stop dropped, in a turn that wrote nothing, is not
   warned about. `ChatState` and the record are unchanged.
+- "Implement in ... mode" (#102, ADR 0005, addendum of 2026-11-13): while Plan is on (`ChatState.mode` is `plan`), the
+  conversation's final answer shows one more secondary button in the last turn's actions, after Retry (and after
+  "Retry anyway" and Cancel while Retry's confirmation is open) and before "Undo changes". `hasFinalAnswer(entries)`
+  (`lastTurn.ts`, loaded by the webview and the controller alike) decides "the final answer": the last entry is an
+  assistant entry that is not a summary, ended `done`, with text that is not empty after trimming. So no button
+  during a reply, after a turn that ended `failed`, `stopped`, or `halted`, after a `/compact` (its summary is then
+  the last entry), or on an empty conversation; an automatic summary earlier in the turn changes nothing. The
+  conversation does not record the mode of its turns, so the button shows under any such answer while Plan is on,
+  also in a conversation opened from History (accepted). Its label names the mode Plan leaves for,
+  `ChatState.settingMode`: "Implement in Ask mode" or "Implement in Auto-edit mode", following a change of the
+  setting at once. It is disabled when Send would not act (`sendWouldAct`), and absent, not disabled, during a
+  reply; while Edit's replacing state holds it acts as usual, as Retry does. A click posts `implementPlan { shown }`,
+  validated like `retry`, and carries no mode. `ChatController.implementPlan(shown, label)` (see
+  `docs/spec/harness.md`, modes) leaves Plan without writing the setting and starts an ordinary turn through
+  `startTurn`: the host passes `l10n.t("Implement the plan above.")` as the entry's typed text, and the model gets
+  the fixed English `IMPLEMENT_PLAN_TEXT`, as for Continue. The plan is in the history already and is not quoted
+  again. A second click cannot act: Plan is off and a reply is in flight. Ending `done`, the turn sends the first
+  queued message, in the mode then in force, as after any send. The record is unchanged.
 - Edit (#112, parent #73): the last user entry has Edit when the last turn offers Retry (`lastTurnActions`, the same
   conditions), enabled when Send would act. A click changes nothing on the host or on disk and posts nothing: the
   message's text as typed goes into the message box as a returned text does (`editDraft` through `applyDraft`, mode

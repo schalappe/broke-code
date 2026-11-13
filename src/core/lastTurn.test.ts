@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { lastTurnActions, unrevertedEffects } from "./lastTurn";
+import { hasFinalAnswer, lastTurnActions, unrevertedEffects } from "./lastTurn";
 import type { ChatEntry, HaltReason, ReplyStatus, StepApproval } from "./protocol";
 
 const user = (content: string): ChatEntry => ({ role: "user", content, mentions: [] });
@@ -66,6 +66,38 @@ describe("lastTurnActions", () => {
 
   test("places the actions under a failed automatic summary that took the turn's only reply", () => {
     expect(lastTurnActions([user("A"), summary("failed")])).toEqual({ user: 0, reply: 1, continues: false });
+  });
+});
+
+describe("hasFinalAnswer", () => {
+  const answer = (content: string): ChatEntry => ({ role: "assistant", reasoning: "", content, status: "done" });
+
+  test("holds when the last entry is a done answer with text", () => {
+    expect(hasFinalAnswer([user("Plan it"), reply()])).toBe(true);
+    expect(hasFinalAnswer([user("A"), reply("failed"), user("B"), reply(), step("read_file"), reply()])).toBe(true);
+  });
+
+  test("does not hold on an empty conversation or for an answer without text", () => {
+    expect(hasFinalAnswer([])).toBe(false);
+    expect(hasFinalAnswer([user("Plan it")])).toBe(false);
+    expect(hasFinalAnswer([user("Plan it"), answer("")])).toBe(false);
+    expect(hasFinalAnswer([user("Plan it"), answer(" \n\t ")])).toBe(false);
+  });
+
+  test("does not hold when the last reply failed, was stopped, halted, or is in flight", () => {
+    for (const status of ["failed", "stopped", "halted", "waiting", "streaming"] as const) {
+      expect({ status, holds: hasFinalAnswer([user("Plan it"), reply(status)]) }).toEqual({ status, holds: false });
+    }
+  });
+
+  test("does not hold when the last entry is a summary or a tool step", () => {
+    expect(hasFinalAnswer([user("Plan it"), reply(), summary()])).toBe(false);
+    expect(hasFinalAnswer([user("Plan it"), reply("halted", "stepLimit"), step("read_file")])).toBe(false);
+    expect(hasFinalAnswer([user("Plan it"), reply(), step("read_file")])).toBe(false);
+  });
+
+  test("holds for a done answer that follows an automatic summary in the same turn", () => {
+    expect(hasFinalAnswer([user("Plan it"), reply(), step("read_file"), summary(), reply()])).toBe(true);
   });
 });
 

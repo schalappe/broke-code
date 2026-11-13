@@ -73,3 +73,33 @@ conversation changes no mode.
 - A later Ask or Auto-edit turn may see "not available in Plan mode" steps in its history; its prompt lists the
   tools again, so the model can call them.
 - A failed memento write loses Plan at the next load, silently but for the log.
+
+## Addendum (2026-11-13): a second way out of Plan, from the plan's answer
+
+After a Plan turn, carrying the plan out took two steps that nothing tied to the plan shown: leave Plan with the
+selector, then type a message asking to implement it. A button under the plan's answer now does both (#102):
+"Implement in Ask mode" or "Implement in Auto-edit mode", named after the mode `brokeCode.autoApproveWrites` holds.
+
+A click leaves Plan without writing the setting. `ChatController.implementPlan` clears the Plan key only, then starts
+an ordinary turn whose user message is shown as "Implement the plan above." in the display language and sent to the
+model as that fixed English text (`IMPLEMENT_PLAN_TEXT`), the way Continue shows its label and sends fixed English. The
+selector's way out is unchanged: it still writes the setting first when its value must change.
+
+- The setting is never written here, so nothing pends and no write can fail: the mode after the click is the one the
+  setting already holds, which the label named. `ChatState.settingMode` carries that mode while `mode` is `plan`, and
+  follows each change of the setting. The click carries no mode: each write still reads the setting when it runs
+  (ADR 0002), so a change of the setting between the render and a write applies, as in every turn.
+- A failed memento write is still logged only: Plan is left for the session and the send goes. The cost is the one
+  above, reversed: Plan is back at the next load.
+- The controller acts only when the entries shown are still the conversation's, Plan is on, a turn may start
+  (`mayStartTurn`), and the conversation ends on its final answer (`hasFinalAnswer`: the last entry is a reply that
+  is not a summary, ended `done`, with text). Otherwise it does nothing at all, and Plan stays on. Once it acted,
+  Plan stays left even when the turn fails.
+- Plan is still not part of a conversation, so the button shows under any final answer while Plan is on, a
+  conversation opened from History included. Accepted: recording which turns ran in Plan would change the record.
+- The plan is not quoted in the message: it is in the history already. A plan that `/compact` summarized is no
+  longer the last entry, so the button does not show under the summary.
+
+Considered and rejected: a choice of mode at the click (a second selector, and a setting write that can fail between
+leaving Plan and sending); carrying the label's mode in the message and applying it to the turn (writes would stop
+following the setting, against ADR 0002); saving the plan to a file (out of scope).

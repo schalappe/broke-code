@@ -244,6 +244,11 @@ export type ChatState = {
    */
   mode: Mode;
   /**
+   * The mode the setting holds, whatever `mode` says: the one Plan leaves for, which the "Implement in ... mode" button
+   * names. Read again whenever the setting changes.
+   */
+  settingMode: Exclude<Mode, "plan">;
+  /**
    * A mode pick's settings write is pending: the mode selector and Send are disabled, and the host ignores `setMode`
    * and `send`, as while a reply is in flight.
    */
@@ -301,9 +306,9 @@ export type HostMessage =
   | ({ type: "insertDraft" } & DraftInsert);
 
 /**
- * What the panel showed when the user asked to Retry, Continue, or send while replacing the last turn (Edit): the
- * conversation shown (`ChatState.conversationId`) and its entries count. The host acts only on that conversation with
- * that count, so a click on a lagging panel removes or extends nothing but the turn it showed.
+ * What the panel showed when the user asked to Retry, Continue, implement a plan, or send while replacing the last
+ * turn (Edit): the conversation shown (`ChatState.conversationId`) and its entries count. The host acts only on that
+ * conversation with that count, so a click on a lagging panel removes or extends nothing but the turn it showed.
  */
 export type ShownEntries = { conversationId: string; entries: number };
 
@@ -364,7 +369,12 @@ export type WebviewMessage =
   /** A row of "Changed files": open the diff of the first held file the row's displayed `path` names. */
   | { type: "openChangeDiff"; path: string }
   /** Retry or Continue the last turn (see `lastTurnActions`) of what the panel showed. */
-  | { type: "retry" | "continueTurn"; shown: ShownEntries };
+  | { type: "retry" | "continueTurn"; shown: ShownEntries }
+  /**
+   * "Implement in ... mode" under a plan's final answer (see `hasFinalAnswer`): leave Plan for the mode the setting
+   * holds and send the message asking to carry the plan out. `shown`: what the panel showed. Carries no mode.
+   */
+  | { type: "implementPlan"; shown: ShownEntries };
 
 /** Chat state carried by `message`; `undefined` for a message that must leave the panel's state alone. */
 export function chatStateOf(message: HostMessage): ChatState | undefined {
@@ -382,8 +392,8 @@ export function isReplying(state: ChatState): boolean {
 
 /**
  * Whether Send would act now: a model chosen, no reply in flight, no mode change being written, and no undo running.
- * The one check of the panel's Send, Enter, built-in commands, Send now, Retry, and Continue; the host checks the same
- * conditions again (`mayStartTurn`), since the panel's state may lag.
+ * The one check of the panel's Send, Enter, built-in commands, Send now, Retry, Continue, and "Implement in ... mode";
+ * the host checks the same conditions again (`mayStartTurn`), since the panel's state may lag.
  */
 export function sendWouldAct(state: ChatState): boolean {
   return state.model !== undefined && !isReplying(state) && !state.modePending && !state.undo.running;
@@ -502,7 +512,8 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | undefined {
       return value === undefined || value.length > REPLY_MAX_LENGTH ? undefined : { type: "insertCode", text: value };
     }
     case "retry":
-    case "continueTurn": {
+    case "continueTurn":
+    case "implementPlan": {
       const shown = shownEntries(message.shown);
       return shown ? { type: message.type, shown } : undefined;
     }

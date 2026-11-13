@@ -33,6 +33,7 @@ const CONVERSATION_ID = "0b0d4c1e-8f9a-4c3b-9d2e-1a2b3c4d5e6f";
 /** Conversation fields of a state with nothing saved, and the Ask mode. */
 const unsaved = {
   mode: "ask" as const,
+  settingMode: "ask" as const,
   modePending: false,
   conversationId: CONVERSATION_ID,
   conversations: [],
@@ -3324,6 +3325,77 @@ describe("retry and continue", () => {
     expect(disabled(shown)).toBe(true);
     expect(shown.indexOf(RETRY.slice(1))).toBeLessThan(shown.indexOf(CONTINUE.slice(1)));
     expect(shown.indexOf(CONTINUE.slice(1))).toBeLessThan(shown.indexOf("Undoing changes…"));
+  });
+
+  describe("Implement in ... mode", () => {
+    const plan = { mode: "plan", settingMode: "ask" } as const;
+    const answered = [question, reply("done")];
+    const IMPLEMENT = ">Implement in Ask mode</button>";
+
+    test("names the mode the setting holds", () => {
+      expect(count(html(answered, plan), IMPLEMENT)).toBe(1);
+      const autoEdit = html(answered, { mode: "plan", settingMode: "autoEdit" });
+      expect(count(autoEdit, ">Implement in Auto-edit mode</button>")).toBe(1);
+      expect(autoEdit).not.toContain("Implement in Ask mode");
+    });
+
+    test("is absent outside Plan, during a reply, and when the conversation does not end on a final answer", () => {
+      expect(html(answered)).not.toContain("Implement in");
+      expect(html(answered, { mode: "autoEdit", settingMode: "autoEdit" })).not.toContain("Implement in");
+      for (const status of ["waiting", "streaming", "failed", "stopped"] as const) {
+        expect(html([question, reply(status)], plan)).not.toContain("Implement in");
+      }
+      expect(html([question, reply("halted", { haltReason: "stepLimit" }), readStep], plan)).not.toContain(
+        "Implement in",
+      );
+      expect(html([question, reply("done", { content: "  " })], plan)).not.toContain("Implement in");
+      const summary = reply("done", { summary: true, content: "Summary." });
+      expect(html([...answered, summary], plan)).not.toContain("Implement in");
+      expect(html([], plan)).not.toContain("Implement in");
+    });
+
+    test("sits after Retry and before Undo changes, as a secondary button", () => {
+      const undo = { reply: 1, ranCommand: false, running: false, outcome: undefined };
+      const shown = html(answered, { ...plan, undo });
+      expect(shown).toContain(`<button type="button" class="secondary"${IMPLEMENT}`);
+      expect(shown.indexOf(RETRY)).toBeLessThan(shown.indexOf(IMPLEMENT));
+      expect(shown.indexOf(IMPLEMENT)).toBeLessThan(shown.indexOf(">Undo changes</button>"));
+    });
+
+    test("is disabled when Send would not act", () => {
+      const disabled = (shown: string) => shown.includes('disabled="">Implement in Ask mode<');
+      expect(disabled(html(answered, plan))).toBe(false);
+      expect(disabled(html(answered, { ...plan, modePending: true }))).toBe(true);
+      expect(disabled(html(answered, { ...plan, model: undefined }))).toBe(true);
+      const undo = { reply: 1, ranCommand: false, running: true, outcome: undefined };
+      expect(disabled(html(answered, { ...plan, undo }))).toBe(true);
+    });
+
+    test("a click posts the request with the conversation and entries count, and no mode", async () => {
+      await withPanel(stateWith(true, { entries: answered, ...plan }), async ({ click }) => {
+        await click("Implement in Ask mode");
+        expect(posted).toEqual([{ type: "implementPlan", shown: { conversationId: CONVERSATION_ID, entries: 2 } }]);
+      });
+    });
+
+    test("while Retry's confirmation is open, it sits after Retry anyway and Cancel and still acts", async () => {
+      await withPanel(stateWith(true, { entries: wrote, ...plan }), async ({ host, click }) => {
+        await click("Retry");
+        const labels = [...host.querySelectorAll(".turn-actions button")].map((button) => button.textContent);
+        expect(labels).toEqual(["Retry anyway", "Cancel", "Implement in Ask mode"]);
+        await click("Implement in Ask mode");
+        expect(posted).toEqual([{ type: "implementPlan", shown: { conversationId: CONVERSATION_ID, entries: 4 } }]);
+      });
+    });
+
+    test("while replacing the last turn (Edit), it still shows and acts", async () => {
+      await withPanel(stateWith(true, { entries: answered, ...plan }), async ({ host, click }) => {
+        await click("Edit");
+        expect(host.textContent).toContain("Sending replaces this message and its replies.");
+        await click("Implement in Ask mode");
+        expect(posted).toEqual([{ type: "implementPlan", shown: { conversationId: CONVERSATION_ID, entries: 2 } }]);
+      });
+    });
   });
 
   const wrote: ChatEntry[] = [

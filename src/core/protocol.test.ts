@@ -252,6 +252,18 @@ describe("parseWebviewMessage", () => {
     }
   });
 
+  test("accepts implementPlan with the conversation and entries count shown, and drops it without them", () => {
+    const shown = { conversationId: ID, entries: 2 };
+    expect(parseWebviewMessage({ type: "implementPlan", shown, mode: "autoEdit" })).toEqual({
+      type: "implementPlan",
+      shown,
+    });
+    for (const invalid of [undefined, 2, null, ...badShown]) {
+      expect(parseWebviewMessage({ type: "implementPlan", shown: invalid })).toBeUndefined();
+    }
+    expect(parseWebviewMessage({ type: "implementPlan", entries: 2 })).toBeUndefined();
+  });
+
   test("drops a mode pick of an unknown mode", () => {
     for (const mode of [undefined, "Plan", "Ask", "auto", "", true, 1, ["ask"]]) {
       expect(parseWebviewMessage({ type: "setMode", mode })).toBeUndefined();
@@ -274,6 +286,7 @@ describe("chatStateOf", () => {
     storageProblem: undefined,
     context: { used: 0, size: 32768, known: false },
     mode: "ask",
+    settingMode: "ask",
     modePending: false,
     queue: [],
     undo: { reply: undefined, ranCommand: false, running: false, outcome: undefined },
