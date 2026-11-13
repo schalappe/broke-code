@@ -157,6 +157,12 @@
           "default": 120,
           "minimum": 1,
           "markdownDescription": "%config.commandTimeoutSeconds.description%"
+        },
+        "brokeCode.notifications": {
+          "type": "boolean",
+          "scope": "application",
+          "default": true,
+          "markdownDescription": "%config.notifications.description%"
         }
       }
     }

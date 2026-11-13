@@ -28,6 +28,7 @@ import { CONTINUE_TEXT, type LastTurnActions, lastTurnActions } from "./lastTurn
 import { contextOf, DEFAULT_RATIO, estimateTokens, fillsContext, parseLimits, type TurnLimits } from "./limits";
 import { type LineCounts, lineDiffCount } from "./lineDiff";
 import { composeUserMessage, findMentions, type MentionReader, type MentionResult, type ReadMention } from "./mentions";
+import type { TurnEnd, TurnEvent } from "./notifications";
 import { workspacePath } from "./problems";
 import {
   type ChangedFile,
@@ -169,7 +170,10 @@ export type LimitsSource = { read(): TurnLimits };
  * logged as lost. `undo`: what "Undo changes" needs; absent (the eval), no turn is held and the button never shows.
  * `changeDiffs`: opens and closes the diffs of "Changed files"; absent, the rows still show and a click does nothing.
  * `now`: clock for record times, in milliseconds since the epoch. `providerSupport`: what is known of each model of
- * each provider, read and taught by every chat request; the host shares it with the commit message.
+ * each provider, read and taught by every chat request; the host shares it with the commit message. `turnEvents`:
+ * told each approval request that opens and each turn that ends `done`, `failed`, or `halted` (see `TurnEvent`), so
+ * the host can notify a user who looks elsewhere; one that throws is logged and changes nothing; absent (the eval),
+ * nothing is told.
  */
 export type ChatPorts = {
   apiKeys: KeyStore;
@@ -188,6 +192,7 @@ export type ChatPorts = {
   changeDiffs?: ChangeDiffHost;
   now?: () => number;
   providerSupport: ProviderSupport;
+  turnEvents?: (event: TurnEvent) => void;
 };
 
 /**
@@ -342,6 +347,7 @@ export class ChatController {
   private readonly changeDiffs: ChangeDiffHost | undefined;
   private readonly now: () => number;
   private readonly providerSupport: ProviderSupport;
+  private readonly turnEvents: ((event: TurnEvent) => void) | undefined;
   /**
    * What the last chat request of the conversation shown reported, kept while the next one is in flight. Replaced when
    * a request ends, cleared when the conversation shown or the model is set. Memory only, never saved.
@@ -384,6 +390,7 @@ export class ChatController {
     this.changeDiffs = ports.changeDiffs;
     this.now = ports.now ?? Date.now;
     this.providerSupport = ports.providerSupport;
+    this.turnEvents = ports.turnEvents;
     this.plan = this.workspaceState.get<unknown>(PLAN_KEY) === true;
     // [>]: Instruction files and skills are read only at a send, never just to refresh the display.
     this.systemPrompt = composeSystemPrompt(offeredTools(this.tools.tools, []), [], []);
@@ -1332,7 +1339,7 @@ export class ChatController {
    * then `body` runs with its `ReplyRun`. An unexpected throw inside `body` (a bug, never the provider's failure) ends
    * the reply `failed` with an `internal` error, logged with its stack under `what`, so the composer never stays
    * locked on a reply that will not end. Whatever ended `body`, the reply in flight is then released and navigation
-   * waiting for it goes on.
+   * waiting for it goes on, and the end is told to the events port (`reportEnd`).
    */
   private async runReply(
     provider: Provider,
@@ -1359,15 +1366,45 @@ export class ChatController {
       },
     };
     this.emit();
+    let status: ReplyStatus;
     try {
-      return { status: await body(run), reply: run.reply };
+      status = await body(run);
     } catch (error) {
       console.error(`broke-code: ${what} failed unexpectedly`, error instanceof Error ? error.stack : error);
       run.reply.error = { kind: "internal", message: error instanceof Error ? error.message : String(error) };
-      return { status: run.settle("failed"), reply: run.reply };
+      status = run.settle("failed");
     } finally {
       if (this.reply?.abort === abort) this.reply = undefined;
       markSettled();
+    }
+    this.reportEnd(run.reply);
+    return { status, reply: run.reply };
+  }
+
+  /**
+   * Tell the events port how the turn whose last reply is `reply` ended, once that reply is settled and published. A
+   * turn that ends `stopped` tells nothing, whatever stopped it.
+   */
+  private reportEnd(reply: ChatEntry & { role: "assistant" }): void {
+    const end = turnEnd(reply);
+    if (!end) return;
+    this.reportEvent({
+      kind: "turnEnded",
+      ...end,
+      summary: reply.summary === true,
+      empty: reply.content.trim() === "",
+    });
+  }
+
+  /**
+   * Hand `event` to the events port, if any. A port that throws is logged and otherwise ignored: a notification that
+   * cannot show must never end or change a turn.
+   */
+  private reportEvent(event: TurnEvent): void {
+    try {
+      this.turnEvents?.(event);
+    } catch (error) {
+      console.error("broke-code: could not report a turn event", event.kind, error);
     }
   }
 
@@ -1445,6 +1482,7 @@ export class ChatController {
       this.openApproval = { id, settle };
       this.state.approval = { id, kind: request.kind, tool: request.tool, summary: request.summary };
       this.emit();
+      this.reportEvent({ kind: "approvalRequested", request: request.kind, summary: request.summary });
     });
     const approval: StepApproval | undefined =
       decision.kind === "accept" ? "accepted" : decision.kind === "reject" ? "rejected" : undefined;
@@ -1831,6 +1869,28 @@ function closePreview(preview: Preview | undefined): void {
   Promise.resolve()
     .then(() => preview.close())
     .catch((error: unknown) => console.error("broke-code: could not close an approval preview", error));
+}
+
+/**
+ * How the turn whose last reply is `reply` ended, for the events port; `undefined` for a reply that ended `stopped`,
+ * or is still in flight.
+ */
+function turnEnd(reply: ChatEntry & { role: "assistant" }): TurnEnd | undefined {
+  switch (reply.status) {
+    case "done":
+      return { status: "done" };
+    case "failed":
+      // [>]: Every failed reply carries its error; one without it is a bug of broke-code, reported as such.
+      return {
+        status: "failed",
+        error: reply.error ?? { kind: "internal", message: "the reply failed without an error" },
+      };
+    case "halted":
+      // [>]: `settle` sets the reason with the status (see `ChatEntry.haltReason`); without one there is nothing to say.
+      return reply.haltReason === undefined ? undefined : { status: "halted", reason: reply.haltReason };
+    default:
+      return undefined;
+  }
 }
 
 function waitingReply(): ChatEntry & { role: "assistant" } {

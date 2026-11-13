@@ -3,7 +3,8 @@
  * Activation entry point: wires settings, API keys, mentions (and the diagnostics `@problems`, the git diffs `@diff`,
  * and the selection `@selection` read), read tools, write tools and commands behind their approval, each turn's
  * written files recorded for "Undo changes" and listed in "Changed files" with their diffs, instruction files, skills, turn limits, file index, saved conversations, chat controller, chat view, `broke-code.setApiKey`,
- * `broke-code.addProvider`, `broke-code.generateCommitMessage`, and the editor's entry points into the chat:
+ * `broke-code.addProvider`, `broke-code.generateCommitMessage`, the notifications of a turn that ended or waits while
+ * the chat is not in view, and the editor's entry points into the chat:
  * `broke-code.addSelectionToChat` and the quick fix "Fix with broke-code" (`broke-code.fixDiagnostic`).
  */
 import { homedir } from "node:os";
@@ -35,6 +36,7 @@ import { registerCommitMessageCommand } from "./commitMessage";
 import { askContextSize, LIMIT_SETTINGS, readCommandTimeoutSeconds, readLimits } from "./contextSizes";
 import { WorkspaceFileIndex } from "./fileIndex";
 import { gitDiffs } from "./git";
+import { turnNotifier } from "./notifications";
 import { registerTurnDiffs } from "./turnDiffs";
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -99,6 +101,7 @@ export function activate(context: vscode.ExtensionContext): void {
     undo: { roots: workspaceRoots, hasUnsavedChanges },
     changeDiffs: turnDiffs.diffs,
     providerSupport,
+    turnEvents: turnNotifier(() => view?.visible === true),
   });
   const fileIndex = new WorkspaceFileIndex();
   view = new ChatView(context.extensionUri, controller, {

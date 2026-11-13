@@ -332,6 +332,24 @@ message box, one per paragraph, so you lose nothing you typed. broke-code never 
 `/compact`. A message you queue while `/compact` runs goes out once the summary is done. The queue survives hiding the
 panel but not a window reload.
 
+### Notifications
+
+A turn can run for minutes. When it ends, fails, or stops on a limit while the chat is not in view, VS Code shows a
+notification. It shows one too when a file change or a command waits for your decision, naming the file or the first
+line of the command. The chat is in view when the chat view is visible and the VS Code window has the focus. Working
+in an editor of the same window, with the chat still visible, shows no notification.
+
+Each notification has one button, **Show chat**, which shows the chat and nothing more. You still accept or reject in
+the chat. A turn you stop shows no notification, and neither does **Generate commit message**, which shows its own
+progress. VS Code cannot take a notification back, so one may still be there after you answered in the chat.
+
+To turn the notifications off, set `brokeCode.notifications` to `false` in your **user** settings. A workspace
+`settings.json` cannot change it.
+
+```json
+"brokeCode.notifications": false
+```
+
 ### Retry or continue a turn
 
 Once no reply is in flight, the chat shows **Retry** under the last reply of the conversation. It also shows
