@@ -236,7 +236,7 @@ This file specifies what the chat panel does around a turn: folding, code block 
   next ArrowUp still recalls; the file query the box posts for an `@` token at the caret may still go.
 - The place is forgotten for good when the conversation shown changes (coming back does not resume; the text stays
   as a plain draft), when a send or a built-in command clears the box, when ArrowDown empties it, when a draft is
-  applied (an editor entry point, a returned queued message, Edit), and when the entry at that index is gone or holds
-  another text. Erasing the box by hand does not forget it: ArrowUp in the blank box starts again from the newest
+  applied (an editor entry point, a returned queued message, Edit, Quote), and when the entry at that index is gone
+  or holds another text. Erasing the box by hand does not forget it: ArrowUp in the blank box starts again from the newest
   message. Sending a recalled message is an ordinary send (mentions read again, a `/<skill>` loaded again, a recalled
   Continue sent as plain text, queued during a reply); while Edit's replacing state holds, Send still replaces.

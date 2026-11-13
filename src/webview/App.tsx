@@ -1476,7 +1476,7 @@ function Reasoning({ entry }: { entry: ChatEntry & { role: "assistant" } }) {
  * a built-in command excepted, which stays text in the box; the queue shows under the box (`QueuedMessages`). Queued
  * texts the host returns arrive as `paragraph` drafts, applied like the editor's but without moving the focus.
  * ArrowUp in a blank box recalls the earlier user messages of the conversation shown, and ArrowDown goes back
- * (`composerKeyAction`); the box remembers the place recalled until a send, a draft, or another conversation ends it.
+ * (`composerKeyAction`); the box remembers the place recalled until a send, a draft, a quote, or another conversation ends it.
  */
 function Composer({
   state,
@@ -1636,6 +1636,7 @@ function Composer({
     if (quoting === undefined) return;
     takeQuoting();
     setDraft(quoteDraft({ text, caret, picked }, quoting));
+    setRecalled(undefined);
     input.current?.focus();
   }, [quoting]);
 

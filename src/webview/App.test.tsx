@@ -3581,4 +3581,21 @@ describe("quote a selection of an answer", () => {
     });
   });
 
+  test("a quote applied during a recall ends it", async () => {
+    const entries = [ask("First"), reply("Hello there"), ask("Second"), reply("Done")];
+    await withPanel(stateWith(true, { entries }), async ({ host, textarea, type, press, click }) => {
+      await press("ArrowUp");
+      expect(textarea.value).toBe("Second");
+      await selectText(host, "Hello there");
+      await click("Quote");
+      expect(textarea.value).toBe("Second\n\n> Hello there\n\n");
+      // [>]: Erasing the quote by hand puts back the recalled text; a recall still in progress would go older here.
+      await type("Second");
+      const event = new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true, cancelable: true });
+      await act(async () => {
+        textarea.dispatchEvent(event);
+      });
+      expect({ prevented: event.defaultPrevented, text: textarea.value }).toEqual({ prevented: false, text: "Second" });
+    });
+  });
 });
