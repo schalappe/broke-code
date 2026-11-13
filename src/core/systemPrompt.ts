@@ -60,7 +60,7 @@ const TOOL_RULES: Record<string, string> = {
   run_command:
     "- run_command runs the command with the user's shell, in the workspace folder unless cwd names another, and only once the user approves it: wait for its result. For work over a whole folder tree, such as counting or finding files in every subfolder, one command takes one step where list_files takes one per folder.",
   ask_user:
-    "- When the request names one thing and several match it, such as two functions with the same name, call ask_user before any write instead of changing them all or picking one yourself; otherwise do not ask.",
+    "- When the request names one thing and several distinct ones match it, such as two functions defined with the same name in two files (two different functions, not one), call ask_user to ask which before any write instead of changing them all or picking one yourself; otherwise do not ask.",
   load_skill:
     "- Read a loaded skill's files with read_file, list_files, or search by the absolute path the load_skill result gives. A skill folder outside the workspace is read-only.",
 };
