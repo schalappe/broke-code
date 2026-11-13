@@ -1,7 +1,7 @@
 /**
  * @module text
- * Localized panel text for provider errors (worded in the core, translated here), skipped providers and skills,
- * mentions, tool steps, folded turns, halted agent turns, the outcome of "Undo changes", context usage, and saved
+ * Localized panel text for provider errors and halted agent turns (both worded in the core, translated here), skipped
+ * providers and skills, mentions, tool steps, folded turns, the outcome of "Undo changes", context usage, and saved
  * conversations.
  */
 import * as l10n from "@vscode/l10n";
@@ -23,6 +23,10 @@ import {
 } from "../core/providerError";
 import type { SkippedProvider } from "../core/providers";
 import type { MentionKind } from "../core/reservedMentions";
+import {
+  describeEmptySummary as describeEmptySummaryWith,
+  describeHalt as describeHaltWith,
+} from "../core/turnEndText";
 import { type FoldCounts, STEP_KINDS, type StepKind } from "./turns";
 
 export type { ErrorText };
@@ -178,9 +182,11 @@ function describeTruncated(kind: MentionKind, count: number): string {
 /**
  * The argument a step row shows: a search's pattern, else the path, else the first value given. A `read_file` given a
  * line range shows it after the path as the model wrote it (`big.log 2001-4000`), its missing end left blank
- * (`big.log 2001-`) and its missing start shown as 1 (`big.log 1-50`), so two reads of one file differ.
+ * (`big.log 2001-`) and its missing start shown as 1 (`big.log 1-50`), so two reads of one file differ. An `ask_user`
+ * shows the first line of its question, never its options, whichever the model wrote first; nothing without a question.
  */
 export function mainArgument(name: string, args: Record<string, string>): string | undefined {
+  if (name === "ask_user") return args.question?.trim().split("\n")[0]?.trim() || undefined;
   const { start_line: start, end_line: end } = args;
   if (name === "read_file" && args.path !== undefined && (start !== undefined || end !== undefined)) {
     return `${args.path} ${start ?? 1}-${end ?? ""}`;
@@ -271,26 +277,14 @@ function describeKind(kind: StepKind, shown: number): string {
   }
 }
 
-/**
- * Why an agent turn halted, shown after its last step, or on the reply whose request was not sent. `summary`: the
- * reply is a summary (`/compact`), whose request only a full context halts.
- */
+/** Halt wording with the panel's translator; see `describeHalt` in the core. */
 export function describeHalt(reason: HaltReason, summary = false): string {
-  if (summary && reason === "contextFull") {
-    return l10n.t(
-      "Not summarized: the conversation does not fit the model's context, even with its tool results left out. Start a new chat with New chat.",
-    );
-  }
-  switch (reason) {
-    case "malformedCalls":
-      return l10n.t("Stopped: the model sent three malformed tool calls in a row.");
-    case "stepLimit":
-      return l10n.t("Stopped: the agent turn reached its tool step limit.");
-    case "contextFull":
-      return l10n.t(
-        "Stopped: the conversation fills the model's context. Summarize it with /compact, or start a new chat with New chat.",
-      );
-  }
+  return describeHaltWith(reason, summary, l10n);
+}
+
+/** The empty summary's wording with the panel's translator; see `describeEmptySummary` in the core. */
+export function describeEmptySummary(): string {
+  return describeEmptySummaryWith(l10n);
 }
 
 /**

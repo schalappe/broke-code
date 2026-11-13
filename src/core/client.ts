@@ -15,8 +15,9 @@ import type { LookupFunction } from "node:net";
 import { pipeline, Readable, Transform } from "node:stream";
 import * as zlib from "node:zlib";
 import { charactersOf } from "./limits";
-import { REPLY_MAX_LENGTH, type ReportedUsage } from "./protocol";
-import type { CutOffReason, ProviderError } from "./providerError";
+import type { Translator } from "./modelList";
+import { REPLY_MAX_LENGTH, type ReasoningEffort, type ReportedUsage } from "./protocol";
+import { type CutOffReason, describeProviderError, type ErrorText, type ProviderError } from "./providerError";
 import type { ProviderSupport } from "./providerSupport";
 import type { Provider } from "./providers";
 import { readSseData, SseEventTooLargeError } from "./sse";
@@ -26,6 +27,18 @@ export type ProviderAccess = {
   provider: Provider;
   /** Absent or empty -> no `Authorization` header. */
   apiKey: string | undefined;
+};
+
+/**
+ * The provider and model selected in the chat, that provider's key, and the model's context size in tokens, read when
+ * a command outside the chat (the commit message, "Edit selection") starts its run and kept for that run.
+ */
+/** The chat's provider and model as another command uses them, with the reasoning effort picked for the model. */
+export type ChatModel = {
+  access: ProviderAccess;
+  model: string;
+  contextSize: number;
+  reasoningEffort?: ReasoningEffort;
 };
 
 /** `system`: the system prompt, sent first. Tool results go back as `user` messages, never as the `tool` role (ADR 0001). */
@@ -61,20 +74,22 @@ export type NetworkOptions = {
 };
 
 /**
- * Build streaming chat request. Body: `model`, `messages`, `stream: true`, and, when `askUsage`,
- * `stream_options: { include_usage: true }`, which asks the provider to end the stream with the reply's token counts.
- * No `tools` key, ever.
+ * Build streaming chat request. Body: `model`, `messages`, `stream: true`, `reasoning_effort` when one is picked, and,
+ * when `askUsage`, `stream_options: { include_usage: true }`, which asks the provider to end the stream with the
+ * reply's token counts. No `tools` key, ever.
  */
 export function buildChatRequest(
   access: ProviderAccess,
   model: string,
   messages: ChatMessage[],
   askUsage: boolean,
+  reasoningEffort?: ReasoningEffort,
 ): HttpRequest {
   const body = {
     model,
     messages: messages.map(({ role, content }) => ({ role, content })),
     stream: true,
+    ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
     ...(askUsage ? { stream_options: { include_usage: true } } : {}),
   };
   return {
@@ -110,6 +125,11 @@ export async function listModels(access: ProviderAccess, network: NetworkOptions
 export type StreamChatOptions = {
   model: string;
   messages: ChatMessage[];
+  /**
+   * Sent as `reasoning_effort`; absent sends no field. A provider that rejects it answers with an error the user sees,
+   * never retried without it: the user picked it, and Default is one click away.
+   */
+  reasoningEffort?: ReasoningEffort;
   /** Abort -> outcome `stopped`, never `cutOff`. */
   signal: AbortSignal;
   /**
@@ -123,6 +143,33 @@ export type StreamChatOptions = {
   onReasoning: (text: string) => void;
   network?: NetworkOptions;
 };
+
+/** One reply read whole: its answer, a stop (abort or Cancel), or a provider error in the chat's wording. */
+export type CollectedReply = { kind: "reply"; text: string } | { kind: "stopped" } | { kind: "error"; text: ErrorText };
+
+/**
+ * Send one request through `stream` (`streamChat`, or a test double) and collect its answer whole, for a request
+ * outside the chat; the reasoning is dropped. An aborted `signal` is `stopped` whatever the outcome; a failure is
+ * worded by `describeProviderError`.
+ */
+export async function collectReply(
+  stream: (access: ProviderAccess, options: StreamChatOptions) => Promise<ChatOutcome>,
+  access: ProviderAccess,
+  options: Omit<StreamChatOptions, "onContent" | "onReasoning">,
+  l10n: Translator,
+): Promise<CollectedReply> {
+  let reply = "";
+  const outcome = await stream(access, {
+    ...options,
+    onContent: (text) => {
+      reply += text;
+    },
+    onReasoning: () => {},
+  });
+  if (options.signal.aborted || outcome.status === "stopped") return { kind: "stopped" };
+  if (outcome.status === "failed") return { kind: "error", text: describeProviderError(outcome.error, l10n) };
+  return { kind: "reply", text: reply };
+}
 
 /**
  * Stream chat reply, split into reasoning and answer. Reasoning: `delta.reasoning` (Ollama),
@@ -205,11 +252,16 @@ const FIELD_REFUSAL_STATUSES = new Set([400, 422]);
  * a request with the field marks it `accepts`. Any other answer is sent once, and a second failure is reported as is.
  */
 async function openStream(access: ProviderAccess, options: StreamChatOptions): Promise<Sent> {
-  const { model, messages, signal, support } = options;
+  const { model, messages, signal, support, reasoningEffort } = options;
   const { provider } = access;
   const network = options.network ?? {};
   const askUsage = support.usageField(provider, model) !== "refuses";
-  const exchanged = await exchange(access, buildChatRequest(access, model, messages, askUsage), network, signal);
+  const exchanged = await exchange(
+    access,
+    buildChatRequest(access, model, messages, askUsage, reasoningEffort),
+    network,
+    signal,
+  );
   if (!exchanged.ok) return exchanged;
   const { response } = exchanged;
   // [!]: Recognized by its status alone, before `classify` looks at the encoding. The model's state is read again now,
@@ -229,7 +281,7 @@ async function openStream(access: ProviderAccess, options: StreamChatOptions): P
     const detail = read.ok ? errorDetail(read.text) : "";
     return { ok: false, error: { kind: "rejected", provider: provider.name, status: response.status, detail } };
   }
-  const resent = await send(access, buildChatRequest(access, model, messages, false), network, signal);
+  const resent = await send(access, buildChatRequest(access, model, messages, false, reasoningEffort), network, signal);
   if (resent.ok) support.usageFieldRefused(provider, model);
   return resent;
 }

@@ -1,18 +1,21 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   BENCH_MODELS,
+  benchTarget,
   describeSandboxFailure,
   dumpLine,
   modelsProblem,
   OLLAMA_URL,
   parseBenchArgs,
   sandboxProblem,
+  startLine,
   trimIncompleteLine,
 } from "./bench";
-import { CREATE_SCENARIO, SCENARIOS } from "./scenarios";
+import { playScenario } from "./run";
+import { ASK_SCENARIO, CREATE_SCENARIO, judge, SCENARIOS } from "./scenarios";
 
 describe("parseBenchArgs", () => {
   test("defaults to both models, every scenario, and 10 runs", () => {
@@ -22,6 +25,7 @@ describe("parseBenchArgs", () => {
       runs: 10,
       dump: undefined,
       baseUrl: OLLAMA_URL,
+      withoutAskUser: false,
     });
     expect(BENCH_MODELS).toEqual(["qwen3.8:27b", "gemma4:26b-a4b-it-qat"]);
   });
@@ -33,7 +37,17 @@ describe("parseBenchArgs", () => {
       runs: 3,
       dump: "/tmp/runs.jsonl",
       baseUrl: OLLAMA_URL,
+      withoutAskUser: false,
     });
+  });
+
+  test("with --no-ask-user, leaves the tool out and judges the ask scenario on the workspace alone", () => {
+    const { scenarios, withoutAskUser } = parseBenchArgs(["--no-ask-user", "--scenario", "ask"]);
+    expect(withoutAskUser).toBe(true);
+    expect(scenarios).toHaveLength(1);
+    expect(scenarios[0]).toMatchObject({ name: "ask", files: ASK_SCENARIO.files, writes: ASK_SCENARIO.writes });
+    expect(scenarios[0]?.check).toBeUndefined();
+    expect(parseBenchArgs(["--scenario", "ask"]).scenarios).toEqual([ASK_SCENARIO]);
   });
 
   test("takes another server's base URL, trailing slashes dropped, and refuses anything else", () => {
@@ -58,7 +72,7 @@ describe("parseBenchArgs", () => {
 
   test("refuses a scenario the bench does not hold, naming those it does", () => {
     expect(() => parseBenchArgs(["--scenario", "reed"])).toThrow(
-      '--scenario takes one of read, edit, create, skill, command, slash, hidden, range, not "reed".',
+      '--scenario takes one of read, edit, create, skill, command, slash, hidden, range, ask, not "reed".',
     );
   });
 
@@ -219,4 +233,54 @@ describe("trimIncompleteLine", () => {
       expect(await trimIncompleteLine(dump)).toBe(0);
       expect(await readFile(dump, "utf8")).toBe('{"run":1}\n');
     }));
+});
+
+describe("the --no-ask-user flag, from the command line to the run", () => {
+  type ChatRequest = { messages: { role: string; content: string }[] };
+  const systemPrompts: string[] = [];
+  let replies: string[] = [];
+  const server = Bun.serve({
+    port: 0,
+    async fetch(request) {
+      if (new URL(request.url).pathname.endsWith("/models")) return Response.json({ data: [{ id: "m" }] });
+      const body: ChatRequest = await request.json();
+      systemPrompts.push(body.messages[0]?.content ?? "");
+      const content = replies.shift() ?? "script exhausted";
+      const event = `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`;
+      return new Response(`${event}data: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
+    },
+  });
+  afterAll(() => server.stop(true));
+  const edit =
+    "<edit_file>\n<path>src/parcels/labels.py</path>\n<old>def build_label(</old>\n<new>def make_label(</new>\n</edit_file>";
+
+  /** Plays `ask` once as `bun run eval` would with `flags`: a rename in the answered file, without asking. */
+  async function renameWithoutAsking(flags: string[]) {
+    const options = parseBenchArgs(["--base-url", `http://localhost:${server.port}/v1`, "--scenario", "ask", ...flags]);
+    const scenario = options.scenarios[0];
+    if (scenario === undefined) throw new Error("no ask scenario");
+    systemPrompts.length = 0;
+    replies = [edit, "Renamed."];
+    const parent = await mkdtemp(join(tmpdir(), "broke-code-bench-flag-"));
+    try {
+      const outcome = await playScenario(scenario, benchTarget(options, "m", undefined), parent);
+      return { prompt: systemPrompts[0] ?? "", verdict: judge(scenario, outcome.entries, outcome.after) };
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  }
+
+  test("under the flag, ask_user is absent from the prompt and ask is judged on the workspace alone", async () => {
+    const { prompt, verdict } = await renameWithoutAsking(["--no-ask-user"]);
+    expect(prompt).not.toContain("ask_user");
+    expect(verdict).toEqual({ pass: true });
+    expect(startLine(parseBenchArgs(["--no-ask-user"]))).toEndWith(", ask_user not offered.");
+  });
+
+  test("without the flag, ask_user is in the prompt and a rename without asking is wrongTool", async () => {
+    const { prompt, verdict } = await renameWithoutAsking([]);
+    expect(prompt).toContain("## ask_user");
+    expect(verdict).toMatchObject({ pass: false, category: "wrongTool" });
+    expect(startLine(parseBenchArgs([]))).not.toContain("ask_user");
+  });
 });

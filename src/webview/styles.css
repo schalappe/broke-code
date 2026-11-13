@@ -1554,6 +1554,43 @@ div.step-row:has(.step-status.loading)::before {
   min-width: 0;
 }
 
+/* The question in full, its options, then the field and Answer: Shift+Tab from the message box meets them in reverse. */
+.question {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bc-space-3);
+  min-width: 0;
+  margin: var(--bc-space-2) 0 0;
+  padding: 0;
+  border: none;
+}
+
+/* The model's own line breaks are kept; a long word or path wraps instead of widening the block. */
+.question-text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* One option per line at the block's width, so a long option wraps whole and each is a full-width target. */
+.question-options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bc-space-2);
+  min-width: 0;
+}
+
+.question-option {
+  min-height: var(--bc-row);
+  text-align: start;
+  overflow-wrap: anywhere;
+}
+
+.question-field {
+  flex: 1;
+  min-width: 0;
+}
+
 /* On the negative block the primary button is the panel's own ground, which holds in every theme, high contrast
    included, where the theme's button has no fill. */
 .decision .actions button:not(.secondary) {

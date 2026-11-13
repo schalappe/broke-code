@@ -30,6 +30,11 @@ written and commands run by the removed steps stay as they are, so the chat asks
 under the last reply while no `/compact` summary follows the last user message.
 _Avoid_: regenerate, redo, rerun
 
+**Final answer**:
+The last entry of a conversation when it is a reply that is not a summary, ended `done`, and holds text. While Plan is
+on, it carries the "Implement in ... mode" button (see **Mode**).
+_Avoid_: last reply, plan entry
+
 **Continue**:
 A new user message, shown as "Continue", that asks the model to carry on from where its last agent turn stopped:
 offered after **Stop**, the step limit, or three malformed calls, never after a context-full stop. It removes nothing.
@@ -58,6 +63,13 @@ the chat while the agent turn waits; a rejection, with its optional reason, goes
 result. A setting can approve writes without asking, never commands.
 _Avoid_: confirmation, permission, consent
 
+**Question**:
+One question the model asks the user inside an agent turn with the `ask_user` tool, when only the user can settle a
+choice. The chat shows it where an **approval** shows, with the options the model proposes and a field for another
+answer, and the turn waits; the answer goes back to the model as the call's result. Stop and leaving the conversation
+cancel it. Not a **queued message**: a message sent from the message box meanwhile waits for the turn to end.
+_Avoid_: prompt, clarification, the user's question (that is a message)
+
 **Undo changes**:
 The chat's way back from the writes of an agent turn: under the last reply of the latest turn of the conversation
 shown that wrote a file, it puts each file that turn wrote back to its text from before the turn, or deletes a file the
@@ -76,10 +88,12 @@ _Avoid_: modified files, diff list, file changes
 
 **Mode**:
 What an agent turn may do, shown and picked in the message box: **Ask** waits for the user's approval of each write;
-**Auto-edit** approves writes without asking; **Plan** offers the read tools only, so the model answers with a plan and
-nothing is written or run. Ask and Auto-edit are the user setting `brokeCode.autoApproveWrites`, so they apply to every
+**Auto-edit** approves writes without asking; **Plan** offers the tools that change nothing (the read tools and `ask_user`, the **question**), so the model answers
+with a plan and nothing is written or run. Ask and Auto-edit are the user setting `brokeCode.autoApproveWrites`, so they apply to every
 window; Plan is kept per workspace and wins over the setting while on. A turn reads Plan when it starts. Commands wait
-for Run in every mode that offers them.
+for Run in every mode that offers them. Under a plan's **final answer**, "Implement in Ask mode" or "Implement in
+Auto-edit mode" leaves Plan for the mode the setting holds, without writing the setting, and sends "Implement the plan
+above."
 _Avoid_: agent mode, approval mode, permission mode
 
 **Queued message**:
@@ -104,6 +118,11 @@ _Avoid_: snippet, preview, extract
 The text a model writes before its answer to work the problem out, shown collapsed in the chat, never sent back
 to the model, and never read for body tool calls.
 _Avoid_: thoughts, chain of thought, thinking
+
+**Reasoning effort**:
+How much reasoning the user asks the selected model for (Low, Medium, or High), sent as `reasoning_effort`, or
+Default, which sends nothing and leaves it to the provider. Picked in the panel header, remembered per model.
+_Avoid_: thinking budget, effort level
 
 **Code block**:
 A block of code in an assistant answer's Markdown, fenced or indented. Once its text is final it has Copy and Insert
@@ -193,3 +212,12 @@ A commit message the model writes from the staged diff of a git repository, at t
 view, with the provider and model selected in the chat. It is written to the commit input box once the reply has
 ended; it is no agent turn and belongs to no conversation.
 _Avoid_: AI commit, commit suggestion, auto-commit
+
+## Editor
+
+**Edit selection**:
+A rewrite of the editor's selection by the model selected in the chat, in one request, from an instruction the user
+types, or the fixed instruction of a preset: "Refactor selection", "Add documentation comments", "Add types". It shows as a diff with Accept and Reject; Accept edits the open document, without saving, in one Undo, and only when nothing changed at or
+above the end of the selection since the command started. It is no
+agent turn and belongs to no conversation.
+_Avoid_: inline edit, inline completion, quick edit

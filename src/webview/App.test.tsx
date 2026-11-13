@@ -21,6 +21,7 @@ const {
   Header,
   HistoryPanel,
   MentionMenu,
+  QuestionControls,
   SlashMenu,
   Warnings,
 } = await import("./App");
@@ -33,6 +34,7 @@ const CONVERSATION_ID = "0b0d4c1e-8f9a-4c3b-9d2e-1a2b3c4d5e6f";
 /** Conversation fields of a state with nothing saved, and the Ask mode. */
 const unsaved = {
   mode: "ask" as const,
+  settingMode: "ask" as const,
   modePending: false,
   conversationId: CONVERSATION_ID,
   conversations: [],
@@ -54,6 +56,7 @@ function render(reply: Omit<Reply, "role">): string {
     provider: "P",
     models: { status: "loaded", models: ["m"] },
     model: "m",
+    reasoningEffort: undefined,
     entries: [
       { role: "user", content: "Hi", mentions: [] },
       { role: "assistant", ...reply },
@@ -119,6 +122,7 @@ describe("agent turn", () => {
       provider: "P",
       models: { status: "loaded", models: ["m"] },
       model: "m",
+      reasoningEffort: undefined,
       entries: [{ role: "user", content: "Hi", mentions: [] }, ...entries],
     };
     return renderToStaticMarkup(<App state={state} language="en" />);
@@ -776,6 +780,205 @@ describe("approval", () => {
   });
 });
 
+describe("question", () => {
+  const answer =
+    "Two match.\n<ask_user>\n<options>src/a.ts\nsrc/b.ts\nBoth</options>\n<question>Which load do you mean?\nBoth files define one.</question>\n</ask_user>";
+  // [>]: The options come first, as a model may write them: the row still shows the question.
+  const asking: ChatEntry = {
+    role: "assistant",
+    reasoning: "",
+    content: answer,
+    status: "streaming",
+    call: {
+      name: "ask_user",
+      args: { options: "src/a.ts\nsrc/b.ts\nBoth", question: "Which load do you mean?\nBoth files define one." },
+      start: 11,
+      end: answer.length,
+    },
+  };
+  const question = {
+    id: 9,
+    question: "Which load do you mean?\nBoth files define one.",
+    options: ["src/a.ts", "src/b.ts", "Both"],
+  };
+  const user: ChatEntry = { role: "user", content: "Rename load", mentions: [] };
+  const turn = (entries: ChatEntry[], open = true) =>
+    renderToStaticMarkup(
+      <App state={stateWith(true, { entries: [user, ...entries], ...(open ? { question } : {}) })} language="en" />,
+    );
+  const controls = (text: string, asked = question) => QuestionControls({ question: asked, text, setText: () => {} });
+  const FOCUSABLE = "button, select, textarea, input, a[href], summary";
+
+  test("an open question shows its row, the question in full, its three options, the field, and Answer, beside Stop", () => {
+    const html = turn([asking]);
+    expect(html).toContain('<div class="answer"><p>Two match.</p></div><div class="decision"><div class="step">');
+    expect(html).toContain("waiting for your answer");
+    expect(html).not.toContain("running…");
+    expect(html).toContain('<p class="question-text">Which load do you mean?\nBoth files define one.</p>');
+    expect(html.match(/<button type="button" class="secondary question-option">[^<]*<\/button>/g)).toEqual([
+      '<button type="button" class="secondary question-option">src/a.ts</button>',
+      '<button type="button" class="secondary question-option">src/b.ts</button>',
+      '<button type="button" class="secondary question-option">Both</button>',
+    ]);
+    expect(html).toContain('maxLength="4000"');
+    expect(html).toContain('placeholder="Your answer"');
+    expect(html).toContain(">Answer<");
+    expect(html).toContain(">Stop<");
+  });
+
+  test("the row shows the first line of a two-line question, whatever the order of the arguments", () => {
+    const html = turn([asking]);
+    expect(html).toContain(
+      '<span class="step-tool">ask_user</span><span class="step-arg">Which load do you mean?</span>',
+    );
+    const answered: ChatEntry = {
+      role: "tool",
+      name: "ask_user",
+      args: asking.role === "assistant" ? asking.call!.args : {},
+      status: "ok",
+      text: "The user answered: src/b.ts",
+    };
+    const done = turn([{ ...asking, status: "done" }, answered], false);
+    expect(done).toContain(
+      '<span class="step-tool">ask_user</span><span class="step-arg">Which load do you mean?</span>',
+    );
+    expect(done).toContain("<code>The user answered: src/b.ts</code>");
+    expect(done).not.toContain('class="decision"');
+  });
+
+  test("an open question without options shows the field and Answer only", () => {
+    const html = renderToStaticMarkup(
+      <App
+        state={stateWith(true, { entries: [user, asking], question: { ...question, options: [] } })}
+        language="en"
+      />,
+    );
+    expect(html).not.toContain("question-option");
+    expect(html).toContain(">Answer<");
+  });
+
+  test("Answer is disabled while the field is empty or blank", () => {
+    expect(button(controls(""), "Answer").props.disabled).toBe(true);
+    expect(button(controls("  \t "), "Answer").props.disabled).toBe(true);
+    expect(button(controls("c.ts"), "Answer").props.disabled).toBe(false);
+    expect(turn([asking])).toMatch(/<button type="button" disabled="">Answer<\/button>/);
+  });
+
+  test("an option click answers with that option's text; Answer sends the field's text, trimmed", () => {
+    button(controls(""), "src/b.ts").props.onClick!();
+    button(controls("  the one in c.ts \n"), "Answer").props.onClick!();
+    expect(posted).toEqual([
+      { type: "answer", id: 9, text: "src/b.ts" },
+      { type: "answer", id: 9, text: "the one in c.ts" },
+    ]);
+  });
+
+  test("Enter in the field answers; a blank field, other keys, and Enter while composing (IME) do not", () => {
+    const pressIn = (text: string) => {
+      const field = elements(controls(text)).find((element) => element.type === "input");
+      if (!field) throw new Error("no answer field");
+      const onKeyDown = field.props.onKeyDown as (event: unknown) => void;
+      return (key: string, isComposing = false) =>
+        onKeyDown({ key, nativeEvent: { isComposing }, preventDefault: () => prevented.push(key) });
+    };
+    const prevented: string[] = [];
+
+    pressIn(" c.ts ")("a");
+    pressIn(" c.ts ")("Escape");
+    pressIn(" c.ts ")("Enter", true);
+    expect(posted).toEqual([]);
+    expect(prevented).toEqual([]);
+
+    pressIn("   ")("Enter");
+    expect(posted).toEqual([]);
+    pressIn(" c.ts ")("Enter");
+    expect(posted).toEqual([{ type: "answer", id: 9, text: "c.ts" }]);
+    expect(prevented).toEqual(["Enter", "Enter"]);
+  });
+
+  test("a question opening leaves focus where it was, in the message box or on a button", async () => {
+    const running = stateWith(true, { entries: [user, asking] });
+    const open = stateWith(true, { entries: [user, asking], question });
+    const focusedAfterOpening = async (pick: (panel: Panel) => HTMLElement) => {
+      let kept = false;
+      await withPanel(running, async (panel) => {
+        const target = pick(panel);
+        target.focus();
+        expect(document.activeElement).toBe(target);
+        await panel.show(open);
+        expect(panel.host.querySelector(".question-field")).not.toBeNull();
+        kept = document.activeElement === target;
+      });
+      return kept;
+    };
+
+    expect(await focusedAfterOpening(({ textarea }) => textarea)).toBe(true);
+    expect(
+      await focusedAfterOpening(({ host }) => {
+        const history = [...host.querySelectorAll("button")].find((element) => element.textContent === "History");
+        if (!history) throw new Error("no History button");
+        return history;
+      }),
+    ).toBe(true);
+  });
+
+  test("the tab order is the options, the field, then Answer, with nothing focusable before the message box", async () => {
+    const queue = [{ id: 1, text: "then run the tests", mentions: [] }];
+    const state = stateWith(true, { entries: [user, asking], question, queue });
+    await withPanel(state, async ({ host, textarea, fill }) => {
+      const field = host.querySelector<HTMLInputElement>("input.question-field");
+      if (!field) throw new Error("no answer field");
+      // [>]: A disabled Answer is out of the tab order; typed text puts it back, last before the message box.
+      await fill(field, "c.ts");
+      const focusable = [...host.querySelectorAll<HTMLElement>(FOCUSABLE)];
+      const box = focusable.indexOf(textarea);
+      const block = focusable.slice(box - 5, box);
+      expect(block.map((element) => element.textContent)).toEqual(["src/a.ts", "src/b.ts", "Both", "", "Answer"]);
+      expect(block[3]).toBe(field);
+      expect(block.every((element) => element.closest(".decision") !== null)).toBe(true);
+      expect(focusable.findIndex((element) => element.closest(".queue"))).toBeGreaterThan(box);
+    });
+  });
+
+  test("the block belongs to the reply in flight only, never to a stopped one", () => {
+    const html = turn([{ ...asking, status: "stopped" }]);
+    expect(html).not.toContain(">Answer<");
+    expect(html).toContain("stopped, no result");
+  });
+
+  test("without an open question, the call shows as running, with no block", () => {
+    const html = turn([asking], false);
+    expect(html).toContain("running…");
+    expect(html).not.toContain('class="decision"');
+  });
+
+  test("the text typed survives opening and closing History, and Answer still carries it", async () => {
+    const state = stateWith(true, { entries: [user, asking], question });
+    await withPanel(state, async ({ host, fill, click }) => {
+      const field = host.querySelector<HTMLInputElement>("input.question-field");
+      if (!field) throw new Error("no answer field");
+      await fill(field, "the one in c.ts");
+      await click("History");
+      await click("History");
+
+      expect(host.querySelector<HTMLInputElement>("input.question-field")?.value).toBe("the one in c.ts");
+      await click("Answer");
+      expect(posted).toEqual([{ type: "answer", id: 9, text: "the one in c.ts" }]);
+    });
+  });
+
+  test("a new question starts with an empty field", async () => {
+    const state = stateWith(true, { entries: [user, asking], question });
+    await withPanel(state, async ({ host, fill, show }) => {
+      const field = host.querySelector<HTMLInputElement>("input.question-field");
+      if (!field) throw new Error("no answer field");
+      await fill(field, "the one in c.ts");
+      await show({ ...state, question: { ...question, id: 10 } });
+      expect(host.querySelector<HTMLInputElement>("input.question-field")?.value).toBe("");
+    });
+  });
+});
+
 describe("error actions", () => {
   /** Panel markup for a model listing that failed with `error`. */
   function failedListing(error: ProviderError): string {
@@ -787,6 +990,7 @@ describe("error actions", () => {
       provider: "P",
       models: { status: "failed", error },
       model: undefined,
+      reasoningEffort: undefined,
       entries: [],
     };
     return renderToStaticMarkup(<App state={state} language="en" />);
@@ -821,6 +1025,7 @@ describe("mentions", () => {
       provider: "P",
       models: { status: "loaded", models: ["m"] },
       model: "m",
+      reasoningEffort: undefined,
       entries: [{ role: "user", content: "look", mentions, ...(skill ? { skill } : {}) }],
     };
     return renderToStaticMarkup(<App state={state} language="en" />);
@@ -1114,6 +1319,7 @@ function stateWith(configured: boolean, overrides: Partial<ChatState> = {}): Cha
     provider: configured ? "P" : undefined,
     models: configured ? { status: "loaded", models: ["m"] } : { status: "noProvider" },
     model: configured ? "m" : undefined,
+    reasoningEffort: undefined,
     entries: [],
     ...overrides,
   };
@@ -1276,6 +1482,7 @@ describe("conversation history", () => {
       provider: "P",
       models: { status: "loaded", models: ["m"] },
       model: "m",
+      reasoningEffort: undefined,
       entries: [],
     };
     const html = renderToStaticMarkup(<App state={state} language="en" />);
@@ -2452,6 +2659,20 @@ describe("drafts from the editor", () => {
   });
 });
 
+describe("reasoning effort picker", () => {
+  test("offers Default and the three efforts once a model is selected, showing the pick", () => {
+    const html = renderToStaticMarkup(<App state={stateWith(true, { reasoningEffort: "high" })} language="en" />);
+    expect(html).toContain('aria-label="Reasoning effort"');
+    for (const label of ["Default effort", "Low effort", "Medium effort", "High effort"]) expect(html).toContain(label);
+    expect(html).toContain('<option value="high" selected="">High effort</option>');
+  });
+
+  test("is absent without a model", () => {
+    const html = renderToStaticMarkup(<App state={stateWith(true, { model: undefined })} language="en" />);
+    expect(html).not.toContain('aria-label="Reasoning effort"');
+  });
+});
+
 describe("context usage", () => {
   const usage = { used: 12345, size: 32768 };
 
@@ -2493,6 +2714,7 @@ describe("context usage", () => {
     const state = stateWith(true, {
       models: { status: "loading" },
       model: undefined,
+      reasoningEffort: undefined,
       context: { ...usage, known: false },
     });
     const html = renderToStaticMarkup(<App state={state} language="en" />);
@@ -3324,6 +3546,77 @@ describe("retry and continue", () => {
     expect(disabled(shown)).toBe(true);
     expect(shown.indexOf(RETRY.slice(1))).toBeLessThan(shown.indexOf(CONTINUE.slice(1)));
     expect(shown.indexOf(CONTINUE.slice(1))).toBeLessThan(shown.indexOf("Undoing changes…"));
+  });
+
+  describe("Implement in ... mode", () => {
+    const plan = { mode: "plan", settingMode: "ask" } as const;
+    const answered = [question, reply("done")];
+    const IMPLEMENT = ">Implement in Ask mode</button>";
+
+    test("names the mode the setting holds", () => {
+      expect(count(html(answered, plan), IMPLEMENT)).toBe(1);
+      const autoEdit = html(answered, { mode: "plan", settingMode: "autoEdit" });
+      expect(count(autoEdit, ">Implement in Auto-edit mode</button>")).toBe(1);
+      expect(autoEdit).not.toContain("Implement in Ask mode");
+    });
+
+    test("is absent outside Plan, during a reply, and when the conversation does not end on a final answer", () => {
+      expect(html(answered)).not.toContain("Implement in");
+      expect(html(answered, { mode: "autoEdit", settingMode: "autoEdit" })).not.toContain("Implement in");
+      for (const status of ["waiting", "streaming", "failed", "stopped"] as const) {
+        expect(html([question, reply(status)], plan)).not.toContain("Implement in");
+      }
+      expect(html([question, reply("halted", { haltReason: "stepLimit" }), readStep], plan)).not.toContain(
+        "Implement in",
+      );
+      expect(html([question, reply("done", { content: "  " })], plan)).not.toContain("Implement in");
+      const summary = reply("done", { summary: true, content: "Summary." });
+      expect(html([...answered, summary], plan)).not.toContain("Implement in");
+      expect(html([], plan)).not.toContain("Implement in");
+    });
+
+    test("sits after Retry and before Undo changes, as a secondary button", () => {
+      const undo = { reply: 1, ranCommand: false, running: false, outcome: undefined };
+      const shown = html(answered, { ...plan, undo });
+      expect(shown).toContain(`<button type="button" class="secondary"${IMPLEMENT}`);
+      expect(shown.indexOf(RETRY)).toBeLessThan(shown.indexOf(IMPLEMENT));
+      expect(shown.indexOf(IMPLEMENT)).toBeLessThan(shown.indexOf(">Undo changes</button>"));
+    });
+
+    test("is disabled when Send would not act", () => {
+      const disabled = (shown: string) => shown.includes('disabled="">Implement in Ask mode<');
+      expect(disabled(html(answered, plan))).toBe(false);
+      expect(disabled(html(answered, { ...plan, modePending: true }))).toBe(true);
+      expect(disabled(html(answered, { ...plan, model: undefined }))).toBe(true);
+      const undo = { reply: 1, ranCommand: false, running: true, outcome: undefined };
+      expect(disabled(html(answered, { ...plan, undo }))).toBe(true);
+    });
+
+    test("a click posts the request with the conversation and entries count, and no mode", async () => {
+      await withPanel(stateWith(true, { entries: answered, ...plan }), async ({ click }) => {
+        await click("Implement in Ask mode");
+        expect(posted).toEqual([{ type: "implementPlan", shown: { conversationId: CONVERSATION_ID, entries: 2 } }]);
+      });
+    });
+
+    test("while Retry's confirmation is open, it sits after Retry anyway and Cancel and still acts", async () => {
+      await withPanel(stateWith(true, { entries: wrote, ...plan }), async ({ host, click }) => {
+        await click("Retry");
+        const labels = [...host.querySelectorAll(".turn-actions button")].map((button) => button.textContent);
+        expect(labels).toEqual(["Retry anyway", "Cancel", "Implement in Ask mode"]);
+        await click("Implement in Ask mode");
+        expect(posted).toEqual([{ type: "implementPlan", shown: { conversationId: CONVERSATION_ID, entries: 4 } }]);
+      });
+    });
+
+    test("while replacing the last turn (Edit), it still shows and acts", async () => {
+      await withPanel(stateWith(true, { entries: answered, ...plan }), async ({ host, click }) => {
+        await click("Edit");
+        expect(host.textContent).toContain("Sending replaces this message and its replies.");
+        await click("Implement in Ask mode");
+        expect(posted).toEqual([{ type: "implementPlan", shown: { conversationId: CONVERSATION_ID, entries: 2 } }]);
+      });
+    });
   });
 
   const wrote: ChatEntry[] = [

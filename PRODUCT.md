@@ -41,14 +41,16 @@ supports them (ADR 0001), so one contract covers the internal service and Ollama
 - Small models with small contexts (32,768 tokens assumed when unknown): context usage, left-out tool results,
   `/compact`, and automatic compaction are everyday parts of use, not edge cases.
 - The workspace's own conventions: `AGENTS.md` instruction files and Agent Skills under `.agents/skills/`.
-- Entry points outside the chat: "Add selection to chat", the quick fix "Fix with broke-code", and "Generate commit
-  message" in Source Control.
+- Entry points outside the chat: the editor's "broke-code" submenu ("Add selection to chat" and "Edit selection", a
+  one-request rewrite of the selection shown as a diff, ADR 0007, with its presets "Refactor selection", "Add
+  documentation comments", and "Add types"), the quick fix "Fix with broke-code", and "Generate
+  commit message" in Source Control.
 
 ## Capabilities and Constraints
 
-- Tools: `read_file`, `list_files`, `search`, `write_file`, `edit_file`, `run_command`, `load_skill`.
+- Tools: `read_file`, `list_files`, `search`, `write_file`, `edit_file`, `run_command`, `load_skill`, `ask_user`.
 - Three modes of one agent: Ask (each write waits for Accept or Reject), Auto-edit (writes are accepted at once),
-  Plan (read tools only). A command always waits for Run (ADR 0002, ADR 0005).
+  Plan (the read tools and `ask_user` only). A command always waits for Run (ADR 0002, ADR 0005).
 - The way back: "Undo changes" for a turn's writes, Retry, Continue, and Edit on the last turn.
 - Mentions (`@file`, `@folder`, `@problems`, `@diff`, `@selection`), slash commands (`/new`, `/model`, `/compact`,
   skills), queued messages, saved conversations per workspace with History.
@@ -59,7 +61,8 @@ supports them (ADR 0001), so one contract covers the internal service and Ollama
   component kit, no Tailwind. Every color comes from the active VS Code theme (see `DESIGN.md`).
 - Out of scope for v1, by maintainer decision: inline completion, multi-agent modes, MCP, code indexing and
   embeddings, a browser tool, git checkpoints, native or hybrid tool calling, skill directories other than
-  `.agents`, `CLAUDE.md`, `/clear`, `/help`.
+  `.agents`, `CLAUDE.md`, `/clear`, `/help`. "Edit selection" is not inline completion: nothing is suggested while
+  the user types (ADR 0007).
 - The domain vocabulary is in `GLOSSARY.md`; the decisions are in `docs/adr/`.
 
 ## Brand Commitments
@@ -70,8 +73,8 @@ supports them (ADR 0001), so one contract covers the internal service and Ollama
 
 ## Evidence on Hand
 
-- The Ollama eval bench (`bun run eval`): seven scenarios, 10 runs each, on `qwen3.8:27b` and
-  `gemma4:26b-a4b-it-qat`; 140 of 140 runs passed on edc18b5. Results per commit are in `docs/eval.md`.
+- The Ollama eval bench (`bun run eval`): nine scenarios, 10 runs each, on `qwen3.8:27b` and
+  `gemma4:26b-a4b-it-qat`; 180 of 180 runs passed on 6c690db. Results per commit are in `docs/eval.md`.
 - The extension is published on Open VSX and the Visual Studio Marketplace.
 - Nothing else exists: no testimonial, user count, benchmark against other extensions, or customer name. Future
   work must not invent one.

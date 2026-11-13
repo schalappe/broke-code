@@ -69,6 +69,11 @@ export class ChatView implements vscode.WebviewViewProvider {
     });
   }
 
+  /** Whether the chat view is visible now; `false` for a view never opened in this window. */
+  get visible(): boolean {
+    return this.view?.visible === true;
+  }
+
   publish(state: ChatState): void {
     if (this.ready) this.post({ type: "state", state });
   }
@@ -155,6 +160,9 @@ export class ChatView implements vscode.WebviewViewProvider {
       case "selectModel":
         controller.selectModel(message.model);
         return;
+      case "selectReasoningEffort":
+        controller.selectReasoningEffort(message.effort);
+        return;
       case "retryModels":
         return void controller.loadModels();
       case "send":
@@ -189,6 +197,9 @@ export class ChatView implements vscode.WebviewViewProvider {
       case "continueTurn":
         // [>]: The entry shows the button's label as typed; the model gets the fixed English text.
         return void controller.continueTurn(message.shown, vscode.l10n.t("Continue"));
+      case "implementPlan":
+        // [>]: As Continue: the entry shows the message in the display language; the model gets the fixed English text.
+        return void controller.implementPlan(message.shown, vscode.l10n.t("Implement the plan above."));
       case "chooseModel":
         return void this.chooseModel();
       case "compact":
@@ -224,6 +235,9 @@ export class ChatView implements vscode.WebviewViewProvider {
         return;
       case "reject":
         controller.reject(message.id, message.reason);
+        return;
+      case "answer":
+        controller.answer(message.id, message.text);
         return;
       case "setMode":
         return void controller.setMode(message.mode).then((change) => {

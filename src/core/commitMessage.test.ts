@@ -1,10 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { type ChatOutcome, type ProviderAccess, type StreamChatOptions, streamChat } from "./client";
+import { type ChatModel, type ChatOutcome, type ProviderAccess, type StreamChatOptions, streamChat } from "./client";
 import {
   CommitMessageGenerator,
   type CommitMessagePorts,
   type CommitRepository,
-  type CommitSelection,
   cleanCommitMessage,
   composeCommitRequest,
   type RepositoryLookup,
@@ -187,7 +186,7 @@ describe("CommitMessageGenerator", () => {
   function fakePorts(options: {
     reply?: (request: StreamChatOptions) => Promise<ChatOutcome>;
     confirm?: boolean | Promise<boolean> | (() => Promise<boolean>);
-    selection?: CommitSelection | undefined;
+    selection?: ChatModel | undefined;
     providerSupport?: ProviderSupport;
   }) {
     const calls = {

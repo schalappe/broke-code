@@ -11,6 +11,7 @@
  * display carries the counts the last chat request of the conversation shown reported.
  */
 import type { ApprovalRequest, Decision, Preview } from "./approval";
+import type { AnswerRequest, QuestionAnswer } from "./askUser";
 import { type ChatMessage, lateReasoning, listModels, type ProviderAccess, streamChat } from "./client";
 import {
   CONVERSATION_VERSION,
@@ -24,10 +25,11 @@ import {
 } from "./conversation";
 import type { ConversationStore } from "./conversationStore";
 import { type HistoryBudget, historyStart, sentEntries, summaryHistory, toHistory } from "./history";
-import { CONTINUE_TEXT, type LastTurnActions, lastTurnActions } from "./lastTurn";
+import { CONTINUE_TEXT, hasFinalAnswer, IMPLEMENT_PLAN_TEXT, type LastTurnActions, lastTurnActions } from "./lastTurn";
 import { contextOf, DEFAULT_RATIO, estimateTokens, fillsContext, parseLimits, type TurnLimits } from "./limits";
 import { type LineCounts, lineDiffCount } from "./lineDiff";
 import { composeUserMessage, findMentions, type MentionReader, type MentionResult, type ReadMention } from "./mentions";
+import type { TurnEnd, TurnEvent } from "./notifications";
 import { workspacePath } from "./problems";
 import {
   type ChangedFile,
@@ -36,9 +38,11 @@ import {
   type ContextUsage,
   type DraftInsert,
   type HaltReason,
+  isReasoningEffort,
   isReplying,
   MAX_QUEUED_MESSAGES,
   type Mode,
+  type ReasoningEffort,
   type ReplyStatus,
   type ReportedUsage,
   type ShownEntries,
@@ -92,9 +96,11 @@ type ReplyRun = {
  * The request shows in `ChatState.approval` with its preview open until the user decides; Stop, and the navigation
  * that stops the reply, cancel it and close the preview. A write is accepted at once, without a preview, while the
  * auto-approve setting is on; a command always waits. Rejects only when the preview cannot open, or when another
- * request of the run is still open. `skills`: the valid skills the send discovered. `skillRoots`: the real folders of
- * the skills loaded in the conversation, the ones the read tools may also read, derived at each call (see
- * `loadedSkillRoots`), so a load earlier in the turn counts. `sentSkillRoots`: those of them loaded in the history
+ * request of the run is still open. `requestAnswer`: asks the user the `ask_user` question, and settles with the
+ * answer. The question shows in `ChatState.question` until the user answers; Stop, and the navigation that stops the
+ * reply, cancel it. Rejects only when another request of the run is still open. `skills`: the valid skills the send
+ * discovered. `skillRoots`: the real folders of the skills loaded in the conversation, the ones the read tools may
+ * also read, derived at each call (see `loadedSkillRoots`), so a load earlier in the turn counts. `sentSkillRoots`: those of them loaded in the history
  * sent, from the last summary on (see `historyStart`): `load_skill` answers "already loaded" for these only, since the
  * text of an earlier load is no longer sent. `changes`: the turn's record of written files, which the host's applier
  * records into (`recordingApplier`) so "Undo changes" can restore them; an applier that ignores it (the eval's) makes
@@ -103,6 +109,7 @@ type ReplyRun = {
 export type ToolContext = {
   signal: AbortSignal;
   requestApproval: (request: ApprovalRequest) => Promise<Decision>;
+  requestAnswer: (request: AnswerRequest) => Promise<QuestionAnswer>;
   skills: readonly Skill[];
   skillRoots: readonly string[];
   sentSkillRoots: readonly string[];
@@ -169,7 +176,10 @@ export type LimitsSource = { read(): TurnLimits };
  * logged as lost. `undo`: what "Undo changes" needs; absent (the eval), no turn is held and the button never shows.
  * `changeDiffs`: opens and closes the diffs of "Changed files"; absent, the rows still show and a click does nothing.
  * `now`: clock for record times, in milliseconds since the epoch. `providerSupport`: what is known of each model of
- * each provider, read and taught by every chat request; the host shares it with the commit message.
+ * each provider, read and taught by every chat request; the host shares it with the commit message. `turnEvents`:
+ * told each approval request that opens and each turn that ends `done`, `failed`, or `halted` (see `TurnEvent`), so
+ * the host can notify a user who looks elsewhere; one that throws is logged and changes nothing; absent (the eval),
+ * nothing is told.
  */
 export type ChatPorts = {
   apiKeys: KeyStore;
@@ -188,6 +198,7 @@ export type ChatPorts = {
   changeDiffs?: ChangeDiffHost;
   now?: () => number;
   providerSupport: ProviderSupport;
+  turnEvents?: (event: TurnEvent) => void;
 };
 
 /**
@@ -213,12 +224,22 @@ const LAST_CHOICE_KEY = "brokeCode.lastChoice";
  * cleared without a provider, and Plan must survive both.
  */
 const PLAN_KEY = "brokeCode.plan";
+/**
+ * Reasoning effort picked per provider and model, keyed by `effortKey`. A pair on Default has no entry. A key of its
+ * own, as Plan: the provider and model choice is rewritten whole.
+ */
+const REASONING_EFFORTS_KEY = "brokeCode.reasoningEfforts";
 /** Id of the conversation shown, reopened at the next window load. */
 const CURRENT_CONVERSATION_KEY = "brokeCode.currentConversation";
 /** Shortest time between two saves of a streaming reply. */
 const SAVE_INTERVAL_MS = 500;
 
 type LastChoice = { provider: string; model?: string };
+
+/** Unambiguous whatever characters the names hold. */
+function effortKey(provider: string, model: string): string {
+  return JSON.stringify([provider, model]);
+}
 
 /**
  * An agent turn as "Undo changes" sees it. `conversation`: the one it was sent in. `changes`: the files its writes
@@ -251,8 +272,8 @@ type UserEntry = ChatEntry & { role: "user" };
 
 /**
  * How an agent turn starts. `send`: a new message, its mentions read and its `/<name>` skill loaded now. `continue`: a
- * new user entry whose model text is already set. `retry`: the last user entry, already the last entry, resent with
- * the model text of its first send, so nothing it mentions or loads is read again.
+ * new user entry whose model text is already set (Continue, "Implement in ... mode"). `retry`: the last user entry,
+ * already the last entry, resent with the model text of its first send, so nothing it mentions or loads is read again.
  */
 type TurnStart =
   | { kind: "send"; content: string; picked: readonly string[] }
@@ -287,10 +308,15 @@ export class ChatController {
   private listingId = 0;
   /** Last id given to a queued message. */
   private queuedId = 0;
-  /** Bumped per approval request shown; a decision counts only for the request open. */
-  private approvalId = 0;
+  /**
+   * Bumped per approval request or question shown, so no two requests share an id; a decision or an answer counts only
+   * for the request open.
+   */
+  private requestId = 0;
   /** The approval request open, mirrored in `ChatState.approval`, and how to settle it. */
   private openApproval: { id: number; settle: (decision: Decision) => void } | undefined;
+  /** The question open, mirrored in `ChatState.question`, and how to settle it. Never beside `openApproval`. */
+  private openQuestion: { id: number; settle: (answer: QuestionAnswer) => void } | undefined;
   /**
    * Navigation (restore, New chat, open, delete, pruning) runs one operation at a time, in request order, so the
    * conversation shown is always the result of the last request and never one deleted or pruned before it. The
@@ -342,6 +368,7 @@ export class ChatController {
   private readonly changeDiffs: ChangeDiffHost | undefined;
   private readonly now: () => number;
   private readonly providerSupport: ProviderSupport;
+  private readonly turnEvents: ((event: TurnEvent) => void) | undefined;
   /**
    * What the last chat request of the conversation shown reported, kept while the next one is in flight. Replaced when
    * a request ends, cleared when the conversation shown or the model is set. Memory only, never saved.
@@ -384,6 +411,7 @@ export class ChatController {
     this.changeDiffs = ports.changeDiffs;
     this.now = ports.now ?? Date.now;
     this.providerSupport = ports.providerSupport;
+    this.turnEvents = ports.turnEvents;
     this.plan = this.workspaceState.get<unknown>(PLAN_KEY) === true;
     // [>]: Instruction files and skills are read only at a send, never just to refresh the display.
     this.systemPrompt = composeSystemPrompt(offeredTools(this.tools.tools, []), [], []);
@@ -395,6 +423,7 @@ export class ChatController {
       provider: undefined,
       models: { status: "noProvider" },
       model: undefined,
+      reasoningEffort: undefined,
       conversationId: this.conversation.id,
       entries: this.conversation.entries,
       conversations: [],
@@ -404,6 +433,7 @@ export class ChatController {
       // [>]: The setting is read at `modeChanged`, which the host calls at activation as it applies the providers; the
       // constructor reads no setting.
       mode: "ask",
+      settingMode: "ask",
       modePending: false,
       queue: [],
       undo: { reply: undefined, ranCommand: false, running: false, outcome: undefined },
@@ -513,12 +543,42 @@ export class ChatController {
   }
 
   /**
-   * Set or reset the selected model. The reported usage goes with it, even when the model is the same: it belonged to
-   * the request before, which a new listing or a provider change makes stale.
+   * Pick the reasoning effort of the selected provider and model (`undefined`: Default), used from the next request,
+   * a commit message's and an edit's included. Ignored while a reply is in flight, like a model pick.
+   */
+  selectReasoningEffort(effort: ReasoningEffort | undefined): void {
+    const { provider, model } = this.state;
+    if (isReplying(this.state) || provider === undefined || model === undefined) return;
+    this.state.reasoningEffort = effort;
+    const { [effortKey(provider, model)]: _previous, ...others } = this.rememberedEfforts();
+    const efforts = effort === undefined ? others : { ...others, [effortKey(provider, model)]: effort };
+    this.workspaceState.update(REASONING_EFFORTS_KEY, efforts).then(undefined, (error: unknown) => {
+      // [>]: Losing it only costs a re-pick next session -> log, don't interrupt chat.
+      console.error("broke-code: could not remember the reasoning effort", error);
+    });
+    this.emit();
+  }
+
+  /**
+   * Set or reset the selected model, with the reasoning effort remembered for it. The reported usage goes with it,
+   * even when the model is the same: it belonged to the request before, which a new listing or a provider change
+   * makes stale.
    */
   private setModel(model: string | undefined): void {
     this.state.model = model;
+    const { provider } = this.state;
+    const remembered =
+      provider === undefined || model === undefined ? undefined : this.rememberedEfforts()[effortKey(provider, model)];
+    this.state.reasoningEffort = isReasoningEffort(remembered) ? remembered : undefined;
     this.reported = undefined;
+  }
+
+  /** The stored efforts; anything else under the key (another version's shape, a hand edit) reads as none. */
+  private rememberedEfforts(): Record<string, unknown> {
+    const stored = this.workspaceState.get<unknown>(REASONING_EFFORTS_KEY);
+    return typeof stored === "object" && stored !== null && !Array.isArray(stored)
+      ? (stored as Record<string, unknown>)
+      : {};
   }
 
   /**
@@ -531,11 +591,13 @@ export class ChatController {
   }
 
   /**
-   * Read the mode into `ChatState.mode`: Plan while on, else the auto-approve setting. At activation, and whenever the
-   * setting changes, here or elsewhere (the settings editor, another window).
+   * Read the mode into `ChatState.mode`: Plan while on, else the auto-approve setting, which `ChatState.settingMode`
+   * names in every mode. At activation, and whenever the setting changes, here or elsewhere (the settings editor,
+   * another window).
    */
   modeChanged(): void {
-    this.state.mode = this.readMode();
+    this.state.settingMode = this.readAutoApprove() ? "autoEdit" : "ask";
+    this.state.mode = this.plan ? "plan" : this.state.settingMode;
     this.emit();
   }
 
@@ -589,11 +651,6 @@ export class ChatController {
     });
   }
 
-  private readMode(): Mode {
-    if (this.plan) return "plan";
-    return this.readAutoApprove() ? "autoEdit" : "ask";
-  }
-
   /** Key of `provider` changed -> relist its models, since listing may have failed on old key. */
   keyChanged(provider: string): void {
     if (provider === this.state.provider) void this.loadModels();
@@ -634,7 +691,7 @@ export class ChatController {
    * the reply fails, or Stop. Limits: the step limit, three malformed calls in a row, and the context budget, checked
    * before each request, the first included: the oldest tool results are left out of a request that would fill the
    * model's context (see `toHistory`), and one that fills it even so is never sent. The
-   * turn reads the settings and Plan once, when it starts: in Plan it offers the read tools only, and a call to a tool
+   * turn reads the settings and Plan once, when it starts: in Plan it offers no tool that writes or runs a command, and a call to a tool
    * Plan leaves out gets an `error` step saying so, counted toward the step limit like any step. The webview clears the
    * box before the host answers and its state may lag, so a message that cannot start a turn now is never dropped: while
    * a reply is in flight it goes through `queueMessage` (a turn the queue started after a stale `done`), and otherwise
@@ -691,20 +748,50 @@ export class ChatController {
    */
   continueTurn(shown: ShownEntries, label: string): Promise<void> {
     if (!this.lastTurnNow(shown)?.continues) return Promise.resolve();
+    return this.startFixedTextTurn(label, CONTINUE_TEXT);
+  }
+
+  /**
+   * "Implement in ... mode" under a plan's final answer: leave Plan for the mode the setting holds, writing no setting
+   * (only the Plan key is cleared, and a failed memento write still leaves Plan for the session), then append a user
+   * entry whose text as typed is `label` (the message in the display language) and whose model text is
+   * `IMPLEMENT_PLAN_TEXT`, and run it as a send. The plan is in the history already and is not quoted again. `shown`:
+   * as for `retry`. Does nothing at all, Plan staying on, unless the entries shown are the conversation's, Plan is on,
+   * the conversation ends on its final answer (`hasFinalAnswer`), and a turn may start. Plan stays left when the turn
+   * then fails.
+   */
+  implementPlan(shown: ShownEntries, label: string): Promise<void> {
+    const acts =
+      this.isShownNow(shown) && this.plan && this.mayStartTurn() && hasFinalAnswer(this.conversation.entries);
+    if (!acts) return Promise.resolve();
+    this.rememberPlan(false);
+    this.modeChanged();
+    return this.startFixedTextTurn(label, IMPLEMENT_PLAN_TEXT);
+  }
+
+  /**
+   * Start a turn on a user entry a button sent: the chat shows `label`, and the model reads `modelText`, a fixed
+   * English text, in its place. The caller checks first that the button may act.
+   */
+  private startFixedTextTurn(label: string, modelText: string): Promise<void> {
     const user: UserEntry = { role: "user", content: label, mentions: [] };
-    this.modelText.set(user, CONTINUE_TEXT);
+    this.modelText.set(user, modelText);
     return this.startTurn({ kind: "continue", user });
   }
 
   /**
-   * What the last turn offers now, for a request made while the panel showed `shown`. Another conversation with as many
-   * entries is refused; within the conversation shown, the count is the only check, so a request posted before a Retry
-   * that ended on as many entries acts on the turn that Retry ran.
+   * What the last turn offers now, for a request made while the panel showed `shown`. Within the conversation shown,
+   * the count is the only check, so a request posted before a Retry that ended on as many entries acts on the turn
+   * that Retry ran.
    */
-  private lastTurnNow({ conversationId, entries }: ShownEntries): LastTurnActions | undefined {
-    const current = conversationId === this.conversation.id && entries === this.conversation.entries.length;
-    if (!current || !this.mayStartTurn()) return undefined;
+  private lastTurnNow(shown: ShownEntries): LastTurnActions | undefined {
+    if (!this.isShownNow(shown) || !this.mayStartTurn()) return undefined;
     return lastTurnActions(this.conversation.entries);
+  }
+
+  /** Whether the panel showed the current conversation with its current count: another one with as many is refused. */
+  private isShownNow({ conversationId, entries }: ShownEntries): boolean {
+    return conversationId === this.conversation.id && entries === this.conversation.entries.length;
   }
 
   /**
@@ -981,6 +1068,7 @@ export class ChatController {
               if (request.kind === "command" && answer.decision.kind === "accept") turn.ranCommand = true;
               return answer.decision;
             },
+            requestAnswer: (request) => this.askQuestion(request, signal),
             skills: discovery.skills,
             skillRoots: loadedSkillRoots(conversation.entries, discovery.skills),
             sentSkillRoots: loadedSkillRoots(sentEntries(conversation.entries), discovery.skills),
@@ -1257,6 +1345,7 @@ export class ChatController {
       streamChat(access, {
         model,
         messages,
+        reasoningEffort: this.state.reasoningEffort,
         signal: AbortSignal.any([signal, cut.signal]),
         support: this.providerSupport,
         onContent: delta("content"),
@@ -1332,7 +1421,7 @@ export class ChatController {
    * then `body` runs with its `ReplyRun`. An unexpected throw inside `body` (a bug, never the provider's failure) ends
    * the reply `failed` with an `internal` error, logged with its stack under `what`, so the composer never stays
    * locked on a reply that will not end. Whatever ended `body`, the reply in flight is then released and navigation
-   * waiting for it goes on.
+   * waiting for it goes on, and the end is told to the events port (`reportEnd`).
    */
   private async runReply(
     provider: Provider,
@@ -1359,15 +1448,45 @@ export class ChatController {
       },
     };
     this.emit();
+    let status: ReplyStatus;
     try {
-      return { status: await body(run), reply: run.reply };
+      status = await body(run);
     } catch (error) {
       console.error(`broke-code: ${what} failed unexpectedly`, error instanceof Error ? error.stack : error);
       run.reply.error = { kind: "internal", message: error instanceof Error ? error.message : String(error) };
-      return { status: run.settle("failed"), reply: run.reply };
+      status = run.settle("failed");
     } finally {
       if (this.reply?.abort === abort) this.reply = undefined;
       markSettled();
+    }
+    this.reportEnd(run.reply);
+    return { status, reply: run.reply };
+  }
+
+  /**
+   * Tell the events port how the turn whose last reply is `reply` ended, once that reply is settled and published. A
+   * turn that ends `stopped` tells nothing, whatever stopped it.
+   */
+  private reportEnd(reply: ChatEntry & { role: "assistant" }): void {
+    const end = turnEnd(reply);
+    if (!end) return;
+    this.reportEvent({
+      kind: "turnEnded",
+      ...end,
+      summary: reply.summary === true,
+      empty: reply.content.trim() === "",
+    });
+  }
+
+  /**
+   * Hand `event` to the events port, if any. A port that throws is logged and otherwise ignored: a notification that
+   * cannot show must never end or change a turn.
+   */
+  private reportEvent(event: TurnEvent): void {
+    try {
+      this.turnEvents?.(event);
+    } catch (error) {
+      console.error("broke-code: could not report a turn event", event.kind, error);
     }
   }
 
@@ -1423,13 +1542,13 @@ export class ChatController {
     if (signal.aborted) return { decision: { kind: "cancel" } };
     // [!]: The one place the setting applies, so it can never accept a command.
     if (request.kind === "write" && this.readAutoApprove()) return { decision: { kind: "accept" }, approval: "auto" };
-    if (this.openApproval) throw new Error("another approval request is still open");
+    this.refuseSecondRequest();
     const preview = request.preview ? await request.preview() : undefined;
     if (signal.aborted) {
       closePreview(preview);
       return { decision: { kind: "cancel" } };
     }
-    const id = ++this.approvalId;
+    const id = ++this.requestId;
     const decision = await new Promise<Decision>((resolve) => {
       // [>]: Cleared and published at once, also on Stop, so no state after the stop still shows the buttons.
       const settle = (decision: Decision) => {
@@ -1445,10 +1564,43 @@ export class ChatController {
       this.openApproval = { id, settle };
       this.state.approval = { id, kind: request.kind, tool: request.tool, summary: request.summary };
       this.emit();
+      this.reportEvent({ kind: "approvalRequested", request: request.kind, summary: request.summary });
     });
     const approval: StepApproval | undefined =
       decision.kind === "accept" ? "accepted" : decision.kind === "reject" ? "rejected" : undefined;
     return { decision, ...(approval ? { approval } : {}) };
+  }
+
+  /**
+   * Answer the `ask_user` question `request` of the call running under `signal`: it shows in `ChatState.question`
+   * until the user answers or `signal` aborts, which cancels it. Nothing is reported to the events port: a question
+   * raises no notification.
+   */
+  private async askQuestion(request: AnswerRequest, signal: AbortSignal): Promise<QuestionAnswer> {
+    if (signal.aborted) return { kind: "cancel" };
+    this.refuseSecondRequest();
+    const id = ++this.requestId;
+    return new Promise<QuestionAnswer>((resolve) => {
+      // [>]: Cleared and published at once, also on Stop, so no state after the stop still shows the question.
+      const settle = (answer: QuestionAnswer) => {
+        signal.removeEventListener("abort", onAbort);
+        this.openQuestion = undefined;
+        this.state.question = undefined;
+        this.emit();
+        resolve(answer);
+      };
+      const onAbort = () => settle({ kind: "cancel" });
+      signal.addEventListener("abort", onAbort, { once: true });
+      this.openQuestion = { id, settle };
+      this.state.question = { id, question: request.question, options: [...request.options] };
+      this.emit();
+    });
+  }
+
+  /** At most one request is open at a time, an approval or a question: one call runs per reply, and it asks once. */
+  private refuseSecondRequest(): void {
+    if (this.openApproval) throw new Error("another approval request is still open");
+    if (this.openQuestion) throw new Error("a question is still open");
   }
 
   /** The auto-approve setting; a reader that throws despite its contract means off, logged. */
@@ -1474,6 +1626,14 @@ export class ChatController {
     if (this.openApproval?.id !== id) return;
     const trimmed = reason?.trim();
     this.openApproval.settle(trimmed ? { kind: "reject", reason: trimmed } : { kind: "reject" });
+  }
+
+  /**
+   * The user answers question `id` with `text`, an option's or typed, as the protocol checked it (trimmed, not empty).
+   * Ignored unless it is the question open.
+   */
+  answer(id: number, text: string): void {
+    if (this.openQuestion?.id === id) this.openQuestion.settle({ kind: "answer", text });
   }
 
   stop(): void {
@@ -1831,6 +1991,28 @@ function closePreview(preview: Preview | undefined): void {
   Promise.resolve()
     .then(() => preview.close())
     .catch((error: unknown) => console.error("broke-code: could not close an approval preview", error));
+}
+
+/**
+ * How the turn whose last reply is `reply` ended, for the events port; `undefined` for a reply that ended `stopped`,
+ * or is still in flight.
+ */
+function turnEnd(reply: ChatEntry & { role: "assistant" }): TurnEnd | undefined {
+  switch (reply.status) {
+    case "done":
+      return { status: "done" };
+    case "failed":
+      // [>]: Every failed reply carries its error; one without it is a bug of broke-code, reported as such.
+      return {
+        status: "failed",
+        error: reply.error ?? { kind: "internal", message: "the reply failed without an error" },
+      };
+    case "halted":
+      // [>]: `settle` sets the reason with the status (see `ChatEntry.haltReason`); without one there is nothing to say.
+      return reply.haltReason === undefined ? undefined : { status: "halted", reason: reply.haltReason };
+    default:
+      return undefined;
+  }
 }
 
 function waitingReply(): ChatEntry & { role: "assistant" } {

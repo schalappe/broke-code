@@ -54,6 +54,13 @@ export type StepApproval = "accepted" | "rejected" | "auto";
 export type PendingApproval = { id: number; kind: "write" | "command"; tool: string; summary: string };
 
 /**
+ * The `ask_user` question open in the chat, which the reply in flight waits on. `id`: the question's, carried by the
+ * answer, so an answer for a question no longer open is ignored. `question`: its text, in full. `options`: the answers
+ * the model proposes, in its order, maybe none; the user may always type another.
+ */
+export type PendingQuestion = { id: number; question: string; options: string[] };
+
+/**
  * The skill a user message loads with `/<name>`: `loaded` when its text reached the model, `failed` when its `SKILL.md`
  * could not be read at send, and the model got a notice instead.
  */
@@ -150,7 +157,7 @@ export type ReportedUsage = { prompt: number; completion: number };
 
 /**
  * What an agent turn may do: `ask` waits for Accept or Reject on each write, `autoEdit` accepts writes at once, both
- * derived from the user value of `brokeCode.autoApproveWrites`; `plan` offers the read tools only, kept per workspace
+ * derived from the user value of `brokeCode.autoApproveWrites`; `plan` offers the read tools and `ask_user` only, kept per workspace
  * and winning over the setting while on. Commands wait for Run in every mode that offers them.
  */
 export const MODES = ["ask", "autoEdit", "plan"] as const;
@@ -215,6 +222,17 @@ export type UndoState = {
  */
 export type ChangedFile = { path: string; kind: "created" | "edited"; added: number; removed: number };
 
+/**
+ * Reasoning effort the user picked for a model, sent as the request's `reasoning_effort`. No pick ("Default") sends no
+ * field, so a provider that rejects it is unaffected until the user picks one.
+ */
+export const REASONING_EFFORTS = ["low", "medium", "high"] as const;
+export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
+
+export function isReasoningEffort(value: unknown): value is ReasoningEffort {
+  return REASONING_EFFORTS.some((effort) => effort === value);
+}
+
 export type ChatState = {
   providers: string[];
   skipped: SkippedProvider[];
@@ -223,6 +241,8 @@ export type ChatState = {
   provider: string | undefined;
   models: ModelsState;
   model: string | undefined;
+  /** Picked for the selected provider and model, remembered per pair in the workspace; `undefined`: Default. */
+  reasoningEffort: ReasoningEffort | undefined;
   /** Id of the conversation shown; `entries` are its entries. */
   conversationId: string;
   entries: ChatEntry[];
@@ -238,11 +258,18 @@ export type ChatState = {
   context: ContextUsage;
   /** The approval request the reply in flight waits on; at most one, since one call runs per reply. */
   approval?: PendingApproval;
+  /** The question the reply in flight waits on; never beside `approval`, since one call runs per reply. */
+  question?: PendingQuestion;
   /**
    * `plan` while Plan is on in this workspace, else the mode the setting holds; never the one last picked: a failed
    * write leaves it as it was.
    */
   mode: Mode;
+  /**
+   * The mode the setting holds, whatever `mode` says: the one Plan leaves for, which the "Implement in ... mode" button
+   * names. Read again whenever the setting changes.
+   */
+  settingMode: Exclude<Mode, "plan">;
   /**
    * A mode pick's settings write is pending: the mode selector and Send are disabled, and the host ignores `setMode`
    * and `send`, as while a reply is in flight.
@@ -301,9 +328,9 @@ export type HostMessage =
   | ({ type: "insertDraft" } & DraftInsert);
 
 /**
- * What the panel showed when the user asked to Retry, Continue, or send while replacing the last turn (Edit): the
- * conversation shown (`ChatState.conversationId`) and its entries count. The host acts only on that conversation with
- * that count, so a click on a lagging panel removes or extends nothing but the turn it showed.
+ * What the panel showed when the user asked to Retry, Continue, implement a plan, or send while replacing the last
+ * turn (Edit): the conversation shown (`ChatState.conversationId`) and its entries count. The host acts only on that
+ * conversation with that count, so a click on a lagging panel removes or extends nothing but the turn it showed.
  */
 export type ShownEntries = { conversationId: string; entries: number };
 
@@ -311,6 +338,8 @@ export type WebviewMessage =
   | { type: "ready" }
   | { type: "selectProvider"; provider: string }
   | { type: "selectModel"; model: string }
+  /** `undefined`: Default, which sends no `reasoning_effort`. */
+  | { type: "selectReasoningEffort"; effort: ReasoningEffort | undefined }
   | { type: "retryModels" }
   /**
    * `mentions`: paths picked in the menu; see `ChatController.send`. `replaces`: sent while the panel was replacing the
@@ -352,6 +381,8 @@ export type WebviewMessage =
   /** The user's decision on approval request `id` (`ChatState.approval`); `reason`: optional, as typed. */
   | { type: "approve"; id: number }
   | { type: "reject"; id: number; reason?: string }
+  /** The user's answer to question `id` (`ChatState.question`); `text`: trimmed, never empty (`MAX_ANSWER_LENGTH`). */
+  | { type: "answer"; id: number; text: string }
   /** Insert at cursor: replace every selection of the active text editor with a code block's `text`. */
   | { type: "insertCode"; text: string }
   /**
@@ -364,7 +395,12 @@ export type WebviewMessage =
   /** A row of "Changed files": open the diff of the first held file the row's displayed `path` names. */
   | { type: "openChangeDiff"; path: string }
   /** Retry or Continue the last turn (see `lastTurnActions`) of what the panel showed. */
-  | { type: "retry" | "continueTurn"; shown: ShownEntries };
+  | { type: "retry" | "continueTurn"; shown: ShownEntries }
+  /**
+   * "Implement in ... mode" under a plan's final answer (see `hasFinalAnswer`): leave Plan for the mode the setting
+   * holds and send the message asking to carry the plan out. `shown`: what the panel showed. Carries no mode.
+   */
+  | { type: "implementPlan"; shown: ShownEntries };
 
 /** Chat state carried by `message`; `undefined` for a message that must leave the panel's state alone. */
 export function chatStateOf(message: HostMessage): ChatState | undefined {
@@ -382,8 +418,8 @@ export function isReplying(state: ChatState): boolean {
 
 /**
  * Whether Send would act now: a model chosen, no reply in flight, no mode change being written, and no undo running.
- * The one check of the panel's Send, Enter, built-in commands, Send now, Retry, and Continue; the host checks the same
- * conditions again (`mayStartTurn`), since the panel's state may lag.
+ * The one check of the panel's Send, Enter, built-in commands, Send now, Retry, Continue, and "Implement in ... mode";
+ * the host checks the same conditions again (`mayStartTurn`), since the panel's state may lag.
  */
 export function sendWouldAct(state: ChatState): boolean {
   return state.model !== undefined && !isReplying(state) && !state.modePending && !state.undo.running;
@@ -412,6 +448,8 @@ export function searchNeedle(text: string): { needle: string; searchable: boolea
   const searchable = needle.length <= MAX_QUERY_LENGTH && [...needle].length >= MIN_NEEDLE_LENGTH;
   return { needle, searchable };
 }
+/** UTF-16 units an answer to a question may hold once trimmed; the panel's field stops typing there. */
+export const MAX_ANSWER_LENGTH = 4000;
 /** Longest picked mention path accepted. */
 export const MAX_MENTION_PATH_LENGTH = 4096;
 /**
@@ -444,6 +482,12 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | undefined {
     case "selectModel": {
       const model = text("model");
       return model === undefined ? undefined : { type: "selectModel", model };
+    }
+    case "selectReasoningEffort": {
+      // [>]: Default goes as a missing field: `undefined` does not survive the webview's JSON.
+      const { effort } = message;
+      if (effort === undefined) return { type: "selectReasoningEffort", effort: undefined };
+      return isReasoningEffort(effort) ? { type: "selectReasoningEffort", effort } : undefined;
     }
     case "setContextSize": {
       // [!]: The name becomes a key of a user setting: an empty one is refused.
@@ -497,12 +541,18 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | undefined {
       if (!isRequestId(id) || (reason !== undefined && typeof reason !== "string")) return undefined;
       return reason === undefined ? { type: "reject", id } : { type: "reject", id, reason };
     }
+    case "answer": {
+      const value = text("text")?.trim();
+      if (!isRequestId(message.id) || !value || value.length > MAX_ANSWER_LENGTH) return undefined;
+      return { type: "answer", id: message.id, text: value };
+    }
     case "insertCode": {
       const value = text("text");
       return value === undefined || value.length > REPLY_MAX_LENGTH ? undefined : { type: "insertCode", text: value };
     }
     case "retry":
-    case "continueTurn": {
+    case "continueTurn":
+    case "implementPlan": {
       const shown = shownEntries(message.shown);
       return shown ? { type: message.type, shown } : undefined;
     }

@@ -34,6 +34,7 @@ Most changes touch `src/core/chatController.ts`, `src/core/protocol.ts`, `src/we
 | Saved conversations, navigation, History | `docs/spec/conversations.md` |
 | Skill discovery, `load_skill`, `/<name>` | `docs/spec/skills.md` |
 | "Generate commit message" | `docs/spec/commit-message.md` |
+| "Edit selection", its diff, Accept and Reject | `docs/spec/edit-selection.md` |
 
 ## Commands
 
@@ -65,7 +66,8 @@ actionlint                                    # run after editing a file in .git
 - The dependency direction is `src/extension/` and `src/webview/` into `src/core/`, never the reverse. `bun test`
   cannot load `vscode`, so put logic in `src/core/` behind a port and keep `src/extension/` to wiring.
 - The webview bundles `markdownCode.ts`, `suggestions.ts`, `reservedMentions.ts`, `modelList.ts`, `conversation.ts`,
-  `history.ts`, and `lastTurn.ts` from `src/core/`. Keep `node:` imports out of these files.
+  `history.ts`, `lastTurn.ts`, `providerError.ts`, and `turnEndText.ts` from `src/core/`. Keep `node:` imports out of
+  these files.
 - `src/core/protocol.ts` defines and validates every message between the host and the webview. To add a message,
   change `protocol.ts` first, then the host handler in `src/extension/chatView.ts`, then the webview.
 - English messages are the keys of `l10n.t`. When you add or change a UI string, add its French translation to

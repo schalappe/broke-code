@@ -100,8 +100,8 @@ Each takes the color the theme gives that exact job, so a button is the theme's 
 | `--bc-accent-line` | `button.background`, then `--bc-edge` | The outline of an earlier user message. The latest one takes the button tokens themselves. |
 | `--bc-accent-chip` | 18% of `button.foreground` | A chip on the latest user message. |
 | `--bc-tool` | `textLink.foreground` | A tool's name on the thread. Not a link: its row opens, and the name is also in the editor font, weight 600. |
-| `--bc-inverse-well`, `--bc-inverse-hover`, `--bc-inverse-line` | 14%, 16%, and 45% of `sideBar.background` | On the decision block, drawn in negative: the command's ground, a hovered Reject, Reject's border. |
-| `--bc-inverse-button-hover` | 86% of `sideBar.background` over the foreground | The hovered Accept or Run on the decision block. |
+| `--bc-inverse-well`, `--bc-inverse-hover`, `--bc-inverse-line` | 14%, 16%, and 45% of `sideBar.background` | On the decision block, drawn in negative: the command's ground, a hovered Reject or option, their border. |
+| `--bc-inverse-button-hover` | 86% of `sideBar.background` over the foreground | The hovered Accept, Run, or Answer on the decision block. |
 | `--bc-link`, `--bc-link-active` | `textLink.foreground`, `textLink.activeForeground` | Links, always underlined, so color is never the only cue. |
 | `--bc-code-fg` | `textPreformat.foreground`, then `--bc-fg` | Inline code. |
 | `--bc-error`, `--bc-warning` | `errorForeground`, `editorWarning.foreground` | Status text and marks. |
@@ -213,14 +213,14 @@ user's message). Borders and rules are 1px. No colored side stripe.
 ### Buttons
 
 - Primary (Send, Stop, Set API key, Add provider in the empty state): the theme's button colors. At most one per region. In the
-  conversation, only the decision block has one, Accept or Run, drawn in negative like its block (see "The decision
-  block"). While a reply is in flight, Stop is the message box's primary button
+  conversation, only the decision block has one, Accept, Run, or Answer, drawn in negative like its block (see "The
+  decision block"). While a reply is in flight, Stop is the message box's primary button
   and Send, which then queues, is secondary.
 - Header (New chat, History): secondary buttons shown as quiet text, dim and without a drawn box (`--bc-edge` only),
   until hovered, focused, or pressed, when they take the secondary look. The two pickers follow the same rule: dim
   text on the panel, one size down, their border back on hover and focus.
-- Secondary (New chat, History, Delete, Reject, Retry, Add provider under the skipped providers, a queued message's
-  Send now, Edit, and Remove, the turn's Retry, Retry anyway, Cancel, Continue, and Undo changes, the last message's Edit and the Cancel of its mark): a hairline box on the panel (`--bc-line`), the foreground as
+- Secondary (New chat, History, Delete, Reject, a question's options, Retry, Add provider under the skipped providers, a queued message's
+  Send now, Edit, and Remove, the turn's Retry, Retry anyway, Cancel, Continue, "Implement in ... mode", and Undo changes, the last message's Edit and the Cancel of its mark): a hairline box on the panel (`--bc-line`), the foreground as
   text; `--bc-fill-strong` when hovered or pressed (`aria-expanded="true"`).
 - Link (Open provider settings, Set context size): the link color, underlined.
 - Code block action (Copy, Insert at cursor): a secondary button two pixels down (`--bc-fs-xs`), at least a row high
@@ -302,8 +302,10 @@ would not act. Above the rows, a notice line says "The queue is paused." when no
   turn before it folds by the usual rule.
 - The turn's actions (`.turn-actions`): one row of secondary buttons after how the turn ended, wrapping when narrow:
   under the last turn's reply, Retry, then Continue when the turn was stopped or halted on the step limit or on
-  malformed calls, both disabled when Send would not act; then, under the last reply of the turn whose writes are
-  held, "Undo changes", followed by the small dim hint "Commands this turn ran are not listed or undone." when the
+  malformed calls, both disabled when Send would not act; then, while Plan is on and the conversation ends on its
+  final answer, "Implement in Ask mode" or "Implement in Auto-edit mode", named after the mode the setting holds and
+  disabled like Retry (secondary too: only the decision block has a primary button); then, under the last reply of
+  the turn whose writes are held, "Undo changes", followed by the small dim hint "Commands this turn ran are not listed or undone." when the
   turn ran one.
   None shows while a reply is in flight, so nothing sits between an approval's controls and the message box. When
   Retry would leave written files or run commands behind, its first click asks: a line of its own above the buttons
@@ -348,6 +350,12 @@ Reject. On this block Accept or Run is the panel's own ground with the foregroun
 theme's button color is not chosen for this ground and a high-contrast theme gives it no fill; Reject is outlined in
 the panel's color. A focus ring on its buttons is the panel's color.
 
+A question of the agent (`ask_user`) uses the same block, since it holds the turn the same way: the row says "waiting
+for your answer", then the question in full with its line breaks (`.question-text`), one button per option, each on
+its own line at the block's width, outlined in the panel's color like Reject and wrapping when long
+(`.question-option`), then the answer field, in the theme's input colors, with Answer after it on the same line.
+Answer is the block's primary button, drawn like Accept, and is disabled, at half opacity, while the field is blank.
+
 ### Menus and History
 
 - The `@` and `/` menus overlay the conversation above the message box. The highlighted row takes the theme's active
@@ -372,7 +380,7 @@ Each kind of state has one look, distinct from the others at a glance:
 | Warning (skipped providers and skills, an undo that skipped files, conversations History could not search) | A block on the theme's warning fill; under skipped providers, Add provider (secondary) below the block, only while a valid provider exists: without one, the empty state's Add provider is the panel's only one. |
 | Error (models unavailable, failed reply, storage and listing problems, an undo that failed unexpectedly) | A block on the theme's error fill: the message, its technical detail in the editor font, then its actions. |
 | Failed step or chip | The error color on the status text; no block. |
-| Waiting for a decision | The decision block, in negative, on the thread's solid node. |
+| Waiting for a decision or an answer | The decision block, in negative, on the thread's solid node. |
 | Turn ending (Stopped, halted) | A short rule, then small dim text. |
 | Folded turn (an ended turn of two steps or more) | One small dim row on a double-ring node: what the steps did ("Read 3 files, edited 1 file, ran 1 command"), "N steps" for a fold of other steps only, then the failed and rejected counts in words, then the chevron; it wraps, never cut. |
 | Replacing (Edit on the last message) | The last turn dimmed as a group under one line in the full foreground saying that sending replaces it, with Cancel; not dimmed in high contrast. |
@@ -398,8 +406,8 @@ opacity over `--bc-fast`. Under `prefers-reduced-motion: reduce`, and when VS Co
   box shows it on the border of its rounded field.
 - A folded turn's row is a native `<summary>`: Tab reaches it, Enter and Space open and close it, with no key handler
   of ours. Folding at turn end moves no focus.
-- Focus never moves on its own. When an approval request opens, the focused element stays focused, so a key pressed
-  at that moment cannot accept a write or run a command. A webview test pins this. Written exceptions: opening
+- Focus never moves on its own. When an approval request or a question opens, the focused element stays focused, so
+  a key pressed at that moment cannot accept a write, run a command, or pick an answer. A webview test pins each. Written exceptions: opening
   History moves the focus into its search field, since the user asked for History and no approval control sits
   there. Escape in an empty search field closes History and gives the focus back to the History button. And a draft
   from the editor ("Add selection to chat", the quick fix "Fix with broke-code") closes History and moves the focus
@@ -422,6 +430,9 @@ opacity over `--bc-fast`. Under `prefers-reduced-motion: reduce`, and when VS Co
   box. The mode selector therefore comes after the message box: Tab from the message box reaches it, then Send, then
   Stop while a reply is in flight, then the queued messages' controls, which sit under the box for the same reason. A
   webview test pins this order, with and without a queue.
+- With a question open, Shift+Tab from the message box reaches Answer (unless the blank field disables it), then the
+  answer field, then the options from last to first: the options come first in the DOM, then the field, then Answer,
+  and nothing focusable may be added between them and the message box. A webview test pins this order, with a queue.
 - The `@` and `/` menus keep the focus in the message box (`aria-activedescendant`); the highlighted row is the
   visible focus there, so it must differ from its neighbours in every theme.
 - The message box takes the focus back when a reply ends, unless History is open: the focus then stays where the user

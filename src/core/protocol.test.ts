@@ -30,6 +30,19 @@ describe("parseWebviewMessage", () => {
     expect(parseWebviewMessage({ type: "setApiKey", provider: "P" })).toEqual({ type: "setApiKey", provider: "P" });
   });
 
+  test("accepts a known reasoning effort or none, and refuses any other", () => {
+    expect(parseWebviewMessage({ type: "selectReasoningEffort", effort: "medium" })).toEqual({
+      type: "selectReasoningEffort",
+      effort: "medium",
+    });
+    expect(parseWebviewMessage({ type: "selectReasoningEffort" })).toEqual({
+      type: "selectReasoningEffort",
+      effort: undefined,
+    });
+    expect(parseWebviewMessage({ type: "selectReasoningEffort", effort: "max" })).toBeUndefined();
+    expect(parseWebviewMessage({ type: "selectReasoningEffort", effort: null })).toBeUndefined();
+  });
+
   test("accepts a changed file's diff request for a non-empty path within the mention path limit", () => {
     expect(parseWebviewMessage({ type: "openChangeDiff", path: "src/a.ts", extra: 1 })).toEqual({
       type: "openChangeDiff",
@@ -191,6 +204,34 @@ describe("parseWebviewMessage", () => {
       expect(parseWebviewMessage({ type: "reject", id: 3, reason })).toBeUndefined();
     }
   });
+  test("accepts an answer by its question id, trimmed, up to 4,000 UTF-16 units after trimming", () => {
+    expect(parseWebviewMessage({ type: "answer", id: 3, text: "  src/a.ts \n" })).toEqual({
+      type: "answer",
+      id: 3,
+      text: "src/a.ts",
+    });
+    const longest = "a".repeat(4000);
+    expect(parseWebviewMessage({ type: "answer", id: 3, text: longest })).toEqual({
+      type: "answer",
+      id: 3,
+      text: longest,
+    });
+    expect(parseWebviewMessage({ type: "answer", id: 3, text: ` ${longest} ` })).toEqual({
+      type: "answer",
+      id: 3,
+      text: longest,
+    });
+  });
+
+  test("rejects an answer that is empty, blank, over 4,000 UTF-16 units, not text, or without a valid id", () => {
+    for (const text of ["", "   ", " \n\t ", "a".repeat(4001), undefined, 3, ["a"]]) {
+      expect(parseWebviewMessage({ type: "answer", id: 3, text })).toBeUndefined();
+    }
+    for (const id of [undefined, "3", 1.5, -1, Number.NaN]) {
+      expect(parseWebviewMessage({ type: "answer", id, text: "src/a.ts" })).toBeUndefined();
+    }
+  });
+
   test("accepts an insert of a code block's text up to the reply length cap, the empty text included", () => {
     expect(parseWebviewMessage({ type: "insertCode", text: "a\nb" })).toEqual({ type: "insertCode", text: "a\nb" });
     expect(parseWebviewMessage({ type: "insertCode", text: "" })).toEqual({ type: "insertCode", text: "" });
@@ -252,6 +293,18 @@ describe("parseWebviewMessage", () => {
     }
   });
 
+  test("accepts implementPlan with the conversation and entries count shown, and drops it without them", () => {
+    const shown = { conversationId: ID, entries: 2 };
+    expect(parseWebviewMessage({ type: "implementPlan", shown, mode: "autoEdit" })).toEqual({
+      type: "implementPlan",
+      shown,
+    });
+    for (const invalid of [undefined, 2, null, ...badShown]) {
+      expect(parseWebviewMessage({ type: "implementPlan", shown: invalid })).toBeUndefined();
+    }
+    expect(parseWebviewMessage({ type: "implementPlan", entries: 2 })).toBeUndefined();
+  });
+
   test("drops a mode pick of an unknown mode", () => {
     for (const mode of [undefined, "Plan", "Ask", "auto", "", true, 1, ["ask"]]) {
       expect(parseWebviewMessage({ type: "setMode", mode })).toBeUndefined();
@@ -267,6 +320,7 @@ describe("chatStateOf", () => {
     provider: undefined,
     models: { status: "noProvider" },
     model: undefined,
+    reasoningEffort: undefined,
     conversationId: "0b0d4c1e-8f9a-4c3b-9d2e-1a2b3c4d5e6f",
     entries: [],
     conversations: [],
@@ -274,6 +328,7 @@ describe("chatStateOf", () => {
     storageProblem: undefined,
     context: { used: 0, size: 32768, known: false },
     mode: "ask",
+    settingMode: "ask",
     modePending: false,
     queue: [],
     undo: { reply: undefined, ranCommand: false, running: false, outcome: undefined },

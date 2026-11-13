@@ -78,6 +78,16 @@ broke-code follows VS Code's proxy settings. It never follows an HTTP redirect, 
 that gets no response within 300 seconds fails as unreachable. broke-code cuts off a reply that sends nothing for 300
 seconds.
 
+## Reasoning effort
+
+Next to the model picker, the panel header has a reasoning effort picker: **Default effort**, **Low effort**,
+**Medium effort**, or **High effort**. Low, Medium, and High send `reasoning_effort` with every request to that model,
+from the chat, a commit message, and **Edit selection**. Default sends nothing and leaves the choice to the provider.
+broke-code remembers your pick for each model of each provider, in this workspace.
+
+The model decides what an effort changes, and some ignore it. If the provider answers with an error, pick Default
+again.
+
 ## Corporate or self-signed certificates
 
 broke-code trusts the certificates your system trusts. A provider may use a certificate signed by a corporate or
@@ -187,13 +197,18 @@ broke-code attaches nothing in these cases, shows the chip in the error color, a
 
 ## From the editor
 
-Two entry points fill the chat's message box from the editor. Neither sends anything. You read the draft, add to it,
-and send it yourself. Both open the chat panel, close History if it is open, and put the focus in the message box. Both
-work while a reply runs, since they only edit the draft.
+Two entry points fill the chat's message box from the editor, and a third rewrites the selection in place.
+
+When text is selected, the editor's context menu has a **broke-code** submenu with **Add selection to chat**, **Edit
+selection**, and its presets **Refactor selection**, **Add documentation comments**, and **Add types**.
+
+The first two send nothing. You read the draft, add to it, and send it yourself. Both open the chat panel, close
+History if it is open, and put the focus in the message box. Both work while a reply runs, since they only edit the
+draft.
 
 - **broke-code: Add selection to chat** inserts `@selection ` at the cursor of the message box, with a space before it
-  when needed. It is in the Command Palette, and in the editor's context menu when text is selected. The editor keeps
-  its selection, and `@selection` attaches the selection as it stands when you send.
+  when needed. It is in the Command Palette, and in the editor's broke-code submenu. The editor keeps its selection,
+  and `@selection` attaches the selection as it stands when you send.
 - **Fix with broke-code** is a quick fix in the light bulb of each error or warning in a file inside the workspace
   folders. It puts `Fix this problem in @src/app.ts at line 12: <the message>` in the message box, with the file as a
   mention, the line, and the message on one line. It fills an empty box. If the box holds a draft, it adds the text on
@@ -202,6 +217,39 @@ work while a reply runs, since they only edit the draft.
 
 The extension starts once the window has started, so the quick fix is there before you first open the chat. Without a
 provider, the chat opens with a notification that asks you to add one, and broke-code drops the draft.
+
+### Edit selection
+
+**broke-code: Edit selection** asks for an instruction, such as "handle an empty list", and sends the selection to the
+model selected in the chat in one request, with the lines around it as context. No agent turn runs and no conversation
+is saved. It is in the Command Palette and in the editor's broke-code submenu, and has no keyboard shortcut.
+
+- It works on the primary selection of a file you can write, or of an untitled document. A notification says so when
+  nothing is selected, or when the document is read-only or of another kind.
+- A notification shows while the model writes. Its **Cancel** stops the request.
+- The rewrite opens in a diff: the document on the left, the document with the rewritten selection on the right.
+  **Accept** and **Reject** sit in the diff's title bar. Closing the diff is a Reject.
+- **Accept** changes the document, not the file on disk, and does not save it. One Undo restores it. If you changed the
+  selected text or anything above it since you ran the command, even if you undid the change or pasted a copy of the
+  same line, broke-code edits nothing and says so. Changes below the selection do not block it.
+- If you change the selected text or anything above it while you type the instruction, broke-code sends nothing and
+  says so.
+- broke-code drops the model's reasoning, removes a code block around the code, and sets the indentation to the
+  selection's. The model's line breaks become the document's.
+- The request uses the chat's provider, model, and context size. If the file is long, broke-code sends as many lines
+  before and after the selection as fit. If the selection alone does not fit, it sends nothing and says so.
+- One edit runs per document at a time. It works while the chat replies.
+
+Three presets run Edit selection with a fixed instruction and no input box. They are in the Command Palette and in the
+editor's broke-code submenu:
+
+- **broke-code: Refactor selection** makes the code simpler and easier to read, and keeps its behavior and public names.
+- **broke-code: Add documentation comments** adds documentation comments in the style of the file's language, and
+  changes nothing else.
+- **broke-code: Add types** adds explicit type annotations where the language allows them, and changes nothing else.
+
+A preset counts as the document's edit: until it ends, Edit selection and the other presets refuse to start on that
+document, and say so.
 
 ## How the agent works
 
@@ -251,15 +299,21 @@ setting, so a change you make in the settings editor shows in the selector too. 
 Auto-edit in one window applies to every window and project. A workspace `settings.json` cannot turn it on. The
 selector is disabled while the agent works. Commands always ask, in both modes.
 
-The third mode, **Plan**, asks the agent for a plan instead of changes. The agent gets only the tools that read
-(**read_file**, **list_files**, **search**, and **load_skill** when a skill is listed). It answers with a plan of the
+The third mode, **Plan**, asks the agent for a plan instead of changes. The agent gets only the tools that change
+nothing (**read_file**, **list_files**, **search**, **ask_user**, and **load_skill** when a skill is listed). It answers with a plan of the
 changes, file by file, in order. broke-code writes nothing and runs no command. If the model still tries to write or
 run a command, the chat shows a failed step that says the tool is not available in Plan mode, and the model goes on.
 
 broke-code keeps Plan for the workspace, also after a reload, and writes no setting for it. When you leave Plan for Ask
 or Auto-edit, broke-code writes the setting only if its value must change. If that write fails, the error shows and
-Plan stays. A message you send in Plan stays a Plan turn until it ends. So you can switch to Ask afterwards and send "do
-it", and the agent writes the plan, with your approval.
+Plan stays. A message you send in Plan stays a Plan turn until it ends.
+
+To carry a plan out, click the button under the plan's answer: **Implement in Ask mode**, or **Implement in Auto-edit
+mode** when `brokeCode.autoApproveWrites` is on. The label names the mode the setting holds. The click leaves Plan for
+that mode, writes no setting, and sends the message "Implement the plan above." The agent then makes the changes, with
+your approval of each write in Ask. The button shows while Plan is on, under the last answer of the conversation, once
+no reply is in flight and that answer ended normally. It does not show after a stop, an error, or `/compact`. It is
+disabled while **Send** would not act. You can still leave Plan with the selector and type your own message.
 
 The agent can also run a shell command with **run_command**. It always asks you first, and no setting changes that.
 The chat shows the whole command under the call, with its line breaks, and the folder it runs in when the model names
@@ -290,9 +344,23 @@ Unlike the file tools, a command can go outside the workspace. It runs with your
 delete anything you can. broke-code checks only the folder it starts in. Your approval is the guard, so read the whole
 command before you click **Run**.
 
+The agent can ask you a question with **ask_user**, in every mode. It is told to ask when your request names one
+thing and several match, such as a function that two files define under the same name, instead of changing them all
+or picking one. The chat shows the question where an approval shows, with a button for each answer the model proposes
+(six at most), then a field and **Answer** for an answer of your own, up to 4,000 characters. Enter in the field
+answers too.
+
+- Your answer goes back to the model as the result of its call, and the turn goes on. Click the step's row to read it
+  again.
+- A message you send from the message box meanwhile is queued, as during an approval. It does not answer the
+  question.
+- **Stop**, **New chat**, and opening or deleting a conversation cancel the question, and the turn ends stopped. A
+  question is never saved: after a reload, the conversation shows that turn as stopped.
+- No notification tells you about a question while the chat is out of view.
+
 Each tool call shows as a compact row under the model's text. The row shows the tool, its main argument (a path, a
-search pattern, or the whole command), and whether it worked with the size of its result, or the exit code for a
-command. Click the row to see the result the model received.
+search pattern, the whole command, or the first line of a question), and whether it worked with the size of its
+result, or the exit code for a command. Click the row to see the result the model received.
 
 Once an agent turn ends, its steps fold under one row above the final answer that says what they did, such as "Read 3
 files, edited 1 file, ran 1 command, 1 failed". Files count once however the model spelled their path (`a.ts`,
@@ -331,6 +399,24 @@ first, and the queue resumes when its turn ends with an answer.
 message box, one per paragraph, so you lose nothing you typed. broke-code never queues `/new`, `/model`, or
 `/compact`. A message you queue while `/compact` runs goes out once the summary is done. The queue survives hiding the
 panel but not a window reload.
+
+### Notifications
+
+A turn can run for minutes. When it ends, fails, or stops on a limit while the chat is not in view, VS Code shows a
+notification. It shows one too when a file change or a command waits for your decision, naming the file or the first
+line of the command. The chat is in view when the chat view is visible and the VS Code window has the focus. Working
+in an editor of the same window, with the chat still visible, shows no notification.
+
+Each notification has one button, **Show chat**, which shows the chat and nothing more. You still accept or reject in
+the chat. A turn you stop shows no notification, and neither does **Generate commit message**, which shows its own
+progress. VS Code cannot take a notification back, so one may still be there after you answered in the chat.
+
+To turn the notifications off, set `brokeCode.notifications` to `false` in your **user** settings. A workspace
+`settings.json` cannot change it.
+
+```json
+"brokeCode.notifications": false
+```
 
 ### Retry or continue a turn
 
@@ -673,7 +759,7 @@ with no folder open keeps its conversation in memory only.
 ## Tested models
 
 The eval bench measures broke-code's tool calls on two local models with Ollama, `qwen3.8:27b` and
-`gemma4:26b-a4b-it-qat`. It runs each task ten times, and a task passes at nine. The bench has eight tasks.
+`gemma4:26b-a4b-it-qat`. It runs each task ten times, and a task passes at nine. The bench has nine tasks.
 
 - **Read** answers with the value of a setting that only a file holds.
 - **Edit** renames a function in a source file and changes nothing else.
@@ -684,6 +770,8 @@ The eval bench measures broke-code's tool calls on two local models with Ollama,
 - **Hidden** repeats the slash task with a skill kept from the model, which only you can load, next to an unrelated
   skill the model may load.
 - **Range** gives the code on the last line of a 2,400-line file, by reading on past its first 2,000 lines.
+- **Ask** renames a function that two files define under the same name, by asking which one first. The bench
+  answers the question, as you do in the chat.
 
 In the latest full run, both models passed all 10 runs of every task. When a model thinks, then stops without a word,
 broke-code tells it so and asks again. Contributors run the bench with `bun run eval`.
@@ -697,7 +785,9 @@ the server runs no reasoning parser. [docs/eval.md](docs/eval.md) has the detail
 
 broke-code collects no telemetry. It contacts only the providers you configure. When you generate a commit message,
 broke-code sends the staged diff of that repository to the provider selected in the chat. When a message mentions
-`@diff`, broke-code sends the uncommitted changes of the workspace folders with it.
+`@diff`, broke-code sends the uncommitted changes of the workspace folders with it. When you run "Edit selection",
+broke-code sends the selection, the lines around it, the file's path, and your instruction to the provider selected in
+the chat; a preset sends its own instruction.
 
 ## Credits
 

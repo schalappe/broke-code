@@ -76,8 +76,8 @@ This file specifies mentions (`@file`, `@folder`, and the reserved `@problems`, 
   optional `range` (`{ path, start, end }`, 1-based lines, `start` not after `end`), which the chip shows with the
   count: "src/app.ts 10-12, 3 lines", "src/app.ts 10, 1 line".
 - Two editor entry points fill the message box and never send (Send's rules stay in one place): the command
-  `broke-code.addSelectionToChat` ("broke-code: Add selection to chat", Command Palette, and `editor/context` when
-  `editorHasSelection`) and the quick fix "Fix with broke-code". Both go through `ChatView.insertDraft`, which runs the
+  `broke-code.addSelectionToChat` ("broke-code: Add selection to chat", Command Palette, and the first entry of the
+  editor's `broke-code` submenu, `editor/context` when `editorHasSelection`, `docs/spec/edit-selection.md`) and the quick fix "Fix with broke-code". Both go through `ChatView.insertDraft`, which runs the
   view's `brokeCode.chat.focus` command (resolving the view on a first show), then posts `insertDraft { text, mode,
   picked }` (`DraftInsert`) through the `DraftQueue` (`draftQueue.ts`). A draft is queued only once the show succeeded:
   a show that fails queues nothing and is shown as an error, so a retry delivers it once. Queued drafts are posted in

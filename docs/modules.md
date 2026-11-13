@@ -14,17 +14,34 @@ This file says which file holds which responsibility. Update it when a module ga
   parser reads a new entry appended to the setting, the one rule of what may be added), the "Add provider" flow
   (`addProvider.ts`: the Ollama preset, the input boxes' validation, the key then the setting, over ports the host
   fills), the API key shape check, the provider
-  HTTP client (`client.ts`: the request body with the usage field, its one resend without it after a 400 or 422, and
-  the reply's reported usage in its outcome), the provider support memory (`providerSupport.ts`: `ProviderSupport`,
+  HTTP client (`client.ts`: the request body with the reasoning effort and the usage field, its one resend without it after a 400 or 422, and
+  the reply's reported usage in its outcome; `collectReply`, one reply read whole for the commit message and "Edit
+  selection"), the provider support memory (`providerSupport.ts`: `ProviderSupport`,
   per provider name, base URL, and model, whether the usage field is taken and the characters per token the replies'
-  reported usage taught; one instance, made by the host, shared by the chat controller and the commit message), the CA trust and certificate error classification (`tls.ts`), the SSE reader, the typed provider
+  reported usage taught; one instance, made by the host, shared by the chat controller, the commit message, and
+  "Edit selection"), the CA trust and certificate error classification (`tls.ts`), the SSE reader, the typed provider
   errors and their wording (`providerError.ts`: `describeProviderError` with a translator, for the panel and the
-  host's notifications), the generated commit message (`commitMessage.ts`: the request's system prompt, the diff cut to
+  host's notifications), the sentences of a halted turn and of an empty summary (`turnEndText.ts`: `describeHalt` and
+  `describeEmptySummary` with a translator, for the panel and the host's notifications), the turn notifications
+  (`notifications.ts`: `TurnEvent`, what the chat controller reports through its optional `turnEvents` port;
+  `notifyTurnEvent`, at most one notification per event from the view's visibility, the window's focus, and the user
+  value of `brokeCode.notifications`, its severity and text, a command cut to its first line, and "Show chat" over the
+  host's ports), the generated commit message (`commitMessage.ts`: the request's system prompt, the diff cut to
   the context threshold, the reply's cleaning, and `CommitMessageGenerator`, the command over its git, provider
-  request, and user interface ports), the chat controller (conversation state, the agent turn loop with its tool runner, instruction reader, and
+  request, and user interface ports), "Edit selection" (`editSelection.ts`: `composeEditRequest`, the request's
+  system prompt and the lines around the selection cut to the context threshold, half and half then pooled;
+  `cleanEditReply`, the reply's reasoning, one wrapping fence, the re-based indentation, and line breaks;
+  `requestPath`, the document's name in the request; `isWritableDocument`, the writable check of the active editor's
+  document; `EDIT_SCHEME`, the scheme of its diff's sides; `EDIT_PRESETS`
+  and `editInstruction`, the three presets' fixed instructions by command and each command's instruction; and
+  `SelectionEditor`, the command and its presets over its provider request, document, diff, and user interface ports: the checks in
+  order, the caller's instruction, the change watch of the document from the read to the run's end, the document read
+  again before the request, one run per document, Accept's check of the watch and of the text through the range's end
+  and one edit, Reject, a closed tab,
+  and dispose), the chat controller (conversation state, the agent turn loop with its tool runner, instruction reader, and
   skill reader ports, its limits source and step limits, the context budget check, the usage display with the last reported usage (`ContextUsage.reported`), streaming, Stop, saving, reopen, delete,
   the queue of messages sent while a reply is in flight, with `mayStartTurn`, the one check a send, `/compact`, the
-  queue, Retry, and Continue share, Retry and Continue (`retry`, `continueTurn`, over `startTurn` and `removeFrom`), a
+  queue, Retry, Continue, and "Implement in ... mode" share, Retry and Continue (`retry`, `continueTurn`, over `startTurn` and `removeFrom`), leaving Plan from a plan's final answer (`implementPlan`, over `startTurn`), a
   send replacing the last turn (`send`'s `replaces`, Edit, over the same checks and `removeFrom`), and "Undo changes": each turn's `RecordedChanges` on `ToolContext.changes`, the held turn with its
   write steps by file, and `undoChanges` over the `UndoHost` port, which marks the steps of the files put back; and
   "Changed files": the held turn's rows in `ChatState.changedFiles`, named at each recorded write, and
@@ -101,18 +118,23 @@ This file says which file holds which responsibility. Update it when a module ga
   `restored`, `removed`, or `skipped` with its `RestoreRefusal`, as `UndoneFile` in `protocol.ts` plus the file's real
   path), the approval seam (`approval.ts`: the request a tool
   makes, the decision it gets, the rejection text, and the decisions of the editor side: which change diffs to close,
-  the unsaved-editor check over the open documents, the auto-approve setting from its user value), the tool runner (`toolRunner.ts`: the read and write tools over the
+  the unsaved-editor check over the open documents, the auto-approve setting from its user value), the question tool
+  (`askUser.ts`: `ASK_USER_TOOL`, `askUser` checks the question and the options and asks the run context's
+  `requestAnswer`, the request beside the approval request; the answer, or a cancellation on Stop), the
+  tool runner (`toolRunner.ts`: the read and write tools over the
   workspace folders, the read tools also over the run's `skillRoots`, each write handed to the applier the host builds
-  for the run, `run_command` with the command environment the host passes, read at each call, and `load_skill` over
-  the run's `skills`), the instruction files
+  for the run, `run_command` with the command environment the host passes, read at each call, `load_skill` over
+  the run's `skills`, and `ask_user` only when its caller turns it on, which the extension does, and the eval bench but
+  for its baseline run), the instruction files
   (`instructions.ts`: `~/.agents/AGENTS.md`, then each workspace folder's `AGENTS.md`, under the mention caps), and the
   skills (`skills.ts`: discovery in `~/.agents/skills/` and each workspace folder's `.agents/skills/`, the frontmatter
   subset, validation, precedence, warnings, the line the extension logs at each send; `LOAD_SKILL_TOOL`, `loadSkill`
   for the model's call, `findSlashSkill`, the skill a `/<name> args` message loads, `loadSkillText`, the load result
   whoever loads, the user's arguments substituted or appended, and `answerSkillQuery`, the `/` menu's answer). the last turn's actions (`lastTurn.ts`: `lastTurnActions`, whether the last turn offers Retry and Continue and
   under which reply; `unrevertedEffects`, the applied writes and run commands a removal from an index leaves on disk;
-  `CONTINUE_TEXT`). `markdownCode.ts`, `suggestions.ts`, `reservedMentions.ts`, `modelList.ts`, `conversation.ts`,
-  `history.ts`, and `lastTurn.ts` import nothing from
+  `CONTINUE_TEXT`; `hasFinalAnswer`, whether the conversation ends on a final answer, which "Implement in ... mode"
+  needs, and `IMPLEMENT_PLAN_TEXT`). `markdownCode.ts`, `suggestions.ts`, `reservedMentions.ts`, `modelList.ts`, `conversation.ts`,
+  `history.ts`, `lastTurn.ts`, `providerError.ts`, and `turnEndText.ts` import nothing from
   `node:`, since the webview loads them. Unit tests sit next to them as `*.test.ts`, because `bun test` cannot load `vscode`. `tlsFixture.ts`
   generates test certificates with `/usr/bin/openssl` at test time; no private key is committed.
   `conversationFixture.ts` is the in-memory conversation file port for tests.
@@ -131,7 +153,9 @@ This file says which file holds which responsibility. Update it when a module ga
   `approval.ts` (the diff preview over `vscode.diff` and a content provider, the tabs, documents, and
   `brokeCode.autoApproveWrites` values it feeds the core decisions, and `writeAutoApproveWrites`, the user value the
   mode selector writes), the "Changed files" diffs in `turnDiffs.ts` (`registerTurnDiffs`: the core `TurnDiffs` over
-  `vscode.diff`, `stat`, the tabs, and the error notifications, and the content provider of its left sides), the instruction reader and the skill reader from the home folder and the workspace folders, the latter logging the
+  `vscode.diff`, `stat`, the tabs, and the error notifications, and the content provider of its left sides), the turn
+  notifications in `notifications.ts` (`turnNotifier`: the core `notifyTurnEvent` over the chat view's visibility,
+  `window.state.focused`, the `brokeCode.notifications` values, VS Code's messages, and the view's focus command), the instruction reader and the skill reader from the home folder and the workspace folders, the latter logging the
   skills of each send, and the same discovery, unlogged, for the `/` menu's `querySkills`; `chatView.ts` answers
   History's `searchConversations` through the action `extension.ts` binds to `answerConversationSearch` over the
   controller's listed conversations, opens the
@@ -139,11 +163,15 @@ This file says which file holds which responsibility. Update it when a module ga
   `DraftQueue` to the view's focus command and `postMessage` (`insertDraft`); `extension.ts` registers `broke-code.addSelectionToChat`,
   `broke-code.fixDiagnostic`, and the code action provider of the quick fix; `commitMessage.ts` registers `broke-code.generateCommitMessage`, its git port over the
   built-in Git extension's API, the repository Quick Pick, the replace question, the progress notification, and the
-  notifications).
+  notifications; `progress.ts` holds the cancellable progress notification both run their request under; `editSelection.ts` registers `broke-code.editSelection`, its presets `broke-code.refactorSelection`,
+  `broke-code.documentSelection`, and `broke-code.typeSelection`, and the diff's `broke-code.acceptEdit` and
+  `broke-code.rejectEdit`: the active editor read with the writable check, the instruction's input box, the progress
+  notification, the diff's content provider of `EDIT_SCHEME`, the closing of its tabs and the watch of
+  `tabGroups.onDidChangeTabs` for a tab the user closed, the change watch over `workspace.onDidChangeTextDocument`, and the edit as one `WorkspaceEdit` on the document's URI).
 - `src/webview/`: the React chat panel and its CSS (`styles.css`: a token layer, then rules that consume it, every color
   from a `--vscode-*` variable; see `DESIGN.md`), the thread that carries a turn's tool steps as nodes, the latest
-  user message in the theme's button colors and the earlier ones outlined (`Entry`'s `earlier`), tool step rows, the approval controls, the mode selector after the message box (`ModeSelect`), the turn's actions row (`TurnActions`: Retry, its
-  confirmation and Cancel, and Continue under the last turn's reply, then "Undo changes" under the reply
+  user message in the theme's button colors and the earlier ones outlined (`Entry`'s `earlier`), tool step rows, the approval controls, the question block (`QuestionControls`: the open `ask_user` question, its options, the answer field, and Answer, posting `answer`), the mode selector after the message box (`ModeSelect`), the turn's actions row (`TurnActions`: Retry, its
+  confirmation and Cancel, Continue, and "Implement in ... mode" under the last turn's reply, then "Undo changes" under the reply
   `ChatState.undo` names), Edit under the last turn's user message and the replacing state's mark with Cancel (held by
   `App`, the composer's Send carrying it), "Changed files" under the reply `ChatState.undo` names (`ChangedFiles`, a
   button per row posting `openChangeDiff`), and the last undo's outcome (`UndoOutcome`), and the answer's code blocks with Copy and Insert at cursor (`CodeBlock`,
@@ -164,7 +192,9 @@ This file says which file holds which responsibility. Update it when a module ga
   `describeUndoFailure`), and the header's usage line and its tooltip with the reported usage (`describeContextUsage`,
   `describeContextTitle`).
 - `src/l10n.test.ts`: checks that every `l10n.t` message has a French translation and that the
-  `package.nls*.json` files match.
+  `package.nls*.json` files match. `src/manifest.test.ts`: checks the manifest's editor menus: the `broke-code`
+  submenu and the order of its five entries, the presets in the Command Palette, and Accept and Reject on the edit
+  diff's title bar only.
 - `l10n/bundle.l10n.fr.json`, `package.nls.json`, `package.nls.fr.json`: French strings for the host and
   webview, and the English and French manifest strings. English messages are the keys of `l10n.t`.
 - `scripts/build.ts`: `bun run build` writes the host bundle (`dist/extension.js`, CommonJS) and the webview
@@ -173,14 +203,16 @@ This file says which file holds which responsibility. Update it when a module ga
   release workflow runs it as a CLI. Its tests sit next to it.
 - `eval/`: the Ollama eval bench (`bun run eval`). `scenarios.ts` holds each scenario (fixture files, an optional
   fixture home folder, message, the files it must write with their exact text, an optional check of a turn that ended
-  `done`) and `judge`, the verdict and failure category of a run, which compares the workspace after the run with the
+  `done`, an optional answer to `ask_user`, `DEFAULT_ANSWER` when absent), `withoutAskUser` (the scenarios judged
+  without the tool: `ask` on the workspace alone), and `judge`, the verdict and failure category of a run, which compares the workspace after the run with the
   fixture plus those writes; `run.ts` plays one run through the `ChatController` ports, with the read and write tools,
-  `run_command`, and `load_skill` over a copy of the fixture under the system temporary directory, each write applied at
-  once by `fileApplier` and recorded for the dump, each command approved at once (rejected instead in a scenario with
+  `run_command`, `load_skill`, and `ask_user` (unless the target leaves it out) over a copy of the fixture under the
+  system temporary directory, each write applied at once by `fileApplier` and recorded for the dump, each question
+  answered at once with the scenario's answer, each command approved at once (rejected instead in a scenario with
   `rejectCommands`, as a user's Reject would) and run with `benchCommandEnv` (the
   allow-listed environment and `sandbox-exec` with `BENCH_SANDBOX_PROFILE` as the launcher, the run's real paths as
   its parameters), and the skills discovered in a copy of the fixture home, never the real one;
-  `report.ts` formats the scores; `bench.ts` is the CLI (`sandboxProblem`, its check before any run), guarded by `import.meta.main` so `bun test` never starts it.
+  `report.ts` formats the scores; `bench.ts` is the CLI (`sandboxProblem`, its check before any run; `--no-ask-user`, the baseline without the tool), guarded by `import.meta.main` so `bun test` never starts it.
   Its unit tests sit next to them and need no Ollama.
 - `media/`: `logo.png` (256 px), the extension icon on Open VSX and the Visual Studio Marketplace (`icon` in
   `package.json`; the registries refuse SVG), rendered from its source `logo.svg` with

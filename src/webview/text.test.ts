@@ -15,6 +15,7 @@ import {
   describeUndoneFile,
   describeUndoOutcome,
   formatConversationDate,
+  mainArgument,
 } from "./text";
 import { type FoldCounts, foldTurns, STEP_KINDS, type StepKind } from "./turns";
 
@@ -269,6 +270,12 @@ describe("describeFold", () => {
     );
   });
 
+  test("counts an ask_user step among the other steps", () => {
+    const ask = step("ask_user", { question: "Which file?" }, { text: "The user answered: a.ts" });
+    expect(rowOf(read("a.ts"), ask)).toBe("Read 1 file, 1 other step");
+    expect(rowOf(ask, ask)).toBe("2 steps");
+  });
+
   test("words each kind in the singular and the plural", () => {
     const rows: [StepKind | "other", string, string][] = [
       ["read", "Read 1 file", "Read 2 files"],
@@ -363,6 +370,26 @@ describe("describeToolStep", () => {
     expect(describeToolStep({ ...step, approval: "auto", undone: true })).toBe("undone, auto-approved, ok, 1 line");
     expect(describeToolStep({ ...step, approval: "accepted", undone: true })).toBe("undone, ok, 1 line");
     expect(describeToolStep({ ...step, approval: "auto" })).toBe("auto-approved, ok, 1 line");
+  });
+});
+
+describe("mainArgument", () => {
+  test("an ask_user row shows the first line of its question, whichever argument the model wrote first", () => {
+    const question = "  Which load do you mean?  \nBoth files define one.";
+    expect(mainArgument("ask_user", { options: "a.ts\nb.ts", question })).toBe("Which load do you mean?");
+    expect(mainArgument("ask_user", { question, options: "a.ts\nb.ts" })).toBe("Which load do you mean?");
+    expect(mainArgument("ask_user", { question: "\n\nWhich file?" })).toBe("Which file?");
+  });
+
+  test("an ask_user row without a question shows no argument, never its options", () => {
+    expect(mainArgument("ask_user", { options: "a.ts\nb.ts" })).toBeUndefined();
+    expect(mainArgument("ask_user", { question: "  \n ", options: "a.ts" })).toBeUndefined();
+  });
+
+  test("another tool shows its pattern, else its path, else the first value given", () => {
+    expect(mainArgument("search", { path: "src", pattern: "load" })).toBe("load");
+    expect(mainArgument("list_files", { path: "src" })).toBe("src");
+    expect(mainArgument("load_skill", { name: "review" })).toBe("review");
   });
 });
 

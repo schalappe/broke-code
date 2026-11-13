@@ -34,7 +34,7 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
   last line break is; content left empty writes an empty file. Accepted cost, by maintainer decision (ADR 0001):
   `write_file` cannot create a file ending with an empty line; `edit_file` can.
 - The v1 tools are `read_file`, `list_files`, `search` (ripgrep), `write_file`, `edit_file`, `run_command`,
-  and `load_skill`.
+  `load_skill`, and `ask_user`.
 - `read_file(path, start_line?, end_line?)` reads a file under the mention caps (binary or over 1 MiB refused whole)
   and shows lines `start_line` to `end_line`, 1-based and inclusive, at most 2,000 of them (#100). Left out,
   `start_line` is 1 and `end_line` the last line; either may come alone, and an `end_line` past the end reads to it.
@@ -57,6 +57,28 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
     without `end_line`, `big.log 1-50` without `start_line`.
 - `edit_file` replaces exact text only, compared byte for byte, line endings included. If the text matches zero
   times or more than once (overlapping matches count), return an error to the model. Never guess the location.
+- `ask_user(question, options?)` asks the user one question inside the turn (#142, #143). `question` comes first, may span
+  several lines, and is trimmed. `options`, when given, holds one choice per line: each line is trimmed, blank lines
+  are dropped, and a line equal to an earlier one is dropped. Before anything is asked, the call is an `error` result
+  when the question is empty after trimming or longer than 2,000 characters, when more than 6 options remain, or when
+  an option is longer than 200 characters. No parsing rule changes for it: an argument may already span several
+  lines.
+  - It asks through its run context with a request of its own beside the approval request,
+    `ToolContext.requestAnswer({ question, options })`, which settles with the answer text or a cancellation. The
+    answer gives the `ok` result `The user answered: <text>`; an abort of the turn's signal, also while the request is
+    being made, cancels it without waiting for the request and gives the stopped error
+    (`ask_user: stopped before it finished.`).
+    A request that throws gives an `error` result saying the question could not be asked. The call is one tool step
+    toward the step limit, like any call.
+  - It changes nothing, so every mode offers it, Plan included, with its rule in the system prompt (System prompt,
+    below).
+  - `workspaceToolRunner` offers it only when its caller turns on its `offerAskUser` switch, a bare switch: unlike the
+    command environment that offers `run_command`, it carries nothing, since the answer comes from the run context.
+    The extension turns it on, and the controller answers the request with the user's answer from the chat
+    (Approvals, below). The eval bench turns it on too, except in its baseline run without the tool, and answers each
+    question by wrapping the run context, as it decides command approvals (`docs/eval.md`). With the switch off, the
+    system prompt and the tool list are the ones before #142, and a model that writes an `ask_user` call gets the
+    malformed-call result for a tool that is not known.
 
 ## Write tools, atomic writes, and recorded changes
 
@@ -147,6 +169,26 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
     field. The webview's `approve { id }` and
     `reject { id, reason? }` are validated like the other messages, and a decision for a request no longer open is
     ignored. One request at a time, since one call runs per reply.
+  - The run context carries a second kind of request beside it, `ToolContext.requestAnswer`, the question of
+    `ask_user` (Body tool calls, above; ADR 0002, addenda of 2026-11-13). It approves nothing: it brings back the
+    user's answer as text, and an abort of the turn cancels it like an approval request.
+    - While the question is open, the reply stays `streaming` and `ChatState.question` holds
+      `{ id, question, options }`: the question in full and the options the tool kept, in the model's order, maybe
+      none. At most one request is open at a time, an approval or a question, and both take their ids from one
+      counter: a second request made while one is open is refused (`requestAnswer` and `requestApproval` reject, and
+      the tool reports it as an `error` result), and the open one stays.
+    - The chat renders the question from that state alone ("The question block" in `docs/spec/chat-panel.md`). The
+      webview's `answer { id, text }` is validated like the other messages: the text is trimmed, and the message is
+      dropped when the id is not a request id, or when the text is not a string, is empty after trimming, or is longer
+      than 4,000 UTF-16 units after trimming (`MAX_ANSWER_LENGTH`). An option is at most 200 characters, so an option
+      click always passes. `ChatController.answer(id, text)` settles the question with that text, and ignores an
+      answer whose id is not the open question's, a second answer included.
+    - A message sent from the message box meanwhile is queued, as during an approval; it never answers the question.
+    - Stop, New chat, opening or deleting a conversation, and deactivation cancel the question as they cancel an
+      approval: the state is cleared at once and the reply ends `stopped`, with no step. An open question is never
+      saved: a record saved meanwhile holds the reply in flight with its call, and reloads `stopped`. When the view is
+      hidden and shown again, the question is still open, from the state.
+    - A question raises no notification (#101 covers approval requests and turn ends only).
   - A write opens the native VS Code diff editor beside the chat, titled with the path: the planned `before` text on
     the left (empty for a new file), the proposed text on the right, both from a content provider. Accept writes with
     the atomic applier below, never through `WorkspaceEdit`; the diff tab closes on Accept, Reject, and Cancel. Closing
@@ -191,6 +233,17 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
     (`failed`). A failed memento write is logged only, as for `brokeCode.lastChoice`: Plan applies for the session
     and is lost at the next load. Plan is not part of a conversation: reopening one changes no mode. While leaving Plan
     writes the setting, the mode change is pending as above, and no send or other pick is taken.
+  - Leaving Plan from a plan's answer (#102, ADR 0005, addendum of 2026-11-13): `ChatState.settingMode` is always
+    present and names the mode the setting holds, `ask` or `autoEdit`, whatever `mode` says; `modeChanged` reads both,
+    so it follows each change of the setting while Plan is on. `ChatController.implementPlan(shown, label)` is the
+    second way out of Plan: it clears the Plan key without writing `brokeCode.autoApproveWrites`, so nothing pends
+    and the mode becomes the one the setting holds, then starts an ordinary turn (`TurnStart` `continue`) whose user
+    entry shows `label` and whose model text is `IMPLEMENT_PLAN_TEXT` (`Implement the plan above.`), with no mention
+    and the provider, model, and limits of that moment. Writes of that turn follow the setting as it stands when each
+    runs. It acts only when the entries shown are the conversation's (`ShownEntries`), Plan is on, `mayStartTurn`
+    passes, and `hasFinalAnswer(entries)` holds; otherwise it does nothing: Plan stays on and nothing is sent. A
+    failed memento write is logged only: Plan is still left for the session and the send goes. Plan stays left when
+    the turn fails. The button and the predicate are specified in `docs/spec/chat-panel.md`.
   - "Undo changes" (#93, ADR 0002, 2026-11-12): neither the editor's Undo nor Local History sees an accepted write,
     which goes to disk outside the editor, so the chat offers the way back. Each agent turn gets a `RecordedChanges`
     (`ToolContext.changes`, set per call like `requestApproval`); the host's applier records into it. The controller
@@ -347,7 +400,8 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
   vLLM once repeated one call for 24 minutes. An opening with no complete call before it stops nothing.
 - When a reply ends, its answer goes through the parser. Text and no call: the turn ends. A call: the answer is cut
   at the end of the call block, so the chat and the history never hold the text after it, then the tool runs with the
-  turn's context (`ToolRunner.run(call, { signal, requestApproval })`, the abort signal and the approval request), a tool step entry records its name, arguments, status, text, and approval, and the loop requests again.
+  turn's context (`ToolRunner.run(call, { signal, requestApproval, requestAnswer })`, the abort signal, the approval
+  request, and the question request), a tool step entry records its name, arguments, status, text, and approval, and the loop requests again.
   A malformed call or an empty reply: a step entry with the message (for an empty reply, "Your reply was empty. Call a
   tool, or write your answer to the user."), and the loop requests again. In a Plan turn, a closed block of
   `write_file`, `edit_file`, or `run_command` (`PLAN_BLOCKED_TOOLS`), which the parser reads as "not a known tool"
@@ -364,6 +418,56 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
   the turn `failed`; so does an unexpected exception inside the turn (a bug), with an `internal` error giving its
   message, logged with its stack, so the composer never stays locked. Truncate tool results longer than about 2,000 lines and say so in the result.
 
+## Notifications
+
+- When a turn ends or waits for a decision while the chat is not in view, a VS Code notification says so (#101). The
+  chat is in view when the chat view is visible and the VS Code window has the focus, both read once, at the event. A
+  view never opened in this window is not visible. The focus in an editor of the same window, the view still visible,
+  keeps the chat in view. Nothing is notified later for an event that happened while the chat was in view, and no
+  notification is withdrawn or repeated when the view shows again or the window regains the focus: VS Code cannot
+  withdraw a notification, so one may outlive its event.
+- The controller reports the events through an optional port, `ChatPorts.turnEvents` (`TurnEvent` in
+  `notifications.ts`); the eval bench passes none. The core decides the events; the host decides whether to notify
+  (`notifyTurnEvent`, over the view's visibility, the window's focus, and the setting). A port that throws is logged
+  and changes nothing in the turn.
+  - `approvalRequested`: one per approval request that opens, a write in Ask or a command, with the request's kind and
+    summary, reported once `ChatState.approval` holds it. A write accepted at once (Auto-edit) opens no request and
+    reports nothing.
+  - `turnEnded`: one per turn that ends `done`, `failed`, or `halted`, reported once the published state holds the
+    final status, with the status, the halt reason or the failure, whether the reply that ended it is a summary entry
+    (a `/compact`, or an automatic summary that failed and so ended its turn), and whether that reply's text is empty
+    once trimmed. A `/compact` is a turn of its own. An automatic summary reports nothing of its own: its turn reports
+    once, when it ends. Each turn of a queue reports its own end, and a queued message starting reports nothing.
+  - A turn that ends `stopped` reports nothing, whatever stopped it: Stop, New chat, opening or deleting a
+    conversation, a provider removed or changed in the settings, deactivation.
+- One notification per event, each with one button, "Show chat":
+
+  | Event | Severity | Text |
+  |---|---|---|
+  | Write approval | information | `broke-code is waiting for your decision: {0}`, the request's summary (the path), never cut |
+  | Command approval | information | the same text with the command cut (below) |
+  | Turn `done` | information | `broke-code finished its turn.` |
+  | `/compact` `done` with a summary text | information | `broke-code summarized the conversation.` |
+  | `/compact` `done` with no text | warning | the chat's sentence, `The model's reply held no summary.` |
+  | `failed`, a summary or not | warning | `broke-code failed: {0}`, the chat's message for that failure (`describeProviderError`), without its technical detail |
+  | `halted` | warning | the chat's sentence for that halt reason (`describeHalt`, the summary variant for a `/compact` halted on a full context) |
+
+- A command is cut to its first line: leading whitespace and line breaks are dropped, then the first line is kept as
+  it is. When that line is longer than 80 UTF-16 units, or more lines follow, blank or not, it is cut to at most 79
+  units, never inside a surrogate pair, and `…` is added. The line break that ends the command starts no line: `ls\n`
+  gives `ls`, and `ls\n\n` gives `ls…`.
+- "Show chat" focuses the chat view with the view's focus command, as the editor entry points do, whatever conversation
+  it shows by then, and does nothing else: the decision stays in the chat, and an approval answered or cancelled
+  meanwhile is no longer there. A view that cannot be focused shows the error "Could not open the chat". A notification
+  that cannot show is logged.
+- `brokeCode.notifications` (boolean, default true, `application` scope, read from `globalValue` at each event):
+  notifications are off only when the user value is `false`. A value set only in a workspace, or one that is not a
+  boolean, leaves them on.
+- The halt sentences and the empty summary's sentence live in the core (`turnEndText.ts`), each taking a translator as
+  `describeProviderError` does, so the panel and the host share one wording and one set of English keys.
+- Not notified: the commit message command, which shows its own progress. No sound, no notification outside VS Code,
+  no unread badge.
+
 ## Context budget and summaries
 
 - Before each request of an agent turn, the first included, the controller estimates its size as the characters of the
@@ -378,7 +482,8 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
   may be replaced: the count changes about once every 4 new steps, so the requests in between only add to the prompt
   of the one before and a provider's prompt cache holds. Never replaced: the system prompt, user messages (a `/<name>` skill message included),
   assistant answers, the last 3 tool steps sent (`KEPT_RECENT_STEPS`), whatever turn they belong to,
-  every `load_skill` step, whatever its status (a second load answers "already loaded" without the body), every undone
+  every `load_skill` step, whatever its status (a second load answers "already loaded" without the body), every
+  `ask_user` step, whatever its status (the user's decision must stay in front of the model), every undone
   step (a left-out line would tell the model the change stands; the estimate and the usage display count its added
   line), and a step whose replacement line is not shorter than its text; a malformed-call step follows the same rule as the others. The
   choice is a pure function of the entries, the system prompt, the context size, and the ratio, linear in the entries, since the
@@ -497,10 +602,16 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
   `load_skill` tool and its rule (reading a loaded skill's files by the absolute path the result gives, read-only
   outside the workspace): the
   controller offers the runner's tools less `load_skill` (`offeredTools`), so its call is then malformed.
+- When `ask_user` is offered, its rule follows the general rules: when the request names one thing and several
+  distinct ones match it, such as two functions defined with the same name in two files, call `ask_user` to ask which
+  before any write instead of changing them all or picking one; otherwise do not ask. Its wording was chosen on the
+  eval's `ask` scenario (`docs/eval.md`). Without the tool, the rule is absent and the prompt is the one before #142.
 - In a Plan turn, `offeredTools` also leaves out `write_file`, `edit_file`, and `run_command`, so their rules drop with
   them, and `composeSystemPrompt(tools, instructions, skills, mode)` replaces the role sentence with one saying the
   agent reads files, followed by a "Plan mode" paragraph: read what it needs, answer with a plan of the changes, file
-  by file, in order, change no file and run no command. Without a mode, or in Ask or Auto-edit, the prompt is
+  by file, in order, change no file and run no command. `ask_user` and its rule stay, since a question changes
+  nothing (ADR 0005, addendum of 2026-11-13); the Plan role sentence is left as it is, although it speaks of reading
+  only, since no eval measures a Plan prompt. Without a mode, or in Ask or Auto-edit, the prompt is
   byte-identical to the one before Plan; the eval bench passes no mode. A `/<name>` message loads its skill in Plan
   as in any mode; a skill that asks to write meets the refused-call step.
 - The system prompt includes `~/.agents/AGENTS.md`, then each workspace folder's `AGENTS.md` (labelled with its

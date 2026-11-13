@@ -64,6 +64,38 @@
         "category": "broke-code"
       },
       {
+        "command": "broke-code.editSelection",
+        "title": "%command.editSelection.title%",
+        "category": "broke-code"
+      },
+      {
+        "command": "broke-code.refactorSelection",
+        "title": "%command.refactorSelection.title%",
+        "category": "broke-code"
+      },
+      {
+        "command": "broke-code.documentSelection",
+        "title": "%command.documentSelection.title%",
+        "category": "broke-code"
+      },
+      {
+        "command": "broke-code.typeSelection",
+        "title": "%command.typeSelection.title%",
+        "category": "broke-code"
+      },
+      {
+        "command": "broke-code.acceptEdit",
+        "title": "%command.acceptEdit.title%",
+        "category": "broke-code",
+        "icon": "$(check)"
+      },
+      {
+        "command": "broke-code.rejectEdit",
+        "title": "%command.rejectEdit.title%",
+        "category": "broke-code",
+        "icon": "$(close)"
+      },
+      {
         "command": "broke-code.fixDiagnostic",
         "title": "%command.fixDiagnostic.title%",
         "category": "broke-code"
@@ -74,13 +106,59 @@
         {
           "command": "broke-code.fixDiagnostic",
           "when": "false"
+        },
+        {
+          "command": "broke-code.acceptEdit",
+          "when": "false"
+        },
+        {
+          "command": "broke-code.rejectEdit",
+          "when": "false"
         }
       ],
       "editor/context": [
         {
-          "command": "broke-code.addSelectionToChat",
+          "submenu": "broke-code.editor",
           "when": "editorHasSelection",
           "group": "broke-code"
+        }
+      ],
+      "broke-code.editor": [
+        {
+          "command": "broke-code.addSelectionToChat",
+          "group": "broke-code@1"
+        },
+        {
+          "command": "broke-code.editSelection",
+          "when": "!editorReadonly",
+          "group": "broke-code@2"
+        },
+        {
+          "command": "broke-code.refactorSelection",
+          "when": "!editorReadonly",
+          "group": "broke-code@3"
+        },
+        {
+          "command": "broke-code.documentSelection",
+          "when": "!editorReadonly",
+          "group": "broke-code@4"
+        },
+        {
+          "command": "broke-code.typeSelection",
+          "when": "!editorReadonly",
+          "group": "broke-code@5"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "broke-code.acceptEdit",
+          "when": "resourceScheme == broke-code-edit",
+          "group": "navigation@1"
+        },
+        {
+          "command": "broke-code.rejectEdit",
+          "when": "resourceScheme == broke-code-edit",
+          "group": "navigation@2"
         }
       ],
       "scm/title": [
@@ -91,6 +169,12 @@
         }
       ]
     },
+    "submenus": [
+      {
+        "id": "broke-code.editor",
+        "label": "broke-code"
+      }
+    ],
     "configuration": {
       "title": "broke-code",
       "properties": {
@@ -157,6 +241,12 @@
           "default": 120,
           "minimum": 1,
           "markdownDescription": "%config.commandTimeoutSeconds.description%"
+        },
+        "brokeCode.notifications": {
+          "type": "boolean",
+          "scope": "application",
+          "default": true,
+          "markdownDescription": "%config.notifications.description%"
         }
       }
     }

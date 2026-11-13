@@ -1,6 +1,6 @@
 # Chat panel behavior
 
-This file specifies what the chat panel does around a turn: folding, code block actions, Quote, queued messages, Retry, Continue, Edit, and the recall of earlier messages. `DESIGN.md` holds the look; `docs/spec/harness.md` holds the turn itself.
+This file specifies what the chat panel does around a turn: folding, code block actions, Quote, the question block, queued messages, Retry, Continue, "Implement in ... mode", Edit, and the recall of earlier messages. `DESIGN.md` holds the look; `docs/spec/harness.md` holds the turn itself.
 
 ## Turn folding
 
@@ -95,6 +95,30 @@ This file specifies what the chat panel does around a turn: folding, code block 
   a quoted `@dataclass` shows a failed chip). With Edit's replacing mark on, the quote is appended and Send still
   replaces the last turn.
 
+## The question block
+
+- The question block (#143): while `ChatState.question` is set, the reply in flight whose `ask_user` call has no step
+  yet shows the call's row and the question's controls in one block, where an approval's decision block renders
+  (`DESIGN.md`, "The decision block"). The state, the `answer` message, and the cancellation are specified in
+  `docs/spec/harness.md` ("Approvals, modes, ...").
+- The row shows the tool name, the first line of the question (`mainArgument`: the `question` argument trimmed, whatever
+  order the model wrote the arguments in, and nothing when it has none), and "waiting for your answer". The block then
+  shows the question in full with its line breaks, one button per option in the order given, then a free-text field
+  ("Your answer") with an Answer button. A question without options shows the field and Answer only.
+- An option click posts `answer { id, text }` with that option's text. Answer, and Enter in the field (not while an
+  IME composes), post it with the field's text, trimmed; neither posts while the field is empty after trimming, and
+  Answer is then disabled. The field takes at most 4,000 UTF-16 units (`maxLength`, `MAX_ANSWER_LENGTH`).
+- The DOM order is the visual order: the options, the field, Answer. Nothing focusable sits between the block and the
+  message box: from the message box, Shift+Tab reaches Answer (when enabled), then the field, then the options from
+  last to first. The focus does not move when the block opens.
+- The text typed is the block's own state, keyed by the question's id: it survives opening and closing History, a new
+  question starts with an empty field, and when the view is hidden and shown again the question is still open but the
+  text typed and not yet sent is lost, like an unsent approval reason.
+- Once answered, the step is an ordinary row: the first line of the question, then `ok` and the result's size; the
+  expanded row shows the result, `The user answered: <text>`. A folded turn counts an `ask_user` step among the "other
+  steps", and History's content search does not search tool results, so an answer is not found by it (both accepted,
+  #143).
+
 ## Queued messages
 
 - Queued messages (#70): while a reply is in flight, Send and Enter post `queueMessage { text, mentions }` (validated
@@ -180,6 +204,24 @@ This file specifies what the chat panel does around a turn: folding, code block 
   compared as their JSON text while the confirmation is open, since unrelated posts resend the whole state), drops the
   confirmation (scouting decision, 2026-11-12: in the chat, no native modal). Accepted gap: a command whose step Stop dropped, in a turn that wrote nothing, is not
   warned about. `ChatState` and the record are unchanged.
+- "Implement in ... mode" (#102, ADR 0005, addendum of 2026-11-13): while Plan is on (`ChatState.mode` is `plan`), the
+  conversation's final answer shows one more secondary button in the last turn's actions, after Retry (and after
+  "Retry anyway" and Cancel while Retry's confirmation is open) and before "Undo changes". `hasFinalAnswer(entries)`
+  (`lastTurn.ts`, loaded by the webview and the controller alike) decides "the final answer": the last entry is an
+  assistant entry that is not a summary, ended `done`, with text that is not empty after trimming. So no button
+  during a reply, after a turn that ended `failed`, `stopped`, or `halted`, after a `/compact` (its summary is then
+  the last entry), or on an empty conversation; an automatic summary earlier in the turn changes nothing. The
+  conversation does not record the mode of its turns, so the button shows under any such answer while Plan is on,
+  also in a conversation opened from History (accepted). Its label names the mode Plan leaves for,
+  `ChatState.settingMode`: "Implement in Ask mode" or "Implement in Auto-edit mode", following a change of the
+  setting at once. It is disabled when Send would not act (`sendWouldAct`), and absent, not disabled, during a
+  reply; while Edit's replacing state holds it acts as usual, as Retry does. A click posts `implementPlan { shown }`,
+  validated like `retry`, and carries no mode. `ChatController.implementPlan(shown, label)` (see
+  `docs/spec/harness.md`, modes) leaves Plan without writing the setting and starts an ordinary turn through
+  `startTurn`: the host passes `l10n.t("Implement the plan above.")` as the entry's typed text, and the model gets
+  the fixed English `IMPLEMENT_PLAN_TEXT`, as for Continue. The plan is in the history already and is not quoted
+  again. A second click cannot act: Plan is off and a reply is in flight. Ending `done`, the turn sends the first
+  queued message, in the mode then in force, as after any send. The record is unchanged.
 - Edit (#112, parent #73): the last user entry has Edit when the last turn offers Retry (`lastTurnActions`, the same
   conditions), enabled when Send would act. A click changes nothing on the host or on disk and posts nothing: the
   message's text as typed goes into the message box as a returned text does (`editDraft` through `applyDraft`, mode
