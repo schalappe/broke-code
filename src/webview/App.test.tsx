@@ -733,19 +733,20 @@ describe("approval", () => {
     ]);
   });
 
-  test("Enter in the reason field rejects with the reason; other keys and Enter while composing (IME) do not", () => {
+  test("Enter in the reason field rejects with the reason; other keys, modified Enter (⌘Enter), and Enter while composing (IME) do not", () => {
     const field = elements(ApprovalControls({ approval, reason: " Too broad. ", setReason: () => {} })).find(
       (element) => element.type === "input",
     );
     if (!field) throw new Error("no reason field");
     const onKeyDown = field.props.onKeyDown as (event: unknown) => void;
     const prevented: string[] = [];
-    const press = (key: string, isComposing = false) =>
-      onKeyDown({ key, nativeEvent: { isComposing }, preventDefault: () => prevented.push(key) });
+    const press = (key: string, isComposing = false, modifiers: Record<string, boolean> = {}) =>
+      onKeyDown({ key, nativeEvent: { isComposing }, preventDefault: () => prevented.push(key), ...modifiers });
 
     press("a");
     press("Escape");
     press("Enter", true);
+    for (const modifier of ["metaKey", "ctrlKey", "altKey", "shiftKey"]) press("Enter", false, { [modifier]: true });
     expect(posted).toEqual([]);
     expect(prevented).toEqual([]);
 

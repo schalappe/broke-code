@@ -1621,7 +1621,8 @@ export function ApprovalControls({
         aria-label={l10n.t("Reason for rejecting (optional)")}
         onChange={(event) => setReason(event.target.value)}
         onKeyDown={(event) => {
-          if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+          const modified = event.metaKey || event.ctrlKey || event.altKey || event.shiftKey;
+          if (event.key !== "Enter" || modified || event.nativeEvent.isComposing) return;
           event.preventDefault();
           reject();
         }}
