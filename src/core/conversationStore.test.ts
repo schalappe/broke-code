@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { type ConversationRecord, newConversationId } from "./conversation";
 import { directoryFiles } from "./conversationFiles";
 import { memoryFiles } from "./conversationFixture";
-import { ConversationStore } from "./conversationStore";
+import { answerConversationSearch, ConversationStore } from "./conversationStore";
 
 function record(updatedAt: number, text = `message at ${updatedAt}`): ConversationRecord {
   return {
@@ -654,5 +654,56 @@ describe("ConversationStore.search timing", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("answerConversationSearch", () => {
+  const ids = [newConversationId(), newConversationId(), newConversationId()];
+  /** Run the answer over a `search` stub; returns what was posted. */
+  async function answered(search: () => Promise<unknown>) {
+    const posted: unknown[] = [];
+    const store = { search } as unknown as ConversationStore;
+    await answerConversationSearch(store, { id: 7, ids, query: "lexer" }, (message) => posted.push(message));
+    return posted;
+  }
+
+  test("posts the search's answer under the request id", async () => {
+    const items = [{ id: ids[1] ?? "", excerpt: "the lexer" }];
+    expect(await answered(async () => ({ items, unreadableCount: 1 }))).toEqual([
+      { type: "conversationMatches", id: 7, items, unreadableCount: 1 },
+    ]);
+  });
+
+  test("posts nothing for a search that was not answered: stopped by a newer one, or not searchable", async () => {
+    expect(await answered(async () => undefined)).toEqual([]);
+  });
+
+  test("logs an unexpected failure and answers every conversation searched as unreadable", async () => {
+    let posted: unknown[] = [];
+    const logged = await quietly(async () => {
+      posted = await answered(async () => {
+        throw new Error("boom");
+      });
+    });
+    expect(posted).toEqual([{ type: "conversationMatches", id: 7, items: [], unreadableCount: 3 }]);
+    expect(logged).toHaveLength(1);
+  });
+
+  test("passes the ids and the query to the store's search", async () => {
+    const files = memoryFiles();
+    const store = new ConversationStore(files);
+    const text = "the lexer";
+    const saved: ConversationRecord = {
+      ...record(1, "q"),
+      entries: [{ role: "user", content: text, mentions: [], modelText: text }],
+    };
+    await store.save(saved);
+    const posted: unknown[] = [];
+    await answerConversationSearch(store, { id: 2, ids: [saved.id], query: "LEXER" }, (message) =>
+      posted.push(message),
+    );
+    expect(posted).toEqual([
+      { type: "conversationMatches", id: 2, items: [{ id: saved.id, excerpt: text }], unreadableCount: 0 },
+    ]);
   });
 });

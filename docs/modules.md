@@ -38,7 +38,8 @@ This file says which file holds which responsibility. Update it when a module ga
   of one record and its excerpt), its store
   (`conversationStore.ts`: a record and a summary file per conversation, the list from the summaries, reads, writes,
   and deletes in call order, and `search`, History's content search: one record read at a time through the queue,
-  stopped by a newer search, unreadable records counted), and the store's file access (`conversationFiles.ts`:
+  stopped by a newer search, unreadable records counted; `answerConversationSearch`, the host's answer to it, an
+  unexpected failure logged and counted), and the store's file access (`conversationFiles.ts`:
   the file port, and its implementation over a local directory with `node:fs`: missing versus failed, regular files
   only, atomic writes, leftover temporary files), the dialog queue, the host-webview message
   protocol and its validation (and `sendWouldAct`, the panel's one "Send would act" check; `searchNeedle`, History's
@@ -132,7 +133,7 @@ This file says which file holds which responsibility. Update it when a module ga
   mode selector writes), the "Changed files" diffs in `turnDiffs.ts` (`registerTurnDiffs`: the core `TurnDiffs` over
   `vscode.diff`, `stat`, the tabs, and the error notifications, and the content provider of its left sides), the instruction reader and the skill reader from the home folder and the workspace folders, the latter logging the
   skills of each send, and the same discovery, unlogged, for the `/` menu's `querySkills`; `chatView.ts` answers
-  History's `searchConversations` through the action `extension.ts` binds to the store's `search` over the
+  History's `searchConversations` through the action `extension.ts` binds to `answerConversationSearch` over the
   controller's listed conversations, opens the
   Quick Pick of `chooseModel`, runs `insertCode` over the active text editor, shows a failed mode write, and wires the
   `DraftQueue` to the view's focus command and `postMessage` (`insertDraft`); `extension.ts` registers `broke-code.addSelectionToChat`,

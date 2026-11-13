@@ -99,7 +99,8 @@ This file specifies how conversations are saved, listed, pruned, and reopened, a
     holds every matching conversation in the list's order, whatever its title, each with its excerpt. A record whose
     read fails, or that is invalid or of an unknown version, is left out and counted in `unreadableCount`; one gone
     meanwhile (deleted or pruned) is left out and not counted. Neither is a listing failure, and a search writes
-    nothing. The conversation shown is searched as saved, so during a reply the disk can be one save interval behind.
+    nothing. An unexpected failure of the search itself (`answerConversationSearch`) is logged and answered with no
+    row and every conversation it would have searched counted, so the panel never waits forever or claims no match. The conversation shown is searched as saved, so during a reply the disk can be one save interval behind.
   - The rows: those matching by title first, without an excerpt, even when their messages match too; then those
     matching by content only, in the list's order, each with its excerpt as plain text on one line, never rendered as
     Markdown, without a highlight. The answer is crossed with the list as it is now, so a conversation deleted since

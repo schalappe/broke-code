@@ -4,7 +4,6 @@
  */
 import * as vscode from "vscode";
 import type { ChatController } from "../core/chatController";
-import type { ConversationSearchAnswer } from "../core/conversationStore";
 import { DraftQueue } from "../core/draftQueue";
 import type { FileQueryAnswer } from "../core/fileIndex";
 import { insertCode } from "../core/insertCode";
@@ -23,8 +22,8 @@ export type ChatViewActions = {
   queryFiles: (query: string) => Promise<FileQueryAnswer>;
   /** The skills a send would discover, for the `/` menu; no log line, since nothing is sent. */
   querySkills: () => Promise<SkillDiscovery>;
-  /** History's content search over the listed conversations; `undefined` when unanswered (`ConversationStore.search`). */
-  searchConversations: (query: string) => Promise<ConversationSearchAnswer | undefined>;
+  /** Answer History's content search request `id` through `post` (`answerConversationSearch`); never rejects. */
+  searchConversations: (id: number, query: string, post: (message: HostMessage) => void) => Promise<void>;
   /** "broke-code: Add provider"; shows its own failures and never rejects. */
   addProvider: () => Promise<void>;
 };
@@ -127,11 +126,6 @@ export class ChatView implements vscode.WebviewViewProvider {
     }
   }
 
-  private async answerSearch(query: string, id: number): Promise<void> {
-    const answer = await this.actions.searchConversations(query);
-    if (answer) this.post({ type: "conversationMatches", id, ...answer });
-  }
-
   /** The `/model` pick over the editor's Quick Pick; see `chooseModel`. */
   private chooseModel(): Promise<void> {
     const { controller } = this;
@@ -180,7 +174,7 @@ export class ChatView implements vscode.WebviewViewProvider {
       case "querySkills":
         return void answerSkillQuery(message.id, this.actions.querySkills).then((answer) => this.post(answer));
       case "searchConversations":
-        return void this.answerSearch(message.query, message.id);
+        return void this.actions.searchConversations(message.id, message.query, (answer) => this.post(answer));
       case "stop":
         controller.stop();
         return;

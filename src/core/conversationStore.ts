@@ -20,7 +20,7 @@ import {
   summarize,
 } from "./conversation";
 import { type ConversationFiles, isTemporaryName } from "./conversationFiles";
-import { searchNeedle } from "./protocol";
+import { type HostMessage, searchNeedle } from "./protocol";
 import { SerialQueue } from "./serialQueue";
 
 const RECORD_PATTERN = /^(.+)\.json$/;
@@ -225,6 +225,29 @@ export class ConversationStore {
     if (parsed.record.id !== id) return logSkipped(id, `holds id ${parsed.record.id}`);
     return { kind: "read", record: parsed.record };
   }
+}
+
+/**
+ * The host's answer to History's `searchConversations` request `id`: posts the store's search over `ids` (the listed
+ * conversations, newest first) for `query` as `conversationMatches`, or nothing when the search was not answered
+ * (stopped by a newer one, or not searchable). `search` is not meant to reject; if it does, the failure is logged and
+ * every conversation it would have searched is answered as unreadable, so the panel says the search failed instead of
+ * waiting forever or claiming no match.
+ */
+export async function answerConversationSearch(
+  store: ConversationStore,
+  request: { id: number; ids: readonly string[]; query: string },
+  post: (message: HostMessage & { type: "conversationMatches" }) => void,
+): Promise<void> {
+  const { id, ids, query } = request;
+  let answer: ConversationSearchAnswer | undefined;
+  try {
+    answer = await store.search(ids, query);
+  } catch (error) {
+    console.error("broke-code: could not search the saved conversations", error);
+    answer = { items: [], unreadableCount: Math.min(ids.length, MAX_CONVERSATIONS) };
+  }
+  if (answer) post({ type: "conversationMatches", id, ...answer });
 }
 
 /** File of conversation `id`. Throws on anything but an id `newConversationId` makes, so no other file is touched. */
