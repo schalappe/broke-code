@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ChatEntry, ReplyStatus } from "../core/protocol";
-import { type ConversationPart, foldTurns } from "./turns";
+import { type ConversationPart, type FoldCounts, foldTurns } from "./turns";
 
 const U: ChatEntry = { role: "user", content: "Hi", mentions: [] };
 const A = (status: ReplyStatus = "done", extra: Partial<ChatEntry & { role: "assistant" }> = {}): ChatEntry => ({
@@ -144,5 +144,98 @@ describe("foldTurns", () => {
     expect(parts).toHaveLength(60_000);
     expect(shape(parts.slice(-3))).toEqual(["119994", "fold 119995-119999 2/1/0", "119999"]);
     expect(rendered(parts)).toEqual(entries.map((_, index) => index));
+  });
+});
+
+describe("the kinds a fold counts", () => {
+  const step = (name: string, args: Record<string, string>, extra: Partial<ChatEntry & { role: "tool" }> = {}) =>
+    ({ role: "tool", name, args, status: "ok", text: "x", ...extra }) as ChatEntry;
+
+  /** The counts of the fold of one ended turn holding `steps`, two at least. */
+  function countsOf(...steps: ChatEntry[]): FoldCounts {
+    const part = foldTurns([U, ...steps, A("done")]).find((each) => each.kind === "fold");
+    if (part?.kind !== "fold") throw new Error("no fold");
+    return part.counts;
+  }
+
+  /** Each kind as `shown/steps`, and the other steps, left out when zero. */
+  function kinds(counts: FoldCounts): Record<string, string | number> {
+    const named = Object.entries(counts.kinds).filter(([, count]) => count.steps > 0);
+    const out: Record<string, string | number> = Object.fromEntries(
+      named.map(([kind, count]) => [kind, `${count.shown}/${count.steps}`]),
+    );
+    if (counts.otherSteps > 0) out.other = counts.otherSteps;
+    return out;
+  }
+
+  test("a malformed step is other, whatever its name", () => {
+    expect(kinds(countsOf(step("read_file", { path: "a.ts" }, { status: "malformed" }), T()))).toEqual({
+      read: "1/1",
+      other: 1,
+    });
+  });
+
+  test("a write without a path, a read of `.`, a command without one, and an unknown tool are other", () => {
+    const counts = countsOf(
+      step("write_file", {}, { status: "error" }),
+      step("read_file", { path: "." }),
+      step("edit_file", { path: "./" }),
+      step("read_file", { path: "" }),
+      step("run_command", {}, { status: "error" }),
+      step("open_browser", { url: "x" }),
+    );
+    expect(kinds(counts)).toEqual({ other: 6 });
+    expect(counts.steps).toBe(6);
+  });
+
+  test("edits of one path under two spellings are one file, `../a.ts` and `a.ts` two", () => {
+    expect(kinds(countsOf(step("edit_file", { path: "a.ts" }), step("write_file", { path: "./a.ts" })))).toEqual({
+      edited: "1/2",
+    });
+    expect(kinds(countsOf(step("edit_file", { path: "src/../a.ts" }), step("edit_file", { path: "a.ts" })))).toEqual({
+      edited: "1/2",
+    });
+    expect(kinds(countsOf(step("edit_file", { path: "../a.ts" }), step("edit_file", { path: "a.ts" })))).toEqual({
+      edited: "2/2",
+    });
+  });
+
+  test("the cleanup is lexical: a `..` with nothing before it stays, a leading `/` and letter case are kept", () => {
+    const read = (path: string) => step("read_file", { path });
+    expect(kinds(countsOf(read("../../a.ts"), read("../a.ts")))).toEqual({ read: "2/2" });
+    expect(kinds(countsOf(read("../../a.ts"), read(".././../a.ts")))).toEqual({ read: "1/2" });
+    expect(kinds(countsOf(read("/a.ts"), read("a.ts")))).toEqual({ read: "2/2" });
+    expect(kinds(countsOf(read("/x/./a.ts"), read("/x//a.ts")))).toEqual({ read: "1/2" });
+    expect(kinds(countsOf(read("A.ts"), read("a.ts")))).toEqual({ read: "2/2" });
+  });
+
+  test("four reads of one path are one file", () => {
+    const read = step("read_file", { path: "big.log", start_line: "1" });
+    expect(kinds(countsOf(read, read, read, read))).toEqual({ read: "1/4" });
+  });
+
+  test("listing the workspace root without a path and with `.` is one folder", () => {
+    const counts = countsOf(
+      step("list_files", {}),
+      step("list_files", { path: "." }),
+      step("list_files", { path: "./" }),
+      step("list_files", { path: "" }),
+      step("list_files", { path: "src" }),
+    );
+    expect(kinds(counts)).toEqual({ listed: "2/5" });
+  });
+
+  test("an undone write and a rejected write count as edited; searches, skills, and commands count steps", () => {
+    const counts = countsOf(
+      step("write_file", { path: "a.ts" }, { undone: true }),
+      step("edit_file", { path: "b.ts" }, { status: "error", approval: "rejected" }),
+      step("search", { pattern: "x" }),
+      step("search", {}),
+      step("load_skill", {}),
+      step("run_command", { command: "ls" }),
+      step("run_command", { command: "ls" }, { status: "error" }),
+    );
+    expect(kinds(counts)).toEqual({ edited: "2/2", searched: "2/2", loaded: "1/1", ran: "2/2" });
+    expect([counts.steps, counts.failed, counts.rejected]).toEqual([7, 1, 1]);
   });
 });
