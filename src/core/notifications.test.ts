@@ -234,6 +234,14 @@ describe("the command of a command approval", () => {
     expect(await shownFor("ls -la\n")).toBe("ls -la");
   });
 
+  test("a blank line after the first one is another line", async () => {
+    expect(await shownFor("ls\n\n")).toBe("ls…");
+  });
+
+  test("the whitespace that ends the first line counts toward the 80 units", async () => {
+    expect(await shownFor(`${"a".repeat(79)}  `)).toBe(`${"a".repeat(79)}…`);
+  });
+
   test("the cut never splits a character in two", async () => {
     const shown = await shownFor(`${"d".repeat(78)}😀${"d".repeat(10)}`);
     expect(shown).toBe(`${"d".repeat(78)}…`);

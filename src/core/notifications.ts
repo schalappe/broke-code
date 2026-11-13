@@ -112,13 +112,13 @@ const MAX_COMMAND_LENGTH = 80;
 
 /**
  * The first line of `command`, its leading whitespace and line breaks dropped, for a notification: whole when it is
- * at most 80 UTF-16 units and nothing but whitespace follows it; otherwise cut to at most 79 units, never inside a
- * surrogate pair, with `…` added.
+ * at most 80 UTF-16 units and no line follows it; otherwise cut to at most 79 units, never inside a surrogate pair,
+ * with `…` added. A line that follows counts even when blank; the line break that ends the command starts none.
  */
 function firstCommandLine(command: string): string {
-  const [first = "", ...rest] = command.trimStart().split(/\r?\n/);
-  const line = first.trimEnd();
-  const more = rest.some((following) => following.trim() !== "");
+  const [line = "", ...rest] = command.trimStart().split(/\r?\n/);
+  // A command ending on a line break splits into one empty last piece, which is not a line.
+  const more = rest.join("\n") !== "";
   if (!more && line.length <= MAX_COMMAND_LENGTH) return line;
   const kept = line.slice(0, MAX_COMMAND_LENGTH - 1);
   const splitsPair = /[\uD800-\uDBFF]$/.test(kept) && kept.length < line.length;

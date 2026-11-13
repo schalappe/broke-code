@@ -409,9 +409,10 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
   | `failed`, a summary or not | warning | `broke-code failed: {0}`, the chat's message for that failure (`describeProviderError`), without its technical detail |
   | `halted` | warning | the chat's sentence for that halt reason (`describeHalt`, the summary variant for a `/compact` halted on a full context) |
 
-- A command is cut to its first line: leading whitespace and line breaks are dropped, then the first line is kept,
-  without the whitespace that ends it. When that line is longer than 80 UTF-16 units, or a line that is not blank
-  follows it, it is cut to at most 79 units, never inside a surrogate pair, and `…` is added.
+- A command is cut to its first line: leading whitespace and line breaks are dropped, then the first line is kept as
+  it is. When that line is longer than 80 UTF-16 units, or more lines follow, blank or not, it is cut to at most 79
+  units, never inside a surrogate pair, and `…` is added. The line break that ends the command starts no line: `ls\n`
+  gives `ls`, and `ls\n\n` gives `ls…`.
 - "Show chat" focuses the chat view with the view's focus command, as the editor entry points do, whatever conversation
   it shows by then, and does nothing else: the decision stays in the chat, and an approval answered or cancelled
   meanwhile is no longer there. A view that cannot be focused shows the error "Could not open the chat". A notification
