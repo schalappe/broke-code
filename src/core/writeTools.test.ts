@@ -476,7 +476,7 @@ describe("approvalApplier", () => {
     const host: WriteApprovalHost = {
       preview: async (change) => {
         previewed.push(change);
-        return { close: async () => {} };
+        return { show: async () => {}, close: async () => {} };
       },
       hasUnsavedChanges: async (target) => {
         checked.push(target);

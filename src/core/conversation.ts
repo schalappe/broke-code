@@ -4,6 +4,7 @@
  * history row saved beside the record, so a valid summary spares the list parsing the record. Files read from disk are
  * untrusted: `parseConversation` and `parseSummary` check every field and keep only known ones.
  */
+import type { LineCounts } from "./lineDiff";
 import type { LineRange, MentionResult, MentionStatus } from "./mentions";
 import type {
   ChatEntry,
@@ -11,6 +12,7 @@ import type {
   ReplyCall,
   ReplyStatus,
   StepApproval,
+  TextRange,
   ToolStepStatus,
   UserSkill,
 } from "./protocol";
@@ -48,7 +50,11 @@ export type ConversationRecord = {
 };
 
 /** A row of the history list. */
-export type ConversationSummary = { id: string; title: string; updatedAt: number };
+/**
+ * A History row. `messages`: the user messages the conversation holds, so two rows with one title tell apart; absent in
+ * a summary file written before it was kept, until the conversation is saved again.
+ */
+export type ConversationSummary = { id: string; title: string; updatedAt: number; messages?: number };
 
 /** A conversation whose messages hold a History search, and the excerpt around its first match. */
 export type ConversationMatch = { id: string; excerpt: string };
@@ -120,7 +126,8 @@ export function conversationTitle(entries: readonly ChatEntry[]): string {
 }
 
 export function summarize(record: ConversationRecord): ConversationSummary {
-  return { id: record.id, title: conversationTitle(record.entries), updatedAt: record.updatedAt };
+  const messages = record.entries.filter((entry) => entry.role === "user").length;
+  return { id: record.id, title: conversationTitle(record.entries), updatedAt: record.updatedAt, messages };
 }
 
 /**
@@ -189,7 +196,10 @@ export function parseSummary(text: string): ConversationSummary | undefined {
   }
   if (!isObject(value) || value.version !== CONVERSATION_VERSION || !isConversationId(value.id)) return undefined;
   if (!isString(value.title) || !isTime(value.updatedAt)) return undefined;
-  return { id: value.id, title: value.title, updatedAt: value.updatedAt };
+  const { messages } = value;
+  if (messages !== undefined && !(Number.isSafeInteger(messages) && (messages as number) >= 0)) return undefined;
+  const summary = { id: value.id, title: value.title, updatedAt: value.updatedAt };
+  return messages === undefined ? summary : { ...summary, messages: messages as number };
 }
 
 /** Conversations kept per workspace. */
@@ -243,6 +253,9 @@ function parseEntry(raw: unknown): StoredEntry | undefined {
     if (raw.error !== undefined && !error) return undefined;
     const call = raw.call === undefined ? undefined : parseCall(raw.call, raw.content.length);
     if (raw.call !== undefined && !call) return undefined;
+    const malformedCall =
+      raw.malformedCall === undefined ? undefined : parseTextRange(raw.malformedCall, raw.content.length);
+    if (raw.malformedCall !== undefined && !malformedCall) return undefined;
     const halted = raw.status === "halted";
     if (halted !== HALT_REASONS.includes(raw.haltReason as HaltReason)) return undefined;
     if (!halted && raw.haltReason !== undefined) return undefined;
@@ -257,6 +270,7 @@ function parseEntry(raw: unknown): StoredEntry | undefined {
       status,
       ...(error ? { error } : {}),
       ...(call ? { call } : {}),
+      ...(malformedCall ? { malformedCall } : {}),
       ...(halted ? { haltReason: raw.haltReason as HaltReason } : {}),
       ...(raw.summary === true ? { summary: true } : {}),
     };
@@ -266,8 +280,10 @@ function parseEntry(raw: unknown): StoredEntry | undefined {
     if (!TOOL_STEP_STATUSES.includes(raw.status as ToolStepStatus)) return undefined;
     if (raw.approval !== undefined && !STEP_APPROVALS.includes(raw.approval as StepApproval)) return undefined;
     if (raw.undone !== undefined && raw.undone !== true) return undefined;
+    if (!isOptional(raw.lines, isLineCounts)) return undefined;
     const status = raw.status as ToolStepStatus;
     const approval = raw.approval as StepApproval | undefined;
+    const lines = raw.lines as LineCounts | undefined;
     return {
       role: "tool",
       name: raw.name,
@@ -275,19 +291,34 @@ function parseEntry(raw: unknown): StoredEntry | undefined {
       status,
       text: raw.text,
       ...(approval !== undefined ? { approval } : {}),
+      ...(lines !== undefined ? { lines: { added: lines.added, removed: lines.removed } } : {}),
       ...(raw.undone === true ? { undone: true } : {}),
     };
   }
   return undefined;
 }
 
+/** A write's added and removed line counts: two whole numbers, neither negative. */
+function isLineCounts(raw: unknown): raw is LineCounts {
+  if (!isObject(raw)) return false;
+  const count = (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 0;
+  return count(raw.added) && count(raw.removed);
+}
+
 /** A reply's call, its range inside an answer of `length` code units. */
 function parseCall(raw: unknown, length: number): ReplyCall | undefined {
   if (!isObject(raw) || !isString(raw.name) || !isStringRecord(raw.args)) return undefined;
+  const range = parseTextRange(raw, length);
+  return range && { name: raw.name, args: { ...raw.args }, ...range };
+}
+
+/** A range inside an answer of `length` code units: `start` up to `end`, neither outside it. */
+function parseTextRange(raw: unknown, length: number): TextRange | undefined {
+  if (!isObject(raw)) return undefined;
   const { start, end } = raw;
   if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)) return undefined;
   if ((start as number) < 0 || (start as number) > (end as number) || (end as number) > length) return undefined;
-  return { name: raw.name, args: { ...raw.args }, start: start as number, end: end as number };
+  return { start: start as number, end: end as number };
 }
 
 function isStringRecord(value: unknown): value is Record<string, string> {

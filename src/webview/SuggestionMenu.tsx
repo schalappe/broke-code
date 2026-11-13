@@ -6,8 +6,11 @@
  */
 import { useEffect } from "react";
 
-/** One row. `icon`: kind marker class (`file`, `folder`), drawn in CSS. `description`: a short line after the label. */
-export type MenuItem = { key: string; label: string; icon?: string; description?: string };
+/**
+ * One row. `icon`: kind marker class (`file`, `folder`), drawn in CSS. `description`: a short line after the label.
+ * `group`: a small heading drawn above the row, which starts a group of rows of another kind.
+ */
+export type MenuItem = { key: string; label: string; icon?: string; description?: string; group?: string };
 
 export type SuggestionMenuProps = {
   /** Listbox id; option ids derive from it. */
@@ -31,7 +34,13 @@ export function SuggestionMenu({ id, trigger, label, items, highlighted, onPick,
   return (
     <div className="menu">
       <div id={id} role="listbox" aria-label={label} className="menu-list">
-        {items.map((item, index) => (
+        {items.map((item, index) => [
+          // [>]: Seen, not read: each row's description already says what it is, and a listbox holds options only.
+          item.group && (
+            <div key={`group-${item.key}`} className="menu-group" aria-hidden="true">
+              {item.group}
+            </div>
+          ),
           // biome-ignore lint/a11y/useKeyWithClickEvents: keys stay in the composer textarea, which drives the highlight.
           <div
             key={item.key}
@@ -51,8 +60,8 @@ export function SuggestionMenu({ id, trigger, label, items, highlighted, onPick,
               {item.label}
             </span>
             {item.description && <span className="menu-description">{item.description}</span>}
-          </div>
-        ))}
+          </div>,
+        ])}
       </div>
       {notices.map((notice) => (
         <p key={notice} className="menu-notice">

@@ -29,6 +29,8 @@
   /* Sizes that are not spacing: a one-line row, and a mark drawn in CSS (a dot, a chevron). */
   --bc-row: 22px;
   --bc-mark: 6px;
+  /* The room a native select's chevron takes at its right. */
+  --bc-chevron: 14px;
   /* The thread of an agent turn: the indent of what sits on it, a node, and the solid node of the call that waits. */
   --bc-thread-indent: 20px;
   --bc-node: 7px;
@@ -46,8 +48,6 @@
   --bc-rule: color-mix(in srgb, var(--vscode-foreground) 16%, transparent);
   --bc-fill: color-mix(in srgb, var(--vscode-foreground) 6%, transparent);
   --bc-fill-strong: color-mix(in srgb, var(--vscode-foreground) 11%, transparent);
-  /* The entries no longer sent to the model, faded as a group; a dim line says it in words. */
-  --bc-unsent-opacity: 0.6;
 
   /* The high-contrast rule: the boundary of a filled surface, and of the selected or hovered one. */
   --bc-edge: var(--vscode-contrastBorder, transparent);
@@ -62,7 +62,9 @@
   --bc-link: var(--vscode-textLink-foreground);
   --bc-link-active: var(--vscode-textLink-activeForeground, var(--bc-link));
   --bc-code-fg: var(--vscode-textPreformat-foreground, var(--bc-fg));
-  --bc-error: var(--vscode-errorForeground);
+  /* The theme's error color drawn 40% toward the foreground: Light Modern's own fell to 3.2:1 as small text on the
+     panel. Still read as the error color in every theme; marks take it too, so a state has one color. */
+  --bc-error: color-mix(in srgb, var(--vscode-errorForeground) 60%, var(--vscode-foreground));
   --bc-warning: var(--vscode-editorWarning-foreground);
 
   /* Each control and surface below takes the color the theme gives that exact job. */
@@ -81,15 +83,20 @@
   --bc-button-border: var(--vscode-button-border, var(--bc-edge));
   --bc-button-border-hover: var(--vscode-contrastActiveBorder, var(--bc-button-border));
 
-  /* The latest user message sits on the button colors; an earlier one keeps their outline, and a chip is a tint. */
+  /* The latest user message sits on the button colors; an earlier one keeps their outline, and a chip is outlined in a
+   tint of their text. */
   --bc-accent-line: var(--vscode-button-background, var(--bc-edge));
-  --bc-accent-chip: color-mix(in srgb, var(--vscode-button-foreground) 18%, transparent);
+  --bc-accent-chip: color-mix(in srgb, var(--vscode-button-foreground) 45%, transparent);
   /* A tool's name on the thread. */
   --bc-tool: var(--vscode-textLink-foreground);
   /* The decision block is drawn in negative, the panel's color on the foreground: its tints of the panel. */
   --bc-inverse-well: color-mix(in srgb, var(--vscode-sideBar-background) 14%, transparent);
   --bc-inverse-hover: color-mix(in srgb, var(--vscode-sideBar-background) 16%, transparent);
   --bc-inverse-line: color-mix(in srgb, var(--vscode-sideBar-background) 45%, transparent);
+  /* The thumb of a thin scroll bar, where a block scrolls sideways. */
+  --bc-slider: var(--vscode-scrollbarSlider-background, var(--bc-line));
+  /* Secondary text on the decision block, such as a placeholder: the block's dim, as --bc-fg-dim is the panel's. */
+  --bc-inverse-dim: color-mix(in srgb, var(--vscode-sideBar-background) 72%, transparent);
   --bc-inverse-button-hover: color-mix(in srgb, var(--vscode-sideBar-background) 86%, var(--vscode-foreground));
 
   --bc-warning-fill: var(--vscode-inputValidation-warningBackground);
@@ -114,7 +121,7 @@
   --bc-error-text: var(--bc-fg);
   --bc-warning-text: var(--bc-fg);
 
-  /* Motion: the breathing of a loading text, and the time a small change takes. Both are switched off below. */
+  /* Motion: the breathing of a loading mark, and the time a small change takes. Both are switched off below. */
   --bc-breathe: pulse;
   --bc-fast: 0.12s;
   --bc-ease: cubic-bezier(0.16, 1, 0.3, 1);
@@ -139,8 +146,6 @@ body.vscode-high-contrast-light {
   --bc-fg-dim: color-mix(in srgb, var(--bc-fg) 88%, transparent);
   --bc-error-text: var(--bc-error);
   --bc-warning-text: var(--bc-warning);
-  /* Faded text would fall under the theme's contrast; the line over the unsent entries says it in words. */
-  --bc-unsent-opacity: 1;
 }
 
 html,
@@ -194,7 +199,7 @@ select {
 }
 
 select:disabled {
-  opacity: 0.6;
+  opacity: 0.5;
 }
 
 ::placeholder {
@@ -221,6 +226,13 @@ button:hover:not(:disabled) {
 button:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* A disabled primary button drops the theme's button fill, so at rest it never reads as the region's live action. */
+button:disabled:not(.secondary, .link) {
+  color: var(--bc-fg);
+  background: transparent;
+  border-color: var(--bc-line);
 }
 
 /* A secondary action is a hairline box on the panel itself. */
@@ -282,8 +294,7 @@ button:focus-visible {
 
 /* ---------- Header ---------- */
 
-/* A running head over one rule. The usage and the buttons wrap below the pickers once the pickers would fall under
-   16em, so model names stay readable. */
+/* A running head over one rule: the pickers on the first line, then the usage and the buttons, which wrap. */
 .header {
   display: flex;
   flex-wrap: wrap;
@@ -293,22 +304,36 @@ button:focus-visible {
   border-bottom: 1px solid var(--bc-line);
 }
 
+/* The pickers take the header's first line whole: a model id is long, and the one thing to read there. The reasoning
+   effort sits in the message box, beside the mode. */
 .pickers {
   display: flex;
-  flex: 1 1 16em;
+  flex: 1 1 100%;
   gap: var(--bc-space-2);
   min-width: 0;
 }
 
-/* The pickers and the header's buttons are quiet text until hovered or focused; high contrast keeps their edge. */
+/* The pickers and the header's buttons are quiet text until hovered or focused; high contrast keeps their edge. The
+   model takes the room first; the provider and the effort shrink to their names. The native chevron keeps its own
+   room at the right, so it never covers the name. */
 .pickers select {
-  flex: 1 1 0;
+  flex: 0 1 auto;
   min-width: 0;
   padding-left: 0;
+  padding-right: calc(var(--bc-space-2) + var(--bc-chevron));
   color: var(--bc-fg-dim);
   background: transparent;
   border-color: var(--bc-edge);
   font-size: var(--bc-fs-sm);
+}
+
+.pickers .model-picker {
+  flex: 1 1 auto;
+}
+
+/* Disabled during a reply, the model id is still what the user reads there: it keeps the pickers' dim, not half of it. */
+.pickers .model-picker:disabled {
+  opacity: 1;
 }
 
 .pickers select:hover:not(:disabled),
@@ -318,7 +343,7 @@ button:focus-visible {
 }
 
 .usage {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -326,6 +351,12 @@ button:focus-visible {
   font-size: var(--bc-fs-xs);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+/* Near or past the context size: the full foreground and weight 600, the share in words beside it, never color alone. */
+.usage.nearly-full {
+  color: var(--bc-fg);
+  font-weight: 600;
 }
 
 .actions {
@@ -342,6 +373,23 @@ button:focus-visible {
 .history button.secondary {
   padding: var(--bc-space-1) var(--bc-space-3);
   font-size: var(--bc-fs-sm);
+}
+
+/* Beside the usage it qualifies, at the usage's size, and never cut: dim like the usage, a dotted underline saying it
+   acts, the link color only when hovered or focused. Configuration, not news, so it never outranks the model. */
+.header button.usage-set {
+  flex: none;
+  padding: 0;
+  color: var(--bc-fg-dim);
+  font-size: var(--bc-fs-xs);
+  text-decoration-style: dotted;
+  white-space: nowrap;
+}
+
+.header button.usage-set:hover:not(:disabled),
+.header button.usage-set:focus-visible {
+  color: var(--bc-link-active);
+  text-decoration-style: solid;
 }
 
 .header button.secondary {
@@ -362,9 +410,11 @@ button:focus-visible {
   margin: 0;
   color: var(--bc-fg-dim);
   font-size: var(--bc-fs-sm);
+  text-wrap: pretty;
 }
 
 .warnings,
+.warning,
 .error {
   padding: var(--bc-space-3) var(--bc-space-4);
   border: 1px solid var(--bc-edge);
@@ -384,6 +434,32 @@ button:focus-visible {
   font-size: var(--bc-fs-sm);
 }
 
+/* One warning on its own: a full context, said where the turn ended and over the message box with its ways out. */
+.warning {
+  margin: 0;
+  color: var(--bc-warning-text);
+  background: var(--bc-warning-fill);
+  border: 1px solid var(--bc-warning-edge);
+  font-size: var(--bc-fs-sm);
+}
+
+.message .warning {
+  margin-top: var(--bc-space-3);
+}
+
+.warning p {
+  margin: 0;
+}
+
+/* The full context over the message box: one line, then the summary under it. At side-bar widths the two never fit on
+   one line, so they always stack, the same at every width. */
+.warning.context-full {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--bc-space-2);
+}
+
 .error {
   background: var(--bc-error-fill);
   border-color: var(--bc-error-edge);
@@ -394,9 +470,11 @@ button:focus-visible {
   color: var(--bc-error-text);
 }
 
+/* The detail keeps the block's text color: the editor font already sets it apart, and a dim tint on a light error
+   fill fell under 4.5:1. */
 .error .detail {
   margin: var(--bc-space-2) 0 0;
-  color: var(--bc-fg-dim);
+  color: var(--bc-error-text);
   font-family: var(--bc-mono);
   font-size: var(--bc-fs-mono);
   white-space: pre-wrap;
@@ -420,8 +498,20 @@ button:focus-visible {
   text-align: center;
 }
 
+/* Alone in the panel, the no-provider state takes the room and sits centered in it; above an earlier conversation
+   kept readable, it stays one block at the top. */
 .empty {
   padding: var(--bc-space-5) 0;
+}
+
+.empty:not(:has(~ .conversation)) {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--bc-space-3);
+  text-align: center;
 }
 
 .empty p,
@@ -498,6 +588,35 @@ p.history-searching {
   outline: 1px solid var(--bc-edge-active);
 }
 
+/* Delete is quiet and shows only on the row the pointer or the focus is on, so the titles lead; hidden by opacity, it
+   stays in the tab order. Asking to confirm, it and Cancel stay shown. */
+button.history-delete {
+  flex: none;
+  padding: var(--bc-space-1) var(--bc-space-2);
+  color: var(--bc-fg-dim);
+  border-color: var(--bc-edge);
+  font-size: var(--bc-fs-sm);
+  opacity: 0;
+  transition: opacity var(--bc-fast) var(--bc-ease);
+}
+
+.history-rows li:hover button.history-delete,
+.history-rows li:focus-within button.history-delete,
+button.history-delete.confirming {
+  opacity: 1;
+}
+
+button.history-delete.confirming {
+  color: var(--bc-fg);
+  border-color: var(--bc-line);
+}
+
+@media (hover: none) {
+  button.history-delete {
+    opacity: 1;
+  }
+}
+
 .history-rows li.current {
   background: var(--bc-row-current);
   outline: 1px solid var(--bc-edge-active);
@@ -520,11 +639,15 @@ button.history-open:hover:not(:disabled) {
   background: none;
 }
 
+/* Two lines at most, so a narrow panel still shows most of a title; past them, cut with an ellipsis. */
 .history-title {
+  display: -webkit-box;
   max-width: 100%;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
 }
 
 /* The excerpt of a row found by its messages: plain text on one line, under the title. */
@@ -554,8 +677,10 @@ button.history-open:hover:not(:disabled) {
    up. Nothing above that row changes (earlier turns are already folded, entries only append), so with anchoring off the
    view stays put. On, the browser would re-anchor on whatever stays visible, such as the final reply, or a step that
    vanished into the fold, and move the view. */
+/* The conversation keeps a third of the panel whatever sits under it, so a decision waiting there stays in view. */
 .conversation {
   flex: 1 1 auto;
+  min-height: 33vh;
   overflow-y: auto;
   overflow-anchor: none;
   display: flex;
@@ -563,6 +688,44 @@ button.history-open:hover:not(:disabled) {
   gap: var(--bc-space-4);
   margin: 0 calc(-1 * var(--bc-space-2));
   padding: var(--bc-space-1) var(--bc-space-2);
+}
+
+/*
+ * Scrolled up, one row stays at the bottom of the conversation's view: "Jump to latest", or what the reply waits on
+ * ("Waiting for your decision: ..."), in the full foreground and weight 600, since the turn holds until the user acts.
+ * On the panel's opaque ground, so the entries under it never show through.
+ */
+.jump-row {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  justify-content: center;
+  padding-top: var(--bc-space-2);
+  background: linear-gradient(transparent, var(--bc-bg) var(--bc-space-2));
+}
+
+button.jump {
+  max-width: 100%;
+  padding: var(--bc-space-1) var(--bc-space-3);
+  color: var(--bc-fg-dim);
+  background: var(--bc-bg);
+  border-color: var(--bc-line);
+  font-size: var(--bc-fs-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+button.jump:hover:not(:disabled) {
+  color: var(--bc-fg);
+  background: linear-gradient(var(--bc-fill-strong), var(--bc-fill-strong)), var(--bc-bg);
+  border-color: var(--bc-line-active);
+}
+
+button.jump.waiting {
+  color: var(--bc-fg);
+  border-color: var(--bc-fg);
+  font-weight: 600;
 }
 
 /* `display: flex` above would otherwise win over the `hidden` attribute. */
@@ -575,18 +738,14 @@ button.history-open:hover:not(:disabled) {
 }
 
 /*
- * The entries before the summary the history starts at: still shown, no longer sent. Dimmed as a group under one line
- * that says so in words, so the state never rests on the dimming alone (high contrast drops the dimming). The turn's
- * message an automatic summary quotes is still sent: full opacity, with its own dim line.
+ * The entries before the summary the history starts at: still shown, no longer sent. A group under one line that says
+ * so in words, at full contrast: they stay readable, so they are not dimmed. The turn's message an automatic summary
+ * quotes is still sent, with its own dim line.
  */
 .unsent {
   display: flex;
   flex-direction: column;
   gap: var(--bc-space-4);
-}
-
-.unsent > :not(.unsent-note, .still-sent) {
-  opacity: var(--bc-unsent-opacity);
 }
 
 .still-sent {
@@ -614,18 +773,26 @@ button.history-open:hover:not(:disabled) {
   margin-top: calc(var(--bc-space-2) - var(--bc-space-4));
 }
 
+/* Quiet, as the header's buttons: Edit sits under every last message and must not outweigh the answer. */
+.user-actions button.secondary {
+  padding: var(--bc-space-1) var(--bc-space-2);
+  color: var(--bc-fg-dim);
+  border-color: var(--bc-edge);
+  font-size: var(--bc-fs-sm);
+}
+
+.user-actions button.secondary:hover:not(:disabled) {
+  color: var(--bc-fg);
+}
+
 /*
- * The last turn while Edit replaces it: dimmed like the entries no longer sent (not in high contrast, through the same
- * token), under a line in the full foreground, since it says what Send will do, with Cancel beside it.
+ * The last turn while Edit replaces it: a group under a line in the full foreground, since it says what Send will do,
+ * with Cancel beside it. Not dimmed, like the entries no longer sent: the line says it.
  */
 .replacing {
   display: flex;
   flex-direction: column;
   gap: var(--bc-space-4);
-}
-
-.replacing > :not(.replacing-head) {
-  opacity: var(--bc-unsent-opacity);
 }
 
 .replacing-head {
@@ -784,6 +951,56 @@ button.history-open:hover:not(:disabled) {
   padding: var(--bc-space-2) var(--bc-space-3);
   border: 1px solid var(--bc-line);
   text-align: left;
+  vertical-align: top;
+}
+
+.answer th {
+  background: var(--bc-fill);
+  font-weight: 600;
+}
+
+/* A cell keeps a readable width: a wide table scrolls instead of breaking its words into fragments. */
+.answer td {
+  min-width: 6em;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A task list keeps its boxes in the marker's place; they show the model's state and take no click. */
+.answer .contains-task-list {
+  padding-left: 0;
+  list-style: none;
+}
+
+/* Drawn, since the browser greys a disabled box whatever its accent: an outlined square, filled with the button color
+   and a check mark when ticked. */
+.answer .task-list-item input {
+  appearance: none;
+  display: inline-grid;
+  place-content: center;
+  box-sizing: border-box;
+  width: 1em;
+  height: 1em;
+  margin: 0 var(--bc-space-2) 0 0;
+  padding: 0;
+  vertical-align: -0.125em;
+  background: transparent;
+  border: 1px solid var(--bc-fg-dim);
+  border-radius: var(--bc-radius-sm);
+}
+
+.answer .task-list-item input:checked {
+  background: var(--bc-button-bg);
+  border-color: var(--bc-button-border);
+}
+
+.answer .task-list-item input:checked::before {
+  content: "";
+  width: 0.25em;
+  height: 0.5em;
+  margin-top: -0.1em;
+  border: solid var(--bc-button-fg);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
 }
 
 .answer img {
@@ -810,17 +1027,22 @@ button.history-open:hover:not(:disabled) {
 .answer code {
   padding: 0 var(--bc-space-2);
   color: var(--bc-code-fg);
-  background: var(--bc-fill-strong);
+  /* The fainter fill: the theme's preformatted text color is dim already, and the stronger one took it under 4.5:1. */
+  background: var(--bc-fill);
   border-radius: var(--bc-radius-sm);
   font-family: var(--bc-mono);
   font-size: var(--bc-fs-mono);
 }
 
 .answer pre,
-.step-result {
+.step-result,
+.malformed-block {
   margin: 0 0 0.75em;
   padding: var(--bc-space-3) var(--bc-space-4);
   overflow-x: auto;
+  /* A thin bar in the theme's slider color: a block that scrolls sideways says so without a heavy track. */
+  scrollbar-width: thin;
+  scrollbar-color: var(--bc-slider) transparent;
   background: var(--bc-fill);
   border: 1px solid var(--bc-edge);
   border-radius: var(--bc-radius);
@@ -828,12 +1050,14 @@ button.history-open:hover:not(:disabled) {
 }
 
 /*
- * A final code block of the answer: its frame holds a header with Copy and Insert at cursor, then the code, which
- * still scrolls inside itself. The header keeps its room, so revealing it moves nothing; its buttons show while the
- * pointer is over the block or the focus is inside it, and stay in the tab order when hidden. One class only, so
+ * A final code block of the answer: the code, which still scrolls inside itself, with Copy and Insert at cursor laid
+ * over its top right corner. They take no room, so the block at rest is the code alone and revealing them moves
+ * nothing; they show while the pointer is over the block or the focus is inside it, on the panel's opaque ground so
+ * the code under them never shows through, and stay in the tab order when hidden. One class only, so
  * `.answer > :last-child` still drops the last block's margin.
  */
 .code-block {
+  position: relative;
   margin: 0 0 0.75em;
   background: var(--bc-fill);
   border: 1px solid var(--bc-edge);
@@ -842,16 +1066,16 @@ button.history-open:hover:not(:disabled) {
 
 .code-block > pre {
   margin: 0;
-  padding-top: 0;
   background: none;
   border: none;
 }
 
 .code-actions {
+  position: absolute;
+  top: var(--bc-space-2);
+  right: var(--bc-space-2);
   display: flex;
-  justify-content: flex-end;
   gap: var(--bc-space-2);
-  padding: var(--bc-space-2) var(--bc-space-2) 0;
   opacity: 0;
   transition: opacity var(--bc-fast) var(--bc-ease);
   /* Their labels are never part of selected text, in a quote or in a plain copy. */
@@ -875,18 +1099,26 @@ button.code-action {
   padding: 0 var(--bc-space-3);
   min-height: var(--bc-row);
   color: var(--bc-fg);
-  background: transparent;
+  background: var(--bc-bg);
   border-color: var(--bc-line);
   font-size: var(--bc-fs-xs);
 }
 
 button.code-action:hover:not(:disabled) {
-  background: var(--bc-fill-strong);
+  background: linear-gradient(var(--bc-fill-strong), var(--bc-fill-strong)), var(--bc-bg);
   border-color: var(--bc-line-active);
 }
 
+/* A call the parser could not read, as the model wrote it: code, its line breaks kept, wrapped rather than scrolled. */
+.malformed-block {
+  margin: var(--bc-space-1) 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .step-result code,
-.answer pre code {
+.answer pre code,
+pre.malformed-block code {
   padding: 0;
   font-family: var(--bc-mono);
   font-size: var(--bc-fs-mono);
@@ -908,10 +1140,12 @@ button.code-action:hover:not(:disabled) {
   font-size: var(--bc-fs-xs);
 }
 
+/* When a chip runs out of width its status wraps under the path, so a short path like "@problems" never breaks. */
 .chip {
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--bc-space-2);
+  gap: 0 var(--bc-space-2);
   max-width: 100%;
   box-sizing: border-box;
   padding: 0 var(--bc-space-2);
@@ -988,10 +1222,13 @@ button.code-action:hover:not(:disabled) {
   border-color: var(--bc-error);
 }
 
-/* On the latest message's ground a chip is a tint of its text. A failed or neutral chip takes the panel's ground
-   back, where its own color reads. */
+/* On the latest message's ground a chip is a tint of its text. A failed chip takes the panel's ground back, where its
+   error color reads. A neutral chip keeps the message's text and no fill, its edge dashed: quieter than an attached
+   chip, never louder, and its status says why in words. */
+/* No fill of its own: a tint behind the text would lower its contrast with the message's ground. */
 .message.user:not(.earlier) .chip {
-  background: var(--bc-accent-chip);
+  background: transparent;
+  border-color: var(--bc-accent-chip);
 }
 
 .message.user:not(.earlier) .chip-status {
@@ -1008,16 +1245,15 @@ button.code-action:hover:not(:disabled) {
 }
 
 .message.user:not(.earlier) .chip.neutral {
-  color: var(--bc-fg-dim);
-  background: var(--bc-bg);
+  color: inherit;
+  border-style: dashed;
 }
 
 /* ---------- Loading and turn endings ---------- */
 
-/* Loading: dim text that breathes; a line of its own leads with a dot. */
+/* Loading: dim text, steady so it keeps its contrast; a line of its own leads with a dot, and the dot breathes. */
 .loading {
   color: var(--bc-fg-dim);
-  animation: var(--bc-breathe) 1.6s ease-in-out infinite;
 }
 
 p.loading {
@@ -1034,6 +1270,18 @@ p.loading::before {
   height: var(--bc-mark);
   background: var(--bc-fg-dim);
   border-radius: 50%;
+  animation: var(--bc-breathe) 1.6s ease-in-out infinite;
+}
+
+/* Text still arriving: the loading dot, breathing, on a line of its own after the text. */
+.streaming-mark {
+  display: block;
+  width: var(--bc-mark);
+  height: var(--bc-mark);
+  margin-top: var(--bc-space-2);
+  background: var(--bc-fg-dim);
+  border-radius: 50%;
+  animation: var(--bc-breathe) 1.6s ease-in-out infinite;
 }
 
 @keyframes pulse {
@@ -1108,10 +1356,13 @@ p.loading::before {
   list-style: none;
 }
 
+/* When the path's longest name and the counts do not fit on one line, "created" and the counts go under it, at the
+   right, rather than split a name. */
 button.changed-file {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  gap: var(--bc-space-3);
+  gap: 0 var(--bc-space-3);
   box-sizing: border-box;
   width: 100%;
   padding: var(--bc-space-1) var(--bc-space-2);
@@ -1132,9 +1383,18 @@ button.changed-file:focus-visible {
 
 .changed-path {
   flex: 0 1 auto;
-  min-width: 0;
+  /* Never narrower than its longest name, never wider than the row. */
+  min-width: min-content;
+  max-width: 100%;
   font-family: var(--bc-mono);
   font-size: var(--bc-fs-mono);
+}
+
+/* One folder or file name and its "/": atomic, so the path wraps only between names; a name wider than the row still
+   wraps inside itself. */
+.path-segment {
+  display: inline-block;
+  max-width: 100%;
   overflow-wrap: anywhere;
 }
 
@@ -1197,7 +1457,7 @@ button.changed-file:focus-visible {
 
 .undo-outcome .detail {
   margin: var(--bc-space-2) 0 0;
-  color: var(--bc-fg-dim);
+  color: inherit;
   font-family: var(--bc-mono);
   font-size: var(--bc-fs-mono);
   white-space: pre-wrap;
@@ -1291,6 +1551,17 @@ summary.step-row:hover,
   margin-top: var(--bc-space-2);
 }
 
+/* What failed, last on the row and in the error color, its tools named in words. */
+.fold-failed {
+  color: var(--bc-error);
+}
+
+/* A fold holding a failed step: its double ring (see "Thread") in the error color. Set on the row only, so the nodes
+   of the steps inside keep their own colors. */
+.turn-fold-row.failed {
+  --node-ring: var(--bc-error);
+}
+
 /* ---------- Thread ---------- */
 
 /*
@@ -1349,7 +1620,7 @@ summary.step-row:hover,
 .turn-fold > summary::before {
   box-shadow:
     0 0 0 2px var(--bc-bg),
-    0 0 0 3px var(--bc-fg-dim);
+    0 0 0 3px var(--node-ring, var(--bc-fg-dim));
 }
 
 /* A node: a ring on the line, level with its row's first line. The panel's color inside it hides the line. */
@@ -1370,7 +1641,7 @@ summary.step-row:hover,
   width: var(--bc-node);
   height: var(--bc-node);
   background: var(--bc-bg);
-  border: 1px solid var(--bc-fg-dim);
+  border: 1px solid var(--node-ring, var(--bc-fg-dim));
   border-radius: 50%;
 }
 
@@ -1397,16 +1668,18 @@ summary.step-row:hover,
   font-size: var(--bc-fs-sm);
 }
 
+/* The status goes to a line of its own, at the right, rather than leave the path fewer than ten characters. */
 .step-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  gap: var(--bc-space-3);
+  gap: 0 var(--bc-space-3);
   min-width: 0;
   min-height: var(--bc-row);
 }
 
 /* A call without a result has no chevron; its node is filled while the call runs. */
-div.step-row:has(.step-status[role="status"])::before {
+div.step-row:has(.step-status.loading, .step-status.waiting)::before {
   background: var(--bc-fg-dim);
 }
 
@@ -1423,6 +1696,8 @@ div.step-row:has(.step-status.loading)::before {
 }
 
 .step-arg {
+  /* The path gives way first, down to ten characters: a status is cut last. */
+  flex: 1 100 10ch;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1468,6 +1743,20 @@ div.step-row:has(.step-status.loading)::before {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--bc-error);
+}
+
+/* The rejection the user typed, or the answer they gave: their own words under the row, wrapped, never cut. */
+.step-note {
+  margin: calc(-1 * var(--bc-space-1)) 0 var(--bc-space-2);
+  color: var(--bc-fg-dim);
+  font-size: var(--bc-fs-sm);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+/* A rejection is no failure, but the reply after it may claim the change was made: the full foreground, not dim. */
+.step-status.rejected {
+  color: var(--bc-fg);
 }
 
 .step .step-result {
@@ -1538,20 +1827,68 @@ div.step-row:has(.step-status.loading)::before {
   font-weight: 600;
 }
 
-/* The reason field, then Accept or Run and Reject: Shift+Tab from the message box meets them in reverse. */
+/* A write's counts and Show change on a line of their own, then the reason field with Accept or Run and Reject after it
+   on one line, the field taking the room left; below about 300px the buttons wrap under it. The field is one quiet
+   row, never the block's largest element. Shift+Tab from the message box meets them in reverse. */
 .approval {
   display: flex;
-  flex-direction: column;
-  gap: var(--bc-space-3);
+  flex-wrap: wrap;
+  gap: var(--bc-space-2);
+  align-items: center;
   min-width: 0;
   margin: var(--bc-space-3) 0 0;
   padding: 0;
   border: none;
 }
 
+/* The reason is optional and secondary: no fill, an outline in the block's tint like Reject's, so Accept or Run stays
+   the block's weightiest control. */
 .approval-reason {
-  width: 100%;
+  flex: 1 1 9em;
   min-width: 0;
+  padding: var(--bc-space-1) var(--bc-space-2);
+  color: var(--bc-bg);
+  caret-color: var(--bc-bg);
+  background: transparent;
+  border-color: var(--bc-inverse-line);
+  font-size: var(--bc-fs-sm);
+}
+
+.approval-reason::placeholder {
+  color: var(--bc-inverse-dim);
+}
+
+/* The decision keys, in words, as the reason's placeholder is dim: help, never a control. */
+.approval-keys {
+  flex: 1 0 100%;
+  margin: 0;
+  color: var(--bc-inverse-dim);
+  font-size: var(--bc-fs-xs);
+}
+
+.approval-reason:focus-visible {
+  outline-color: var(--bc-bg);
+}
+
+/* A write's line counts, then Show change: the size of what Accept writes, and the way back to its diff. On the
+   negative block both take its text color; the theme's link color is drawn for the panel's ground, not this one. */
+.approval-change {
+  flex: 1 0 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--bc-space-1) var(--bc-space-3);
+  align-items: baseline;
+  font-size: var(--bc-fs-sm);
+}
+
+.decision .changed-counts {
+  margin-left: 0;
+  color: inherit;
+}
+
+.decision button.link,
+.decision button.link:hover:not(:disabled) {
+  color: inherit;
 }
 
 /* The question in full, its options, then the field and Answer: Shift+Tab from the message box meets them in reverse. */
@@ -1570,6 +1907,17 @@ div.step-row:has(.step-status.loading)::before {
   margin: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+/* Inline code the model wrote in backticks, in the editor font on the block's own well. */
+p.question-text code {
+  padding: 0 var(--bc-space-1);
+  /* The block's own text color: the webview's default code color is drawn for the panel's ground, not this one. */
+  color: inherit;
+  background: var(--bc-inverse-well);
+  border-radius: var(--bc-radius-sm);
+  font-family: var(--bc-mono);
+  font-size: var(--bc-fs-mono);
 }
 
 /* One option per line at the block's width, so a long option wraps whole and each is a full-width target. */
@@ -1653,23 +2001,41 @@ div.step-row:has(.step-status.loading)::before {
   flex: none;
 }
 
+/* After a plan, carrying it out leads the row: secondary still, set apart by weight. */
+button.next-step {
+  font-weight: 600;
+}
+
 /* The buttons sit at the right: Send alone, or Send then Stop while a reply is in flight. */
 .composer > button:first-of-type {
   margin-left: auto;
 }
 
-.composer > select.mode {
+/* The mode, then the reasoning effort: the two settings of the next turn, at the left of Send. */
+.composer > select {
   flex: none;
   max-width: 100%;
   padding: var(--bc-space-1) var(--bc-space-2);
   font-size: var(--bc-fs-sm);
 }
 
+/* Away from Ask, what the mode does, on its own line at the end of the field: Auto-edit writes without asking, Plan
+   never writes, and neither may hide in the selector's tooltip. */
+.mode-hint {
+  flex: 1 1 100%;
+  margin: 0;
+  padding: 0 var(--bc-space-2);
+  color: var(--bc-fg-dim);
+  font-size: var(--bc-fs-xs);
+}
+
 /* ---------- Queued messages ---------- */
 
 /* Under the message box, after it in the tab order: a quiet line when paused or full, then one filled row per message,
-   its text cut to one line, its actions at the right. */
+   its text cut to one line, its actions at the right. The rows scroll in their own box past about three, so a long
+   queue never takes the conversation's room; Tab to a row's button scrolls it into view. */
 .queue {
+  flex: none;
   display: flex;
   flex-direction: column;
   gap: var(--bc-space-2);
@@ -1679,12 +2045,16 @@ div.step-row:has(.step-status.loading)::before {
   display: flex;
   flex-direction: column;
   gap: var(--bc-space-1);
+  max-height: 20vh;
   margin: 0;
   padding: 0;
+  overflow-y: auto;
   list-style: none;
 }
 
 .queue li {
+  /* Rows keep their height in the capped list, which scrolls instead of squeezing them. */
+  flex: none;
   display: flex;
   align-items: center;
   gap: var(--bc-space-3);
@@ -1707,6 +2077,29 @@ div.step-row:has(.step-status.loading)::before {
 .queue li button {
   padding: var(--bc-space-1) var(--bc-space-3);
   font-size: var(--bc-fs-sm);
+}
+
+/* In a narrow panel the buttons would leave the text a few letters: the text takes its own line, the buttons go under it
+   at the right. */
+@media (max-width: 340px) {
+  .queue li {
+    flex-wrap: wrap;
+    row-gap: var(--bc-space-1);
+  }
+
+  .queued-text {
+    display: -webkit-box;
+    flex-basis: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+  }
+
+  .queue li .actions {
+    margin-left: auto;
+  }
 }
 
 /* ---------- Mention and slash menus ---------- */
@@ -1787,8 +2180,28 @@ div.step-row:has(.step-status.loading)::before {
   border-color: currentColor;
 }
 
+/* A small dim heading over the first skill: the built-in commands above it, the workspace's skills under it. */
+.menu-group {
+  margin-top: var(--bc-space-2);
+  padding: var(--bc-space-2) var(--bc-space-3) var(--bc-space-1);
+  border-top: 1px solid var(--bc-line);
+  color: var(--bc-fg-dim);
+  font-size: var(--bc-fs-xs);
+}
+
 .menu-notice {
   margin: 0;
   padding: var(--bc-space-2) var(--bc-space-4);
   color: var(--bc-fg-dim);
+}
+
+/* The live region a screen reader hears: out of sight, still in the accessibility tree. */
+.announcer {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }

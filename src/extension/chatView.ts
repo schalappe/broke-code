@@ -3,6 +3,7 @@
  * Sidebar webview view: serves chat HTML, relays state to webview and actions to controller.
  */
 import * as vscode from "vscode";
+import { CHAT_CONTEXT_KEYS, type ChatContext, chatContext } from "../core/chatCommands";
 import type { ChatController } from "../core/chatController";
 import { DraftQueue } from "../core/draftQueue";
 import type { FileQueryAnswer } from "../core/fileIndex";
@@ -27,6 +28,27 @@ export type ChatViewActions = {
   /** "broke-code: Add provider"; shows its own failures and never rejects. */
   addProvider: () => Promise<void>;
 };
+
+/**
+ * The `when` context of the chat's palette commands (`chatCommands`), set from each published state. A key is set
+ * only when its value changes, since the controller publishes on every streamed delta.
+ */
+export class ChatContextKeys {
+  private last: Partial<ChatContext> = {};
+
+  update(state: ChatState): void {
+    const next = chatContext(state);
+    for (const key of Object.keys(next) as (keyof ChatContext)[]) {
+      if (this.last[key] === next[key]) continue;
+      void vscode.commands
+        .executeCommand("setContext", CHAT_CONTEXT_KEYS[key], next[key])
+        .then(undefined, (error) =>
+          console.error("broke-code: could not set a context key", CHAT_CONTEXT_KEYS[key], error),
+        );
+    }
+    this.last = next;
+  }
+}
 
 export class ChatView implements vscode.WebviewViewProvider {
   private view: vscode.WebviewView | undefined;
@@ -233,6 +255,8 @@ export class ChatView implements vscode.WebviewViewProvider {
       case "approve":
         controller.approve(message.id);
         return;
+      case "showChange":
+        return void controller.showChange(message.id);
       case "reject":
         controller.reject(message.id, message.reason);
         return;

@@ -19,6 +19,8 @@ export type KindCount = { shown: number; steps: number };
 export type FoldCounts = {
   steps: number;
   failed: number;
+  /** The tools of the failed steps, each once, in the order they first failed: the row names them. */
+  failedTools: string[];
   rejected: number;
   kinds: Record<StepKind, KindCount>;
   otherSteps: number;
@@ -86,16 +88,26 @@ function inFlight(entry: ChatEntry | undefined): boolean {
   return entry?.role === "assistant" && (entry.status === "waiting" || entry.status === "streaming");
 }
 
-/** The tool steps among `entries` from `from` up to `to` (excluded), in one pass. */
+/**
+ * The tool steps among `entries` from `from` up to `to` (excluded), in one pass. A rejected or failed step counts only
+ * as rejected or failed, never in a kind: "changed 1 file" must mean a file changed.
+ */
 function countSteps(entries: ChatEntry[], from: number, to: number): FoldCounts {
-  const counts: FoldCounts = { steps: 0, failed: 0, rejected: 0, kinds: emptyKinds(), otherSteps: 0 };
+  const counts: FoldCounts = { steps: 0, failed: 0, failedTools: [], rejected: 0, kinds: emptyKinds(), otherSteps: 0 };
   const paths = { read: new Set<string>(), listed: new Set<string>(), edited: new Set<string>() };
   for (let index = from; index < to; index++) {
     const entry = entries[index]!;
     if (entry.role !== "tool") continue;
     counts.steps++;
-    if (entry.approval === "rejected") counts.rejected++;
-    else if (entry.status !== "ok") counts.failed++;
+    if (entry.approval === "rejected") {
+      counts.rejected++;
+      continue;
+    }
+    if (entry.status !== "ok") {
+      counts.failed++;
+      if (!counts.failedTools.includes(entry.name)) counts.failedTools.push(entry.name);
+      continue;
+    }
     const kind = stepKind(entry);
     if (kind === undefined) {
       counts.otherSteps++;

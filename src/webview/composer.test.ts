@@ -14,6 +14,7 @@ import {
   menuView,
   openMenuToken,
   pickedInText,
+  pickKeepsToken,
   quoteDraft,
   recallHolds,
   replaceToken,
@@ -108,6 +109,23 @@ describe("mentionPick", () => {
   });
 });
 
+describe("pickKeepsToken", () => {
+  const at = (query: string) => ({ trigger: "@" as const, start: 0, query });
+
+  test("holds when the token already is what the row inserts, so Enter sends", () => {
+    expect(pickKeepsToken(file("src/a.ts"), at("src/a.ts"))).toBe(true);
+    expect(pickKeepsToken({ path: "src/", kind: "folder" }, at("src/"))).toBe(true);
+    expect(pickKeepsToken({ path: "diff", kind: "diff" }, at("diff"))).toBe(true);
+  });
+
+  test("fails for a partial path, another case, a reserved name the row turns into ./<name>, and a / token", () => {
+    expect(pickKeepsToken(file("src/a.ts"), at("src/a"))).toBe(false);
+    expect(pickKeepsToken(file("src/a.ts"), at("SRC/a.ts"))).toBe(false);
+    expect(pickKeepsToken(file("problems"), at("problems"))).toBe(false);
+    expect(pickKeepsToken(file("src/a.ts"), { trigger: "/", start: 0, query: "src/a.ts" })).toBe(false);
+  });
+});
+
 describe("composerKeyAction", () => {
   const key = (name: string, fields: Partial<ComposerKey> = {}): ComposerKey => ({
     key: name,
@@ -126,12 +144,22 @@ describe("composerKeyAction", () => {
     conversationId: "c1",
     entries: [],
     recalled: undefined,
+    replying: false,
   };
 
   test("Escape dismisses an open menu, rows or not, and does nothing without one", () => {
     expect(composerKeyAction(key("Escape"), 3, idle)).toEqual({ type: "dismiss" });
     expect(composerKeyAction(key("Escape"), 0, idle)).toEqual({ type: "dismiss" });
     expect(composerKeyAction(key("Escape"), undefined, idle)).toEqual({ type: "none" });
+  });
+
+  test("a bare Escape in an empty box stops a reply in flight when no menu is open", () => {
+    const replying = { ...idle, replying: true };
+    expect(composerKeyAction(key("Escape"), undefined, replying)).toEqual({ type: "stop" });
+    expect(composerKeyAction(key("Escape"), 2, replying)).toEqual({ type: "dismiss" });
+    expect(composerKeyAction(key("Escape", { shift: true }), undefined, replying)).toEqual({ type: "none" });
+    const typing = { ...replying, text: "@src/a.ts and then", selectionStart: 18, selectionEnd: 18 };
+    expect(composerKeyAction(key("Escape"), undefined, typing)).toEqual({ type: "none" });
   });
 
   test("ArrowDown and ArrowUp move the highlight in opposite directions", () => {
@@ -456,6 +484,11 @@ describe("replaceToken", () => {
 });
 
 describe("applyDraft", () => {
+  test("a focus draft leaves the text, the caret, and the picked paths as they are", () => {
+    const draft = { text: "half typed", caret: 4, picked: ["a.ts"] };
+    expect(applyDraft(draft, { text: "", mode: "focus", picked: [] })).toBe(draft);
+  });
+
   /** The draft `marked`, its caret at `|`, after inserting `@selection` at the caret. */
   const atCaret = (marked: string): string => {
     const caret = marked.indexOf("|");

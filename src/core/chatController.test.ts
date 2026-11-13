@@ -15,6 +15,7 @@ import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { autoApproveWrites, type Decision, type InspectedSetting, type Preview } from "./approval";
+import { ASK_USER_TOOL } from "./askUser";
 import {
   ChatController,
   type ChatPorts,
@@ -2031,6 +2032,7 @@ describe("ChatController agent turn", () => {
 
     expect(calls).toEqual([]);
     expect(state().entries[1]).toMatchObject({ content: "Loaded.\n" });
+    expect(state().entries[1]).not.toHaveProperty("malformedCall");
     expect(state().entries[2]).toMatchObject({ role: "tool", name: "unknown", status: "malformed" });
     const history = sent()[1]!.messages;
     expect(history[2]).toEqual({ role: "assistant", content: "Loaded.\n" });
@@ -2128,6 +2130,10 @@ describe("ChatController agent turn", () => {
     );
     expect(state().entries.at(-2)).toMatchObject({ role: "assistant", status: "halted", haltReason: "malformedCalls" });
     expect(state().entries.at(-1)).toMatchObject({ role: "tool", name: "read_file", status: "malformed" });
+    // [>]: Each malformed block keeps its place in the answer, so the chat can show it as written.
+    const unclosed = malformedReply.content;
+    expect(state().entries[1]).toMatchObject({ content: unclosed, malformedCall: { start: 0, end: unclosed.length } });
+    expect(state().entries[3]).toMatchObject({ content: "<nope>x</nope>", malformedCall: { start: 0, end: 14 } });
     expect(isReplying(state())).toBe(false);
     await settledSave(saved, 7);
     expect(saved()?.entries.at(-2)).toMatchObject({ status: "halted", haltReason: "malformedCalls" });
@@ -2607,6 +2613,8 @@ describe("ChatController agent turn", () => {
       expect(sent()).toHaveLength(4);
       expect(state().entries.at(-1)).toMatchObject({ role: "assistant", status: "halted", haltReason: "contextFull" });
       expect(state().context.leftOut).toBeUndefined();
+      // [>]: The next turn would halt the same way: the state says so, and the panel offers its ways out.
+      expect(state().context.full).toBe("halts");
     });
   });
 
@@ -3344,15 +3352,18 @@ describe("ChatController agent turn", () => {
 
     /**
      * Runner over the read and write tools on the temporary workspace, writes asking through `approvalApplier`. Counts
-     * the previews opened and closed.
+     * the previews opened, shown again, and closed.
      */
     function askingRunner() {
-      const previews = { opened: 0, closed: 0 };
+      const previews = { opened: 0, shown: 0, closed: 0 };
       const roots = [{ name: "ws", path: workspaceDir }];
       const host: WriteApprovalHost = {
         preview: async () => {
           previews.opened += 1;
           return {
+            show: async () => {
+              previews.shown += 1;
+            },
             close: async () => {
               previews.closed += 1;
             },
@@ -3387,14 +3398,21 @@ describe("ChatController agent turn", () => {
 
     test("an open request shows in the state with its diff open while the reply stays streaming", async () => {
       const { state, previews, controller, done } = await waiting();
-      expect(state().approval).toEqual({ id: expect.any(Number), kind: "write", tool: "write_file", summary: "a.txt" });
+      expect(state().approval).toEqual({
+        id: expect.any(Number),
+        kind: "write",
+        tool: "write_file",
+        summary: "a.txt",
+        lines: { added: 1, removed: 1 },
+        preview: true,
+      });
       expect(state().entries.at(-1)).toMatchObject({
         role: "assistant",
         status: "streaming",
         call: { name: "write_file" },
       });
       expect(isReplying(state())).toBe(true);
-      expect(previews).toEqual({ opened: 1, closed: 0 });
+      expect(previews).toEqual({ opened: 1, shown: 0, closed: 0 });
       expect(fileText()).toBe("old\n");
       controller.stop();
       await done;
@@ -3406,7 +3424,7 @@ describe("ChatController agent turn", () => {
       await done;
 
       expect(fileText()).toBe("new\n");
-      expect(previews).toEqual({ opened: 1, closed: 1 });
+      expect(previews).toEqual({ opened: 1, shown: 0, closed: 1 });
       expect(state().approval).toBeUndefined();
       expect(state().entries[2]).toEqual({
         role: "tool",
@@ -3415,6 +3433,7 @@ describe("ChatController agent turn", () => {
         status: "ok",
         text: "write_file: replaced a.txt.",
         approval: "accepted",
+        lines: { added: 1, removed: 1 },
       });
       expect(sent()[1]!.messages.at(-1)?.content).toBe(
         '<tool_result tool="write_file" status="ok">\nwrite_file: replaced a.txt.\n</tool_result>',
@@ -3428,8 +3447,9 @@ describe("ChatController agent turn", () => {
       await done;
 
       expect(fileText()).toBe("old\n");
-      expect(previews).toEqual({ opened: 1, closed: 1 });
+      expect(previews).toEqual({ opened: 1, shown: 0, closed: 1 });
       expect(state().entries[2]).toMatchObject({ status: "error", approval: "rejected" });
+      expect(state().entries[2]).not.toHaveProperty("lines");
       expect(sent()[1]!.messages.at(-1)?.content).toBe(
         '<tool_result tool="write_file" status="error">\nThe user rejected this change.\nKeep the old name.\n</tool_result>',
       );
@@ -3444,6 +3464,18 @@ describe("ChatController agent turn", () => {
           '<tool_result tool="write_file" status="error">\nThe user rejected this change.\n</tool_result>',
         );
       }
+    });
+
+    test("Show change shows the open request's diff again, and nothing for another id or once it closed", async () => {
+      const { state, previews, controller, done } = await waiting();
+      const id = state().approval!.id;
+      await controller.showChange(id + 1);
+      await controller.showChange(id);
+      expect(previews).toMatchObject({ opened: 1, shown: 1, closed: 0 });
+      controller.approve(id);
+      await done;
+      await controller.showChange(id);
+      expect(previews).toEqual({ opened: 1, shown: 1, closed: 1 });
     });
 
     test("a decision for another request id is ignored, and so is a second decision", async () => {
@@ -3467,7 +3499,7 @@ describe("ChatController agent turn", () => {
       await done;
 
       expect(state().approval).toBeUndefined();
-      expect(previews).toEqual({ opened: 1, closed: 1 });
+      expect(previews).toEqual({ opened: 1, shown: 0, closed: 1 });
       expect(state().entries.at(-1)).toMatchObject({
         role: "assistant",
         status: "stopped",
@@ -3490,7 +3522,7 @@ describe("ChatController agent turn", () => {
 
       expect(state().conversationId).not.toBe(turnId);
       expect(state().approval).toBeUndefined();
-      expect(previews).toEqual({ opened: 1, closed: 1 });
+      expect(previews).toEqual({ opened: 1, shown: 0, closed: 1 });
       controller.approve(id);
       await Bun.sleep(20);
       expect(fileText()).toBe("old\n");
@@ -3540,7 +3572,7 @@ describe("ChatController agent turn", () => {
       clearInterval(subscription);
 
       expect(fileText()).toBe("new\n");
-      expect(previews).toEqual({ opened: 0, closed: 0 });
+      expect(previews).toEqual({ opened: 0, shown: 0, closed: 0 });
       expect(published).toBe(false);
       expect(state().entries[2]).toMatchObject({ status: "ok", approval: "auto" });
     });
@@ -4017,6 +4049,7 @@ describe("ChatController agent turn", () => {
       controller.stop();
       await done;
       open({
+        show: async () => {},
         close: async () => {
           closed += 1;
         },
@@ -4326,6 +4359,8 @@ describe("ChatController agent turn", () => {
       const { controller, state, sent } = await scripted([{ content: "never sent" }], undefined, undefined, on());
       await controller.send("x".repeat(4000));
       expect(sent()).toHaveLength(0);
+      // [>]: No summary can free this context, automatic or `/compact`: the state says both would halt.
+      expect(state().context.full).toBe("summaryHalts");
       expect(state().entries).toEqual([
         { role: "user", content: "x".repeat(4000), mentions: [] },
         { role: "assistant", reasoning: "", content: "", status: "halted", haltReason: "contextFull" },
@@ -4348,6 +4383,8 @@ describe("ChatController agent turn", () => {
         error: { kind: "rejected", status: 500 },
       });
       expect(isReplying(state())).toBe(false);
+      // [>]: The summary request fit: the next message summarizes first again.
+      expect(state().context.full).toBe("compacts");
     });
 
     test("an empty summary ends the turn contextFull", async () => {
@@ -6118,7 +6155,7 @@ describe("ChatController undo", () => {
       return unsaved.has(target);
     };
     const host: WriteApprovalHost = {
-      preview: async () => ({ close: async () => {} }),
+      preview: async () => ({ show: async () => {}, close: async () => {} }),
       hasUnsavedChanges: async () => false,
     };
     const runner = workspaceToolRunner(
@@ -7251,5 +7288,128 @@ describe("ChatController turn events", () => {
       expect(state().entries.at(-1)).toMatchObject({ content: "Second.", status: "done" });
       expect(events).toEqual([done, done]);
     });
+  });
+});
+
+describe("ChatController running call", () => {
+  let scriptCount = 0;
+  const readCall = "<read_file>\n<path>a.ts</path>\n</read_file>";
+  const commandCall = "<run_command>\n<command>bun test</command>\n</run_command>";
+  const writeCall = "<write_file>\n<path>a.ts</path>\n<content>new</content>\n</write_file>";
+  const askCall = "<ask_user>\n<question>Which file?</question>\n</ask_user>";
+
+  /**
+   * Runner over the extension's tool specs that asks as their runs do: a command and a write through
+   * `requestApproval`, `ask_user` through `requestAnswer`, a read never; each result is the request's outcome.
+   */
+  const runner: ToolRunner = {
+    tools: [...READ_TOOLS, ...WRITE_TOOLS, RUN_COMMAND_TOOL, ASK_USER_TOOL],
+    run: async (call, context) => {
+      if (call.name === ASK_USER_TOOL.name) {
+        return { status: "ok", text: (await context.requestAnswer({ question: "Which file?", options: [] })).kind };
+      }
+      if (call.name === RUN_COMMAND_TOOL.name) {
+        return {
+          status: "ok",
+          text: (await context.requestApproval({ kind: "command", tool: call.name, summary: "bun test" })).kind,
+        };
+      }
+      if (call.name === "write_file") {
+        return {
+          status: "ok",
+          text: (await context.requestApproval({ kind: "write", tool: call.name, summary: "a.ts" })).kind,
+        };
+      }
+      return { status: "ok", text: "read" };
+    },
+  };
+
+  /**
+   * What a published state says of the reply's call: `shown` (written, not running), `approval`, `question`,
+   * `running`, or the status the reply ended with; `undefined` without a call in flight. `callRunning` set anywhere
+   * else reads `stale`.
+   */
+  function phase(state: ChatState): string | undefined {
+    const last = state.entries.at(-1);
+    const stale = state.callRunning ? "stale" : undefined;
+    if (last?.role !== "assistant") return stale;
+    if (last.status !== "waiting" && last.status !== "streaming") return stale ?? last.status;
+    if (!last.call) return stale;
+    if (state.approval) return stale ?? "approval";
+    if (state.question) return stale ?? "question";
+    return state.callRunning ? "running" : "shown";
+  }
+
+  /**
+   * The phases the controller publishes for a turn whose first reply is `content` and whose second is "Done.", repeats
+   * merged; `settle` acts on the request the call opens, if any.
+   */
+  async function phases(
+    content: string,
+    settle?: (controller: ChatController, state: ChatState) => void,
+    autoApproveWrites?: () => boolean,
+  ): Promise<string[]> {
+    const prefix = `running-${scriptCount++}`;
+    scripts.set(prefix, [{ content }, { content: "Done." }]);
+    const seen: string[] = [];
+    const controller = new ChatController({
+      apiKeys: { get: async () => undefined },
+      workspaceState: memoryStore(),
+      publish: (published) => {
+        const current = phase(published);
+        if (current !== undefined && seen.at(-1) !== current) seen.push(current);
+      },
+      mentions: noMentions,
+      store: new ConversationStore(memoryFiles()),
+      providerSupport: new ProviderSupport(),
+      ...noTools,
+      tools: runner,
+      autoApproveWrites,
+    });
+    const state = () => controller.snapshot;
+    controller.setProviders({
+      providers: [{ name: "Running", baseUrl: `http://localhost:${server.port}/${prefix}/v1` }],
+      skipped: [],
+    });
+    await until(state, (s) => s.model === "m");
+    const sent = controller.send("go");
+    if (settle) {
+      await until(state, (s) => s.approval !== undefined || s.question !== undefined);
+      settle(controller, state());
+    }
+    await sent;
+    return seen;
+  }
+
+  test("a call that never asks runs as it shows", async () => {
+    expect(await phases(readCall)).toEqual(["running", "done"]);
+  });
+
+  test("a command runs only once Run is accepted, in the update that closes the request", async () => {
+    const run = (controller: ChatController, state: ChatState) => controller.approve(state.approval!.id);
+    expect(await phases(commandCall, run)).toEqual(["shown", "approval", "running", "done"]);
+  });
+
+  test("a rejected command never runs", async () => {
+    const reject = (controller: ChatController, state: ChatState) => controller.reject(state.approval!.id);
+    expect(await phases(commandCall, reject)).toEqual(["shown", "approval", "shown", "done"]);
+  });
+
+  test("Stop on an open request never runs the call", async () => {
+    expect(await phases(commandCall, (controller) => controller.stop())).toEqual([
+      "shown",
+      "approval",
+      "shown",
+      "stopped",
+    ]);
+  });
+
+  test("an answered question never reads as running", async () => {
+    const answer = (controller: ChatController, state: ChatState) => controller.answer(state.question!.id, "a.ts");
+    expect(await phases(askCall, answer)).toEqual(["shown", "question", "shown", "done"]);
+  });
+
+  test("an auto-approved write runs without a request", async () => {
+    expect(await phases(writeCall, undefined, () => true)).toEqual(["shown", "running", "done"]);
   });
 });

@@ -46,7 +46,7 @@ export type ProviderError =
   /** HTTP 401 or 403. */
   | { kind: "invalidKey"; provider: string; status: number }
   /**
-   * Other non-2xx. `detail` = `error.message` of JSON body, else raw body truncated; may be empty.
+   * Other non-2xx: a 4xx refusal, or a 5xx failure of the provider. `detail` = `error.message` of JSON body, else raw body truncated; may be empty.
    * `bodyReadError` set when body download failed (then `detail` empty).
    */
   | { kind: "rejected"; provider: string; status: number; detail: string; bodyReadError?: string }
@@ -77,7 +77,14 @@ export function describeProviderError(error: ProviderError, l10n: Translator): E
     case "internal":
       return { message: l10n.t("An unexpected internal error ended the reply."), detail: error.message };
     case "unreachable":
-      return { message: l10n.t("Cannot reach {0} at {1}.", error.provider, error.baseUrl), detail: error.cause };
+      return {
+        message: l10n.t(
+          "Cannot reach {0} at {1}. Check its base URL, your network or VPN, and the http.proxy setting.",
+          error.provider,
+          error.baseUrl,
+        ),
+        detail: error.cause,
+      };
     case "certificate":
       return {
         message: l10n.t(
@@ -102,7 +109,11 @@ export function describeProviderError(error: ProviderError, l10n: Translator): E
       return { message: l10n.t("{0} refused the API key (HTTP {1}).", error.provider, error.status) };
     case "rejected":
       return {
-        message: l10n.t("{0} rejected the request (HTTP {1}).", error.provider, error.status),
+        // [>]: A 5xx is the provider failing, such as a gateway down, not a refusal of what was sent.
+        message:
+          error.status >= 500
+            ? l10n.t("{0} failed to answer the request (HTTP {1}).", error.provider, error.status)
+            : l10n.t("{0} rejected the request (HTTP {1}).", error.provider, error.status),
         ...rejectedDetail(error, l10n),
       };
     case "cutOff":

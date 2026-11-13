@@ -19,6 +19,11 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
   call, makes the reply malformed (`forged`): the answer is cut where the result opens, so the chat and the history
   never hold the invented result, and the model gets a message saying only the extension writes results. Accepted
   cost: a final answer that quotes a raw result opening at a line start, outside code, is refused once.
+- A malformed call keeps its block in the reply's `content`, and the reply records where (`malformedCall`, `{ start,
+  end }`, the parser's range; an optional field of the assistant entry, so the record stays at version 2, ADR 0003,
+  validated on load like `call`'s range). The chat shows that block as written, in the editor font with its line
+  breaks, between the reply's text before and after it as Markdown. A forged result (cut away) and an empty reply have
+  no block and no range; a reply saved before the field shows its block as Markdown, as before.
 - A known tool's call ends at the `</tool_name>` after its last argument value, not at the first one. A value ends at
   the first `</argument>` that closes no `<argument>` opened inside the value and is followed by nothing but
   whitespace and then another argument tag of the tool or the call's closing tag: an inner `<argument>` …
@@ -163,12 +168,46 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
   - Reads run without asking.
   - A tool asks through its run context: `ToolContext.requestApproval(request)` settles with Accept, Reject (with the
     reason typed, trimmed, left out when blank), or Cancel. While the request is open, the reply stays `streaming` and
-    `ChatState.approval` holds `{ id, kind, tool, summary }`; the chat renders the step row "waiting for your decision",
-    Accept (Run for a command), Reject, and a reason field from that state alone, in one block, and never moves the
-    focus when the request opens: from the message box, Shift+Tab reaches Reject, then Accept or Run, then the reason
-    field. The webview's `approve { id }` and
-    `reject { id, reason? }` are validated like the other messages, and a decision for a request no longer open is
+    `ChatState.approval` holds `{ id, kind, tool, summary, lines?, preview? }`; the chat renders the step row "waiting
+    for your decision", for a write its line counts (`+N −M`, `lines`, as "Changed files" counts them) and Show change
+    (when `preview`: its diff opened), Accept (Run for a command), Reject, and a reason field from that state alone, in
+    one block, and never moves the focus when the request opens: from the message box, Shift+Tab reaches Reject, then
+    Accept or Run, then the reason field, then Show change. Only the buttons (and the keys below, outside the field)
+    decide: no key in the reason field does, Enter included, since a note typed there must never reject by habit. The
+    webview's `approve { id }`, `reject { id, reason? }`,
+    and `showChange { id }` are validated like the other messages, and a message for a request no longer open is
     ignored. One request at a time, since one call runs per reply.
+  - A write that goes through keeps its line counts on its tool step (`lines`, an optional field of the entry; the
+    record stays at version 2 and is validated on load, ADR 0003): only when the request was accepted, by the user or
+    auto-approve, and the step's status is `ok`. Its row then says "ok, +N −M"; a write saved before the field shows
+    "ok" alone. A `read_file` row counts the lines of the file it returned, read from its result's header ("(file, 3
+    lines)", or "(file, lines 2-5 of 30)" as 4); other tools count their result's lines (`resultLineCount`), and so
+    does a failed step.
+  - The Command Palette has the same decisions, the keyboard path to the agent loop (`src/core/chatCommands.ts`):
+    "broke-code: Accept the proposed change" (`broke-code.acceptChange`), "Run the proposed command"
+    (`broke-code.runCommand`), "Reject the proposed change or command" (`broke-code.reject`, no reason), "Show the
+    proposed change" (`broke-code.showChange`), "Stop the reply" (`broke-code.stop`), and "New chat"
+    (`broke-code.newChat`). Each acts on the request open in the host's state, as its button does, and shows in the
+    palette only when that button would: the host sets the context keys `broke-code.approval` (`write`, `command`, or
+    `none`), `broke-code.replying`, and `broke-code.hasEntries` from each published state, a key only when its value
+    changes. Accept acts on a write only and Run on a command only; a command with nothing to act on does nothing,
+    since the palette may lag the state. None has a default keybinding; the user may bind them. ⌃⌘B runs "broke-code: Focus
+    the message box" (`broke-code.focusChat`), the one default keybinding of the extension: it shows the chat and puts
+    the focus in the message box through an empty draft of mode `focus` (`DraftInsert`), which changes no text, since
+    the view's own "Focus on Chat View" focuses the webview and nothing inside it (seen live).
+  - In the panel, a bare Escape in an empty message box while a reply is in flight stops it, as Stop does
+    (`composerKeyAction`), unless a menu is open, which it closes instead; with text in the box it does nothing, so a
+    draft, or a second Escape after a menu closed on a token, never stops a turn. Stop names the key in its tooltip and
+    `aria-keyshortcuts`.
+  - In the panel, ⌘Enter accepts or runs and ⌘Backspace rejects the request open (maintainer decision, 2026-11-13),
+    handled by the webview, since only it knows which of its fields has the focus: with no other modifier, not
+    repeated, not while composing (IME), and only while the focus is not in a field holding text (the message box
+    left empty counts as empty, since the focus rests there while a request waits, and hands the two keys on instead
+    of treating ⌘Enter as Enter; in the reason field the keys keep their editing meaning, and with a draft in the
+    message box ⌘Enter sends or queues it as Enter does). A key clicks the decision block's own button, so a rejection carries the
+    reason typed. The buttons name their key in their tooltip and `aria-keyshortcuts`, and a dim line under them says
+    the keys in words ("⌘Enter accepts, ⌘Backspace rejects"), hidden from screen readers, which read the attribute. Accepted risk: ⌘Enter in an
+    empty message box while a request is open accepts it.
   - The run context carries a second kind of request beside it, `ToolContext.requestAnswer`, the question of
     `ask_user` (Body tool calls, above; ADR 0002, addenda of 2026-11-13). It approves nothing: it brings back the
     user's answer as text, and an abort of the turn cancels it like an approval request.
@@ -189,17 +228,28 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
       saved: a record saved meanwhile holds the reply in flight with its call, and reloads `stopped`. When the view is
       hidden and shown again, the question is still open, from the state.
     - A question raises no notification (#101 covers approval requests and turn ends only).
+  - `ChatState.callRunning` says when the call of the reply in flight actually runs. A tool that may ask declares it
+    (`ToolSpec.asks`: `run_command`, `write_file`, `edit_file`, `ask_user`). Its call shows with `callRunning` false,
+    since the request opens after it; `callRunning` turns true only in the update that closes an approval accepted, or
+    when auto-approve accepts a write, and stays false while a request is open and after Reject, Cancel (Stop), or an
+    answer. A tool that never asks runs as its call shows: `callRunning` is true in that same update. It is false
+    again from the update in which the call ends: its step lands, or the reply settles.
   - A write opens the native VS Code diff editor beside the chat, titled with the path: the planned `before` text on
     the left (empty for a new file), the proposed text on the right, both from a content provider. Accept writes with
     the atomic applier below, never through `WorkspaceEdit`; the diff tab closes on Accept, Reject, and Cancel. Closing
-    the tab by hand changes nothing: the request stays open, Accept and Reject still work, and the diff cannot be
-    reopened. A file
+    the tab by hand changes nothing: the request stays open, and Accept and Reject still work. Show change runs the
+    same diff command on the same two URIs, whose texts the content provider holds until the request ends, so it
+    brings the open diff to the front, or opens it again once closed, the focus kept in the chat; one that fails is
+    logged and the request stays open. Show change for a request no longer open does nothing. A file
     open in an editor with unsaved changes is refused before the request and again right before the write, with
     auto-approve too, as an `error` result saying so; a file changed on disk since the plan is refused by the
     applier's planned-text check.
   - A rejection goes back to the model as an `error` tool result: "The user rejected this change." ("The user rejected
     this command." for a command), then the reason on its own line when given. It is a tool step like any other and counts toward the step limit. The step records how it
-    was approved (`approval`: `accepted`, `rejected`, or `auto`), and the row says rejected or auto-approved.
+    was approved (`approval`: `accepted`, `rejected`, or `auto`), and the row says "rejected by you" in the full
+    foreground (the user's own decision, not a failure, but not dim, since the reply after it may claim the change),
+    or "auto-approved". An answered `ask_user` row says "you answered". The reason typed, or the answer given
+    (`stepNote`), shows on a line of its own under the row, wrapped, open or closed.
   - Stop, New chat, opening another conversation, deleting the one shown, and deactivation cancel the open request:
     the diff tab closes, nothing is written, the reply ends `stopped`. An open request is never saved; a record saved
     while one waits reloads `stopped` by the in-flight rule of `docs/spec/conversations.md`.
@@ -279,7 +329,7 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
     `alreadyWritten` result records nothing and is never marked. The record is then saved, after the restore and
     before the outcome shows, so the mark never claims a change is gone before the file is back; a crash between the
     restore and the save leaves the steps unmarked (accepted: the held turn is memory only, so nothing retries it),
-    and marking again is harmless. The step row says "undone" before its status, its line count unchanged (the line
+    and marking again is harmless. The step row says "undone" before its status, its size unchanged (the line
     the model gets is not part of the step's text), also inside a folded turn, whose row counts are unchanged.
   - "Changed files" (#99, ADR 0002, 2026-11-12): the held turn's files, as rows under the reply `ChatState.undo.reply`
     names, so the list shows exactly when "Undo changes" does (never during a reply, never while nothing is held) and
@@ -476,7 +526,7 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
   the history sent replaces the text of tool steps, oldest first over the whole conversation as sent (earlier turns
   included), with one line inside the same `<tool_result>` wrapper, same `tool` and `status`, leaving any text joined
   to that message whole:
-  `[result left out to save context: N lines]` (`1 line` for one), N being the step row's line count
+  `[result left out to save context: N lines]` (`1 line` for one), N being the result's line count
   (`resultLineCount`: a trailing line break dropped, then split; 0 for an empty text). It replaces the fewest steps
   that make the estimate fit, rounded up to the next multiple of 4 (`LEFT_OUT_BLOCK`) and capped at the steps that
   may be replaced: the count changes about once every 4 new steps, so the requests in between only add to the prompt
@@ -491,9 +541,26 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
   whole, and the loaded skills are still derived from the entries. When the estimate is still over with every eligible
   result replaced, the history goes whole, no request is sent, and the reply that would have carried it ends `halted`
   with reason `contextFull`, saved like the other halts; it is never a `ProviderError`, which means a request was sent.
-  The usage display (`ChatState.context`) counts the request as it would be sent, and its optional `leftOut` counts the
-  results left out; while it is set, the panel shows "N older tool results are left out of the request to save
-  context." in the place and look of the unknown-size notice, derived from the state, never saved or sent. Its
+  The usage display (`ChatState.context`) counts the request as it would be sent, and its optional `full` says that
+  estimate still fills the context (`fillsContext`): `halts` when the next turn would end `contextFull` before sending,
+  `compacts` when `brokeCode.autoCompact` is on, read from the limits as they are now, and `summaryHalts`, whatever the
+  setting, when the summary request (`summaryMessages`, with the instruction files the last send or `/compact` read)
+  fills the context too, so the automatic summary and `/compact` would both halt before sending. With `halts`, the panel shows one
+  warning line over the message box ("The conversation fills the model's context.") with "Summarize (/compact)" under it
+  (posts `compact`; New chat stays in the header), and Send, Enter, and Send now send no ordinary message; Retry,
+  Continue, Edit, and "Implement in ... mode" are disabled too, since each starts a turn that would halt at once. The
+  built-in commands still run, and the host checks nothing more, so a lagging panel only costs the halt it would have
+  had. With `summaryHalts`, the warning line says "The conversation fills the model's context, even for a summary.
+  Start a new chat with New chat." with no button, and the message box and those buttons are disabled as with
+  `halts`. With `compacts`, one notice line says the next message summarizes the conversation first. From three quarters
+  of the size on, or with `full`, the usage takes the full foreground in weight 600, and below `full` one notice line
+  says "The context is nearly full: /compact summarizes the conversation to free it." None of these lines is a live
+  region: they change with the usage, and a halt is announced as its reply ends. A `contextFull` halt ends its reply as
+  the other halts do, an ordinary mark: it is a past ending, and the warning over the message box says while the context
+  is still full, so the warning shows once. Its optional `leftOut` counts the results left out; while it is set, the
+  line over the message box says "N older tool results are left out of the request to save context.", before the
+  nearly-full sentence when both apply, so the context speaks in one place; derived from the state, never saved or
+  sent. Its
   optional `reported` holds the counts the last chat request of the conversation shown reported (a turn's request or
   a summary request; the commit message's never reaches the chat's state, see `docs/spec/provider.md`), which the
   header's tooltip shows. While a request is in flight it keeps the counts of the request before it; when the request
@@ -563,8 +630,8 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
   back empty (only whitespace) changes nothing and is never sent; its error shows as for any reply, and a `done` empty
   one says "The model's reply held no summary.". The leave-out rule, its last 3 steps, and the usage display count
   only what is sent, so after a summary the header's usage drops. Entries before it stay in the record and the chat,
-  dimmed as one group under the line "Earlier messages are no longer sent to the model: the summary below replaces
-  them.", derived from the entries, never stored; a high-contrast theme drops the dimming, since the line says it. The record keeps version 2: `summary` is an optional field of the
+  as one group under the line "Earlier messages are no longer sent to the model: the summary below replaces
+  them.", derived from the entries, never stored. The group is not dimmed, so it stays readable; the line says it. The record keeps version 2: `summary` is an optional field of the
   assistant entry (ADR 0003's rule); an older build shows the summary as an ordinary answer and resends the whole
   history, which is harmless. The `contextFull` halt of an agent turn names `/compact` beside New chat.
 - Automatic compaction (#91): `brokeCode.autoCompact` (boolean, default false, `application` scope, read from
@@ -592,7 +659,7 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
   or stopped automatic summary has nothing after it and reads as a manual one, which changes nothing, since neither is
   sent. Its separator says "Conversation summarized automatically" once sent ("Summarizing the conversation…" and
   "Conversation not summarized" as for `/compact`). The turn's message the request quotes sits in the group before
-  the summary but is not dimmed: it shows at full opacity with the dim line "Still sent with the summary" (maintainer
+  the summary and shows with the dim line "Still sent with the summary" (maintainer
   decision, 2026-11-12), derived from the entries (`sentEntries`), never stored.
 
 ## System prompt

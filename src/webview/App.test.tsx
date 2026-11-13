@@ -15,13 +15,13 @@ const posted: unknown[] = [];
 const {
   App,
   ApprovalControls,
-  ContextNotice,
   ConversationList,
   EmptyState,
   Header,
   HistoryPanel,
   MentionMenu,
   QuestionControls,
+  SetContextSize,
   SlashMenu,
   Warnings,
 } = await import("./App");
@@ -40,6 +40,7 @@ const unsaved = {
   conversations: [],
   listFailed: undefined,
   storageProblem: undefined,
+  callRunning: false,
   context: { used: 0, size: 32768, known: true },
   queue: [],
   undo: { reply: undefined, ranCommand: false, running: false, outcome: undefined },
@@ -149,8 +150,7 @@ describe("agent turn", () => {
     expect(html).toContain('<details class="step">');
     expect(html).toContain('<span class="step-tool">read_file</span>');
     expect(html).toContain('<span class="step-arg">src/a.ts</span>');
-    expect(html).toContain("ok");
-    expect(html).toContain("4 lines");
+    expect(html).toContain('<span class="step-status">ok, 3 lines</span>');
     expect(html.split('<span class="step-tool">').length - 1).toBe(1);
   });
 
@@ -193,7 +193,7 @@ describe("agent turn", () => {
     );
     expect(ranged({ start_line: "2001" })).toContain('<span class="step-arg">big.log 2001-</span>');
     expect(ranged({ end_line: "50" })).toContain('<span class="step-arg">big.log 1-50</span>');
-    expect(ranged({ start_line: "2001" })).toContain("ok, 4 lines");
+    expect(ranged({ start_line: "2001" })).toContain("ok, 1 line");
   });
 
   test("an error step says error and its size", () => {
@@ -251,14 +251,38 @@ describe("agent turn", () => {
     expect(limit).toContain(">Send<");
   });
 
-  test("a turn halted on a full context says so and names /compact and New chat", () => {
+  test("a turn halted on a full context says so as an ordinary ending and names /compact and New chat", () => {
     const html = renderTurn([
       { role: "assistant", reasoning: "", content: "", status: "halted", haltReason: "contextFull" },
     ]);
     expect(html).toContain(
-      "Stopped: the conversation fills the model&#x27;s context. Summarize it with /compact, or start a new chat with New chat.",
+      '<p class="mark">Stopped: the conversation fills the model&#x27;s context. Summarize it with /compact, or start a new chat with New chat.</p>',
     );
     expect(html).not.toContain("Waiting for the reply…");
+    expect(renderTurn([{ ...callReply, status: "halted", haltReason: "stepLimit" }, step])).toContain(
+      '<p class="mark">Stopped: the agent turn reached its tool step limit.</p>',
+    );
+  });
+
+  test("a call that could not be read shows as written, in a block of its own between the text around it", () => {
+    const content = "I will read it.\n<read_file>\n<pth>a.ts</pth>\n</read_file>\nThen fix it.";
+    const start = content.indexOf("<read_file>");
+    const end = content.indexOf("\nThen");
+    const html = renderTurn([
+      { role: "assistant", reasoning: "", content, status: "done", malformedCall: { start, end } },
+      { role: "tool", name: "read_file", args: {}, status: "malformed", text: "<read_file> has no argument <pth>." },
+    ]);
+    expect(html).toContain(
+      '<div class="answer"><p>I will read it.</p></div><pre class="malformed-block"><code>&lt;read_file&gt;\n&lt;pth&gt;a.ts&lt;/pth&gt;\n&lt;/read_file&gt;</code></pre><div class="answer"><p>Then fix it.</p></div>',
+    );
+  });
+
+  test("a malformed answer saved without its block's place shows as before, as Markdown", () => {
+    const html = renderTurn([
+      { role: "assistant", reasoning: "", content: "<read_file>", status: "done" },
+      { role: "tool", name: "read_file", args: {}, status: "malformed", text: "The <read_file> tag never closes." },
+    ]);
+    expect(html).not.toContain("malformed-block");
   });
 });
 
@@ -331,7 +355,7 @@ describe("summary", () => {
     const still = html.indexOf('class="still-sent"');
     expect(html.indexOf("Fix it")).toBeGreaterThan(still);
     expect(html.indexOf("Still sent with the summary")).toBeGreaterThan(html.indexOf("Fix it"));
-    // [>]: The earlier turn is not quoted: it stays outside the still-sent block, dimmed with the rest.
+    // [>]: The earlier turn is not quoted: it stays outside the still-sent block, with the rest.
     expect(html.indexOf(">Hi<")).toBeGreaterThan(html.indexOf('class="unsent"'));
     expect(html.indexOf(">Hi<")).toBeLessThan(still);
     // [>]: After `/compact`, nothing before the summary is sent.
@@ -362,9 +386,16 @@ describe("folded turn", () => {
     return html.slice(start, html.indexOf("</section>", start) + "</section>".length);
   }
 
-  test("the row says what the steps did, the failed ones, and the rejected ones", () => {
+  test("the row says what the steps did and the rejected ones, then the failed ones apart, on an error row", () => {
     const html = conversationOf([user, call, ok, call, failed, call, rejected, final]);
-    expect(html).toContain('<summary class="turn-fold-row">Read 1 file, 1 failed, 1 rejected</summary>');
+    expect(html).toContain(
+      '<summary class="turn-fold-row failed"><span>Read 1 file, 1 rejected, <span class="fold-failed">1 failed (read_file)</span></span></summary>',
+    );
+  });
+
+  test("with several failed steps, the row counts them and names each failed tool", () => {
+    const html = conversationOf([user, call, failed, call, { ...failed, name: "search" }, final]);
+    expect(html).toContain('<span class="fold-failed">2 failed (read_file, search)</span>');
   });
 
   test("the row names the files read, the files edited, and the commands run", () => {
@@ -382,7 +413,7 @@ describe("folded turn", () => {
       final,
     ];
     expect(conversationOf(entries)).toContain(
-      '<summary class="turn-fold-row">Read 3 files, edited 1 file, ran 1 command</summary>',
+      '<summary class="turn-fold-row"><span>Read 3 files, changed 1 file, ran 1 command</span></summary>',
     );
   });
 
@@ -569,6 +600,123 @@ describe("approval", () => {
     ).toBe(true);
   });
 
+  test("scrolled up, a row names the decision waiting below; it jumps to the bottom and hands the focus to the message box", async () => {
+    const { act } = await import("react");
+    const entries: ChatEntry[] = [{ role: "user", content: "Hi", mentions: [] }, writing];
+    const jumpText = (host: HTMLElement) => host.querySelector("button.jump")?.textContent;
+    await withPanel(stateWith(true, { entries }), async (panel) => {
+      const list = panel.host.querySelector<HTMLElement>("section.conversation");
+      if (!list) throw new Error("no conversation");
+      // [&]: The DOM has no layout: give the list a height and scroll it up by hand.
+      Object.defineProperties(list, {
+        scrollHeight: { configurable: true, value: 1000 },
+        clientHeight: { configurable: true, value: 200 },
+        scrollTop: { configurable: true, writable: true, value: 0 },
+      });
+      expect(jumpText(panel.host)).toBeUndefined();
+      await act(async () => list.dispatchEvent(new Event("scroll")));
+      expect(jumpText(panel.host)).toBe("Jump to latest");
+      await panel.show(stateWith(true, { entries, approval }));
+      expect(jumpText(panel.host)).toBe("Waiting for your decision: write_file on src/a.ts");
+      expect(panel.host.querySelector("button.jump")?.className).toBe("jump waiting");
+      await act(async () => panel.host.querySelector<HTMLButtonElement>("button.jump")?.click());
+      expect(jumpText(panel.host)).toBeUndefined();
+      expect(document.activeElement).toBe(panel.textarea);
+    });
+  });
+
+  test("a message the user sends takes them back to the bottom", async () => {
+    const { act } = await import("react");
+    const first: ChatEntry[] = [
+      { role: "user", content: "Hi", mentions: [] },
+      { role: "assistant", reasoning: "", content: "Hello.", status: "done" },
+    ];
+    await withPanel(stateWith(true, { entries: first }), async (panel) => {
+      const list = panel.host.querySelector<HTMLElement>("section.conversation");
+      if (!list) throw new Error("no conversation");
+      Object.defineProperties(list, {
+        scrollHeight: { configurable: true, value: 1000 },
+        clientHeight: { configurable: true, value: 200 },
+        scrollTop: { configurable: true, writable: true, value: 0 },
+      });
+      await act(async () => list.dispatchEvent(new Event("scroll")));
+      expect(panel.host.querySelector("button.jump")).not.toBeNull();
+      await panel.show(
+        stateWith(true, {
+          entries: [...first, { role: "user", content: "More", mentions: [] }, { ...writing, status: "waiting" }],
+        }),
+      );
+      expect(panel.host.querySelector("button.jump")).toBeNull();
+    });
+  });
+
+  test("⌘Enter accepts and ⌘Backspace rejects from an empty message box or a button, never from a field with text", async () => {
+    const { act } = await import("react");
+    const entries: ChatEntry[] = [{ role: "user", content: "Hi", mentions: [] }, writing];
+    const key = (key: string, init: KeyboardEventInit = {}) =>
+      act(async () => {
+        window.dispatchEvent(
+          new KeyboardEvent("keydown", { key, metaKey: true, bubbles: true, cancelable: true, ...init }),
+        );
+      });
+    await withPanel(stateWith(true, { entries, approval }), async (panel) => {
+      panel.textarea.focus();
+      await key("Enter");
+      expect(posted).toEqual([{ type: "approve", id: 7 }]);
+      posted.length = 0;
+      await key("Enter", { repeat: true });
+      await key("Enter", { shiftKey: true });
+      await key("Enter", { metaKey: false });
+      expect(posted).toEqual([]);
+      await panel.type("a draft");
+      await key("Backspace");
+      expect(posted).toEqual([]);
+      const reason = panel.host.querySelector<HTMLInputElement>(".approval-reason");
+      if (!reason) throw new Error("no reason field");
+      await panel.fill(reason, "Too broad.");
+      reason.focus();
+      await key("Backspace");
+      expect(posted).toEqual([]);
+      panel.host.querySelector<HTMLButtonElement>(".decision .approval .actions button")?.focus();
+      await key("Backspace");
+      expect(posted).toEqual([{ type: "reject", id: 7, reason: "Too broad." }]);
+    });
+  });
+
+  test("in the message box, ⌘Enter decides only while it is empty; with a draft it sends as Enter does", async () => {
+    const { act } = await import("react");
+    const entries: ChatEntry[] = [{ role: "user", content: "Hi", mentions: [] }, writing];
+    await withPanel(stateWith(true, { entries, approval }), async (panel) => {
+      // [&]: Pressed on the message box itself, so the event goes through its own key handler first.
+      const press = (key: string) =>
+        act(async () => {
+          panel.textarea.dispatchEvent(
+            new KeyboardEvent("keydown", { key, metaKey: true, bubbles: true, cancelable: true }),
+          );
+        });
+      panel.textarea.focus();
+      await press("Enter");
+      expect(posted).toEqual([{ type: "approve", id: 7 }]);
+      posted.length = 0;
+      await panel.type("a draft");
+      await press("Enter");
+      expect(posted.map((message) => (message as { type: string }).type)).toEqual(["queueMessage"]);
+    });
+  });
+
+  test("without an open request, ⌘Enter does nothing", async () => {
+    const { act } = await import("react");
+    await withPanel(
+      stateWith(true, { entries: [{ role: "user", content: "Hi", mentions: [] }, writing] }),
+      async () => {
+        await act(async () => {
+          window.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true }));
+        });
+        expect(posted).toEqual([]);
+      },
+    );
+  });
+
   test("without an open request, a running call shows no decision buttons", () => {
     const html = turn([writing], false);
     expect(html).toContain("running…");
@@ -580,6 +728,23 @@ describe("approval", () => {
     const html = turn([{ ...writing, status: "stopped" }]);
     expect(html).not.toContain(">Accept<");
     expect(html).toContain("stopped, no result");
+  });
+
+  test("a write with a diff shows its line counts and Show change, which posts the request id", () => {
+    const html = turn([writing]);
+    expect(html).not.toContain("Show change");
+    const shown = { ...approval, lines: { added: 4, removed: 1 }, preview: true as const };
+    const markup = renderToStaticMarkup(ApprovalControls({ approval: shown, reason: "", setReason: () => {} }));
+    expect(markup).toContain('<span class="changed-counts">+4 \u22121</span>');
+    expect(markup.indexOf(">Show change<")).toBeLessThan(markup.indexOf('class="approval-reason"'));
+    button(ApprovalControls({ approval: shown, reason: "", setReason: () => {} }), "Show change").props.onClick!();
+    expect(posted).toEqual([{ type: "showChange", id: 7 }]);
+  });
+
+  test("a command shows neither line counts nor Show change", () => {
+    const command = { id: 8, kind: "command" as const, tool: "run_command", summary: "ls" };
+    const markup = renderToStaticMarkup(ApprovalControls({ approval: command, reason: "", setReason: () => {} }));
+    expect(markup).not.toContain("approval-change");
   });
 
   test("Accept posts the request id; Reject posts it with the reason typed, trimmed, or none when blank", () => {
@@ -594,25 +759,13 @@ describe("approval", () => {
     ]);
   });
 
-  test("Enter in the reason field rejects with the reason; other keys and Enter while composing (IME) do not", () => {
+  test("no key in the reason field decides, Enter included: only Reject rejects", () => {
     const field = elements(ApprovalControls({ approval, reason: " Too broad. ", setReason: () => {} })).find(
       (element) => element.type === "input",
     );
     if (!field) throw new Error("no reason field");
-    const onKeyDown = field.props.onKeyDown as (event: unknown) => void;
-    const prevented: string[] = [];
-    const press = (key: string, isComposing = false) =>
-      onKeyDown({ key, nativeEvent: { isComposing }, preventDefault: () => prevented.push(key) });
-
-    press("a");
-    press("Escape");
-    press("Enter", true);
+    expect(field.props.onKeyDown).toBeUndefined();
     expect(posted).toEqual([]);
-    expect(prevented).toEqual([]);
-
-    press("Enter");
-    expect(posted).toEqual([{ type: "reject", id: 7, reason: "Too broad." }]);
-    expect(prevented).toEqual(["Enter"]);
   });
 
   test("the reason typed survives opening and closing History, and Reject still carries it", async () => {
@@ -741,7 +894,7 @@ describe("approval", () => {
         },
       ]);
       expect(html).toContain(commandBlock);
-      expect(html).toContain(">rejected<");
+      expect(html).toContain('<span class="step-status rejected">rejected by you</span>');
     });
   });
 
@@ -760,7 +913,9 @@ describe("approval", () => {
       ],
       false,
     );
-    expect(rejected).toContain("rejected");
+    expect(rejected).toContain('<span class="step-status rejected">rejected by you</span>');
+    // [>]: The reason sits under the row, outside the closed details, so it shows and never pushes the row wide.
+    expect(rejected).toContain('</details><p class="step-note">Keep it.</p>');
     expect(rejected).not.toContain("error, 2 lines");
     const auto = turn(
       [
@@ -772,11 +927,12 @@ describe("approval", () => {
           status: "ok",
           text: "write_file: replaced src/a.ts.",
           approval: "auto",
+          lines: { added: 1, removed: 0 },
         },
       ],
       false,
     );
-    expect(auto).toContain("auto-approved, ok, 1 line");
+    expect(auto).toContain("auto-approved, ok, +1 \u22120");
   });
 });
 
@@ -826,11 +982,18 @@ describe("question", () => {
     expect(html).toContain(">Stop<");
   });
 
-  test("the row shows the first line of a two-line question, whatever the order of the arguments", () => {
-    const html = turn([asking]);
-    expect(html).toContain(
-      '<span class="step-tool">ask_user</span><span class="step-arg">Which load do you mean?</span>',
+  test("the question shows text in backticks as inline code, keeping its line breaks", () => {
+    const asked = { ...question, question: "Rename `add` in `src/a.ts`?\nOr keep `add" };
+    const markup = renderToStaticMarkup(controls("", asked));
+    expect(markup).toContain(
+      '<p class="question-text">Rename <code>add</code> in <code>src/a.ts</code>?\nOr keep `add</p>',
     );
+  });
+
+  test("an open question's row names the tool only; once answered, the row shows the question's first line", () => {
+    const html = turn([asking]);
+    expect(html).toContain('<span class="step-tool">ask_user</span><span class="step-status waiting">');
+    expect(html.split("Which load do you mean?").length - 1).toBe(1);
     const answered: ChatEntry = {
       role: "tool",
       name: "ask_user",
@@ -1004,10 +1167,10 @@ describe("error actions", () => {
     for (const error of errors) expect(failedListing(error)).toContain(">Open provider settings<");
   });
 
-  test("does not offer the provider settings for an unreachable provider", () => {
-    expect(
-      failedListing({ kind: "unreachable", provider: "P", baseUrl: "http://p/v1", cause: "ECONNREFUSED" }),
-    ).not.toContain("Open provider settings");
+  test("offers the provider settings for an unreachable provider, where its base URL is set", () => {
+    const html = failedListing({ kind: "unreachable", provider: "P", baseUrl: "http://p/v1", cause: "ECONNREFUSED" });
+    expect(html).toContain('class="link">Open provider settings<');
+    expect(html).toContain("Check its base URL, your network or VPN, and the http.proxy setting.");
   });
 });
 
@@ -1274,6 +1437,23 @@ describe("slash menu", () => {
     expect(html).not.toContain("menu-notice");
   });
 
+  test("a heading starts the skills under the built-in commands; skills alone get none", () => {
+    const rows = [
+      { name: "new", description: "Start a new conversation", builtIn: "new" as const },
+      { name: "grilling", description: "Grill the plan." },
+      { name: "release", description: "Cut a release." },
+    ];
+    const html = renderToStaticMarkup(<SlashMenu items={rows} failed={false} highlighted={0} onPick={() => {}} />);
+    expect(html.match(/class="menu-group"/g)).toHaveLength(1);
+    expect(html).toContain(
+      'Start a new conversation</span></div><div class="menu-group" aria-hidden="true">Skills</div><div id="slash-menu-option-1"',
+    );
+    const skillsOnly = renderToStaticMarkup(
+      <SlashMenu items={rows.slice(1)} failed={false} highlighted={0} onPick={() => {}} />,
+    );
+    expect(skillsOnly).not.toContain("menu-group");
+  });
+
   test("says No match when nothing matches, and that the skills could not be listed instead when they failed", () => {
     const menu = (failed: boolean, items = []) =>
       renderToStaticMarkup(<SlashMenu items={items} failed={failed} highlighted={0} onPick={() => {}} />);
@@ -1464,8 +1644,25 @@ describe("conversation history", () => {
     expect(html.match(/<li class="current">/g)).toHaveLength(1);
     expect(html).toMatch(/<li class="current"><button[^>]*aria-current="true"/);
     expect(html).toContain("<li><button");
-    expect(html.match(/<button type="button" class="secondary">Delete<\/button>/g)).toHaveLength(2);
+    expect(
+      html.match(
+        /<button type="button" class="secondary history-delete" aria-label="Delete (Newest|Older)">Delete<\/button>/g,
+      ),
+    ).toHaveLength(2);
     expect(html).not.toContain("No past conversations.");
+  });
+
+  test("says how many messages a row holds after its date, and the date alone for a row saved without the count", () => {
+    const noon = new Date(2026, 10, 8, 12).getTime();
+    const html = list([
+      { id: CONVERSATION_ID, title: "Same", updatedAt: noon, messages: 3 } as never,
+      { id: OTHER_ID, title: "Same", updatedAt: noon - 60_000, messages: 1 } as never,
+      { id: "2b0d4c1e-8f9a-4c3b-9d2e-1a2b3c4d5e6f", title: "Old", updatedAt: noon - 120_000 },
+    ]);
+    const details = [...html.matchAll(/<span class="history-date">([^<]*)<\/span>/g)].map((match) => match[1]);
+    expect(details[0]).toEndWith("12:00 PM · 3 messages");
+    expect(details[1]).toEndWith("11:59 AM · 1 message");
+    expect(details[2]).toEndWith("11:58 AM");
   });
 
   test("says when there is no past conversation", () => {
@@ -1582,6 +1779,30 @@ describe("mode selector", () => {
         select.dispatchEvent(new Event("change", { bubbles: true }));
       });
       expect(posted).toEqual([{ type: "setMode", mode: "plan" }]);
+    });
+  });
+
+  test("away from Ask, a line under the composer says what the mode does and describes the selector", async () => {
+    const AUTO_EDIT = "Changes are written without asking. Commands still wait for Run.";
+    await withPanel(stateWith(true), async ({ host, show }) => {
+      expect(host.querySelector(".mode-hint")).toBeNull();
+      expect(modeSelect(host).hasAttribute("aria-describedby")).toBe(false);
+
+      await show(stateWith(true, { mode: "autoEdit" }));
+      const hint = host.querySelector(".mode-hint");
+      expect(hint?.textContent).toBe(AUTO_EDIT);
+      expect(modeSelect(host).getAttribute("aria-describedby")).toBe(hint?.id ?? "");
+
+      await show(stateWith(true, { mode: "plan" }));
+      expect(host.querySelector(".mode-hint")?.textContent).toContain("It changes no file and runs no command.");
+    });
+  });
+
+  test("Escape in the message box stops a reply in flight", async () => {
+    const waiting: ChatEntry[] = [hi[0]!, { role: "assistant", reasoning: "", content: "", status: "waiting" }];
+    await withPanel(stateWith(true, { entries: waiting }), async ({ press }) => {
+      await press("Escape");
+      expect(posted).toContainEqual({ type: "stop" });
     });
   });
 
@@ -1925,6 +2146,21 @@ describe("composer menus", () => {
     failed: false,
   };
 
+  test("Enter on a path typed whole sends it as a mention; on a partial path it picks the row", async () => {
+    await withPanel(stateWith(true), async ({ type, press, receive }) => {
+      const rows = { items: [{ path: "src/a.ts", kind: "file" }], capped: false, failed: false };
+      await type("see @src/a");
+      await receive({ type: "fileSuggestions", id: lastQuery("queryFiles"), ...rows });
+      await press("Enter");
+      expect(posted.some((message) => (message as { type: string }).type === "send")).toBe(false);
+      await type("see @src/a.ts");
+      await receive({ type: "fileSuggestions", id: lastQuery("queryFiles"), ...rows });
+      posted.length = 0;
+      await press("Enter");
+      expect(posted).toEqual([{ type: "send", text: "see @src/a.ts", mentions: ["src/a.ts"] }]);
+    });
+  });
+
   test("the message box controls the open menu, and none while closed", async () => {
     await withPanel(stateWith(true), async ({ textarea, type, receive }) => {
       expect(textarea.hasAttribute("aria-controls")).toBe(false);
@@ -2140,7 +2376,14 @@ describe("history panel", () => {
     await withPanel(stateWith(true, { conversations }), async (panel) => {
       const rowButtons = (className: string) => [...panel.host.querySelectorAll<HTMLButtonElement>(className)];
       await panel.click("History");
-      for (const remove of rowButtons(".history button.secondary")) await act(async () => remove.click());
+      for (const index of [0, 1]) {
+        const remove = rowButtons("button.history-delete")[index];
+        if (!remove) throw new Error(`no Delete on row ${index}`);
+        await act(async () => remove.click());
+        expect(posted).toHaveLength(index);
+        expect(remove.textContent).toBe("Confirm delete");
+        await act(async () => remove.click());
+      }
       for (const index of [0, 1]) {
         if (index > 0) await panel.click("History");
         const open = rowButtons("button.history-open")[index];
@@ -2286,10 +2529,25 @@ describe("history filter", () => {
     await withHistory(saved, async (panel, field) => {
       await panel.fill(field, "parse");
       await panel.click("Delete");
+      await panel.click("Confirm delete");
       expect(posted).toEqual([{ type: "deleteConversation", id: CONVERSATION_ID }]);
       await panel.show(stateWith(true, { conversations: conversations.slice(1) }));
       expect(field.value).toBe("parse");
       expect(titles(panel.host)).toEqual(["Parse the logs"]);
+    });
+  });
+
+  test("Delete asks first; Cancel deletes nothing and puts Delete back", async () => {
+    await withHistory(saved, async (panel) => {
+      await panel.click("Delete");
+      expect(posted).toEqual([]);
+      await panel.click("Cancel");
+      expect(posted).toEqual([]);
+      expect([...panel.host.querySelectorAll("button.history-delete")].map((button) => button.textContent)).toEqual([
+        "Delete",
+        "Delete",
+        "Delete",
+      ]);
     });
   });
 
@@ -2667,6 +2925,14 @@ describe("reasoning effort picker", () => {
     expect(html).toContain('<option value="high" selected="">High effort</option>');
   });
 
+  test("sits in the message box after the mode, not in the header, so the model takes the header's line", () => {
+    const html = renderToStaticMarkup(<App state={stateWith(true, {})} language="en" />);
+    const effort = html.indexOf('aria-label="Reasoning effort"');
+    expect(effort).toBeGreaterThan(html.indexOf('aria-label="Mode"'));
+    expect(effort).toBeGreaterThan(html.indexOf("</header>"));
+    expect(effort).toBeLessThan(html.indexOf(">Send<"));
+  });
+
   test("is absent without a model", () => {
     const html = renderToStaticMarkup(<App state={stateWith(true, { model: undefined })} language="en" />);
     expect(html).not.toContain('aria-label="Reasoning effort"');
@@ -2701,13 +2967,14 @@ describe("context usage", () => {
     );
   });
 
-  test("a model absent from the table shows the 32k notice with its link beside the usage", () => {
+  test("a model absent from the table shows Set context size in the header, after the usage, and no notice line", () => {
     const html = renderToStaticMarkup(
       <App state={stateWith(true, { context: { ...usage, known: false } })} language="en" />,
     );
-    expect(html).toContain("Unknown context size, using 32k");
-    expect(html).toContain(">Set context size<");
-    expect(html).toContain("12,345 / 32,768 tokens (38%)");
+    expect(html).toContain('title="Unknown context size, using 32k">Set context size</button>');
+    expect(html.indexOf("12,345 / 32,768 tokens (38%)")).toBeLessThan(html.indexOf(">Set context size<"));
+    expect(html.indexOf(">Set context size<")).toBeLessThan(html.indexOf("</header>"));
+    expect(html).not.toContain('class="notice"');
   });
 
   test("with no model selected, shows neither the usage nor the notice", () => {
@@ -2722,12 +2989,16 @@ describe("context usage", () => {
     expect(html).not.toContain("Unknown context size");
   });
 
-  test("results left out of the next request show one notice with their count", () => {
+  test("results left out of the next request show one notice with their count, joined to the nearly-full one", () => {
     const plural = renderToStaticMarkup(
       <App state={stateWith(true, { context: { ...usage, known: true, leftOut: 4 } })} language="en" />,
     );
-    expect(plural).toContain(
-      '<p class="notice" role="status">4 older tool results are left out of the request to save context.</p>',
+    expect(plural).toContain('<p class="notice">4 older tool results are left out of the request to save context.</p>');
+    const nearlyFull = renderToStaticMarkup(
+      <App state={stateWith(true, { context: { used: 900, size: 1000, known: true, leftOut: 4 } })} language="en" />,
+    );
+    expect(nearlyFull).toContain(
+      '<p class="notice">4 older tool results are left out of the request to save context. The context is nearly full: /compact summarizes the conversation to free it.</p>',
     );
     const singular = renderToStaticMarkup(
       <App state={stateWith(true, { context: { ...usage, known: true, leftOut: 1 } })} language="en" />,
@@ -2742,8 +3013,104 @@ describe("context usage", () => {
     expect(html).not.toContain("left out of the request");
   });
 
+  test("from three quarters of the size on, the usage takes the nearly-full look", () => {
+    const look = (used: number, full?: "halts") =>
+      renderToStaticMarkup(
+        <App
+          state={stateWith(true, { context: { used, size: 1000, known: true, ...(full ? { full } : {}) } })}
+          language="en"
+        />,
+      );
+    expect(look(749)).toContain('<span class="usage" ');
+    expect(look(750)).toContain('<span class="usage nearly-full" ');
+    expect(look(400, "halts")).toContain('<span class="usage nearly-full" ');
+    expect(look(749)).not.toContain("nearly full");
+    expect(look(750)).toContain(
+      '<p class="notice">The context is nearly full: /compact summarizes the conversation to free it.</p>',
+    );
+    expect(look(400, "halts")).not.toContain("nearly full");
+  });
+
+  test("a full context that halts shows one warning line over the message box with the summary only", () => {
+    const entries: ChatEntry[] = [{ role: "user", content: "Hi", mentions: [] }];
+    const context = { used: 950, size: 1000, known: true, full: "halts" as const };
+    const html = renderToStaticMarkup(<App state={stateWith(true, { entries, context })} language="en" />);
+    expect(html).toContain(
+      '<section class="warning context-full"><p>The conversation fills the model&#x27;s context.</p><button type="button" class="secondary">Summarize (/compact)</button></section>',
+    );
+    expect(html.indexOf("context-full")).toBeLessThan(html.indexOf('<footer class="composer">'));
+    expect(html.match(/>New chat</g)).toHaveLength(1);
+  });
+
+  test("on a full context that halts, Retry, Continue, and Edit are disabled too: their turn would halt at once", () => {
+    const entries: ChatEntry[] = [
+      { role: "user", content: "Hi", mentions: [] },
+      { role: "assistant", reasoning: "", content: "Hel", status: "stopped" },
+    ];
+    const context = { used: 950, size: 1000, known: true, full: "halts" as const };
+    const html = renderToStaticMarkup(<App state={stateWith(true, { entries, context })} language="en" />);
+    for (const label of ["Retry", "Continue", "Edit"]) {
+      expect(html).toContain(`disabled="">${label}</button>`);
+    }
+    const fits = renderToStaticMarkup(
+      <App state={stateWith(true, { entries, context: { used: 10, size: 1000, known: true } })} language="en" />,
+    );
+    expect(fits).toContain('class="secondary">Retry</button>');
+  });
+
+  test("on a full context that halts, Send and Enter send nothing, while /compact and the block's buttons act", async () => {
+    const entries: ChatEntry[] = [{ role: "user", content: "Hi", mentions: [] }];
+    const context = { used: 950, size: 1000, known: true, full: "halts" as const };
+    await withPanel(stateWith(true, { entries, context }), async ({ host, type, press, click }) => {
+      await type("one more thing");
+      const send = [...host.querySelectorAll("button")].find((button) => button.textContent === "Send");
+      expect(send?.disabled).toBe(true);
+      await press("Enter");
+      expect(posted).toEqual([]);
+      await click("Summarize (/compact)");
+      expect(posted).toEqual([{ type: "compact" }]);
+      posted.length = 0;
+      await type("/compact");
+      await press("Escape");
+      posted.length = 0;
+      await press("Enter");
+      expect(posted).toEqual([{ type: "compact" }]);
+    });
+  });
+
+  test("a full context even a summary cannot free names New chat only, and Send and Retry stay disabled", async () => {
+    const entries: ChatEntry[] = [
+      { role: "user", content: "Hi", mentions: [] },
+      { role: "assistant", reasoning: "", content: "Hel", status: "stopped" },
+    ];
+    const context = { used: 950, size: 1000, known: true, full: "summaryHalts" as const };
+    await withPanel(stateWith(true, { entries, context }), async ({ host, type, press }) => {
+      expect(host.innerHTML).toContain(
+        '<section class="warning context-full"><p>The conversation fills the model\'s context, even for a summary. Start a new chat with New chat.</p></section>',
+      );
+      expect(host.innerHTML).not.toContain("Summarize (/compact)");
+      expect(host.innerHTML).toContain('disabled="">Retry</button>');
+      await type("one more thing");
+      await press("Enter");
+      expect(posted).toEqual([]);
+    });
+  });
+
+  test("a full context the turn summarizes first shows one notice, and Send still sends", async () => {
+    const context = { used: 950, size: 1000, known: true, full: "compacts" as const };
+    await withPanel(stateWith(true, { context }), async ({ host, type, press }) => {
+      expect(host.innerHTML).toContain(
+        '<p class="notice">The context is full: the next message summarizes the conversation first.</p>',
+      );
+      expect(host.innerHTML).not.toContain("context-full");
+      await type("go");
+      await press("Enter");
+      expect(posted).toEqual([{ type: "send", text: "go", mentions: [] }]);
+    });
+  });
+
   test("the link asks the host for the selected model's context size", () => {
-    button(ContextNotice({ model: "qwen3:8b" }), "Set context size").props.onClick!();
+    button(SetContextSize({ model: "qwen3:8b" }), "Set context size").props.onClick!();
     expect(posted).toEqual([{ type: "setContextSize", model: "qwen3:8b" }]);
   });
 });
@@ -2823,6 +3190,19 @@ describe("code blocks", () => {
       '<button type="button" class="code-action">Insert at cursor</button>',
     ]);
     expect(html.indexOf('class="code-actions"')).toBeLessThan(html.indexOf("ls -la"));
+  });
+
+  test("GitHub Flavored Markdown renders: a table, strikethrough, and a task list", () => {
+    const html = renderEntries([
+      reply("| Column | Value |\n| --- | --- |\n| a | 1 |\n\n~~old~~\n\n- [x] done\n- [ ] next"),
+    ]);
+    expect(html).toContain("<table>");
+    expect(html).toContain("<th>Column</th>");
+    expect(html).toContain("<td>1</td>");
+    expect(html).not.toContain("| --- |");
+    expect(html).toContain("<del>old</del>");
+    expect(html).toContain('<ul class="contains-task-list">');
+    expect(html).toContain('type="checkbox"');
   });
 
   test("a closed block has its controls while its reply still streams", () => {
@@ -3028,6 +3408,7 @@ describe("code block actions", () => {
       try {
         await click("Copy");
         expect(labels(host)).toEqual(["Copy failed", "Insert at cursor"]);
+        expect(host.querySelector(".announcer")?.textContent).toBe("Copy failed");
         await act(async () => jest.advanceTimersByTime(2100));
         expect(labels(host)).toEqual(["Copy", "Insert at cursor"]);
       } finally {
@@ -3113,7 +3494,7 @@ describe("queued messages", () => {
       expect(rows(host)).toEqual(["B", "C"]);
       expect(host.querySelectorAll(".queue li button")).toHaveLength(4);
       expect(buttonLabels(host)).not.toContain("Send now");
-      expect(host.textContent).not.toContain("The queue is paused.");
+      expect(host.textContent).not.toContain("The queue is paused");
       const focusable = [...host.querySelectorAll<HTMLElement>("button, select, textarea, input, a[href], summary")];
       const firstQueued = focusable.findIndex((element) => element.closest(".queue"));
       expect(firstQueued).toBeGreaterThan(focusable.indexOf(textarea));
@@ -3158,7 +3539,7 @@ describe("queued messages", () => {
 
   test("after a stop, a line says the queue is paused and the first message has Send now", async () => {
     await withPanel(stateWith(true, { entries: stopped, queue }), async ({ host, click }) => {
-      expect(host.textContent).toContain("The queue is paused.");
+      expect(host.textContent).toContain("The queue is paused");
       const rowButtons = [...host.querySelectorAll(".queue li")].map((row) =>
         [...row.querySelectorAll("button")].map((button) => button.textContent),
       );
@@ -3360,7 +3741,7 @@ describe("undo changes", () => {
 
   test("an undone step's row says undone, its line count unchanged", () => {
     const undone: ChatEntry[] = turns.map((entry) => (entry.role === "tool" ? { ...entry, undone: true } : entry));
-    expect(html(idle, undone)).toContain('<span class="step-status">undone, auto-approved, ok, 1 line</span>');
+    expect(html(idle, undone)).toContain('<span class="step-status">undone, auto-approved, ok</span>');
     expect(html(idle)).not.toContain("undone, ");
   });
 
@@ -3370,11 +3751,11 @@ describe("undo changes", () => {
     await withPanel(stateWith(true, { entries: folded }), async ({ host }) => {
       const fold = host.querySelector<HTMLDetailsElement>("details.turn-fold");
       if (!fold) throw new Error("no fold");
-      expect(fold.querySelector(":scope > summary")?.textContent).toBe("Edited 1 file");
+      expect(fold.querySelector(":scope > summary")?.textContent).toBe("Changed 1 file");
       await act(async () => fold.querySelector<HTMLElement>(":scope > summary")?.click());
       expect(fold.open).toBe(true);
       const rows = [...fold.querySelectorAll(".step-status")].map((row) => row.textContent);
-      expect(rows).toEqual(["undone, auto-approved, ok, 1 line", "auto-approved, ok, 1 line"]);
+      expect(rows).toEqual(["undone, auto-approved, ok", "auto-approved, ok"]);
     });
   });
 
@@ -3446,8 +3827,10 @@ describe("changed files", () => {
     expect(at).toBeLessThan(shown.indexOf('class="undo-outcome'));
     expect(shown.indexOf('class="undo-outcome')).toBeLessThan(shown.indexOf(">Undo changes</button>"));
     expect(shown.indexOf(">Undo changes</button>")).toBeLessThan(shown.indexOf("Other."));
-    expect(shown).toContain('<code class="changed-path">src/a.ts</code>');
-    expect(shown).toContain('<code class="changed-path">b.ts</code>');
+    expect(shown).toContain(
+      '<code class="changed-path"><span class="path-segment">src/</span><wbr/><span class="path-segment">a.ts</span></code>',
+    );
+    expect(shown).toContain('<code class="changed-path"><span class="path-segment">b.ts</span></code>');
     expect(shown.indexOf("src/a.ts")).toBeLessThan(shown.indexOf(">b.ts<"));
     expect(shown).toContain(">edited<");
     expect(shown).toContain(">created<");
@@ -3575,11 +3958,11 @@ describe("retry and continue", () => {
       expect(html([], plan)).not.toContain("Implement in");
     });
 
-    test("sits after Retry and before Undo changes, as a secondary button", () => {
+    test("leads the row, before Retry and Undo changes, as a secondary button set apart by weight", () => {
       const undo = { reply: 1, ranCommand: false, running: false, outcome: undefined };
       const shown = html(answered, { ...plan, undo });
-      expect(shown).toContain(`<button type="button" class="secondary"${IMPLEMENT}`);
-      expect(shown.indexOf(RETRY)).toBeLessThan(shown.indexOf(IMPLEMENT));
+      expect(shown).toContain(`<button type="button" class="secondary next-step"${IMPLEMENT}`);
+      expect(shown.indexOf(IMPLEMENT)).toBeLessThan(shown.indexOf(RETRY));
       expect(shown.indexOf(IMPLEMENT)).toBeLessThan(shown.indexOf(">Undo changes</button>"));
     });
 
@@ -3599,11 +3982,11 @@ describe("retry and continue", () => {
       });
     });
 
-    test("while Retry's confirmation is open, it sits after Retry anyway and Cancel and still acts", async () => {
+    test("while Retry's confirmation is open, it still leads, before Retry anyway and Cancel, and still acts", async () => {
       await withPanel(stateWith(true, { entries: wrote, ...plan }), async ({ host, click }) => {
         await click("Retry");
         const labels = [...host.querySelectorAll(".turn-actions button")].map((button) => button.textContent);
-        expect(labels).toEqual(["Retry anyway", "Cancel", "Implement in Ask mode"]);
+        expect(labels).toEqual(["Implement in Ask mode", "Retry anyway", "Cancel"]);
         await click("Implement in Ask mode");
         expect(posted).toEqual([{ type: "implementPlan", shown: { conversationId: CONVERSATION_ID, entries: 4 } }]);
       });
@@ -3832,6 +4215,29 @@ describe("edit the last message", () => {
           replaces: { conversationId: CONVERSATION_ID, entries: 4 },
         },
       ]);
+    });
+  });
+
+  test("sending an edited last message takes a scrolled-up user back to the bottom", async () => {
+    const { act } = await import("react");
+    await withPanel(stateWith(true, { entries }), async (panel) => {
+      const list = panel.host.querySelector<HTMLElement>("section.conversation");
+      if (!list) throw new Error("no conversation");
+      Object.defineProperties(list, {
+        scrollHeight: { configurable: true, value: 1000 },
+        clientHeight: { configurable: true, value: 200 },
+        scrollTop: { configurable: true, writable: true, value: 0 },
+      });
+      await act(async () => list.dispatchEvent(new Event("scroll")));
+      expect(panel.host.querySelector("button.jump")).not.toBeNull();
+      await panel.click("Edit");
+      await panel.click("Send");
+      await panel.show(
+        stateWith(true, {
+          entries: [first, firstReply, { role: "user", content: "Fixed", mentions: [] }, reply("waiting")],
+        }),
+      );
+      expect(panel.host.querySelector("button.jump")).toBeNull();
     });
   });
 
@@ -4143,6 +4549,32 @@ describe("quote a selection of an answer", () => {
         textarea.dispatchEvent(event);
       });
       expect({ prevented: event.defaultPrevented, text: textarea.value }).toEqual({ prevented: false, text: "Second" });
+    });
+  });
+});
+
+describe("live region", () => {
+  const ask: ChatEntry = { role: "user", content: "Fix it", mentions: [] };
+  const reply = (status: "streaming" | "done"): ChatEntry => ({
+    role: "assistant",
+    reasoning: "",
+    content: "Ok",
+    status,
+  });
+
+  test("is mounted empty, then says the decision that waits and how the reply ended, moving no focus", async () => {
+    const flight = stateWith(true, { entries: [ask, reply("streaming")] });
+    await withPanel(flight, async ({ host, textarea, show }) => {
+      const region = host.querySelector(".announcer");
+      expect(region?.getAttribute("role")).toBe("status");
+      expect(region?.textContent).toBe("");
+      textarea.focus();
+      await show({ ...flight, approval: { id: 1, kind: "command", tool: "run_command", summary: "bun test" } });
+      expect(host.querySelector(".announcer")).toBe(region);
+      expect(region?.textContent).toBe("Waiting for your decision: run bun test");
+      expect(document.activeElement).toBe(textarea);
+      await show(stateWith(true, { entries: [ask, reply("done")] }));
+      expect(region?.textContent).toBe("Reply finished.");
     });
   });
 });

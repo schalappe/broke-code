@@ -92,6 +92,14 @@ export function mentionPick(row: MentionRow): { text: string; picked?: string } 
   return { text: `@${path} `, picked: path };
 }
 
+/**
+ * Whether picking `row` would leave the `@` token `token` as typed, the space after it aside: the user wrote the whole
+ * path, so Enter sends rather than picks. Tab still picks.
+ */
+export function pickKeepsToken(row: MentionRow, token: MenuToken): boolean {
+  return token.trigger === "@" && mentionPick(row).text === `@${token.query} `;
+}
+
 /** Host answer to the skill query of the open `/` menu. `failed`: the skills could not be listed. */
 export type SkillAnswer = { items: SlashCommand[]; failed: boolean };
 
@@ -166,30 +174,39 @@ export type ComposerBox = {
   conversationId: string;
   entries: readonly ChatEntry[];
   recalled: RecallPlace | undefined;
+  /** A reply is in flight: Escape in an empty box with no menu open stops it, as Stop does. */
+  replying: boolean;
 };
 
 /**
- * `none`: the textarea's default behavior. `recall`: put `draft` in the box and remember `place`, none once ArrowDown
- * empties the box past the newest message. `keep`: the key is consumed and nothing changes (ArrowUp at the oldest).
+ * `none`: the textarea's default behavior. `stop`: stop the reply in flight. `recall`: put `draft` in the box and
+ * remember `place`, none once ArrowDown empties the box past the newest message. `keep`: the key is consumed and
+ * nothing changes (ArrowUp at the oldest).
  */
 export type KeyAction =
   | { type: "move"; step: 1 | -1 }
   | { type: "pick" }
   | { type: "dismiss" }
   | { type: "send" }
+  | { type: "stop" }
   | { type: "recall"; draft: Draft; place: RecallPlace | undefined }
   | { type: "keep" }
   | { type: "none" };
 
 /**
  * What `pressed` does in `box`. `rows`: rows the open menu shows, `undefined` when it is closed. With rows, the menu
- * owns the arrows, Enter, and Tab; Escape closes even a menu without rows; Enter sends otherwise, Shift+Enter never
- * does. With no row and no modifier, a collapsed selection, and a blank box, ArrowUp recalls the newest user message
+ * owns the arrows, Enter, and Tab; Escape closes even a menu without rows; without a menu, a bare Escape in an empty
+ * box stops a reply in flight; Enter sends otherwise, Shift+Enter never does. With no row and no modifier, a collapsed selection, and a blank box, ArrowUp recalls the newest user message
  * (`recallKey`); during a recall, ArrowUp on the first line goes older and ArrowDown on the last line goes newer.
  */
 export function composerKeyAction(pressed: ComposerKey, rows: number | undefined, box: ComposerBox): KeyAction {
   if (pressed.composing) return { type: "none" };
   if (rows !== undefined && pressed.key === "Escape") return { type: "dismiss" };
+  // [>]: Only from an empty box: a draft in progress, or Escape pressed again after closing a menu, never stops a turn.
+  const bare = !(pressed.shift || pressed.alt || pressed.control || pressed.meta);
+  if (pressed.key === "Escape" && box.replying && bare && box.text.trim() === "") {
+    return { type: "stop" };
+  }
   if (rows !== undefined && rows > 0) {
     if (pressed.key === "ArrowDown") return { type: "move", step: 1 };
     if (pressed.key === "ArrowUp") return { type: "move", step: -1 };
@@ -311,6 +328,7 @@ export type Draft = { text: string; caret: number; picked: readonly string[] };
  * line break, or a blank line for a `paragraph`), the caret goes to the end. `insert.picked` joins the draft's picked paths, each once.
  */
 export function applyDraft(draft: Draft, insert: DraftInsert): Draft {
+  if (insert.mode === "focus") return draft;
   const unique = [...new Set([...draft.picked, ...insert.picked])];
   if (insert.mode !== "caret") {
     const separator = insert.mode === "paragraph" ? "\n\n" : "\n";

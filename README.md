@@ -53,7 +53,7 @@ Palette, or click its button in the chat panel. It offers two choices.
 
 - **Ollama on this machine** adds `ollama` at `http://localhost:11434/v1`, with no key. If a provider named `ollama`
   already exists, the command selects it instead. Start Ollama first. broke-code does not check that it is running, and
-  when it cannot reach Ollama, the chat shows the usual error with Retry.
+  when it cannot reach Ollama, the chat shows the usual error, with **Open provider settings** and Retry.
 - **Other OpenAI-compatible service** asks for a name, the base URL, and the API key. The base URL ends in the
   service's version path, such as `/v1`. You can leave the key empty.
 
@@ -80,7 +80,7 @@ seconds.
 
 ## Reasoning effort
 
-Next to the model picker, the panel header has a reasoning effort picker: **Default effort**, **Low effort**,
+Next to the mode selector, the message box has a reasoning effort picker: **Default effort**, **Low effort**,
 **Medium effort**, or **High effort**. Low, Medium, and High send `reasoning_effort` with every request to that model,
 from the chat, a commit message, and **Edit selection**. Default sends nothing and leaves the choice to the provider.
 broke-code remembers your pick for each model of each provider, in this workspace.
@@ -119,7 +119,8 @@ Type `@` in the message box to attach a workspace file or folder. A menu lists u
 - Then come the files and folders whose path contains what you type, ignoring case, shortest paths first. Folders end
   with `/`.
 
-Move with the arrow keys, pick with Enter, Tab, or a click, and close the menu with Escape. A picked path goes into the
+Move with the arrow keys, pick with Enter, Tab, or a click, and close the menu with Escape. If you typed the whole path
+of the highlighted row, Enter sends the message instead of picking it again. A picked path goes into the
 message as `@<path>`, spaces included. You can also type `@path` yourself. A typed path ends at the first space. An `@`
 inside code, between backticks or in a fenced block, opens no menu and attaches nothing.
 
@@ -278,7 +279,9 @@ the model why.
 
 When the model asks to change a file, the editor opens a diff beside the chat, titled with the path. The left side
 shows the file as the model planned to change it, and the right side shows the proposed text. The chat shows
-**Accept** and **Reject** under the call, with an optional reason.
+**Accept** and **Reject** under the call, with an optional reason, and the lines the change adds and removes. If you
+close the diff, **Show change** opens it again. Only the buttons decide: pressing Enter in the reason field does
+nothing, so a note you type is never sent as a rejection by accident.
 
 - **Accept** writes the change and closes the diff. The write is atomic, so the file holds either its old text or the
   new one, even after a crash.
@@ -328,6 +331,19 @@ one. You get **Run**, **Reject**, and an optional reason.
 The model receives the exit code, then stdout and stderr, each cut to its first 2,000 lines and 1 MiB. broke-code
 reports a command as an error if it exits with a code other than 0 or gets killed.
 
+You can decide from the keyboard too. The Command Palette has **broke-code: Accept the proposed change**, **Run the
+proposed command**, **Reject the proposed change or command**, **Show the proposed change**, **Stop the reply**, and
+**New chat**. Each shows only when its button would. You can bind them in Keyboard Shortcuts. **⌃⌘B** shows the chat
+and puts the focus in the message box (**broke-code: Focus the message box**, which you can rebind).
+
+While a reply is in flight, **Escape** in an empty message box stops it, like **Stop**. With a menu open, Escape
+closes the menu; with text in the box, it does nothing, so a draft never stops a turn. Under **Accept**/**Run** and
+**Reject**, a dim line names their keys.
+
+In the chat, **⌘Enter** accepts the change or runs the command, and **⌘Backspace** rejects it. They work while the
+focus is in the chat but not in a field with text in it, so they never take over your typing; an empty message box
+counts as empty. **⌘Backspace** sends the reason you typed, like **Reject**.
+
 A command stops after 120 seconds. broke-code sends SIGTERM to its process group (the shell and the processes it
 started that stayed in that group), then SIGKILL two seconds later. The model gets the output so far. To change that
 limit, set `brokeCode.commandTimeoutSeconds` (at least 1) in your **user** settings. A workspace `settings.json` cannot
@@ -363,7 +379,10 @@ search pattern, the whole command, or the first line of a question), and whether
 result, or the exit code for a command. Click the row to see the result the model received.
 
 Once an agent turn ends, its steps fold under one row above the final answer that says what they did, such as "Read 3
-files, edited 1 file, ran 1 command, 1 failed". Files count once however the model spelled their path (`a.ts`,
+files, changed 1 file, ran 1 command, 1 failed (run_command)". The failed part comes last, in the error color, and
+names each tool that failed, so a failure never hides in the closed row even when the answer claims success. A step
+that failed or that you rejected counts only there: "changed 1 file" means a file changed. Files
+count once however the model spelled their path (`a.ts`,
 `./a.ts`), but not across letter case or an absolute against a relative path; changed files and commands are always
 named, and the rest add up as "other steps". The row wraps in a narrow panel.
 The answer then sits right under your message. Click the row to see the steps again. If you scrolled up to read, your
@@ -380,10 +399,12 @@ The agent turn ends when the model answers with text and no tool call. It also e
   asks you to start a new chat.
 
 broke-code sends a malformed call back to the model with what is wrong, so the model can try again. It does the same
-for an empty reply, which counts as a malformed call.
+for an empty reply, which counts as a malformed call. The chat shows the malformed call as the model wrote it, in the
+editor font with its line breaks, between the text around it.
 
 You can keep typing while a turn runs. **Send** (or Enter) then queues the message under the message box instead of
-sending it, up to 10 messages. If the queue cannot take a message, the message goes back to the message box.
+sending it, up to 10 messages. Past about three, the queued messages scroll in their own box, so the conversation keeps
+its room. If the queue cannot take a message, the message goes back to the message box.
 
 When the turn ends with the model's answer, the first queued message goes out as if you had just sent it. broke-code
 reads its mentions and loads its `/<skill>` at that point, and uses the provider, model, and mode of that moment. The
@@ -392,7 +413,7 @@ message out of the queue and puts it back in the message box, after what you are
 meanwhile.
 
 When a turn ends any other way (**Stop**, a failure, a limit), broke-code sends nothing more. The panel says the queue
-is paused, and **Send now** on the first message sends it. A message you send yourself while the queue is paused goes
+is paused and why, and **Send now** on the first message sends it. A message you send yourself while the queue is paused goes
 first, and the queue resumes when its turn ends with an answer.
 
 **New chat**, `/new`, opening another conversation, and deleting the one shown put every queued message back in the
@@ -540,15 +561,20 @@ broke-code always sends these whole:
 - a result shorter than that line.
 
 The chat and the saved conversation keep every result whole. Only the request changes. While the next request leaves
-results out, the panel says how many under the header, and the usage counts the request as broke-code would send it.
+results out, the panel says how many in the line above the message box, and the usage counts the request as broke-code would send it.
 
-If the request still does not fit, the turn stops without sending it. The chat asks you to summarize the conversation
-with `/compact`, or to start a new chat with **New chat**. With automatic compaction on, the turn summarizes the
-conversation instead (see [Summarizing with `/compact`](#summarizing-with-compact)).
+The token count turns bold from three quarters of the context size, and a line above the message box suggests
+`/compact`, so you see the end coming. If the request still does not fit, the turn stops without sending it. The chat
+then shows one warning line above the message box with **Summarize (/compact)**, and **Send**, **Retry**,
+**Continue**, and **Edit** stay disabled until the conversation fits again: each would stop at once. **New chat** in
+the header still starts over. `/new`, `/model`, and `/compact` still work. When even the summary would not fit, the
+warning line says so and offers no **Summarize** button: start a new chat. With
+automatic compaction on, a notice says the next message summarizes the conversation first, and **Send** works as usual
+(see [Summarizing with `/compact`](#summarizing-with-compact)).
 
 LLM services do not report a model's context size. broke-code reads it from the `brokeCode.contextSizes` table in
 your **user** settings, by model name as the provider lists it. A model absent from the table uses 32,768 tokens, and
-the chat says so with a **Set context size** link. Enter the size there, and broke-code saves it to the table.
+the chat shows a **Set context size** link after the token count. Enter the size there, and broke-code saves it to the table.
 
 To set the tool step limit of an agent turn, use `brokeCode.maxToolSteps` (default 50, at least 1).
 
@@ -570,7 +596,7 @@ of each workspace folder, when they exist. It reads each file under the same lim
 To ask the model for a summary of the conversation, send `/compact` alone or pick it in the `/` menu. The summary
 covers the goal, the decisions, the files read or changed, and what remains to do. It streams in the chat under a
 **Conversation summarized** separator. From then on, each request sends the summary in place of everything before it,
-so the usage in the header drops. The earlier messages stay in the chat and in the saved conversation, dimmed under a
+so the usage in the header drops. The earlier messages stay in the chat and in the saved conversation, under a
 line that says broke-code no longer sends them.
 
 To keep the summary request small, broke-code leaves out every tool result it can, the most recent included. So the
@@ -592,7 +618,7 @@ your **user** settings. It is off by default, since it adds a request you did no
 With it on, a turn's next request may not fit even with older tool results left out. broke-code then asks the model for
 the same summary, shows it under a **Conversation summarized automatically** separator, and the turn goes on. The next
 request sends the summary, then your message of that turn word for word, so the model still has your request in front
-of it. That message stays undimmed above the summary, marked **Still sent with the summary**.
+of it. That message stays above the summary, marked **Still sent with the summary**.
 
 The summary is not a tool step and does not count toward the step limit. **Stop** ends it like any reply, and
 broke-code queues the messages you send while it runs. A turn summarizes at most once per request. The turn stops as
@@ -666,8 +692,8 @@ usage like the rest of the instructions.
 
 ## Slash commands
 
-Type `/` at the start of the message box to open a menu of commands. It lists `/new`, `/model`, and `/compact`, then
-each of your skills with its description. The menu keeps the commands whose name starts with what you type after `/`,
+Type `/` at the start of the message box to open a menu of commands. It lists `/new`, `/model`, and `/compact`, then,
+under a **Skills** heading, each of your skills with its description. The menu keeps the commands whose name starts with what you type after `/`,
 ignoring case. Move with the arrow keys, pick with Enter, Tab, or a click, and close the menu with Escape.
 
 Picking `/new`, `/model`, or `/compact` runs it at once. Picking a skill puts `/<name> ` in the message box, so you can
@@ -688,7 +714,9 @@ commands. The menu does not list a skipped skill, and its warning shows after yo
 
 ## Code blocks
 
-Each code block of an answer shows **Copy** and **Insert at cursor** above its code when the pointer is over it or the
+Answers render GitHub Flavored Markdown: tables, strikethrough, and task lists.
+
+Each code block of an answer shows **Copy** and **Insert at cursor** at its top right corner when the pointer is over it or the
 keyboard focus is inside it. Tab reaches them in reading order. A block gets them once its text is final, which means
 its fence is closed or the reply has ended.
 
@@ -735,9 +763,11 @@ Command Palette does the same for the only repository open, or for the one you p
 ## Past conversations
 
 broke-code saves each conversation of a workspace, so closing or reloading the window keeps it. **History** in the
-panel header lists the workspace's conversations, newest first. Each row shows the conversation's first message and the
-date of its last change, and the chat marks the one shown. Click a conversation to reopen it and continue where you
-left off, or click **Delete** to delete it.
+panel header lists the workspace's conversations, newest first. Each row shows the conversation's first message, on
+up to two lines, then the date and time of its last change and how many messages it holds, and the chat marks the one
+shown. A conversation saved by an older version shows its count once it is saved again. Click a conversation to reopen it and continue where you
+left off. To delete one, point at its row and click **Delete**, then **Confirm delete**. **Cancel** keeps it. A
+deleted conversation cannot be brought back.
 
 To find a conversation, type in **Search conversations** at the top of History. The conversations whose title holds
 that text, ignoring case, show at once. From 3 characters, broke-code also searches your messages and the agent's

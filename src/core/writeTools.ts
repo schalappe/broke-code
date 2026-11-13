@@ -6,6 +6,7 @@
  * `approvalApplier`, which asks the user first. Model-facing text is English and never localized.
  */
 import { type ApprovalRequest, type Decision, type Preview, rejectionText } from "./approval";
+import { lineDiffCount } from "./lineDiff";
 import { accessFailureReason } from "./mentions";
 import type { ToolSpec } from "./toolCalls";
 import { displayPath, excerpt, stopped, type ToolCall, type ToolResult } from "./tools";
@@ -57,6 +58,7 @@ export const WRITE_TOOLS: ToolSpec[] = [
       },
       { name: "content", required: true, description: "The whole new content of the file, as raw text." },
     ],
+    asks: true,
   },
   {
     name: "edit_file",
@@ -76,6 +78,7 @@ export const WRITE_TOOLS: ToolSpec[] = [
       },
       { name: "new", required: true, description: "The text that replaces the passage." },
     ],
+    asks: true,
   },
 ];
 
@@ -184,6 +187,7 @@ export function approvalApplier(
         kind: "write",
         tool: change.tool,
         summary: displayPath(change.path),
+        lines: lineDiffCount(change.before, change.after),
         preview: () => host.preview(change),
       });
     } catch (error) {

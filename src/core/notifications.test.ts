@@ -164,7 +164,8 @@ describe("the notification of each event", () => {
       };
       expect(await notificationOf(event)).toEqual({
         severity: "warning",
-        message: "broke-code failed: Cannot reach Ollama at http://localhost:1/v1.",
+        message:
+          "broke-code failed: Cannot reach Ollama at http://localhost:1/v1. Check its base URL, your network or VPN, and the http.proxy setting.",
         button,
       });
     }

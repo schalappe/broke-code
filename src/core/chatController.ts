@@ -314,7 +314,7 @@ export class ChatController {
    */
   private requestId = 0;
   /** The approval request open, mirrored in `ChatState.approval`, and how to settle it. */
-  private openApproval: { id: number; settle: (decision: Decision) => void } | undefined;
+  private openApproval: { id: number; settle: (decision: Decision) => void; preview?: Preview } | undefined;
   /** The question open, mirrored in `ChatState.question`, and how to settle it. Never beside `openApproval`. */
   private openQuestion: { id: number; settle: (answer: QuestionAnswer) => void } | undefined;
   /**
@@ -383,6 +383,8 @@ export class ChatController {
    * instruction files are the workspace's, not a conversation's; before the first send, the one without them.
    */
   private systemPrompt: string;
+  /** Instruction files the usage display's summary request counts: the last ones a send or `/compact` read. */
+  private instructionFiles: readonly InstructionFile[] = [];
 
   constructor(ports: ChatPorts) {
     this.apiKeys = ports.apiKeys;
@@ -430,6 +432,7 @@ export class ChatController {
       listFailed: undefined,
       storageProblem: undefined,
       context: this.contextUsage(undefined, undefined),
+      callRunning: false,
       // [>]: The setting is read at `modeChanged`, which the host calls at activation as it applies the providers; the
       // constructor reads no setting.
       mode: "ask",
@@ -1001,6 +1004,7 @@ export class ChatController {
       const tools = offeredTools(this.tools.tools, discovery.skills, mode);
       const system = composeSystemPrompt(tools, instructions, discovery.skills, mode);
       this.systemPrompt = system;
+      this.instructionFiles = instructions;
       // [>]: The display counts the instruction files and skills now, not at the first reply delta.
       this.emit();
       let steps = 0;
@@ -1056,14 +1060,18 @@ export class ChatController {
           // [>]: The reply stays `streaming` while its call runs, so the turn reads as in flight and a crash meanwhile
           // brings it back stopped.
           run.reply.call = { name, args, start, end };
+          // [>]: A tool that asks runs only once its approval is accepted (`askApproval`), never as its call shows.
+          this.state.callRunning = !tools.find((tool) => tool.name === name)?.asks;
           this.emit();
           void this.save(conversation);
           let approval: StepApproval | undefined;
+          let lines: LineCounts | undefined;
           const context: ToolContext = {
             signal,
             requestApproval: async (request) => {
               const answer = await this.askApproval(request, signal);
               approval = answer.approval ?? approval;
+              if (answer.decision.kind === "accept") lines = request.lines ?? lines;
               // [>]: Once Run is clicked the command runs, whether its step is recorded or dropped by Stop.
               if (request.kind === "command" && answer.decision.kind === "accept") turn.ranCommand = true;
               return answer.decision;
@@ -1076,6 +1084,7 @@ export class ChatController {
           };
           turn.written = undefined;
           const result = await unlessAborted(this.runTool({ name, args }, context), signal);
+          this.state.callRunning = false;
           if (!result) return settle("stopped");
           step = {
             role: "tool",
@@ -1084,6 +1093,8 @@ export class ChatController {
             status: result.status,
             text: result.text,
             ...(approval ? { approval } : {}),
+            // [>]: Only a write that went through: a refused or failed one changed nothing.
+            ...(lines && result.status === "ok" ? { lines: { ...lines } } : {}),
           };
           if (turn.written !== undefined) {
             turn.steps.set(turn.written, [...(turn.steps.get(turn.written) ?? []), step]);
@@ -1100,6 +1111,7 @@ export class ChatController {
           // [!]: A result the model invented never reaches the chat or the history, or the model would read it back
           // as true on the next request.
           if (parsed.forged) run.reply.content = run.reply.content.slice(0, parsed.start);
+          else if (parsed.end > parsed.start) run.reply.malformedCall = { start: parsed.start, end: parsed.end };
           step = {
             role: "tool",
             name: malformedToolName(run.reply.content, parsed),
@@ -1403,6 +1415,7 @@ export class ChatController {
       );
       if (!prepared) return settle("stopped");
       const [access, instructions] = prepared;
+      this.instructionFiles = instructions;
       const messages = this.summaryMessages(entries, instructions);
       const ratio = this.providerSupport.ratio(provider, model);
       if (fillsContext(estimateTokens(messages, ratio), contextSize)) return settle("halted", "contextFull");
@@ -1441,6 +1454,7 @@ export class ChatController {
       signal: abort.signal,
       settle: (status, haltReason) => {
         run.reply.status = status;
+        this.state.callRunning = false;
         if (haltReason !== undefined) run.reply.haltReason = haltReason;
         this.emit();
         void this.save(conversation);
@@ -1541,7 +1555,11 @@ export class ChatController {
   ): Promise<{ decision: Decision; approval?: StepApproval }> {
     if (signal.aborted) return { decision: { kind: "cancel" } };
     // [!]: The one place the setting applies, so it can never accept a command.
-    if (request.kind === "write" && this.readAutoApprove()) return { decision: { kind: "accept" }, approval: "auto" };
+    if (request.kind === "write" && this.readAutoApprove()) {
+      this.state.callRunning = true;
+      this.emit();
+      return { decision: { kind: "accept" }, approval: "auto" };
+    }
     this.refuseSecondRequest();
     const preview = request.preview ? await request.preview() : undefined;
     if (signal.aborted) {
@@ -1555,14 +1573,24 @@ export class ChatController {
         signal.removeEventListener("abort", onAbort);
         this.openApproval = undefined;
         this.state.approval = undefined;
+        // [>]: In the same update as the buttons going away, so no state reads as running after Reject or Stop.
+        this.state.callRunning = decision.kind === "accept";
         this.emit();
         closePreview(preview);
         resolve(decision);
       };
       const onAbort = () => settle({ kind: "cancel" });
       signal.addEventListener("abort", onAbort, { once: true });
-      this.openApproval = { id, settle };
-      this.state.approval = { id, kind: request.kind, tool: request.tool, summary: request.summary };
+      this.openApproval = { id, settle, ...(preview ? { preview } : {}) };
+      this.state.approval = {
+        id,
+        kind: request.kind,
+        tool: request.tool,
+        summary: request.summary,
+        ...(request.lines ? { lines: { ...request.lines } } : {}),
+        ...(preview ? { preview: true as const } : {}),
+      };
+      this.state.callRunning = false;
       this.emit();
       this.reportEvent({ kind: "approvalRequested", request: request.kind, summary: request.summary });
     });
@@ -1593,6 +1621,7 @@ export class ChatController {
       signal.addEventListener("abort", onAbort, { once: true });
       this.openQuestion = { id, settle };
       this.state.question = { id, question: request.question, options: [...request.options] };
+      this.state.callRunning = false;
       this.emit();
     });
   }
@@ -1610,6 +1639,20 @@ export class ChatController {
     } catch (error) {
       console.error("broke-code: could not read the auto-approve setting", error);
       return false;
+    }
+  }
+
+  /**
+   * Show change: bring back the preview of approval request `id`, opened again if the user closed it. Ignored unless it
+   * is the request open and has a preview; a preview that fails to show is logged, and the request stays open.
+   */
+  async showChange(id: number): Promise<void> {
+    const preview = this.openApproval?.id === id ? this.openApproval.preview : undefined;
+    if (!preview) return;
+    try {
+      await preview.show();
+    } catch (error) {
+      console.error("broke-code: could not show an approval preview again", error);
     }
   }
 
@@ -1951,19 +1994,30 @@ export class ChatController {
 
   /**
    * Estimate of the next request of the conversation shown, as it would be sent, against `model`'s context size, and
-   * the count of tool results it leaves out, when any.
+   * the count of tool results it leaves out, when any. Full, the summary request is sized too, as a turn and `/compact`
+   * size it: when it does not fit either, no summary can free the context (`summaryHalts`).
    */
   private contextUsage(provider: Provider | undefined, model: string | undefined): ContextUsage {
     const context = contextOf(this.limits, model);
     const ratio = this.ratioOf(provider, model);
     const budget = { system: this.systemPrompt, contextSize: context.size, ratio };
     const { messages, leftOut } = this.requestMessages(this.conversation, budget);
+    const used = estimateTokens(messages, ratio);
+    const full = fillsContext(used, context.size) ? this.fullContextOutcome(context.size, ratio) : undefined;
     return {
-      used: estimateTokens(messages, ratio),
+      used,
       ...context,
       ...(leftOut > 0 ? { leftOut } : {}),
       ...(this.reported ? { reported: this.reported } : {}),
+      ...(full ? { full } : {}),
     };
+  }
+
+  /** What the next turn does on a full context: summarize first, halt, or halt with no summary able to fit. */
+  private fullContextOutcome(contextSize: number, ratio: number): NonNullable<ContextUsage["full"]> {
+    const summary = this.summaryMessages(this.conversation.entries, this.instructionFiles);
+    if (fillsContext(estimateTokens(summary, ratio), contextSize)) return "summaryHalts";
+    return this.limits.autoCompact ? "compacts" : "halts";
   }
 
   private emit(): void {
