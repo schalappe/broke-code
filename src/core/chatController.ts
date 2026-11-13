@@ -24,7 +24,7 @@ import {
 } from "./conversation";
 import type { ConversationStore } from "./conversationStore";
 import { type HistoryBudget, historyStart, sentEntries, summaryHistory, toHistory } from "./history";
-import { CONTINUE_TEXT, type LastTurnActions, lastTurnActions } from "./lastTurn";
+import { CONTINUE_TEXT, hasFinalAnswer, IMPLEMENT_PLAN_TEXT, type LastTurnActions, lastTurnActions } from "./lastTurn";
 import { contextOf, DEFAULT_RATIO, estimateTokens, fillsContext, parseLimits, type TurnLimits } from "./limits";
 import { type LineCounts, lineDiffCount } from "./lineDiff";
 import { composeUserMessage, findMentions, type MentionReader, type MentionResult, type ReadMention } from "./mentions";
@@ -251,8 +251,8 @@ type UserEntry = ChatEntry & { role: "user" };
 
 /**
  * How an agent turn starts. `send`: a new message, its mentions read and its `/<name>` skill loaded now. `continue`: a
- * new user entry whose model text is already set. `retry`: the last user entry, already the last entry, resent with
- * the model text of its first send, so nothing it mentions or loads is read again.
+ * new user entry whose model text is already set (Continue, "Implement in ... mode"). `retry`: the last user entry,
+ * already the last entry, resent with the model text of its first send, so nothing it mentions or loads is read again.
  */
 type TurnStart =
   | { kind: "send"; content: string; picked: readonly string[] }
@@ -404,6 +404,7 @@ export class ChatController {
       // [>]: The setting is read at `modeChanged`, which the host calls at activation as it applies the providers; the
       // constructor reads no setting.
       mode: "ask",
+      settingMode: "ask",
       modePending: false,
       queue: [],
       undo: { reply: undefined, ranCommand: false, running: false, outcome: undefined },
@@ -531,11 +532,13 @@ export class ChatController {
   }
 
   /**
-   * Read the mode into `ChatState.mode`: Plan while on, else the auto-approve setting. At activation, and whenever the
-   * setting changes, here or elsewhere (the settings editor, another window).
+   * Read the mode into `ChatState.mode`: Plan while on, else the auto-approve setting, which `ChatState.settingMode`
+   * names in every mode. At activation, and whenever the setting changes, here or elsewhere (the settings editor,
+   * another window).
    */
   modeChanged(): void {
-    this.state.mode = this.readMode();
+    this.state.settingMode = this.readAutoApprove() ? "autoEdit" : "ask";
+    this.state.mode = this.plan ? "plan" : this.state.settingMode;
     this.emit();
   }
 
@@ -587,11 +590,6 @@ export class ChatController {
     this.workspaceState.update(PLAN_KEY, on ? true : undefined).then(undefined, (error: unknown) => {
       console.error("broke-code: could not remember Plan mode", error);
     });
-  }
-
-  private readMode(): Mode {
-    if (this.plan) return "plan";
-    return this.readAutoApprove() ? "autoEdit" : "ask";
   }
 
   /** Key of `provider` changed -> relist its models, since listing may have failed on old key. */
@@ -697,14 +695,38 @@ export class ChatController {
   }
 
   /**
-   * What the last turn offers now, for a request made while the panel showed `shown`. Another conversation with as many
-   * entries is refused; within the conversation shown, the count is the only check, so a request posted before a Retry
-   * that ended on as many entries acts on the turn that Retry ran.
+   * "Implement in ... mode" under a plan's final answer: leave Plan for the mode the setting holds, writing no setting
+   * (only the Plan key is cleared, and a failed memento write still leaves Plan for the session), then append a user
+   * entry whose text as typed is `label` (the message in the display language) and whose model text is
+   * `IMPLEMENT_PLAN_TEXT`, and run it as a send. The plan is in the history already and is not quoted again. `shown`:
+   * as for `retry`. Does nothing at all, Plan staying on, unless the entries shown are the conversation's, Plan is on,
+   * the conversation ends on its final answer (`hasFinalAnswer`), and a turn may start. Plan stays left when the turn
+   * then fails.
    */
-  private lastTurnNow({ conversationId, entries }: ShownEntries): LastTurnActions | undefined {
-    const current = conversationId === this.conversation.id && entries === this.conversation.entries.length;
-    if (!current || !this.mayStartTurn()) return undefined;
+  implementPlan(shown: ShownEntries, label: string): Promise<void> {
+    const acts =
+      this.isShownNow(shown) && this.plan && this.mayStartTurn() && hasFinalAnswer(this.conversation.entries);
+    if (!acts) return Promise.resolve();
+    this.rememberPlan(false);
+    this.modeChanged();
+    const user: UserEntry = { role: "user", content: label, mentions: [] };
+    this.modelText.set(user, IMPLEMENT_PLAN_TEXT);
+    return this.startTurn({ kind: "continue", user });
+  }
+
+  /**
+   * What the last turn offers now, for a request made while the panel showed `shown`. Within the conversation shown,
+   * the count is the only check, so a request posted before a Retry that ended on as many entries acts on the turn
+   * that Retry ran.
+   */
+  private lastTurnNow(shown: ShownEntries): LastTurnActions | undefined {
+    if (!this.isShownNow(shown) || !this.mayStartTurn()) return undefined;
     return lastTurnActions(this.conversation.entries);
+  }
+
+  /** Whether the panel showed the current conversation with its current count: another one with as many is refused. */
+  private isShownNow({ conversationId, entries }: ShownEntries): boolean {
+    return conversationId === this.conversation.id && entries === this.conversation.entries.length;
   }
 
   /**

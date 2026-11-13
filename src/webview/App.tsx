@@ -20,7 +20,7 @@ import {
   shownAnswer,
 } from "../core/conversation";
 import { historyStart, isAutomaticSummary, sentEntries } from "../core/history";
-import { type LastTurnActions, lastTurnActions, unrevertedEffects } from "../core/lastTurn";
+import { hasFinalAnswer, type LastTurnActions, lastTurnActions, unrevertedEffects } from "../core/lastTurn";
 import { codeBlockText, FENCE_CLOSED, hasTextAfter, remarkFenceClosed } from "../core/markdownCode";
 import { emptyModelsLabel } from "../core/modelList";
 import {
@@ -186,6 +186,7 @@ export function App({
             undo={state.undo}
             changedFiles={state.changedFiles}
             canAct={sendWouldAct(state)}
+            implementIn={state.mode === "plan" ? state.settingMode : undefined}
             hidden={historyOpen}
             replacing={replacingNow !== undefined}
             edit={edit}
@@ -618,11 +619,12 @@ export function ConversationList({
 /**
  * `approval`: the request open, shown on the last reply, the one in flight. `undo`: "Undo changes", shown under the
  * reply it names, with "Changed files" (`changedFiles`), and the last undo's outcome under the reply it undid. Retry and Continue show under the last turn's
- * reply (`lastTurnActions`), enabled when `canAct` (Send would act). `hidden`: History shows instead. Edit sits under
- * the last turn's user message when Retry is offered, enabled when `canAct`, and calls `edit`; while `replacing`, it
- * goes, and the last turn (that message and every entry after it) sits in one dimmed group under the line saying that
- * sending replaces it, with Retry's warning when the removal leaves files or commands behind, and Cancel
- * (`cancelEdit`), which gives the focus back to Edit, since the button it was on goes.
+ * reply (`lastTurnActions`), enabled when `canAct` (Send would act). `implementIn`: Plan is on, and this is the mode
+ * it leaves for, so the final answer (`hasFinalAnswer`) also offers "Implement in ... mode". `hidden`: History shows
+ * instead. Edit sits under the last turn's user message when Retry is offered, enabled when `canAct`, and calls `edit`;
+ * while `replacing`, it goes, and the last turn (that message and every entry after it) sits in one dimmed group under
+ * the line saying that sending replaces it, with Retry's warning when the removal leaves files or commands behind, and
+ * Cancel (`cancelEdit`), which gives the focus back to Edit, since the button it was on goes.
  */
 function Conversation({
   conversationId,
@@ -631,6 +633,7 @@ function Conversation({
   undo,
   changedFiles,
   canAct,
+  implementIn,
   hidden,
   replacing,
   edit,
@@ -642,6 +645,7 @@ function Conversation({
   undo: UndoState;
   changedFiles: ChangedFile[];
   canAct: boolean;
+  implementIn?: SettingMode;
   hidden: boolean;
   replacing: boolean;
   edit: (entry: ChatEntry & { role: "user" }) => void;
@@ -661,6 +665,7 @@ function Conversation({
     shown: { conversationId, entries: entries.length },
     turn: entries.slice(lastTurn.user),
     canAct,
+    implementIn: hasFinalAnswer(entries) ? implementIn : undefined,
     // [>]: Retry reverts nothing: it asks first when the removed entries changed files or ran commands, or when
     // "Undo changes" is offered for the turn it removes.
     asks: hasEffects(unrevertedEffects(entries, lastTurn.user + 1)) || (undo.reply ?? -1) > lastTurn.user,
@@ -936,17 +941,23 @@ function Reply({
   );
 }
 
+/** Ask or Auto-edit: the mode the setting holds, which "Implement in ... mode" names. */
+type SettingMode = ChatState["settingMode"];
+
 /**
  * Retry and Continue of the last turn. `actions`: where they apply and whether Continue is offered. `shown`: the
  * conversation and entries count the requests carry, so the host ignores a click on a lagging panel. `turn`: the last
  * turn's entries, from its user message on, which the confirmation is bound to. `canAct`: Send would act. `asks`:
- * Retry would leave files or commands it does not revert, so its first click asks.
+ * Retry would leave files or commands it does not revert, so its first click asks. `implementIn`: Plan is on and the
+ * turn ended on the final answer, so "Implement in ... mode" is offered, named after this mode, the one the setting
+ * holds.
  */
 type TurnActionsProps = {
   actions: LastTurnActions;
   shown: ShownEntries;
   turn: readonly ChatEntry[];
   canAct: boolean;
+  implementIn?: SettingMode;
   asks: boolean;
 };
 
@@ -955,7 +966,9 @@ function hasEffects(effects: { writes: number; commands: number }): boolean {
 }
 
 /**
- * The actions row under a reply: Retry, Continue, then "Undo changes", each a secondary button, wrapping when narrow.
+ * The actions row under a reply: Retry, Continue, "Implement in ... mode", then "Undo changes", each a secondary
+ * button, wrapping when narrow. "Implement in ... mode" posts no mode: the host leaves Plan for the mode the setting
+ * holds then.
  * When Retry asks, its first click shows the line saying what it does not revert, renames the same button "Retry
  * anyway", so the focus stays on it, and adds Cancel after it; the second click retries. Cancel, and any change of the
  * turn's entries (one added or removed, a status, an `undone` mark), drop the confirmation; Cancel gives the focus back to Retry, since the button it was on goes. "Undo
@@ -1006,6 +1019,18 @@ function TurnActions({ turnActions, undo }: { turnActions?: TurnActionsProps; un
               onClick={() => post({ type: "continueTurn", shown: turnActions.shown })}
             >
               {l10n.t("Continue")}
+            </button>
+          )}
+          {turnActions.implementIn && (
+            <button
+              type="button"
+              className="secondary"
+              disabled={!turnActions.canAct}
+              onClick={() => post({ type: "implementPlan", shown: turnActions.shown })}
+            >
+              {turnActions.implementIn === "autoEdit"
+                ? l10n.t("Implement in Auto-edit mode")
+                : l10n.t("Implement in Ask mode")}
             </button>
           )}
         </>
