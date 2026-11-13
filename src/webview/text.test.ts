@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import * as l10n from "@vscode/l10n";
 import french from "../../l10n/bundle.l10n.fr.json";
-import type { ChatEntry, SkillProblem } from "../core/protocol";
+import type { ChatEntry, ChatState, SkillProblem } from "../core/protocol";
 import {
+  describeAnnouncement,
   describeContextTitle,
   describeContextUsage,
   describeFold,
@@ -435,5 +436,78 @@ describe("describeUndoneFile", () => {
       { path: ".a.ts.broke-code-1.tmp" },
       { text: " could not be removed (EPERM)" },
     ]);
+  });
+});
+
+describe("describeAnnouncement", () => {
+  const ask: ChatEntry = { role: "user", content: "Fix it", mentions: [] };
+  const reply = (status: Extract<ChatEntry, { role: "assistant" }>["status"], extra = {}): ChatEntry => ({
+    role: "assistant",
+    reasoning: "",
+    content: "Done",
+    status,
+    ...extra,
+  });
+  const state = (entries: ChatEntry[], extra: Partial<ChatState> = {}): ChatState =>
+    ({ conversationId: "c", entries, ...extra }) as ChatState;
+
+  test("names the call that waits for a decision, once per request", () => {
+    const before = state([ask, reply("streaming")]);
+    const command = state([ask, reply("streaming")], {
+      approval: { id: 1, kind: "command", tool: "run_command", summary: "bun test" },
+    });
+    expect(describeAnnouncement(before, command)).toBe("Waiting for your decision: run bun test");
+    expect(describeAnnouncement(command, { ...command })).toBeUndefined();
+    const write = state([ask, reply("streaming")], {
+      approval: { id: 2, kind: "write", tool: "edit_file", summary: "src/a.ts" },
+    });
+    expect(describeAnnouncement(command, write)).toBe("Waiting for your decision: edit_file on src/a.ts");
+  });
+
+  test("reads the agent's question", () => {
+    const asked = state([ask, reply("streaming")], { question: { id: 3, question: "Which file?", options: [] } });
+    expect(describeAnnouncement(state([ask, reply("streaming")]), asked)).toBe("The agent asks: Which file?");
+  });
+
+  test("names the call that starts running, once, and none that waits on the user", () => {
+    const flight = state([ask, reply("streaming")]);
+    const read = { name: "read_file", args: { path: "src/a.ts" }, start: 0, end: 4 };
+    const reading = state([ask, reply("streaming", { call: read })]);
+    expect(describeAnnouncement(flight, reading)).toBe("Running read_file on src/a.ts");
+    expect(describeAnnouncement(reading, { ...reading })).toBeUndefined();
+    const run = { name: "run_command", args: { command: "bun test" }, start: 0, end: 4 };
+    const approval = { id: 1, kind: "command" as const, tool: "run_command", summary: "bun test" };
+    const deciding = state([ask, reply("streaming", { call: run })], { approval });
+    const running = state([ask, reply("streaming", { call: run })]);
+    expect(describeAnnouncement(deciding, running)).toBe("Running bun test");
+  });
+
+  test("says how the reply in flight ended", () => {
+    const flight = state([ask, reply("streaming")]);
+    expect(describeAnnouncement(flight, state([ask, reply("done")]))).toBe("Reply finished.");
+    expect(describeAnnouncement(flight, state([ask, reply("stopped")]))).toBe("Stopped");
+    expect(describeAnnouncement(flight, state([ask, reply("halted", { haltReason: "stepLimit" })]))).toBe(
+      describeHalt("stepLimit"),
+    );
+  });
+
+  test("stays quiet on a failure, a reply ending on a call, another conversation, or nothing new", () => {
+    const flight = state([ask, reply("streaming")]);
+    expect(describeAnnouncement(flight, state([ask, reply("failed")]))).toBeUndefined();
+    const call = { name: "read_file", args: { path: "a" }, start: 0, end: 4 };
+    expect(describeAnnouncement(flight, state([ask, reply("done", { call })]))).toBeUndefined();
+    expect(describeAnnouncement(flight, { ...state([ask, reply("done")]), conversationId: "d" })).toBeUndefined();
+    const ended = state([ask, reply("done")]);
+    expect(describeAnnouncement(ended, { ...ended })).toBeUndefined();
+  });
+
+  test("is worded in French with the French bundle", () => {
+    l10n.config({ contents: french });
+    try {
+      const flight = state([ask, reply("streaming")]);
+      expect(describeAnnouncement(flight, state([ask, reply("done")]))).toBe("Réponse terminée.");
+    } finally {
+      l10n.config({ contents: {} });
+    }
   });
 });

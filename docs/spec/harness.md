@@ -563,8 +563,8 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
   back empty (only whitespace) changes nothing and is never sent; its error shows as for any reply, and a `done` empty
   one says "The model's reply held no summary.". The leave-out rule, its last 3 steps, and the usage display count
   only what is sent, so after a summary the header's usage drops. Entries before it stay in the record and the chat,
-  dimmed as one group under the line "Earlier messages are no longer sent to the model: the summary below replaces
-  them.", derived from the entries, never stored; a high-contrast theme drops the dimming, since the line says it. The record keeps version 2: `summary` is an optional field of the
+  as one group under the line "Earlier messages are no longer sent to the model: the summary below replaces
+  them.", derived from the entries, never stored. The group is not dimmed, so it stays readable; the line says it. The record keeps version 2: `summary` is an optional field of the
   assistant entry (ADR 0003's rule); an older build shows the summary as an ordinary answer and resends the whole
   history, which is harmless. The `contextFull` halt of an agent turn names `/compact` beside New chat.
 - Automatic compaction (#91): `brokeCode.autoCompact` (boolean, default false, `application` scope, read from
@@ -592,7 +592,7 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
   or stopped automatic summary has nothing after it and reads as a manual one, which changes nothing, since neither is
   sent. Its separator says "Conversation summarized automatically" once sent ("Summarizing the conversation…" and
   "Conversation not summarized" as for `/compact`). The turn's message the request quotes sits in the group before
-  the summary but is not dimmed: it shows at full opacity with the dim line "Still sent with the summary" (maintainer
+  the summary and shows with the dim line "Still sent with the summary" (maintainer
   decision, 2026-11-12), derived from the entries (`sentEntries`), never stored.
 
 ## System prompt

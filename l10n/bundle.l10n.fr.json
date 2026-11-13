@@ -296,5 +296,11 @@
   "Default effort": "Effort par défaut",
   "Low effort": "Effort faible",
   "Medium effort": "Effort moyen",
-  "High effort": "Effort élevé"
+  "High effort": "Effort élevé",
+  "Waiting for your decision: run {0}": "En attente de votre décision : exécuter {0}",
+  "Waiting for your decision: {0} on {1}": "En attente de votre décision : {0} sur {1}",
+  "The agent asks: {0}": "L'agent demande : {0}",
+  "Reply finished.": "Réponse terminée.",
+  "Running {0}": "Exécution de {0}",
+  "Running {0} on {1}": "Exécution de {0} sur {1}"
 }

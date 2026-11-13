@@ -46,8 +46,6 @@
   --bc-rule: color-mix(in srgb, var(--vscode-foreground) 16%, transparent);
   --bc-fill: color-mix(in srgb, var(--vscode-foreground) 6%, transparent);
   --bc-fill-strong: color-mix(in srgb, var(--vscode-foreground) 11%, transparent);
-  /* The entries no longer sent to the model, faded as a group; a dim line says it in words. */
-  --bc-unsent-opacity: 0.6;
 
   /* The high-contrast rule: the boundary of a filled surface, and of the selected or hovered one. */
   --bc-edge: var(--vscode-contrastBorder, transparent);
@@ -114,7 +112,7 @@
   --bc-error-text: var(--bc-fg);
   --bc-warning-text: var(--bc-fg);
 
-  /* Motion: the breathing of a loading text, and the time a small change takes. Both are switched off below. */
+  /* Motion: the breathing of a loading mark, and the time a small change takes. Both are switched off below. */
   --bc-breathe: pulse;
   --bc-fast: 0.12s;
   --bc-ease: cubic-bezier(0.16, 1, 0.3, 1);
@@ -139,8 +137,6 @@ body.vscode-high-contrast-light {
   --bc-fg-dim: color-mix(in srgb, var(--bc-fg) 88%, transparent);
   --bc-error-text: var(--bc-error);
   --bc-warning-text: var(--bc-warning);
-  /* Faded text would fall under the theme's contrast; the line over the unsent entries says it in words. */
-  --bc-unsent-opacity: 1;
 }
 
 html,
@@ -194,7 +190,7 @@ select {
 }
 
 select:disabled {
-  opacity: 0.6;
+  opacity: 0.5;
 }
 
 ::placeholder {
@@ -575,18 +571,14 @@ button.history-open:hover:not(:disabled) {
 }
 
 /*
- * The entries before the summary the history starts at: still shown, no longer sent. Dimmed as a group under one line
- * that says so in words, so the state never rests on the dimming alone (high contrast drops the dimming). The turn's
- * message an automatic summary quotes is still sent: full opacity, with its own dim line.
+ * The entries before the summary the history starts at: still shown, no longer sent. A group under one line that says
+ * so in words, at full contrast: they stay readable, so they are not dimmed. The turn's message an automatic summary
+ * quotes is still sent, with its own dim line.
  */
 .unsent {
   display: flex;
   flex-direction: column;
   gap: var(--bc-space-4);
-}
-
-.unsent > :not(.unsent-note, .still-sent) {
-  opacity: var(--bc-unsent-opacity);
 }
 
 .still-sent {
@@ -615,17 +607,13 @@ button.history-open:hover:not(:disabled) {
 }
 
 /*
- * The last turn while Edit replaces it: dimmed like the entries no longer sent (not in high contrast, through the same
- * token), under a line in the full foreground, since it says what Send will do, with Cancel beside it.
+ * The last turn while Edit replaces it: a group under a line in the full foreground, since it says what Send will do,
+ * with Cancel beside it. Not dimmed, like the entries no longer sent: the line says it.
  */
 .replacing {
   display: flex;
   flex-direction: column;
   gap: var(--bc-space-4);
-}
-
-.replacing > :not(.replacing-head) {
-  opacity: var(--bc-unsent-opacity);
 }
 
 .replacing-head {
@@ -1014,10 +1002,9 @@ button.code-action:hover:not(:disabled) {
 
 /* ---------- Loading and turn endings ---------- */
 
-/* Loading: dim text that breathes; a line of its own leads with a dot. */
+/* Loading: dim text, steady so it keeps its contrast; a line of its own leads with a dot, and the dot breathes. */
 .loading {
   color: var(--bc-fg-dim);
-  animation: var(--bc-breathe) 1.6s ease-in-out infinite;
 }
 
 p.loading {
@@ -1034,6 +1021,7 @@ p.loading::before {
   height: var(--bc-mark);
   background: var(--bc-fg-dim);
   border-radius: 50%;
+  animation: var(--bc-breathe) 1.6s ease-in-out infinite;
 }
 
 @keyframes pulse {
@@ -1406,7 +1394,7 @@ summary.step-row:hover,
 }
 
 /* A call without a result has no chevron; its node is filled while the call runs. */
-div.step-row:has(.step-status[role="status"])::before {
+div.step-row:has(.step-status.loading, .step-status.waiting)::before {
   background: var(--bc-fg-dim);
 }
 
@@ -1791,4 +1779,15 @@ div.step-row:has(.step-status.loading)::before {
   margin: 0;
   padding: var(--bc-space-2) var(--bc-space-4);
   color: var(--bc-fg-dim);
+}
+
+/* The live region a screen reader hears: out of sight, still in the accessibility tree. */
+.announcer {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }

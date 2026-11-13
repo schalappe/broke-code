@@ -1,16 +1,18 @@
 /**
  * @module text
  * Localized panel text for provider errors and halted agent turns (both worded in the core, translated here), skipped
- * providers and skills, mentions, tool steps, folded turns, the outcome of "Undo changes", context usage, and saved
- * conversations.
+ * providers and skills, mentions, tool steps, folded turns, the outcome of "Undo changes", context usage, saved
+ * conversations, and what the live region announces.
  */
 import * as l10n from "@vscode/l10n";
 import { resultLineCount } from "../core/history";
 import type { MentionResult } from "../core/mentions";
 import type {
   ChatEntry,
+  ChatState,
   ContextUsage,
   HaltReason,
+  ReplyCall,
   SkillWarning,
   StorageProblem,
   UndoneFile,
@@ -280,6 +282,55 @@ function describeKind(kind: StepKind, shown: number): string {
 /** Halt wording with the panel's translator; see `describeHalt` in the core. */
 export function describeHalt(reason: HaltReason, summary = false): string {
   return describeHaltWith(reason, summary, l10n);
+}
+
+/**
+ * What the panel's live region says when the host posts `next` after `previous`, or `undefined` when nothing worth a
+ * word changed: a call that waits for the user's decision, a question the agent asks, a call that starts running, or
+ * the end of the reply in flight.
+ * The focus never moves to tell them (DESIGN.md), so a screen reader would hear none of it otherwise. A failed reply
+ * says nothing here, since its error block is an alert of its own; neither does a reply that ends on a call, since its
+ * step follows; nor another conversation shown, since nothing happened in it.
+ */
+export function describeAnnouncement(previous: ChatState, next: ChatState): string | undefined {
+  if (previous.conversationId !== next.conversationId) return undefined;
+  const { approval, question } = next;
+  if (approval && approval.id !== previous.approval?.id) {
+    return approval.kind === "command"
+      ? l10n.t("Waiting for your decision: run {0}", approval.summary)
+      : l10n.t("Waiting for your decision: {0} on {1}", approval.tool, approval.summary);
+  }
+  if (question && question.id !== previous.question?.id) return l10n.t("The agent asks: {0}", question.question);
+  const call = runningCall(next);
+  if (call && !runningCall(previous)) {
+    if (call.name === "run_command" && call.args.command !== undefined) return l10n.t("Running {0}", call.args.command);
+    const argument = mainArgument(call.name, call.args);
+    return argument === undefined
+      ? l10n.t("Running {0}", call.name)
+      : l10n.t("Running {0} on {1}", call.name, argument);
+  }
+  const index = previous.entries.length - 1;
+  const before = previous.entries[index];
+  const after = next.entries[index];
+  if (before?.role !== "assistant" || after?.role !== "assistant") return undefined;
+  if (before.status !== "waiting" && before.status !== "streaming") return undefined;
+  switch (after.status) {
+    case "done":
+      return after.call ? undefined : l10n.t("Reply finished.");
+    case "stopped":
+      return l10n.t("Stopped");
+    case "halted":
+      return after.haltReason && describeHalt(after.haltReason, after.summary);
+    default:
+      return undefined;
+  }
+}
+
+/** The call the reply in flight runs now: written, and waiting on neither a decision nor an answer. */
+function runningCall(state: ChatState): ReplyCall | undefined {
+  const last = state.entries.at(-1);
+  if (last?.role !== "assistant" || (last.status !== "waiting" && last.status !== "streaming")) return undefined;
+  return state.approval || state.question ? undefined : last.call;
 }
 
 /** The empty summary's wording with the panel's translator; see `describeEmptySummary` in the core. */
