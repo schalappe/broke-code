@@ -7,6 +7,7 @@ import type { ChatController } from "../core/chatController";
 import { DraftQueue } from "../core/draftQueue";
 import type { FileQueryAnswer } from "../core/fileIndex";
 import { insertCode } from "../core/insertCode";
+import type { ConversationSearchAnswer } from "../core/conversationStore";
 import { chooseModel } from "../core/modelList";
 import { type ChatState, type DraftInsert, type HostMessage, parseWebviewMessage } from "../core/protocol";
 import { answerSkillQuery, type SkillDiscovery } from "../core/skills";
@@ -22,6 +23,8 @@ export type ChatViewActions = {
   queryFiles: (query: string) => Promise<FileQueryAnswer>;
   /** The skills a send would discover, for the `/` menu; no log line, since nothing is sent. */
   querySkills: () => Promise<SkillDiscovery>;
+  /** History's content search over the listed conversations; `undefined` when not answered (see `ConversationStore.search`). */
+  searchConversations: (query: string) => Promise<ConversationSearchAnswer | undefined>;
   /** "broke-code: Add provider"; shows its own failures and never rejects. */
   addProvider: () => Promise<void>;
 };
@@ -124,6 +127,11 @@ export class ChatView implements vscode.WebviewViewProvider {
     }
   }
 
+  private async answerSearch(query: string, id: number): Promise<void> {
+    const answer = await this.actions.searchConversations(query);
+    if (answer) this.post({ type: "conversationMatches", id, ...answer });
+  }
+
   /** The `/model` pick over the editor's Quick Pick; see `chooseModel`. */
   private chooseModel(): Promise<void> {
     const { controller } = this;
@@ -171,6 +179,8 @@ export class ChatView implements vscode.WebviewViewProvider {
         return void this.answerQuery(message.query, message.id);
       case "querySkills":
         return void answerSkillQuery(message.id, this.actions.querySkills).then((answer) => this.post(answer));
+      case "searchConversations":
+        return void this.answerSearch(message.query, message.id);
       case "stop":
         controller.stop();
         return;

@@ -106,6 +106,8 @@ export function activate(context: vscode.ExtensionContext): void {
     setContextSize: askContextSize,
     queryFiles: (query) => fileIndex.query(query),
     querySkills: discoverSkills,
+    // [!]: The host's own listed conversations, never ids from the webview.
+    searchConversations: (query) => conversations.search(controller.snapshot.conversations.map(({ id }) => id), query),
     addProvider: () => addProvider(),
   });
 
