@@ -482,3 +482,131 @@ describe("ConversationStore", () => {
     expect(files.files.has("secret.json")).toBe(true);
   });
 });
+
+describe("ConversationStore.search", () => {
+  const reply = (text: string) => ({ role: "assistant" as const, reasoning: "", content: text, status: "done" as const });
+  /** A record whose first message is `title` and whose answer is `answer`. */
+  function conversation(updatedAt: number, title: string, answer: string): ConversationRecord {
+    const saved = record(updatedAt, title);
+    return { ...saved, entries: [...saved.entries, reply(answer)] };
+  }
+  const recordReads = (files: ReturnType<typeof memoryFiles>, ids: string[]) =>
+    ids.reduce((total, id) => total + (files.reads.get(`${id}.json`) ?? 0), 0);
+  /** Let every pending promise callback run. */
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  async function storeOf(...records: ConversationRecord[]) {
+    const files = memoryFiles();
+    const store = new ConversationStore(files);
+    for (const saved of records) await store.save(saved);
+    files.reads.clear();
+    return { files, store };
+  }
+
+  test("returns every conversation whose messages match, in the order given, one matching by title included", async () => {
+    const byTitle = conversation(3000, "the parser bug", "fixed it");
+    const other = conversation(2000, "release notes", "nothing here");
+    const byAnswer = conversation(1000, "question", "The parser reads blocks.");
+    const { store } = await storeOf(byTitle, other, byAnswer);
+    expect(await store.search([byTitle.id, other.id, byAnswer.id], "Parser")).toEqual({
+      items: [
+        { id: byTitle.id, excerpt: "the parser bug" },
+        { id: byAnswer.id, excerpt: "The parser reads blocks." },
+      ],
+      unreadableCount: 0,
+    });
+  });
+
+  test("a query with two spaces between two words finds a text with one", async () => {
+    const saved = conversation(1000, "question", "the parser reads");
+    const { store } = await storeOf(saved);
+    expect((await store.search([saved.id], "parser  reads"))?.items).toEqual([
+      { id: saved.id, excerpt: "the parser reads" },
+    ]);
+  });
+
+  test("counts an invalid record and a failed read, not a deleted one, and fails nothing", async () => {
+    const [good, invalid, failing, deleted, missing] = [
+      conversation(1, "q", "parser"),
+      conversation(2, "q", "parser"),
+      conversation(3, "q", "parser"),
+      conversation(4, "q", "parser"),
+      conversation(5, "q", "parser"),
+    ];
+    const { files, store } = await storeOf(good, invalid, failing, deleted);
+    files.files.set(`${invalid.id}.json`, JSON.stringify({ ...invalid, version: 3 }));
+    await store.remove(deleted.id);
+    const read = files.read;
+    files.read = async (name) => {
+      if (name === `${failing.id}.json`) throw new Error("EACCES: permission denied");
+      return read(name);
+    };
+    let answer: unknown;
+    await quietly(async () => {
+      answer = await store.search([good.id, invalid.id, failing.id, deleted.id, missing.id], "parser");
+    });
+    expect(answer).toEqual({ items: [{ id: good.id, excerpt: "parser" }], unreadableCount: 2 });
+  });
+
+  test("a save asked during a search waits behind at most one of its reads", async () => {
+    const records = [1, 2, 3].map((at) => conversation(at, "q", "parser"));
+    const ids = records.map((saved) => saved.id);
+    const { files, store } = await storeOf(...records);
+    let readsAtWrite: number | undefined;
+    const write = files.write;
+    files.write = async (name, text) => {
+      readsAtWrite ??= recordReads(files, ids);
+      return write(name, text);
+    };
+    let release = () => {};
+    files.holdReads = new Promise((resolve) => {
+      release = resolve;
+    });
+    const search = store.search(ids, "parser");
+    await settle();
+    const saved = store.save(conversation(9, "new", "answer"));
+    files.holdReads = undefined;
+    release();
+    await Promise.all([search, saved]);
+    expect(readsAtWrite).toBe(1);
+    expect((await search)?.items).toHaveLength(3);
+  });
+
+  test("a newer query stops the older one's remaining reads, and only the newer one is answered", async () => {
+    const records = [1, 2, 3].map((at) => conversation(at, "q", "parser and lexer"));
+    const ids = records.map((saved) => saved.id);
+    const { files, store } = await storeOf(...records);
+    let release = () => {};
+    files.holdReads = new Promise((resolve) => {
+      release = resolve;
+    });
+    const older = store.search(ids, "parser");
+    await settle();
+    const newer = store.search(ids, "lexer");
+    files.holdReads = undefined;
+    release();
+    expect(await older).toBeUndefined();
+    expect((await newer)?.items.map((item) => item.id)).toEqual(ids);
+    expect(recordReads(files, ids)).toBe(ids.length + 1);
+  });
+
+  test("a query under 3 characters once normalized reads nothing and is not answered", async () => {
+    const saved = conversation(1, "q", "ab");
+    const { files, store } = await storeOf(saved);
+    expect(await store.search([saved.id], "  AB  ")).toBeUndefined();
+    expect(recordReads(files, [saved.id])).toBe(0);
+  });
+
+  test("searches at most the 50 most recent conversations given and changes nothing on disk", async () => {
+    const records = Array.from({ length: 51 }, (_, index) => conversation(100 - index, "q", "parser"));
+    const { files, store } = await storeOf(...records);
+    const before = new Map(files.files);
+    const answer = await store.search(
+      records.map((saved) => saved.id),
+      "parser",
+    );
+    expect(answer?.items).toHaveLength(50);
+    expect(recordReads(files, [records[50]?.id ?? ""])).toBe(0);
+    expect(files.files).toEqual(before);
+  });
+});

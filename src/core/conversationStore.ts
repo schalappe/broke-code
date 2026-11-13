@@ -7,9 +7,12 @@
  * `ConversationFiles`.
  */
 import {
+  type ConversationMatch,
   type ConversationRecord,
   type ConversationSummary,
+  conversationExcerpt,
   isConversationId,
+  MAX_CONVERSATIONS,
   parseConversation,
   parseSummary,
   serializeConversation,
@@ -17,6 +20,7 @@ import {
   summarize,
 } from "./conversation";
 import { type ConversationFiles, isTemporaryName } from "./conversationFiles";
+import { searchNeedle } from "./protocol";
 import { SerialQueue } from "./serialQueue";
 
 const RECORD_PATTERN = /^(.+)\.json$/;
@@ -31,6 +35,15 @@ export type ConversationListing = {
   unreadable: { id: string; cause: string }[];
 };
 
+/**
+ * A History content search's answer: the matching conversations in the order searched, and how many records could
+ * not be searched (a failed read, an invalid or unknown-version record). A record gone meanwhile is not counted.
+ */
+export type ConversationSearchAnswer = { items: ConversationMatch[]; unreadableCount: number };
+
+/** One record read for the search: read, gone (missing or removed), or unreadable (failed read, invalid). */
+type SearchRead = { kind: "read"; record: ConversationRecord } | { kind: "gone" } | { kind: "unreadable" };
+
 export class ConversationStore {
   /**
    * Every read, write, and remove runs one at a time, in call order: a read sees every write and remove asked
@@ -41,6 +54,8 @@ export class ConversationStore {
   private readonly removed = new Set<string>();
   /** Leftover temporary files are deleted at the first listing only. */
   private listed = false;
+  /** Grows with each `search`, so an older one stops at its next read. */
+  private latestSearch = 0;
 
   /** `files`: `undefined` without a storage directory (no folder open): nothing is kept, the list is empty. */
   constructor(private readonly files: ConversationFiles | undefined) {}
@@ -144,6 +159,42 @@ export class ConversationStore {
     });
   }
 
+  /**
+   * The History content search: the conversations `ids` (the listed ones, newest first; the first 50 only) whose
+   * messages hold `query` once made a needle (`searchNeedle`), each with its excerpt (`conversationExcerpt`). Records
+   * are read one at a time through the queue, each read queued when the one before has ended, so a save waits behind
+   * one read of a search at most. Resolves `undefined`, without an answer, for a query that is not searchable or when
+   * a newer search started meanwhile; its remaining reads are never queued. Never rejects for a record and changes
+   * nothing on disk.
+   */
+  async search(ids: readonly string[], query: string): Promise<ConversationSearchAnswer | undefined> {
+    const run = ++this.latestSearch;
+    const { needle, searchable } = searchNeedle(query);
+    if (!searchable) return undefined;
+    const files = this.files;
+    const answer: ConversationSearchAnswer = { items: [], unreadableCount: 0 };
+    if (!files) return answer;
+    for (const id of ids.slice(0, MAX_CONVERSATIONS)) {
+      if (run !== this.latestSearch) return undefined;
+      const read = await this.queue.run(() => this.readForSearch(files, id));
+      if (read.kind === "unreadable") answer.unreadableCount += 1;
+      if (read.kind !== "read") continue;
+      const excerpt = conversationExcerpt(read.record.entries, needle);
+      if (excerpt !== undefined) answer.items.push({ id, excerpt });
+    }
+    return run === this.latestSearch ? answer : undefined;
+  }
+
+  /** Unqueued read for the search; never rejects: a failed read is logged and unreadable. */
+  private async readForSearch(files: ConversationFiles, id: string): Promise<SearchRead> {
+    try {
+      return await this.readRecord(files, id);
+    } catch (error) {
+      console.error("broke-code: could not read a saved conversation to search it", id, error);
+      return { kind: "unreadable" };
+    }
+  }
+
   /** Unqueued summary read; `undefined` when missing, unreadable (logged), invalid, or not of `id`. */
   private async readSummary(files: ConversationFiles, id: string): Promise<ConversationSummary | undefined> {
     let text: string | undefined;
@@ -158,15 +209,21 @@ export class ConversationStore {
     return summary?.id === id ? summary : undefined;
   }
 
-  /** Unqueued read; callers run it inside the queue. */
+  /** Unqueued read; callers run it inside the queue. `undefined` when gone or unreadable (logged). */
   private async read(files: ConversationFiles, id: string): Promise<ConversationRecord | undefined> {
-    if (this.removed.has(id)) return undefined;
+    const read = await this.readRecord(files, id);
+    return read.kind === "read" ? read.record : undefined;
+  }
+
+  /** Unqueued read of the record `id`; an invalid one is logged and unreadable. Rejects on a read failure. */
+  private async readRecord(files: ConversationFiles, id: string): Promise<SearchRead> {
+    if (this.removed.has(id)) return { kind: "gone" };
     const text = await files.read(fileName(id));
-    if (text === undefined) return undefined;
+    if (text === undefined) return { kind: "gone" };
     const parsed = parseConversation(text);
     if (!parsed.ok) return logSkipped(id, parsed.reason);
     if (parsed.record.id !== id) return logSkipped(id, `holds id ${parsed.record.id}`);
-    return parsed.record;
+    return { kind: "read", record: parsed.record };
   }
 }
 
@@ -181,9 +238,9 @@ function summaryName(id: string): string {
   return `${id}.summary.json`;
 }
 
-function logSkipped(id: string, reason: unknown): undefined {
+function logSkipped(id: string, reason: unknown): SearchRead {
   console.error("broke-code: skipped saved conversation", id, reason);
-  return undefined;
+  return { kind: "unreadable" };
 }
 
 function logOrphan(error: unknown): void {
