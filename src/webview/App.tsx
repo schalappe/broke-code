@@ -447,12 +447,18 @@ export function HistoryPanel({
 /** How long a searchable needle must stay the same before History asks the host to search the conversations. */
 const SEARCH_WAIT_MS = 300;
 
+/**
+ * Last content search request id, for the whole panel: History unmounts when closed, so an id kept per mount would be
+ * reused by the next opening and take a late answer to the earlier one.
+ */
+let lastSearchId = 0;
+
 /** The host's answer to the content search the webview asked last. */
 type ContentAnswer = { items: ConversationMatch[]; unreadableCount: number };
 
 /**
  * History's content search for the field's `query`. Once its needle (`searchNeedle`) is searchable and has stayed the
- * same for 300 ms, asks the host to search the conversations. Each change of the needle advances the request id and
+ * same for 300 ms, asks the host to search the conversations. Each change of the needle takes a new request id and
  * drops the earlier answer at once, so only an answer to the latest needle shows; unmounting cancels the wait.
  * `changeQuery` must carry every change of the field, so the drop lands in the same render as the new text.
  */
@@ -464,14 +470,16 @@ function useContentSearch(): {
 } {
   const [query, setQuery] = useState("");
   const [answer, setAnswer] = useState<ContentAnswer>();
-  const latest = useRef({ id: 0, needle: "" });
+  // [>]: -1 is no request id, so no answer counts before this opening's first needle change.
+  const latest = useRef({ id: -1, needle: "" });
   const { needle, searchable } = searchNeedle(query);
 
   const changeQuery = (next: string) => {
     setQuery(next);
     const nextNeedle = searchNeedle(next).needle;
     if (nextNeedle === latest.current.needle) return;
-    latest.current = { id: latest.current.id + 1, needle: nextNeedle };
+    lastSearchId += 1;
+    latest.current = { id: lastSearchId, needle: nextNeedle };
     setAnswer(undefined);
   };
 

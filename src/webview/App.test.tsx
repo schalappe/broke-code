@@ -2310,6 +2310,24 @@ describe("history filter", () => {
     });
   });
 
+  test("an answer from an earlier History opening is ignored", async () => {
+    await withHistory(saved, async (panel, field) => {
+      await panel.fill(field, "lexer");
+      await advance(300);
+      const earlier = lastSearchId();
+      await panel.click("History");
+      await panel.click("History");
+      const reopened = filterField(panel.host);
+      if (!reopened) throw new Error("no search field");
+      await panel.fill(reopened, "deploy");
+      await advance(300);
+      await answer(panel, [{ id: OTHER_ID, excerpt: "the lexer" }], 1, earlier);
+      expect(rows(panel.host)).toEqual([]);
+      expect(warning(panel.host)).toBeUndefined();
+      expect(historyText(panel.host)).toContain("Searching…");
+    });
+  });
+
   test("closing History before 300 ms posts no search", async () => {
     await withHistory(saved, async (panel, field) => {
       await panel.fill(field, "lexer");
