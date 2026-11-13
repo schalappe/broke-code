@@ -135,14 +135,6 @@ describe("askUser", () => {
     expect((await askUser(call("Which?"), context)).text).toBe("ask_user: stopped before it finished.");
   });
 
-  test("a request no one can answer gives an error result saying so", async () => {
-    const { context } = answering({ kind: "unanswerable" });
-    expect(await askUser(call("Which?"), context)).toEqual({
-      status: "error",
-      text: "No one can answer a question here.",
-    });
-  });
-
   test("a request that rejects gives an error result, never a rejection", async () => {
     const context = {
       signal: new AbortController().signal,

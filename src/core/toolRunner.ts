@@ -20,7 +20,8 @@ import { type ChangeApplier, runWriteTool, WRITE_TOOLS } from "./writeTools";
  * `load_skill` loads from the run's `skills`, a skill of `sentSkillRoots` answering "already loaded". `run_command` is
  * offered only with `commandEnv`, read at each call so a changed setting or shell reaches the next command; it asks the
  * run's `requestApproval` before anything runs. `ask_user` is offered only when `offerAskUser` is on, and asks the
- * run's `requestAnswer`; the eval bench turns it on, the extension does not.
+ * run's `requestAnswer`; the extension turns it on, and so does the eval bench, except in its baseline run without
+ * the tool.
  */
 export function workspaceToolRunner(
   roots: () => WorkspaceRoot[],

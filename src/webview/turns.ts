@@ -122,8 +122,8 @@ function emptyKinds(): Record<StepKind, KindCount> {
 /**
  * The kind of a tool step, judged by its status and arguments before its name, or `undefined` for an other step: a
  * malformed call (it often carries a real tool name), a read or a write whose path is empty once cleaned, a command
- * without its command (a call refused by Plan is recorded without arguments), or a tool of no kind (an old record, a
- * future tool). A `list_files` without a path lists the workspace root.
+ * without its command (a call refused by Plan is recorded without arguments), or a tool of no kind (`ask_user`, an old
+ * record, a future tool). A `list_files` without a path lists the workspace root.
  */
 function stepKind(step: ChatEntry & { role: "tool" }): StepKind | undefined {
   if (step.status === "malformed") return undefined;

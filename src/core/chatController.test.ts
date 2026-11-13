@@ -3587,22 +3587,301 @@ describe("ChatController agent turn", () => {
       expect(decisions).toEqual([{ kind: "reject" }]);
     });
 
-    test("an ask_user question gets the error result at once: no one can answer it here", async () => {
-      const runner = workspaceToolRunner(
-        () => [{ name: "ws", path: workspaceDir }],
-        { ripgrepCandidates: [] },
-        (roots) => fileApplier(roots),
-        undefined,
-        true,
-      );
-      const askCall = "<ask_user>\n<question>Which file?</question>\n<options>a.ts\nb.ts</options>\n</ask_user>";
-      const { controller, state } = await scripted([{ content: askCall }, { content: "Done." }], runner);
-      await controller.send("rename it");
-      expect(state().approval).toBeUndefined();
-      expect(state().entries.find((entry) => entry.role === "tool")).toMatchObject({
-        name: "ask_user",
-        status: "error",
-        text: "No one can answer a question here.",
+    describe("question", () => {
+      const askCall = (question: string, options?: string) =>
+        `<ask_user>\n<question>${question}</question>\n${options === undefined ? "" : `<options>${options}</options>\n`}</ask_user>`;
+      const askResult = (text: string) => `<tool_result tool="ask_user" status="ok">\n${text}\n</tool_result>`;
+
+      /**
+       * A turn on the extension's runner, `ask_user` offered: `before` replies first, then one that asks which of
+       * `a.ts` and `b.ts`, then "Done.".
+       */
+      async function asking(options: { steps?: number; before?: ScriptedReply[] } = {}) {
+        const runner = workspaceToolRunner(
+          () => [{ name: "ws", path: workspaceDir }],
+          { ripgrepCandidates: [] },
+          (roots) => fileApplier(roots),
+          undefined,
+          true,
+        );
+        const limits = options.steps === undefined ? undefined : fixedLimits({ steps: options.steps });
+        const script = [
+          ...(options.before ?? []),
+          { content: askCall("Which file?\nBoth define load.", " a.ts \nb.ts\n") },
+          { content: "Done." },
+        ];
+        return scripted(script, runner, undefined, limits);
+      }
+
+      /** `asking`, with the question open; `done` settles when the turn ends. */
+      async function waitingOnQuestion(options: { steps?: number } = {}) {
+        const turn = await asking(options);
+        const done = turn.controller.send("rename load");
+        await until(turn.state, (s) => s.question !== undefined);
+        return { ...turn, done };
+      }
+
+      test("the call opens one question in the state while the reply stays streaming", async () => {
+        const { state, controller, done, sent } = await waitingOnQuestion();
+        expect(state().question).toEqual({
+          id: expect.any(Number),
+          question: "Which file?\nBoth define load.",
+          options: ["a.ts", "b.ts"],
+        });
+        expect(state().approval).toBeUndefined();
+        expect(state().entries.at(-1)).toMatchObject({
+          role: "assistant",
+          status: "streaming",
+          call: { name: "ask_user" },
+        });
+        expect(isReplying(state())).toBe(true);
+        expect(sent()).toHaveLength(1);
+        controller.stop();
+        await done;
+      });
+
+      test("an option answer and a typed answer each go back as the ok result", async () => {
+        for (const text of ["b.ts", "Neither: rename the one in c.ts."]) {
+          const { state, controller, done, sent } = await waitingOnQuestion();
+          controller.answer(state().question!.id, text);
+          await done;
+
+          expect(state().question).toBeUndefined();
+          expect(state().entries[2]).toEqual({
+            role: "tool",
+            name: "ask_user",
+            args: { question: "Which file?\nBoth define load.", options: " a.ts \nb.ts\n" },
+            status: "ok",
+            text: `The user answered: ${text}`,
+          });
+          expect(sent()[1]!.messages.at(-1)?.content).toBe(askResult(`The user answered: ${text}`));
+          expect(state().entries.at(-1)).toMatchObject({ content: "Done.", status: "done" });
+        }
+      });
+
+      test("an answer for another question id is ignored, and so is a second answer", async () => {
+        const { state, controller, done } = await waitingOnQuestion();
+        const id = state().question!.id;
+        controller.answer(id + 1, "a.ts");
+        controller.answer(id - 1, "a.ts");
+        controller.approve(id);
+        controller.reject(id);
+        await Bun.sleep(20);
+        expect(state().question?.id).toBe(id);
+        controller.answer(id, "b.ts");
+        controller.answer(id, "a.ts");
+        await done;
+        expect(state().entries[2]).toMatchObject({ text: "The user answered: b.ts" });
+      });
+
+      test("Stop cancels the question, records no step, and saves the reply stopped", async () => {
+        const { state, controller, done, sent, saved } = await waitingOnQuestion();
+        const id = state().question!.id;
+        controller.stop();
+        await done;
+
+        expect(state().question).toBeUndefined();
+        expect(state().entries.at(-1)).toMatchObject({
+          role: "assistant",
+          status: "stopped",
+          call: { name: "ask_user" },
+        });
+        controller.answer(id, "a.ts");
+        await Bun.sleep(20);
+        expect(state().entries).toHaveLength(2);
+        expect(sent()).toHaveLength(1);
+        await settledSave(saved, 2);
+        expect(saved()?.entries.at(-1)).toMatchObject({ status: "stopped" });
+      });
+
+      test("New chat cancels the question and saves the turn stopped in its own record", async () => {
+        const { state, controller, done, saved, sent } = await waitingOnQuestion();
+        const id = state().question!.id;
+        const turnId = state().conversationId;
+        await controller.newChat();
+        await done;
+
+        expect(state().conversationId).not.toBe(turnId);
+        expect(state().question).toBeUndefined();
+        controller.answer(id, "a.ts");
+        await Bun.sleep(20);
+        expect(sent()).toHaveLength(1);
+        await controller.openConversation(turnId);
+        await settledSave(saved, 2);
+        expect(saved()?.entries.at(-1)).toMatchObject({ status: "stopped", call: { name: "ask_user" } });
+        expect(state().question).toBeUndefined();
+      });
+
+      test("opening another conversation cancels the question and the turn ends stopped", async () => {
+        const turn = await asking({ before: [{ content: "Hello." }] });
+        const { state, controller, saved, sent } = turn;
+        await controller.send("hi");
+        const firstId = state().conversationId;
+        await controller.newChat();
+        const done = controller.send("rename load");
+        await until(state, (s) => s.question !== undefined);
+        const turnId = state().conversationId;
+
+        await controller.openConversation(firstId);
+        await done;
+        expect(state().conversationId).toBe(firstId);
+        expect(state().question).toBeUndefined();
+        expect(sent()).toHaveLength(2);
+        await controller.openConversation(turnId);
+        await settledSave(saved, 2);
+        expect(state().entries.at(-1)).toMatchObject({ status: "stopped", call: { name: "ask_user" } });
+      });
+
+      test("deleting the conversation shown cancels the question", async () => {
+        const { state, controller, done, sent } = await waitingOnQuestion();
+        const id = state().question!.id;
+        const turnId = state().conversationId;
+        await controller.deleteConversation(turnId);
+        await done;
+
+        expect(state().conversationId).not.toBe(turnId);
+        expect(state().question).toBeUndefined();
+        controller.answer(id, "a.ts");
+        await Bun.sleep(20);
+        expect(sent()).toHaveLength(1);
+      });
+
+      test("deactivation cancels the question and the reply ends stopped", async () => {
+        const { state, controller, done, sent } = await waitingOnQuestion();
+        controller.dispose();
+        await done;
+
+        expect(state().question).toBeUndefined();
+        expect(state().entries.at(-1)).toMatchObject({ status: "stopped", call: { name: "ask_user" } });
+        expect(sent()).toHaveLength(1);
+      });
+
+      test("a message sent while the question is open is queued, and does not answer it", async () => {
+        const { state, controller, done, sent } = await waitingOnQuestion();
+        const id = state().question!.id;
+        await controller.send("a.ts");
+        await controller.queueMessage("and add a test", []);
+
+        expect(state().queue.map((queued) => queued.text)).toEqual(["a.ts", "and add a test"]);
+        expect(state().question?.id).toBe(id);
+        expect(sent()).toHaveLength(1);
+        controller.stop();
+        await done;
+      });
+
+      test("a record saved while the question is open reloads stopped, with no question", async () => {
+        const { state, controller, done, files } = await waitingOnQuestion();
+        const id = state().conversationId;
+        const text = files.files.get(`${id}.json`)!;
+        expect(text).not.toContain('"question":{');
+        expect(Object.keys(JSON.parse(text))).not.toContain("question");
+        const record = await new ConversationStore(files).load(id);
+        expect(record?.entries.at(-1)).toMatchObject({
+          role: "assistant",
+          status: "stopped",
+          call: { name: "ask_user" },
+        });
+        expect(record?.entries).toHaveLength(2);
+        controller.stop();
+        await done;
+      });
+
+      test("the call counts one step toward the step limit", async () => {
+        const { state, controller, done, sent } = await waitingOnQuestion({ steps: 1 });
+        controller.answer(state().question!.id, "a.ts");
+        await done;
+        expect(sent()).toHaveLength(1);
+        expect(state().entries.at(-2)).toMatchObject({ role: "assistant", status: "halted", haltReason: "stepLimit" });
+        expect(state().entries.at(-1)).toMatchObject({ role: "tool", name: "ask_user", status: "ok" });
+      });
+
+      test("a refused call opens no question and gets its error result", async () => {
+        const runner = workspaceToolRunner(
+          () => [{ name: "ws", path: workspaceDir }],
+          { ripgrepCandidates: [] },
+          (roots) => fileApplier(roots),
+          undefined,
+          true,
+        );
+        const { controller, state } = await scripted([{ content: askCall("   ") }, { content: "Done." }], runner);
+        let opened = false;
+        const done = controller.send("rename load");
+        await until(state, (s) => {
+          if (s.question) opened = true;
+          return contentOf(s.entries.at(-1)) === "Done.";
+        });
+        await done;
+        expect(opened).toBe(false);
+        expect(state().entries[2]).toMatchObject({ status: "error", text: "ask_user: the question is empty." });
+      });
+
+      test("a second request while the question is open is refused, and the question stays", async () => {
+        let second: Promise<unknown> | undefined;
+        const runner: ToolRunner = {
+          tools: READ_TOOLS,
+          run: async (call, context) => {
+            const first = context.requestAnswer({ question: "Which file?", options: [] });
+            second = Promise.allSettled([
+              context.requestAnswer({ question: "And which name?", options: [] }),
+              context.requestApproval({ kind: "write", tool: call.name, summary: "a.ts" }),
+            ]);
+            const answer = await first;
+            return { status: "ok", text: answer.kind };
+          },
+        };
+        const { controller, state } = await scripted([{ content: readCall("a.ts") }, { content: "Done." }], runner);
+        const done = controller.send("go");
+        await until(state, (s) => s.question !== undefined);
+        expect(await second).toEqual([
+          { status: "rejected", reason: expect.any(Error) },
+          { status: "rejected", reason: expect.any(Error) },
+        ]);
+        expect(state().question).toMatchObject({ question: "Which file?" });
+        expect(state().approval).toBeUndefined();
+        controller.answer(state().question!.id, "a.ts");
+        await done;
+      });
+
+      test("a question asked while an approval request is open is refused", async () => {
+        let question: Promise<unknown> | undefined;
+        const runner: ToolRunner = {
+          tools: READ_TOOLS,
+          run: async (call, context) => {
+            const approval = context.requestApproval({ kind: "write", tool: call.name, summary: "a.ts" });
+            question = context.requestAnswer({ question: "Which file?", options: [] }).catch((error) => error);
+            return { status: "ok", text: (await approval).kind };
+          },
+        };
+        const { controller, state } = await scripted([{ content: readCall("a.ts") }, { content: "Done." }], runner);
+        const done = controller.send("go");
+        await until(state, (s) => s.approval !== undefined);
+        expect(await question).toBeInstanceOf(Error);
+        expect(state().question).toBeUndefined();
+        controller.approve(state().approval!.id);
+        await done;
+      });
+
+      test("a question asked after Stop is cancelled at once", async () => {
+        let late: Promise<unknown> | undefined;
+        let ask: () => void = () => {};
+        const runner: ToolRunner = {
+          tools: READ_TOOLS,
+          run: (_call, context) =>
+            new Promise(() => {
+              ask = () => {
+                late = context.requestAnswer({ question: "Which file?", options: [] });
+              };
+            }),
+        };
+        const { controller, state } = await scripted([{ content: readCall("a.ts") }], runner);
+        const done = controller.send("go");
+        await until(state, (s) => s.entries.at(-1)?.role === "assistant" && "call" in s.entries.at(-1)!);
+        await Bun.sleep(10);
+        controller.stop();
+        await done;
+        ask();
+        expect(await late).toEqual({ kind: "cancel" });
+        expect(state().question).toBeUndefined();
       });
     });
 

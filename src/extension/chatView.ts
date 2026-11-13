@@ -233,6 +233,9 @@ export class ChatView implements vscode.WebviewViewProvider {
       case "reject":
         controller.reject(message.id, message.reason);
         return;
+      case "answer":
+        controller.answer(message.id, message.text);
+        return;
       case "setMode":
         return void controller.setMode(message.mode).then((change) => {
           if (change.kind !== "failed") return;
