@@ -116,8 +116,10 @@ This file says which file holds which responsibility. Update it when a module ga
   `onRecord` with that file after each; `has`, whether a file is still in the set;
   `RecordedChanges.restore`, the per-file restore over the workspace roots and an unsaved-changes port, each file
   `restored`, `removed`, or `skipped` with its `RestoreRefusal`, as `UndoneFile` in `protocol.ts` plus the file's real
-  path), the approval seam (`approval.ts`: the request a tool
-  makes, the decision it gets, the rejection text, and the decisions of the editor side: which change diffs to close,
+  path), the chat's palette commands (`chatCommands.ts`: `CHAT_COMMANDS`, the `when` context `chatContext` derives from
+  the state, and `runChatCommand`, which acts on the request open as its button does), the approval seam (`approval.ts`:
+  the request a tool makes, with a write's line counts, the preview it opens and shows again, the decision it gets, the
+  rejection text, and the decisions of the editor side: which change diffs to close,
   the unsaved-editor check over the open documents, the auto-approve setting from its user value), the question tool
   (`askUser.ts`: `ASK_USER_TOOL`, `askUser` checks the question and the options and asks the run context's
   `requestAnswer`, the request beside the approval request; the answer, or a cancellation on Stop), the
@@ -159,9 +161,10 @@ This file says which file holds which responsibility. Update it when a module ga
   skills of each send, and the same discovery, unlogged, for the `/` menu's `querySkills`; `chatView.ts` answers
   History's `searchConversations` through the action `extension.ts` binds to `answerConversationSearch` over the
   controller's listed conversations, opens the
-  Quick Pick of `chooseModel`, runs `insertCode` over the active text editor, shows a failed mode write, and wires the
+  Quick Pick of `chooseModel`, runs `insertCode` over the active text editor, shows a failed mode write, sets the
+  palette commands' context keys from each published state (`ChatContextKeys`), and wires the
   `DraftQueue` to the view's focus command and `postMessage` (`insertDraft`); `extension.ts` registers `broke-code.addSelectionToChat`,
-  `broke-code.fixDiagnostic`, and the code action provider of the quick fix; `commitMessage.ts` registers `broke-code.generateCommitMessage`, its git port over the
+  `broke-code.fixDiagnostic`, the chat's palette commands (`CHAT_COMMANDS`), and the code action provider of the quick fix; `commitMessage.ts` registers `broke-code.generateCommitMessage`, its git port over the
   built-in Git extension's API, the repository Quick Pick, the replace question, the progress notification, and the
   notifications; `progress.ts` holds the cancellable progress notification both run their request under; `editSelection.ts` registers `broke-code.editSelection`, its presets `broke-code.refactorSelection`,
   `broke-code.documentSelection`, and `broke-code.typeSelection`, and the diff's `broke-code.acceptEdit` and
@@ -172,7 +175,8 @@ This file says which file holds which responsibility. Update it when a module ga
   from a `--vscode-*` variable; see `DESIGN.md`), the thread that carries a turn's tool steps as nodes, the latest
   user message in the theme's button colors and the earlier ones outlined (`Entry`'s `earlier`), tool step rows, the approval controls, the question block (`QuestionControls`: the open `ask_user` question, its options, the answer field, and Answer, posting `answer`), the mode selector after the message box (`ModeSelect`), the turn's actions row (`TurnActions`: Retry, its
   confirmation and Cancel, Continue, and "Implement in ... mode" under the last turn's reply, then "Undo changes" under the reply
-  `ChatState.undo` names), Edit under the last turn's user message and the replacing state's mark with Cancel (held by
+  `ChatState.undo` names), Show change in the approval controls (posting `showChange`), Set context size in the header
+  (`SetContextSize`), Edit under the last turn's user message and the replacing state's mark with Cancel (held by
   `App`, the composer's Send carrying it), "Changed files" under the reply `ChatState.undo` names (`ChangedFiles`, a
   button per row posting `openChangeDiff`), and the last undo's outcome (`UndoOutcome`), and the answer's code blocks with Copy and Insert at cursor (`CodeBlock`,
   the `pre` override of the answer's renderer) included, and Quote under an answer whose text is selected (`Answer`,

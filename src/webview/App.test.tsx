@@ -15,13 +15,13 @@ const posted: unknown[] = [];
 const {
   App,
   ApprovalControls,
-  ContextNotice,
   ConversationList,
   EmptyState,
   Header,
   HistoryPanel,
   MentionMenu,
   QuestionControls,
+  SetContextSize,
   SlashMenu,
   Warnings,
 } = await import("./App");
@@ -150,8 +150,7 @@ describe("agent turn", () => {
     expect(html).toContain('<details class="step">');
     expect(html).toContain('<span class="step-tool">read_file</span>');
     expect(html).toContain('<span class="step-arg">src/a.ts</span>');
-    expect(html).toContain("ok");
-    expect(html).toContain("4 lines");
+    expect(html).toContain('<span class="step-status">ok, 3 lines</span>');
     expect(html.split('<span class="step-tool">').length - 1).toBe(1);
   });
 
@@ -194,7 +193,7 @@ describe("agent turn", () => {
     );
     expect(ranged({ start_line: "2001" })).toContain('<span class="step-arg">big.log 2001-</span>');
     expect(ranged({ end_line: "50" })).toContain('<span class="step-arg">big.log 1-50</span>');
-    expect(ranged({ start_line: "2001" })).toContain("ok, 4 lines");
+    expect(ranged({ start_line: "2001" })).toContain("ok, 1 line");
   });
 
   test("an error step says error and its size", () => {
@@ -365,7 +364,12 @@ describe("folded turn", () => {
 
   test("the row says what the steps did, the failed ones, and the rejected ones", () => {
     const html = conversationOf([user, call, ok, call, failed, call, rejected, final]);
-    expect(html).toContain('<summary class="turn-fold-row">Read 1 file, 1 failed, 1 rejected</summary>');
+    expect(html).toContain('<summary class="turn-fold-row">Read 1 file, 1 failed (read_file), 1 rejected</summary>');
+  });
+
+  test("with several failed steps, the row counts them without naming one", () => {
+    const html = conversationOf([user, call, failed, call, { ...failed, name: "search" }, final]);
+    expect(html).toContain("2 failed</summary>");
   });
 
   test("the row names the files read, the files edited, and the commands run", () => {
@@ -383,7 +387,7 @@ describe("folded turn", () => {
       final,
     ];
     expect(conversationOf(entries)).toContain(
-      '<summary class="turn-fold-row">Read 3 files, edited 1 file, ran 1 command</summary>',
+      '<summary class="turn-fold-row">Read 3 files, changed 1 file, ran 1 command</summary>',
     );
   });
 
@@ -570,6 +574,123 @@ describe("approval", () => {
     ).toBe(true);
   });
 
+  test("scrolled up, a row names the decision waiting below; it jumps to the bottom and hands the focus to the message box", async () => {
+    const { act } = await import("react");
+    const entries: ChatEntry[] = [{ role: "user", content: "Hi", mentions: [] }, writing];
+    const jumpText = (host: HTMLElement) => host.querySelector("button.jump")?.textContent;
+    await withPanel(stateWith(true, { entries }), async (panel) => {
+      const list = panel.host.querySelector<HTMLElement>("section.conversation");
+      if (!list) throw new Error("no conversation");
+      // [&]: The DOM has no layout: give the list a height and scroll it up by hand.
+      Object.defineProperties(list, {
+        scrollHeight: { configurable: true, value: 1000 },
+        clientHeight: { configurable: true, value: 200 },
+        scrollTop: { configurable: true, writable: true, value: 0 },
+      });
+      expect(jumpText(panel.host)).toBeUndefined();
+      await act(async () => list.dispatchEvent(new Event("scroll")));
+      expect(jumpText(panel.host)).toBe("Jump to latest");
+      await panel.show(stateWith(true, { entries, approval }));
+      expect(jumpText(panel.host)).toBe("Waiting for your decision: write_file on src/a.ts");
+      expect(panel.host.querySelector("button.jump")?.className).toBe("jump waiting");
+      await act(async () => panel.host.querySelector<HTMLButtonElement>("button.jump")?.click());
+      expect(jumpText(panel.host)).toBeUndefined();
+      expect(document.activeElement).toBe(panel.textarea);
+    });
+  });
+
+  test("a message the user sends takes them back to the bottom", async () => {
+    const { act } = await import("react");
+    const first: ChatEntry[] = [
+      { role: "user", content: "Hi", mentions: [] },
+      { role: "assistant", reasoning: "", content: "Hello.", status: "done" },
+    ];
+    await withPanel(stateWith(true, { entries: first }), async (panel) => {
+      const list = panel.host.querySelector<HTMLElement>("section.conversation");
+      if (!list) throw new Error("no conversation");
+      Object.defineProperties(list, {
+        scrollHeight: { configurable: true, value: 1000 },
+        clientHeight: { configurable: true, value: 200 },
+        scrollTop: { configurable: true, writable: true, value: 0 },
+      });
+      await act(async () => list.dispatchEvent(new Event("scroll")));
+      expect(panel.host.querySelector("button.jump")).not.toBeNull();
+      await panel.show(
+        stateWith(true, {
+          entries: [...first, { role: "user", content: "More", mentions: [] }, { ...writing, status: "waiting" }],
+        }),
+      );
+      expect(panel.host.querySelector("button.jump")).toBeNull();
+    });
+  });
+
+  test("⌘Enter accepts and ⌘Backspace rejects from an empty message box or a button, never from a field with text", async () => {
+    const { act } = await import("react");
+    const entries: ChatEntry[] = [{ role: "user", content: "Hi", mentions: [] }, writing];
+    const key = (key: string, init: KeyboardEventInit = {}) =>
+      act(async () => {
+        window.dispatchEvent(
+          new KeyboardEvent("keydown", { key, metaKey: true, bubbles: true, cancelable: true, ...init }),
+        );
+      });
+    await withPanel(stateWith(true, { entries, approval }), async (panel) => {
+      panel.textarea.focus();
+      await key("Enter");
+      expect(posted).toEqual([{ type: "approve", id: 7 }]);
+      posted.length = 0;
+      await key("Enter", { repeat: true });
+      await key("Enter", { shiftKey: true });
+      await key("Enter", { metaKey: false });
+      expect(posted).toEqual([]);
+      await panel.type("a draft");
+      await key("Backspace");
+      expect(posted).toEqual([]);
+      const reason = panel.host.querySelector<HTMLInputElement>(".approval-reason");
+      if (!reason) throw new Error("no reason field");
+      await panel.fill(reason, "Too broad.");
+      reason.focus();
+      await key("Backspace");
+      expect(posted).toEqual([]);
+      panel.host.querySelector<HTMLButtonElement>(".decision .approval .actions button")?.focus();
+      await key("Backspace");
+      expect(posted).toEqual([{ type: "reject", id: 7, reason: "Too broad." }]);
+    });
+  });
+
+  test("in the message box, ⌘Enter decides only while it is empty; with a draft it sends as Enter does", async () => {
+    const { act } = await import("react");
+    const entries: ChatEntry[] = [{ role: "user", content: "Hi", mentions: [] }, writing];
+    await withPanel(stateWith(true, { entries, approval }), async (panel) => {
+      // [&]: Pressed on the message box itself, so the event goes through its own key handler first.
+      const press = (key: string) =>
+        act(async () => {
+          panel.textarea.dispatchEvent(
+            new KeyboardEvent("keydown", { key, metaKey: true, bubbles: true, cancelable: true }),
+          );
+        });
+      panel.textarea.focus();
+      await press("Enter");
+      expect(posted).toEqual([{ type: "approve", id: 7 }]);
+      posted.length = 0;
+      await panel.type("a draft");
+      await press("Enter");
+      expect(posted.map((message) => (message as { type: string }).type)).toEqual(["queueMessage"]);
+    });
+  });
+
+  test("without an open request, ⌘Enter does nothing", async () => {
+    const { act } = await import("react");
+    await withPanel(
+      stateWith(true, { entries: [{ role: "user", content: "Hi", mentions: [] }, writing] }),
+      async () => {
+        await act(async () => {
+          window.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true }));
+        });
+        expect(posted).toEqual([]);
+      },
+    );
+  });
+
   test("without an open request, a running call shows no decision buttons", () => {
     const html = turn([writing], false);
     expect(html).toContain("running…");
@@ -581,6 +702,23 @@ describe("approval", () => {
     const html = turn([{ ...writing, status: "stopped" }]);
     expect(html).not.toContain(">Accept<");
     expect(html).toContain("stopped, no result");
+  });
+
+  test("a write with a diff shows its line counts and Show change, which posts the request id", () => {
+    const html = turn([writing]);
+    expect(html).not.toContain("Show change");
+    const shown = { ...approval, lines: { added: 4, removed: 1 }, preview: true as const };
+    const markup = renderToStaticMarkup(ApprovalControls({ approval: shown, reason: "", setReason: () => {} }));
+    expect(markup).toContain('<span class="changed-counts">+4 \u22121</span>');
+    expect(markup.indexOf(">Show change<")).toBeLessThan(markup.indexOf('class="approval-reason"'));
+    button(ApprovalControls({ approval: shown, reason: "", setReason: () => {} }), "Show change").props.onClick!();
+    expect(posted).toEqual([{ type: "showChange", id: 7 }]);
+  });
+
+  test("a command shows neither line counts nor Show change", () => {
+    const command = { id: 8, kind: "command" as const, tool: "run_command", summary: "ls" };
+    const markup = renderToStaticMarkup(ApprovalControls({ approval: command, reason: "", setReason: () => {} }));
+    expect(markup).not.toContain("approval-change");
   });
 
   test("Accept posts the request id; Reject posts it with the reason typed, trimmed, or none when blank", () => {
@@ -595,19 +733,20 @@ describe("approval", () => {
     ]);
   });
 
-  test("Enter in the reason field rejects with the reason; other keys and Enter while composing (IME) do not", () => {
+  test("Enter in the reason field rejects with the reason; other keys, modified Enter (⌘Enter), and Enter while composing (IME) do not", () => {
     const field = elements(ApprovalControls({ approval, reason: " Too broad. ", setReason: () => {} })).find(
       (element) => element.type === "input",
     );
     if (!field) throw new Error("no reason field");
     const onKeyDown = field.props.onKeyDown as (event: unknown) => void;
     const prevented: string[] = [];
-    const press = (key: string, isComposing = false) =>
-      onKeyDown({ key, nativeEvent: { isComposing }, preventDefault: () => prevented.push(key) });
+    const press = (key: string, isComposing = false, modifiers: Record<string, boolean> = {}) =>
+      onKeyDown({ key, nativeEvent: { isComposing }, preventDefault: () => prevented.push(key), ...modifiers });
 
     press("a");
     press("Escape");
     press("Enter", true);
+    for (const modifier of ["metaKey", "ctrlKey", "altKey", "shiftKey"]) press("Enter", false, { [modifier]: true });
     expect(posted).toEqual([]);
     expect(prevented).toEqual([]);
 
@@ -742,7 +881,7 @@ describe("approval", () => {
         },
       ]);
       expect(html).toContain(commandBlock);
-      expect(html).toContain(">rejected<");
+      expect(html).toContain('<span class="step-status">rejected by you</span>');
     });
   });
 
@@ -761,7 +900,7 @@ describe("approval", () => {
       ],
       false,
     );
-    expect(rejected).toContain("rejected");
+    expect(rejected).toContain('<span class="step-status">rejected by you: Keep it.</span>');
     expect(rejected).not.toContain("error, 2 lines");
     const auto = turn(
       [
@@ -773,11 +912,12 @@ describe("approval", () => {
           status: "ok",
           text: "write_file: replaced src/a.ts.",
           approval: "auto",
+          lines: { added: 1, removed: 0 },
         },
       ],
       false,
     );
-    expect(auto).toContain("auto-approved, ok, 1 line");
+    expect(auto).toContain("auto-approved, ok, +1 \u22120");
   });
 });
 
@@ -827,11 +967,10 @@ describe("question", () => {
     expect(html).toContain(">Stop<");
   });
 
-  test("the row shows the first line of a two-line question, whatever the order of the arguments", () => {
+  test("an open question's row names the tool only; once answered, the row shows the question's first line", () => {
     const html = turn([asking]);
-    expect(html).toContain(
-      '<span class="step-tool">ask_user</span><span class="step-arg">Which load do you mean?</span>',
-    );
+    expect(html).toContain('<span class="step-tool">ask_user</span><span class="step-status waiting">');
+    expect(html.split("Which load do you mean?").length - 1).toBe(1);
     const answered: ChatEntry = {
       role: "tool",
       name: "ask_user",
@@ -1465,7 +1604,11 @@ describe("conversation history", () => {
     expect(html.match(/<li class="current">/g)).toHaveLength(1);
     expect(html).toMatch(/<li class="current"><button[^>]*aria-current="true"/);
     expect(html).toContain("<li><button");
-    expect(html.match(/<button type="button" class="secondary">Delete<\/button>/g)).toHaveLength(2);
+    expect(
+      html.match(
+        /<button type="button" class="secondary history-delete" aria-label="Delete (Newest|Older)">Delete<\/button>/g,
+      ),
+    ).toHaveLength(2);
     expect(html).not.toContain("No past conversations.");
   });
 
@@ -2141,7 +2284,14 @@ describe("history panel", () => {
     await withPanel(stateWith(true, { conversations }), async (panel) => {
       const rowButtons = (className: string) => [...panel.host.querySelectorAll<HTMLButtonElement>(className)];
       await panel.click("History");
-      for (const remove of rowButtons(".history button.secondary")) await act(async () => remove.click());
+      for (const index of [0, 1]) {
+        const remove = rowButtons("button.history-delete")[index];
+        if (!remove) throw new Error(`no Delete on row ${index}`);
+        await act(async () => remove.click());
+        expect(posted).toHaveLength(index);
+        expect(remove.textContent).toBe("Confirm delete");
+        await act(async () => remove.click());
+      }
       for (const index of [0, 1]) {
         if (index > 0) await panel.click("History");
         const open = rowButtons("button.history-open")[index];
@@ -2287,10 +2437,25 @@ describe("history filter", () => {
     await withHistory(saved, async (panel, field) => {
       await panel.fill(field, "parse");
       await panel.click("Delete");
+      await panel.click("Confirm delete");
       expect(posted).toEqual([{ type: "deleteConversation", id: CONVERSATION_ID }]);
       await panel.show(stateWith(true, { conversations: conversations.slice(1) }));
       expect(field.value).toBe("parse");
       expect(titles(panel.host)).toEqual(["Parse the logs"]);
+    });
+  });
+
+  test("Delete asks first; Cancel deletes nothing and puts Delete back", async () => {
+    await withHistory(saved, async (panel) => {
+      await panel.click("Delete");
+      expect(posted).toEqual([]);
+      await panel.click("Cancel");
+      expect(posted).toEqual([]);
+      expect([...panel.host.querySelectorAll("button.history-delete")].map((button) => button.textContent)).toEqual([
+        "Delete",
+        "Delete",
+        "Delete",
+      ]);
     });
   });
 
@@ -2668,6 +2833,14 @@ describe("reasoning effort picker", () => {
     expect(html).toContain('<option value="high" selected="">High effort</option>');
   });
 
+  test("sits in the message box after the mode, not in the header, so the model takes the header's line", () => {
+    const html = renderToStaticMarkup(<App state={stateWith(true, {})} language="en" />);
+    const effort = html.indexOf('aria-label="Reasoning effort"');
+    expect(effort).toBeGreaterThan(html.indexOf('aria-label="Mode"'));
+    expect(effort).toBeGreaterThan(html.indexOf("</header>"));
+    expect(effort).toBeLessThan(html.indexOf(">Send<"));
+  });
+
   test("is absent without a model", () => {
     const html = renderToStaticMarkup(<App state={stateWith(true, { model: undefined })} language="en" />);
     expect(html).not.toContain('aria-label="Reasoning effort"');
@@ -2702,13 +2875,14 @@ describe("context usage", () => {
     );
   });
 
-  test("a model absent from the table shows the 32k notice with its link beside the usage", () => {
+  test("a model absent from the table shows Set context size in the header, after the usage, and no notice line", () => {
     const html = renderToStaticMarkup(
       <App state={stateWith(true, { context: { ...usage, known: false } })} language="en" />,
     );
-    expect(html).toContain("Unknown context size, using 32k");
-    expect(html).toContain(">Set context size<");
-    expect(html).toContain("12,345 / 32,768 tokens (38%)");
+    expect(html).toContain('title="Unknown context size, using 32k">Set context size</button>');
+    expect(html.indexOf("12,345 / 32,768 tokens (38%)")).toBeLessThan(html.indexOf(">Set context size<"));
+    expect(html.indexOf(">Set context size<")).toBeLessThan(html.indexOf("</header>"));
+    expect(html).not.toContain('class="notice"');
   });
 
   test("with no model selected, shows neither the usage nor the notice", () => {
@@ -2744,7 +2918,7 @@ describe("context usage", () => {
   });
 
   test("the link asks the host for the selected model's context size", () => {
-    button(ContextNotice({ model: "qwen3:8b" }), "Set context size").props.onClick!();
+    button(SetContextSize({ model: "qwen3:8b" }), "Set context size").props.onClick!();
     expect(posted).toEqual([{ type: "setContextSize", model: "qwen3:8b" }]);
   });
 });
@@ -2824,6 +2998,19 @@ describe("code blocks", () => {
       '<button type="button" class="code-action">Insert at cursor</button>',
     ]);
     expect(html.indexOf('class="code-actions"')).toBeLessThan(html.indexOf("ls -la"));
+  });
+
+  test("GitHub Flavored Markdown renders: a table, strikethrough, and a task list", () => {
+    const html = renderEntries([
+      reply("| Column | Value |\n| --- | --- |\n| a | 1 |\n\n~~old~~\n\n- [x] done\n- [ ] next"),
+    ]);
+    expect(html).toContain("<table>");
+    expect(html).toContain("<th>Column</th>");
+    expect(html).toContain("<td>1</td>");
+    expect(html).not.toContain("| --- |");
+    expect(html).toContain("<del>old</del>");
+    expect(html).toContain('<ul class="contains-task-list">');
+    expect(html).toContain('type="checkbox"');
   });
 
   test("a closed block has its controls while its reply still streams", () => {
@@ -3362,7 +3549,7 @@ describe("undo changes", () => {
 
   test("an undone step's row says undone, its line count unchanged", () => {
     const undone: ChatEntry[] = turns.map((entry) => (entry.role === "tool" ? { ...entry, undone: true } : entry));
-    expect(html(idle, undone)).toContain('<span class="step-status">undone, auto-approved, ok, 1 line</span>');
+    expect(html(idle, undone)).toContain('<span class="step-status">undone, auto-approved, ok</span>');
     expect(html(idle)).not.toContain("undone, ");
   });
 
@@ -3372,11 +3559,11 @@ describe("undo changes", () => {
     await withPanel(stateWith(true, { entries: folded }), async ({ host }) => {
       const fold = host.querySelector<HTMLDetailsElement>("details.turn-fold");
       if (!fold) throw new Error("no fold");
-      expect(fold.querySelector(":scope > summary")?.textContent).toBe("Edited 1 file");
+      expect(fold.querySelector(":scope > summary")?.textContent).toBe("Changed 1 file");
       await act(async () => fold.querySelector<HTMLElement>(":scope > summary")?.click());
       expect(fold.open).toBe(true);
       const rows = [...fold.querySelectorAll(".step-status")].map((row) => row.textContent);
-      expect(rows).toEqual(["undone, auto-approved, ok, 1 line", "auto-approved, ok, 1 line"]);
+      expect(rows).toEqual(["undone, auto-approved, ok", "auto-approved, ok"]);
     });
   });
 
@@ -3577,11 +3764,11 @@ describe("retry and continue", () => {
       expect(html([], plan)).not.toContain("Implement in");
     });
 
-    test("sits after Retry and before Undo changes, as a secondary button", () => {
+    test("leads the row, before Retry and Undo changes, as a secondary button set apart by weight", () => {
       const undo = { reply: 1, ranCommand: false, running: false, outcome: undefined };
       const shown = html(answered, { ...plan, undo });
-      expect(shown).toContain(`<button type="button" class="secondary"${IMPLEMENT}`);
-      expect(shown.indexOf(RETRY)).toBeLessThan(shown.indexOf(IMPLEMENT));
+      expect(shown).toContain(`<button type="button" class="secondary next-step"${IMPLEMENT}`);
+      expect(shown.indexOf(IMPLEMENT)).toBeLessThan(shown.indexOf(RETRY));
       expect(shown.indexOf(IMPLEMENT)).toBeLessThan(shown.indexOf(">Undo changes</button>"));
     });
 
@@ -3601,11 +3788,11 @@ describe("retry and continue", () => {
       });
     });
 
-    test("while Retry's confirmation is open, it sits after Retry anyway and Cancel and still acts", async () => {
+    test("while Retry's confirmation is open, it still leads, before Retry anyway and Cancel, and still acts", async () => {
       await withPanel(stateWith(true, { entries: wrote, ...plan }), async ({ host, click }) => {
         await click("Retry");
         const labels = [...host.querySelectorAll(".turn-actions button")].map((button) => button.textContent);
-        expect(labels).toEqual(["Retry anyway", "Cancel", "Implement in Ask mode"]);
+        expect(labels).toEqual(["Implement in Ask mode", "Retry anyway", "Cancel"]);
         await click("Implement in Ask mode");
         expect(posted).toEqual([{ type: "implementPlan", shown: { conversationId: CONVERSATION_ID, entries: 4 } }]);
       });
@@ -3834,6 +4021,29 @@ describe("edit the last message", () => {
           replaces: { conversationId: CONVERSATION_ID, entries: 4 },
         },
       ]);
+    });
+  });
+
+  test("sending an edited last message takes a scrolled-up user back to the bottom", async () => {
+    const { act } = await import("react");
+    await withPanel(stateWith(true, { entries }), async (panel) => {
+      const list = panel.host.querySelector<HTMLElement>("section.conversation");
+      if (!list) throw new Error("no conversation");
+      Object.defineProperties(list, {
+        scrollHeight: { configurable: true, value: 1000 },
+        clientHeight: { configurable: true, value: 200 },
+        scrollTop: { configurable: true, writable: true, value: 0 },
+      });
+      await act(async () => list.dispatchEvent(new Event("scroll")));
+      expect(panel.host.querySelector("button.jump")).not.toBeNull();
+      await panel.click("Edit");
+      await panel.click("Send");
+      await panel.show(
+        stateWith(true, {
+          entries: [first, firstReply, { role: "user", content: "Fixed", mentions: [] }, reply("waiting")],
+        }),
+      );
+      expect(panel.host.querySelector("button.jump")).toBeNull();
     });
   });
 

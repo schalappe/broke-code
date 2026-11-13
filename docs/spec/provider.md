@@ -24,7 +24,7 @@ This file specifies how broke-code talks to a provider: the HTTP contract, the s
   stream, or a request built without the field. A refusal is never told apart by its wording: how the internal
   service words one is unknown. An edited base URL under the same name, and another model, start unknown. Docs and
   code call this a resend; Retry is the user's action.
-- `reasoning_effort` is `low`, `medium`, or `high`, as picked in the panel header's reasoning effort picker for the
+- `reasoning_effort` is `low`, `medium`, or `high`, as picked in the reasoning effort picker of the message box, beside the mode, for the
   selected provider and model, and is absent on Default, the picker's first choice. The pick is remembered per
   provider name and model name in the workspace state, and a model without one is on Default. It applies to every
   request to that model from the chat panel, the commit message, and "Edit selection", from the next request on; the
@@ -62,13 +62,16 @@ This file specifies how broke-code talks to a provider: the HTTP contract, the s
   except while a reply is in flight. The flow runs in the API key dialog queue, so the missing-key prompt the settings
   write triggers runs after it and finds the key. Escape at any step writes nothing. Editing or removing a provider
   stays in `settings.json`.
+- A status other than 2xx, 3xx, 401, and 403 shows "<provider> rejected the request (HTTP <status>)." for a 4xx, and
+  "<provider> failed to answer the request (HTTP <status>)." for a 5xx, the provider failing (such as a gateway down)
+  rather than refusing what was sent; both carry the body's `error.message`, else the raw body cut short, as detail.
 - Requests never follow HTTP redirects; a redirect is reported as an error. Provider response bodies are read
   under size caps that cancel the download when exceeded. Responses may be compressed with gzip, deflate, or br;
   the caps count decoded bytes, and any other `Content-Encoding` is reported as an error.
 - The API does not report a model's context size. The `brokeCode.contextSizes` user setting (`application` scope,
   read from `globalValue` like the providers) maps model names to sizes in tokens; a model absent from it, or with an
-  entry that is not a positive integer, uses 32,768. While such a model is selected, the chat shows "Unknown context
-  size, using 32k" with a link: the host asks for the size in an input box and merges it into the user value of the
+  entry that is not a positive integer, uses 32,768. While such a model is selected, the chat's header shows a "Set context size" link after the usage,
+  whose tooltip reads "Unknown context size, using 32k": the host asks for the size in an input box and merges it into the user value of the
   setting. The header shows the next request's estimated size, as it would be sent (older tool results left out
   included, see `docs/spec/harness.md`), against the model's size. Its tooltip says "Estimated size of the next
   request", and, when the last chat request of the conversation shown reported usage, adds ". Last reply: {0} prompt

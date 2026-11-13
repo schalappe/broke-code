@@ -80,7 +80,7 @@ seconds.
 
 ## Reasoning effort
 
-Next to the model picker, the panel header has a reasoning effort picker: **Default effort**, **Low effort**,
+Next to the mode selector, the message box has a reasoning effort picker: **Default effort**, **Low effort**,
 **Medium effort**, or **High effort**. Low, Medium, and High send `reasoning_effort` with every request to that model,
 from the chat, a commit message, and **Edit selection**. Default sends nothing and leaves the choice to the provider.
 broke-code remembers your pick for each model of each provider, in this workspace.
@@ -278,7 +278,8 @@ the model why.
 
 When the model asks to change a file, the editor opens a diff beside the chat, titled with the path. The left side
 shows the file as the model planned to change it, and the right side shows the proposed text. The chat shows
-**Accept** and **Reject** under the call, with an optional reason.
+**Accept** and **Reject** under the call, with an optional reason, and the lines the change adds and removes. If you
+close the diff, **Show change** opens it again.
 
 - **Accept** writes the change and closes the diff. The write is atomic, so the file holds either its old text or the
   new one, even after a crash.
@@ -328,6 +329,14 @@ one. You get **Run**, **Reject**, and an optional reason.
 The model receives the exit code, then stdout and stderr, each cut to its first 2,000 lines and 1 MiB. broke-code
 reports a command as an error if it exits with a code other than 0 or gets killed.
 
+You can decide from the keyboard too. The Command Palette has **broke-code: Accept the proposed change**, **Run the
+proposed command**, **Reject the proposed change or command**, **Show the proposed change**, **Stop the reply**, and
+**New chat**. Each shows only when its button would. You can bind them in Keyboard Shortcuts.
+
+In the chat, **⌘Enter** accepts the change or runs the command, and **⌘Backspace** rejects it. They work while the
+focus is in the chat but not in a field with text in it, so they never take over your typing; an empty message box
+counts as empty. **⌘Backspace** sends the reason you typed, like **Reject**.
+
 A command stops after 120 seconds. broke-code sends SIGTERM to its process group (the shell and the processes it
 started that stayed in that group), then SIGKILL two seconds later. The model gets the output so far. To change that
 limit, set `brokeCode.commandTimeoutSeconds` (at least 1) in your **user** settings. A workspace `settings.json` cannot
@@ -363,7 +372,7 @@ search pattern, the whole command, or the first line of a question), and whether
 result, or the exit code for a command. Click the row to see the result the model received.
 
 Once an agent turn ends, its steps fold under one row above the final answer that says what they did, such as "Read 3
-files, edited 1 file, ran 1 command, 1 failed". Files count once however the model spelled their path (`a.ts`,
+files, changed 1 file, ran 1 command, 1 failed". Files count once however the model spelled their path (`a.ts`,
 `./a.ts`), but not across letter case or an absolute against a relative path; changed files and commands are always
 named, and the rest add up as "other steps". The row wraps in a narrow panel.
 The answer then sits right under your message. Click the row to see the steps again. If you scrolled up to read, your
@@ -548,7 +557,7 @@ conversation instead (see [Summarizing with `/compact`](#summarizing-with-compac
 
 LLM services do not report a model's context size. broke-code reads it from the `brokeCode.contextSizes` table in
 your **user** settings, by model name as the provider lists it. A model absent from the table uses 32,768 tokens, and
-the chat says so with a **Set context size** link. Enter the size there, and broke-code saves it to the table.
+the chat shows a **Set context size** link after the token count. Enter the size there, and broke-code saves it to the table.
 
 To set the tool step limit of an agent turn, use `brokeCode.maxToolSteps` (default 50, at least 1).
 
@@ -688,7 +697,9 @@ commands. The menu does not list a skipped skill, and its warning shows after yo
 
 ## Code blocks
 
-Each code block of an answer shows **Copy** and **Insert at cursor** above its code when the pointer is over it or the
+Answers render GitHub Flavored Markdown: tables, strikethrough, and task lists.
+
+Each code block of an answer shows **Copy** and **Insert at cursor** at its top right corner when the pointer is over it or the
 keyboard focus is inside it. Tab reaches them in reading order. A block gets them once its text is final, which means
 its fence is closed or the reply has ended.
 
@@ -737,7 +748,8 @@ Command Palette does the same for the only repository open, or for the one you p
 broke-code saves each conversation of a workspace, so closing or reloading the window keeps it. **History** in the
 panel header lists the workspace's conversations, newest first. Each row shows the conversation's first message and the
 date of its last change, and the chat marks the one shown. Click a conversation to reopen it and continue where you
-left off, or click **Delete** to delete it.
+left off. To delete one, point at its row and click **Delete**, then **Confirm delete**. **Cancel** keeps it. A
+deleted conversation cannot be brought back.
 
 To find a conversation, type in **Search conversations** at the top of History. The conversations whose title holds
 that text, ignoring case, show at once. From 3 characters, broke-code also searches your messages and the agent's

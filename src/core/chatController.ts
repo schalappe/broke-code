@@ -314,7 +314,7 @@ export class ChatController {
    */
   private requestId = 0;
   /** The approval request open, mirrored in `ChatState.approval`, and how to settle it. */
-  private openApproval: { id: number; settle: (decision: Decision) => void } | undefined;
+  private openApproval: { id: number; settle: (decision: Decision) => void; preview?: Preview } | undefined;
   /** The question open, mirrored in `ChatState.question`, and how to settle it. Never beside `openApproval`. */
   private openQuestion: { id: number; settle: (answer: QuestionAnswer) => void } | undefined;
   /**
@@ -1062,11 +1062,13 @@ export class ChatController {
           this.emit();
           void this.save(conversation);
           let approval: StepApproval | undefined;
+          let lines: LineCounts | undefined;
           const context: ToolContext = {
             signal,
             requestApproval: async (request) => {
               const answer = await this.askApproval(request, signal);
               approval = answer.approval ?? approval;
+              if (answer.decision.kind === "accept") lines = request.lines ?? lines;
               // [>]: Once Run is clicked the command runs, whether its step is recorded or dropped by Stop.
               if (request.kind === "command" && answer.decision.kind === "accept") turn.ranCommand = true;
               return answer.decision;
@@ -1088,6 +1090,8 @@ export class ChatController {
             status: result.status,
             text: result.text,
             ...(approval ? { approval } : {}),
+            // [>]: Only a write that went through: a refused or failed one changed nothing.
+            ...(lines && result.status === "ok" ? { lines: { ...lines } } : {}),
           };
           if (turn.written !== undefined) {
             turn.steps.set(turn.written, [...(turn.steps.get(turn.written) ?? []), step]);
@@ -1572,8 +1576,15 @@ export class ChatController {
       };
       const onAbort = () => settle({ kind: "cancel" });
       signal.addEventListener("abort", onAbort, { once: true });
-      this.openApproval = { id, settle };
-      this.state.approval = { id, kind: request.kind, tool: request.tool, summary: request.summary };
+      this.openApproval = { id, settle, ...(preview ? { preview } : {}) };
+      this.state.approval = {
+        id,
+        kind: request.kind,
+        tool: request.tool,
+        summary: request.summary,
+        ...(request.lines ? { lines: { ...request.lines } } : {}),
+        ...(preview ? { preview: true as const } : {}),
+      };
       this.state.callRunning = false;
       this.emit();
       this.reportEvent({ kind: "approvalRequested", request: request.kind, summary: request.summary });
@@ -1623,6 +1634,20 @@ export class ChatController {
     } catch (error) {
       console.error("broke-code: could not read the auto-approve setting", error);
       return false;
+    }
+  }
+
+  /**
+   * Show change: bring back the preview of approval request `id`, opened again if the user closed it. Ignored unless it
+   * is the request open and has a preview; a preview that fails to show is logged, and the request stays open.
+   */
+  async showChange(id: number): Promise<void> {
+    const preview = this.openApproval?.id === id ? this.openApproval.preview : undefined;
+    if (!preview) return;
+    try {
+      await preview.show();
+    } catch (error) {
+      console.error("broke-code: could not show an approval preview again", error);
     }
   }
 

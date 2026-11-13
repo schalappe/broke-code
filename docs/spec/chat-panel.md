@@ -26,21 +26,28 @@ This file specifies what the chat panel does around a turn: folding, code block 
   nothing more: empty and `.` segments are dropped, `..` removes the segment before it, a `..` with nothing before it
   stays, and a leading `/` is kept, so `a.ts`, `./a.ts`, and `src/../a.ts` are one file, while `../a.ts` and `a.ts`,
   `/a.ts` and `a.ts`, or two letter cases are two. A `list_files` without a path, `.`, and `./` are the workspace root.
-  The row names at most three kinds: edited and ran whenever not zero, the places left to read, listed, searched, and
+  The row names at most three kinds: edited (written "changed N files", the word of "Changed files") and ran whenever not zero, the places left to read, listed, searched, and
   loaded by largest number shown (a tie to the earlier one), written in that fixed order; then "N other steps", the
   other steps plus the steps of every kind not named; then ", M failed" (status `error` or `malformed`, not rejected)
-  and ", K rejected" (`approval` `rejected`) when not zero. A fold of other steps alone says "N steps". The first letter
-  is upper case: "Read 3 files, edited 1 file, ran 1 command"; in French the number comes first ("3 fichiers lus, 1
+  and ", K rejected" (`approval` `rejected`) when not zero; one failed step is named by its tool, "1 failed (search)". A fold of other steps alone says "N steps". The first letter
+  is upper case: "Read 3 files, changed 1 file, ran 1 command"; in French the number comes first ("3 fichiers lus, 1
   fichier modifié, 1 commande exécutée"). The row wraps in a narrow panel; it is never cut. The conversation follows its bottom while the user is within 24px of
-  it; scrolled up, a turn that folds keeps its question row (its user message) in place on screen, because nothing
+  it, and a user message added to it (sent from the message box, including a send that replaces the last turn through Edit, or from the queue) brings the view back to the bottom.
+  Scrolled up, a row stays at the bottom of the view (`.jump-row`, sticky): "Jump to latest", or, while the reply waits
+  on the user, what it waits on, in the live region's words ("Waiting for your decision: edit_file on src/a.ts", "The
+  agent asks: ..."; `describeWaiting`). It appears only on the user's own scroll and never takes the focus; a click
+  scrolls to the bottom, the row goes, and the focus goes to the message box, from which Shift+Tab reaches the
+  decision. While it shows, it is the first control Shift+Tab meets from the message box. Scrolled up, scrolled up, a turn that folds keeps its question row (its user message) in place on screen, because nothing
   above it changes and the browser's scroll anchoring is off (`overflow-anchor: none`), which would otherwise re-anchor
   on a visible entry under the row (maintainer decision, 2026-11-11). Known limit: a fold that leaves too little
   content under the view makes the browser lower the scroll position, moving the row down. It moves no focus.
 
 ## Code blocks of an answer
 
+- An answer's Markdown is GitHub Flavored Markdown (`remark-gfm`): tables, strikethrough, task lists (their boxes
+  disabled), and bare links render. A wide table scrolls inside itself.
 - A code block of an assistant answer (fenced or indented, rendered by the answer's Markdown) has Copy and Insert at
-  cursor in a header above its code once its text is final: its closing fence was written, rendered text follows it
+  cursor laid over its top right corner, before its code in the DOM, once its text is final: its closing fence was written, rendered text follows it
   (the parser closed it), or its reply has ended (done, stopped, failed, halted, or cut off). While its reply is
   waiting or streaming, a block still open has none. React-markdown renders an open fence like a closed one, so
   the parser itself says it: `remarkFenceClosed`, a remark plugin on the answer's renderer only, adds an enter handler
@@ -59,8 +66,8 @@ This file specifies what the chat panel does around a turn: folding, code block 
   throws each show a native error notification and change nothing. VS Code's `edit` settles `true` on a read-only
   document although nothing applied, so an edit counts as refused when it settles `false`, or when the document's
   version did not change and some selection does not already hold the text (then nothing needed changing: `done`). A
-  success shows nothing, and neither button moves the focus. The header holding Copy and Insert at cursor is not
-  selectable (`user-select: none`), so their labels are never part of selected text, in a quote or in a plain copy.
+  success shows nothing, and neither button moves the focus. The buttons take no room in the block, sit on the panel's opaque ground so
+  the code under them never shows through, and are not selectable (`user-select: none`), so their labels are never part of selected text, in a quote or in a plain copy.
 
 ## Quote
 
@@ -114,7 +121,8 @@ This file specifies what the chat panel does around a turn: folding, code block 
 - The text typed is the block's own state, keyed by the question's id: it survives opening and closing History, a new
   question starts with an empty field, and when the view is hidden and shown again the question is still open but the
   text typed and not yet sent is lost, like an unsent approval reason.
-- Once answered, the step is an ordinary row: the first line of the question, then `ok` and the result's size; the
+- While the question is open, its row names the tool only, since the question shows whole under it. Once answered,
+  the step is an ordinary row: the first line of the question, then `ok` and the result's size; the
   expanded row shows the result, `The user answered: <text>`. A folded turn counts an `ask_user` step among the "other
   steps", and History's content search does not search tool results, so an answer is not found by it (both accepted,
   #143).
@@ -205,8 +213,9 @@ This file specifies what the chat panel does around a turn: folding, code block 
   confirmation (scouting decision, 2026-11-12: in the chat, no native modal). Accepted gap: a command whose step Stop dropped, in a turn that wrote nothing, is not
   warned about. `ChatState` and the record are unchanged.
 - "Implement in ... mode" (#102, ADR 0005, addendum of 2026-11-13): while Plan is on (`ChatState.mode` is `plan`), the
-  conversation's final answer shows one more secondary button in the last turn's actions, after Retry (and after
-  "Retry anyway" and Cancel while Retry's confirmation is open) and before "Undo changes". `hasFinalAnswer(entries)`
+  conversation's final answer shows one more secondary button in the last turn's actions, first in the row, in weight
+  600, since carrying the plan out is the step the user came for: before Retry (and before "Retry anyway" and Cancel
+  while Retry's confirmation is open) and "Undo changes". `hasFinalAnswer(entries)`
   (`lastTurn.ts`, loaded by the webview and the controller alike) decides "the final answer": the last entry is an
   assistant entry that is not a summary, ended `done`, with text that is not empty after trimming. So no button
   during a reply, after a turn that ended `failed`, `stopped`, or `halted`, after a `/compact` (its summary is then

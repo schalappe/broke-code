@@ -197,21 +197,57 @@ export function mainArgument(name: string, args: Record<string, string>): string
 }
 
 /**
- * Short status of a finished tool step: `ok` or `error` and the result's size in lines, or the first line of a
- * malformed call's message, which says what is wrong. A call the user rejected says so, its reason in the expanded
- * result; one auto-approved says so before its status; a write "Undo changes" undid says so first, its line count the
- * result's as shown. Model-facing messages are English, never localized.
+ * Short status of a finished tool step: `ok` or `error` and its size, or the first line of a malformed call's message,
+ * which says what is wrong. The size is the one the user knows the step by: a write's added and removed lines, as its
+ * approval showed them (none for a record saved before they were kept); the lines of the file `read_file` returned,
+ * from its result's header; the result's lines for the other tools. A call the user rejected says so, its reason in
+ * the expanded result; one auto-approved says so before its status; a write "Undo changes" undid says so first.
+ * Model-facing messages are English, never localized.
  */
 export function describeToolStep(step: ChatEntry & { role: "tool" }): string {
   if (step.status === "malformed") return step.text.split("\n")[0] ?? "";
-  if (step.approval === "rejected") return l10n.t("rejected");
-  const count = resultLineCount(step.text);
-  const size = count === 1 ? l10n.t("1 line") : l10n.t("{0} lines", count);
+  if (step.approval === "rejected") {
+    // [>]: The result's second line is the reason the user typed (`rejectionText`), when there is one.
+    const reason = step.text.split("\n")[1]?.trim();
+    return reason ? l10n.t("rejected by you: {0}", reason) : l10n.t("rejected by you");
+  }
+  // [>]: An answered question shows what the user picked, which is what the row is read for.
+  const answer = step.name === "ask_user" && step.status === "ok" ? /^The user answered: (.*)$/m.exec(step.text) : null;
+  if (answer?.[1]) return l10n.t("you answered: {0}", answer[1]);
   const ending = step.name === "run_command" ? describeCommandEnding(step.text) : undefined;
-  if (ending !== undefined) return l10n.t("{0}, {1}", ending, size);
-  const status = step.status === "ok" ? l10n.t("ok, {0}", size) : l10n.t("error, {0}", size);
+  if (ending !== undefined) return l10n.t("{0}, {1}", ending, describeLines(resultLineCount(step.text)));
+  const size = stepSize(step);
+  const ok = size === undefined ? l10n.t("ok") : l10n.t("ok, {0}", size);
+  const status = step.status === "ok" ? ok : l10n.t("error, {0}", describeLines(resultLineCount(step.text)));
   const approved = step.approval === "auto" ? l10n.t("auto-approved, {0}", status) : status;
   return step.undone ? l10n.t("undone, {0}", approved) : approved;
+}
+
+/** The tools whose step counts the lines it changed, not the lines of its result. */
+const WRITE_TOOLS: ReadonlySet<string> = new Set(["write_file", "edit_file"]);
+
+/** The size an `ok` step shows; `undefined` for a write saved without its counts. */
+function stepSize(step: ChatEntry & { role: "tool" }): string | undefined {
+  if (WRITE_TOOLS.has(step.name)) return step.lines && `+${step.lines.added} \u2212${step.lines.removed}`;
+  const read = step.name === "read_file" ? readLineCount(step.text) : undefined;
+  return describeLines(read ?? resultLineCount(step.text));
+}
+
+function describeLines(count: number): string {
+  return count === 1 ? l10n.t("1 line") : l10n.t("{0} lines", count);
+}
+
+/**
+ * The lines of the file a `read_file` result holds, from its header (`formatMention`, or a ranged read's
+ * "(file, lines 2-5 of 30)"); `undefined` for a result without one.
+ */
+function readLineCount(text: string): number | undefined {
+  const header = text.split("\n", 1)[0] ?? "";
+  const whole = / \(file, (\d+) lines?(?:, truncated)?\)$/.exec(header);
+  if (whole) return Number(whole[1]);
+  const ranged = / \(file, lines? (\d+)(?:-(\d+))? of \d+\)$/.exec(header);
+  if (!ranged) return undefined;
+  return Number(ranged[2] ?? ranged[1]) - Number(ranged[1]) + 1;
 }
 
 /**
@@ -253,7 +289,9 @@ export function describeFold(counts: FoldCounts): string {
   const other = byNumber.slice(places).reduce((sum, kind) => sum + counts.kinds[kind].steps, counts.otherSteps);
   if (parts.length === 0) parts.push(l10n.t("{0} steps", counts.steps));
   else if (other > 0) parts.push(other === 1 ? l10n.t("1 other step") : l10n.t("{0} other steps", other));
-  if (counts.failed > 0) parts.push(counts.failed === 1 ? l10n.t("1 failed") : l10n.t("{0} failed", counts.failed));
+  if (counts.failed === 1)
+    parts.push(counts.failedTool ? l10n.t("1 failed ({0})", counts.failedTool) : l10n.t("1 failed"));
+  else if (counts.failed > 1) parts.push(l10n.t("{0} failed", counts.failed));
   if (counts.rejected > 0) {
     parts.push(counts.rejected === 1 ? l10n.t("1 rejected") : l10n.t("{0} rejected", counts.rejected));
   }
@@ -273,7 +311,7 @@ function describeKind(kind: StepKind, shown: number): string {
     case "loaded":
       return shown === 1 ? l10n.t("loaded 1 skill") : l10n.t("loaded {0} skills", shown);
     case "edited":
-      return shown === 1 ? l10n.t("edited 1 file") : l10n.t("edited {0} files", shown);
+      return shown === 1 ? l10n.t("changed 1 file") : l10n.t("changed {0} files", shown);
     case "ran":
       return shown === 1 ? l10n.t("ran 1 command") : l10n.t("ran {0} commands", shown);
   }
@@ -282,6 +320,19 @@ function describeKind(kind: StepKind, shown: number): string {
 /** Halt wording with the panel's translator; see `describeHalt` in the core. */
 export function describeHalt(reason: HaltReason, summary = false): string {
   return describeHaltWith(reason, summary, l10n);
+}
+
+/**
+ * What the reply in flight waits on, in words: the approval open ("Waiting for your decision: ..."), the agent's
+ * question ("The agent asks: ..."), or `undefined` when it waits on neither. The live region and the jump row say it.
+ */
+export function describeWaiting({ approval, question }: Pick<ChatState, "approval" | "question">): string | undefined {
+  if (approval) {
+    return approval.kind === "command"
+      ? l10n.t("Waiting for your decision: run {0}", approval.summary)
+      : l10n.t("Waiting for your decision: {0} on {1}", approval.tool, approval.summary);
+  }
+  return question && l10n.t("The agent asks: {0}", question.question);
 }
 
 /**
@@ -295,12 +346,8 @@ export function describeHalt(reason: HaltReason, summary = false): string {
 export function describeAnnouncement(previous: ChatState, next: ChatState): string | undefined {
   if (previous.conversationId !== next.conversationId) return undefined;
   const { approval, question } = next;
-  if (approval && approval.id !== previous.approval?.id) {
-    return approval.kind === "command"
-      ? l10n.t("Waiting for your decision: run {0}", approval.summary)
-      : l10n.t("Waiting for your decision: {0} on {1}", approval.tool, approval.summary);
-  }
-  if (question && question.id !== previous.question?.id) return l10n.t("The agent asks: {0}", question.question);
+  const waiting = approval ? approval.id !== previous.approval?.id : question && question.id !== previous.question?.id;
+  if (waiting) return describeWaiting(next);
   const call = runningCall(next);
   if (call && !runningCall(previous)) {
     if (call.name === "run_command" && call.args.command !== undefined) return l10n.t("Running {0}", call.args.command);

@@ -6,6 +6,7 @@
  * `approvalApplier`, which asks the user first. Model-facing text is English and never localized.
  */
 import { type ApprovalRequest, type Decision, type Preview, rejectionText } from "./approval";
+import { lineDiffCount } from "./lineDiff";
 import { accessFailureReason } from "./mentions";
 import type { ToolSpec } from "./toolCalls";
 import { displayPath, excerpt, stopped, type ToolCall, type ToolResult } from "./tools";
@@ -186,6 +187,7 @@ export function approvalApplier(
         kind: "write",
         tool: change.tool,
         summary: displayPath(change.path),
+        lines: lineDiffCount(change.before, change.after),
         preview: () => host.preview(change),
       });
     } catch (error) {

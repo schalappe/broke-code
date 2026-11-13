@@ -20,7 +20,7 @@ describe("describeProviderError", () => {
         french,
       ),
     ).toEqual({
-      message: "fr:{0} rejected the request (HTTP {1}).|Ollama,500",
+      message: "fr:{0} failed to answer the request (HTTP {1}).|Ollama,500",
       detail: "fr:The response body could not be read: {0}|socket closed",
     });
   });

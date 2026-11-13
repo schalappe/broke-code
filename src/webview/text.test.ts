@@ -43,7 +43,7 @@ describe("describeProviderError", () => {
       bodyReadError: "socket closed",
     });
     expect(text).toEqual({
-      message: "Ollama rejected the request (HTTP 500).",
+      message: "Ollama failed to answer the request (HTTP 500).",
       detail: "The response body could not be read: socket closed",
     });
   });
@@ -236,7 +236,7 @@ describe("describeFold", () => {
   });
 
   test("words each row of the contract's table", () => {
-    expect(table().first).toBe("Read 3 files, edited 1 file, ran 1 command");
+    expect(table().first).toBe("Read 3 files, changed 1 file, ran 1 command");
     const bigLog = read("big.log");
     expect(rowOf(bigLog, bigLog, bigLog, bigLog, command())).toBe("Read 1 file, ran 1 command");
     expect(
@@ -253,13 +253,13 @@ describe("describeFold", () => {
         edit("x.ts"),
         edit("y.ts"),
       ),
-    ).toBe("Read 2 files, searched 4 times, edited 2 files, 2 other steps");
+    ).toBe("Read 2 files, searched 4 times, changed 2 files, 2 other steps");
     expect(rowOf(read("a.ts"), list("."), search(), skill(), edit("a.ts"), command())).toBe(
-      "Read 1 file, edited 1 file, ran 1 command, 3 other steps",
+      "Read 1 file, changed 1 file, ran 1 command, 3 other steps",
     );
     const fiveEdits = Array.from({ length: 5 }, () => edit("a.ts"));
     expect(rowOf(read("a.ts"), read("b.ts"), list("."), list("src"), search(), search(), ...fiveEdits, command())).toBe(
-      "Read 2 files, edited 1 file, ran 1 command, 4 other steps",
+      "Read 2 files, changed 1 file, ran 1 command, 4 other steps",
     );
     expect(table().sixth).toBe("Read 1 file, listed 1 folder, searched 1 time, 5 other steps, 4 failed");
     expect(rowOf(list("."), command({ status: "error", approval: "rejected" }))).toBe(
@@ -267,7 +267,7 @@ describe("describeFold", () => {
     );
     expect(rowOf(malformed(), malformed())).toBe("2 steps, 2 failed");
     expect(rowOf(step("write_file", { path: "a.ts" }, { undone: true }), step("write_file", { path: "a.ts" }))).toBe(
-      "Edited 1 file",
+      "Changed 1 file",
     );
   });
 
@@ -283,7 +283,7 @@ describe("describeFold", () => {
       ["listed", "Listed 1 folder", "Listed 2 folders"],
       ["searched", "Searched 1 time", "Searched 2 times"],
       ["loaded", "Loaded 1 skill", "Loaded 2 skills"],
-      ["edited", "Edited 1 file", "Edited 2 files"],
+      ["edited", "Changed 1 file", "Changed 2 files"],
       ["ran", "Ran 1 command", "Ran 2 commands"],
     ];
     for (const [kind, one, two] of rows) {
@@ -364,13 +364,56 @@ describe("describeUndoFailure", () => {
 });
 
 describe("describeToolStep", () => {
-  const step = { role: "tool", name: "edit_file", args: { path: "a.ts" }, status: "ok", text: "done\n" } as const;
+  const step = {
+    role: "tool",
+    name: "edit_file",
+    args: { path: "a.ts" },
+    status: "ok",
+    text: "done\n",
+    lines: { added: 4, removed: 1 },
+  } as const;
 
-  test("an undone step says so first, its approval and line count unchanged", () => {
-    expect(describeToolStep({ ...step, undone: true })).toBe("undone, ok, 1 line");
-    expect(describeToolStep({ ...step, approval: "auto", undone: true })).toBe("undone, auto-approved, ok, 1 line");
-    expect(describeToolStep({ ...step, approval: "accepted", undone: true })).toBe("undone, ok, 1 line");
-    expect(describeToolStep({ ...step, approval: "auto" })).toBe("auto-approved, ok, 1 line");
+  test("an undone step says so first, its approval and line counts unchanged", () => {
+    expect(describeToolStep({ ...step, undone: true })).toBe("undone, ok, +4 \u22121");
+    expect(describeToolStep({ ...step, approval: "auto", undone: true })).toBe("undone, auto-approved, ok, +4 \u22121");
+    expect(describeToolStep({ ...step, approval: "accepted", undone: true })).toBe("undone, ok, +4 \u22121");
+    expect(describeToolStep({ ...step, approval: "auto" })).toBe("auto-approved, ok, +4 \u22121");
+  });
+
+  test("a write saved without its counts says ok alone; a failed write counts its message's lines", () => {
+    const { lines: _, ...unsized } = step;
+    expect(describeToolStep(unsized)).toBe("ok");
+    expect(describeToolStep({ ...unsized, status: "error", text: "edit_file: a.ts: not found." })).toBe(
+      "error, 1 line",
+    );
+  });
+
+  test("a read counts the lines of the file it returned, from its header, whole or ranged", () => {
+    const read = { role: "tool", name: "read_file", args: { path: "a.ts" }, status: "ok" } as const;
+    expect(describeToolStep({ ...read, text: "@a.ts (file, 3 lines)\n```\na\nb\nc\n```" })).toBe("ok, 3 lines");
+    expect(describeToolStep({ ...read, text: "@a.ts (file, 1 line)\n```\na\n```" })).toBe("ok, 1 line");
+    expect(describeToolStep({ ...read, text: "@a.ts (file, lines 2-5 of 30)\n```\nb\nc\nd\ne\n```" })).toBe(
+      "ok, 4 lines",
+    );
+    expect(describeToolStep({ ...read, text: "@a.ts (file, line 7 of 30)\n```\ng\n```" })).toBe("ok, 1 line");
+    expect(describeToolStep({ ...read, text: "unexpected\ntext" })).toBe("ok, 2 lines");
+  });
+});
+
+describe("describeToolStep for the user's own decisions", () => {
+  test("an answered question shows the answer; an unanswered or failed one keeps the ordinary status", () => {
+    const asked = { role: "tool", name: "ask_user", args: { question: "Which?" }, status: "ok" } as const;
+    expect(describeToolStep({ ...asked, text: "The user answered: src/b.ts" })).toBe("you answered: src/b.ts");
+    expect(describeToolStep({ ...asked, status: "error", text: "ask_user: no question." })).toBe("error, 1 line");
+  });
+
+  test("a rejection says it was the user's, with the reason typed when there is one", () => {
+    const step = { role: "tool", name: "edit_file", args: { path: "a.ts" }, status: "error" } as const;
+    const rejected = { ...step, approval: "rejected" } as const;
+    expect(describeToolStep({ ...rejected, text: "The user rejected this change." })).toBe("rejected by you");
+    expect(describeToolStep({ ...rejected, text: "The user rejected this change.\nKeep it." })).toBe(
+      "rejected by you: Keep it.",
+    );
   });
 });
 

@@ -19,6 +19,8 @@ export type KindCount = { shown: number; steps: number };
 export type FoldCounts = {
   steps: number;
   failed: number;
+  /** The tool of the failed step, its name or "malformed call", when exactly one failed: the row names it. */
+  failedTool?: string;
   rejected: number;
   kinds: Record<StepKind, KindCount>;
   otherSteps: number;
@@ -95,7 +97,10 @@ function countSteps(entries: ChatEntry[], from: number, to: number): FoldCounts 
     if (entry.role !== "tool") continue;
     counts.steps++;
     if (entry.approval === "rejected") counts.rejected++;
-    else if (entry.status !== "ok") counts.failed++;
+    else if (entry.status !== "ok") {
+      counts.failed++;
+      counts.failedTool = counts.failed === 1 ? entry.name : undefined;
+    }
     const kind = stepKind(entry);
     if (kind === undefined) {
       counts.otherSteps++;

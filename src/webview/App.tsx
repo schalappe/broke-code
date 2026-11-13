@@ -15,6 +15,7 @@ import {
   useState,
 } from "react";
 import Markdown, { type Components, type ExtraProps } from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   type ConversationMatch,
   type ConversationSummary,
@@ -94,6 +95,7 @@ import {
   describeUndoFailure,
   describeUndoneFile,
   describeUndoOutcome,
+  describeWaiting,
   type ErrorText,
   formatConversationDate,
   mainArgument,
@@ -126,12 +128,14 @@ export function App({
   const [historyOpen, setHistoryOpen] = useState(false);
   const historyButton = useRef<HTMLButtonElement>(null);
   const [replacing, setReplacing] = useState<ShownEntries>();
+  const [replacementsSent, setReplacementsSent] = useState(0);
   /** Edit's draft until the message box has applied it, once: a composer mounted later never applies it again. */
   const [editing, setEditing] = useState<DraftInsert>();
   /** Text Quote read from an answer until the message box has applied it, once. */
   const [quoting, setQuoting] = useState<string>();
   const replacingNow = replacing && stillReplacing(replacing, state) ? replacing : undefined;
   const { spoken, announce } = useAnnouncer(state);
+  useDecisionKeys(state.approval !== undefined);
 
   // [>]: Once it fails, the state ends for good: a later snapshot that matches again (a Retry ending on as many
   // entries) must not bring the mark back.
@@ -164,7 +168,6 @@ export function App({
       />
       {!configured && <EmptyState />}
       <Warnings state={state} />
-      {state.model !== undefined && !state.context.known && <ContextNotice model={state.model} />}
       {state.model !== undefined && state.context.leftOut !== undefined && (
         <LeftOutNotice count={state.context.leftOut} />
       )}
@@ -203,6 +206,7 @@ export function App({
               implementIn={state.mode === "plan" ? state.settingMode : undefined}
               hidden={historyOpen}
               replacing={replacingNow !== undefined}
+              replacementsSent={replacementsSent}
               edit={edit}
               cancelEdit={() => setReplacing(undefined)}
             />
@@ -220,6 +224,7 @@ export function App({
           quoting={quoting}
           takeQuoting={() => setQuoting(undefined)}
           replaces={replacingNow}
+          sentReplacement={() => setReplacementsSent((count) => count + 1)}
           startNewChat={() => {
             setHistoryOpen(false);
             post({ type: "newChat" });
@@ -291,8 +296,8 @@ export function EmptyState() {
 const HISTORY_ID = "history";
 
 /**
- * Provider and model pickers (with a provider configured), the context usage of the selected model, New chat, and the
- * History toggle. `language`: BCP 47 tag for the usage numbers. `historyButton`: the toggle, which takes the focus
+ * Provider and model pickers (with a provider configured), the context usage of the selected model, with Set context
+ * size when its size is unknown, New chat, and the History toggle. `language`: BCP 47 tag for the usage numbers. `historyButton`: the toggle, which takes the focus
  * back when Escape closes History.
  */
 export function Header({
@@ -316,6 +321,7 @@ export function Header({
           {describeContextUsage(state.context, language)}
         </span>
       )}
+      {state.model !== undefined && !state.context.known && <SetContextSize model={state.model} />}
       <div className="actions">
         <button
           type="button"
@@ -348,20 +354,27 @@ function Pickers({ state }: { state: ChatState }) {
   const { models } = state;
   return (
     <div className="pickers">
+      {/* [>]: With one provider there is nothing to pick: the model takes the room. */}
+      {state.providers.length > 1 && (
+        <select
+          className="provider-picker"
+          aria-label={l10n.t("Provider")}
+          value={state.provider ?? ""}
+          disabled={replying}
+          onChange={(event) => post({ type: "selectProvider", provider: event.target.value })}
+        >
+          {state.providers.map((name) => (
+            <option key={name} value={name}>
+              {name}
+            </option>
+          ))}
+        </select>
+      )}
       <select
-        aria-label={l10n.t("Provider")}
-        value={state.provider ?? ""}
-        disabled={replying}
-        onChange={(event) => post({ type: "selectProvider", provider: event.target.value })}
-      >
-        {state.providers.map((name) => (
-          <option key={name} value={name}>
-            {name}
-          </option>
-        ))}
-      </select>
-      <select
+        className="model-picker"
         aria-label={l10n.t("Model")}
+        // [>]: A long id may still be cut in a narrow panel; the tooltip gives it whole.
+        title={state.model}
         value={state.model ?? ""}
         disabled={replying || models.status !== "loaded" || models.models.length === 0}
         onChange={(event) => post({ type: "selectModel", model: event.target.value })}
@@ -376,25 +389,33 @@ function Pickers({ state }: { state: ChatState }) {
           <option value="">{emptyModelsLabel(models, l10n, "blank")}</option>
         )}
       </select>
-      {state.model !== undefined && (
-        <select
-          aria-label={l10n.t("Reasoning effort")}
-          value={state.reasoningEffort ?? ""}
-          disabled={replying}
-          onChange={(event) => {
-            const effort = event.target.value;
-            post({ type: "selectReasoningEffort", effort: isReasoningEffort(effort) ? effort : undefined });
-          }}
-        >
-          <option value="">{l10n.t("Default effort")}</option>
-          {REASONING_EFFORTS.map((effort) => (
-            <option key={effort} value={effort}>
-              {effortLabel(effort)}
-            </option>
-          ))}
-        </select>
-      )}
     </div>
+  );
+}
+
+/**
+ * The reasoning effort of the selected model, beside the mode: both apply to the next turn. Disabled while a reply is in
+ * flight, like the pickers.
+ */
+function EffortSelect({ state, replying }: { state: ChatState; replying: boolean }) {
+  return (
+    <select
+      className="effort-picker"
+      aria-label={l10n.t("Reasoning effort")}
+      value={state.reasoningEffort ?? ""}
+      disabled={replying}
+      onChange={(event) => {
+        const effort = event.target.value;
+        post({ type: "selectReasoningEffort", effort: isReasoningEffort(effort) ? effort : undefined });
+      }}
+    >
+      <option value="">{l10n.t("Default effort")}</option>
+      {REASONING_EFFORTS.map((effort) => (
+        <option key={effort} value={effort}>
+          {effortLabel(effort)}
+        </option>
+      ))}
+    </select>
   );
 }
 
@@ -436,15 +457,21 @@ export function Warnings({ state }: { state: ChatState }) {
   );
 }
 
-/** The selected `model` is absent from the context size table: 32k is used, and the link asks the host for its size. */
-export function ContextNotice({ model }: { model: string }) {
+/**
+ * The selected `model` is absent from the context size table, so the usage counts against 32k: the link beside the
+ * usage says so in its tooltip and asks the host for the size. In the header's line, not a line of its own, since a
+ * service that never reports its size would keep it on screen for good.
+ */
+export function SetContextSize({ model }: { model: string }) {
   return (
-    <p className="notice" role="status">
-      {l10n.t("Unknown context size, using 32k")}{" "}
-      <button type="button" className="link" onClick={() => post({ type: "setContextSize", model })}>
-        {l10n.t("Set context size")}
-      </button>
-    </p>
+    <button
+      type="button"
+      className="link usage-set"
+      title={l10n.t("Unknown context size, using 32k")}
+      onClick={() => post({ type: "setContextSize", model })}
+    >
+      {l10n.t("Set context size")}
+    </button>
   );
 }
 
@@ -609,6 +636,8 @@ export function ConversationList({
   onDismiss: () => void;
 }) {
   const { query, changeQuery, answer, awaited } = useContentSearch();
+  // [>]: A delete cannot be undone, so Delete asks first, as Retry does when it would leave changes behind.
+  const [confirming, setConfirming] = useState<string>();
   const field = useRef<HTMLInputElement>(null);
   // [>]: On mount only: a field that shows later, when a first conversation is saved, never takes the focus.
   useEffect(() => field.current?.focus(), []);
@@ -684,9 +713,30 @@ export function ConversationList({
                   )}
                   <span className="history-date">{formatConversationDate(conversation.updatedAt, language)}</span>
                 </button>
-                <button type="button" className="secondary" onClick={() => onDelete(conversation.id)}>
-                  {l10n.t("Delete")}
+                {/* [>]: The same button asks, then confirms, so the focus stays on it between the two clicks. */}
+                <button
+                  type="button"
+                  className={
+                    confirming === conversation.id ? "secondary history-delete confirming" : "secondary history-delete"
+                  }
+                  aria-label={confirming === conversation.id ? undefined : l10n.t("Delete {0}", conversation.title)}
+                  onClick={() => {
+                    if (confirming !== conversation.id) return setConfirming(conversation.id);
+                    setConfirming(undefined);
+                    onDelete(conversation.id);
+                  }}
+                >
+                  {confirming === conversation.id ? l10n.t("Confirm delete") : l10n.t("Delete")}
                 </button>
+                {confirming === conversation.id && (
+                  <button
+                    type="button"
+                    className="secondary history-delete confirming"
+                    onClick={() => setConfirming(undefined)}
+                  >
+                    {l10n.t("Cancel")}
+                  </button>
+                )}
               </li>
             );
           })}
@@ -718,6 +768,7 @@ function Conversation({
   implementIn,
   hidden,
   replacing,
+  replacementsSent,
   edit,
   cancelEdit,
 }: {
@@ -731,6 +782,7 @@ function Conversation({
   implementIn?: SettingMode;
   hidden: boolean;
   replacing: boolean;
+  replacementsSent: number;
   edit: (entry: ChatEntry & { role: "user" }) => void;
   cancelEdit: () => void;
 }) {
@@ -761,16 +813,33 @@ function Conversation({
   });
 
   // Follow stream only while user stays at bottom. Unpinned, nothing moves the view: see `overflow-anchor` in the CSS.
+  // A message the user sends, typed or from the queue, takes them back to the bottom, where its reply comes.
+  const latestUser = entries.findLastIndex((shown) => shown.role === "user");
+  const seenUser = useRef(latestUser);
+  const seenReplacements = useRef(replacementsSent);
   useLayoutEffect(() => {
-    if (pinned) end.current?.scrollIntoView({ block: "end" });
+    // [>]: Sending through Edit replaces the last user entry at the same index, so only the host's count shows it.
+    const sent = latestUser > seenUser.current || replacementsSent > seenReplacements.current;
+    seenUser.current = latestUser;
+    seenReplacements.current = replacementsSent;
+    if (!pinned && !sent) return;
+    end.current?.scrollIntoView({ block: "end" });
+    if (!pinned) setPinned(true);
   });
+  const waiting = describeWaiting({ approval, question });
+  const jumpToLatest = () => {
+    end.current?.scrollIntoView({ block: "end" });
+    setPinned(true);
+    // [>]: The row goes once the view is at the bottom; the focus it held goes to the message box, the panel's home,
+    // from which Shift+Tab reaches the decision block.
+    document.querySelector<HTMLTextAreaElement>(".composer textarea")?.focus();
+  };
 
   // [>]: Keyed by index, and another conversation remounts the list. Retry and Edit remove the last turn's entries, and
   // the new turn reuses their indexes: the host posts its first reply `waiting`, with no reasoning, answer, or call,
   // before any read or request, so a removed entry's opened blocks unmount before the new reply fills that index.
   // An entry moving into a fold remounts, so a row opened inside comes back closed. The open request goes to the last
   // entry, never folded, since only an ended turn folds.
-  const latestUser = entries.findLastIndex((shown) => shown.role === "user");
   const entry = (index: number) => {
     const shown = entries[index]!;
     const rendered = (
@@ -884,6 +953,15 @@ function Conversation({
             </button>
           </div>
           {replaced.map(render)}
+        </div>
+      )}
+      {!pinned && (
+        // [>]: Scrolled up, what came in below would go unseen: a decision waiting would hold the turn with nothing on
+        // screen saying so. The row names it; it never takes the focus by itself.
+        <div className="jump-row">
+          <button type="button" className={waiting ? "jump waiting" : "jump"} onClick={jumpToLatest}>
+            {waiting ?? l10n.t("Jump to latest")}
+          </button>
         </div>
       )}
       <div ref={end} />
@@ -1102,6 +1180,20 @@ function TurnActions({ turnActions, undo }: { turnActions?: TurnActionsProps; un
       )}
       {turnActions && (
         <>
+          {/* [>]: First and in weight 600: after a plan, carrying it out is the step the user came for. Still
+          secondary, since the conversation's one primary button belongs to the decision block. */}
+          {turnActions.implementIn && (
+            <button
+              type="button"
+              className="secondary next-step"
+              disabled={!turnActions.canAct}
+              onClick={() => post({ type: "implementPlan", shown: turnActions.shown })}
+            >
+              {turnActions.implementIn === "autoEdit"
+                ? l10n.t("Implement in Auto-edit mode")
+                : l10n.t("Implement in Ask mode")}
+            </button>
+          )}
           <button ref={retryButton} type="button" className="secondary" disabled={!turnActions.canAct} onClick={retry}>
             {confirming ? l10n.t("Retry anyway") : l10n.t("Retry")}
           </button>
@@ -1118,18 +1210,6 @@ function TurnActions({ turnActions, undo }: { turnActions?: TurnActionsProps; un
               onClick={() => post({ type: "continueTurn", shown: turnActions.shown })}
             >
               {l10n.t("Continue")}
-            </button>
-          )}
-          {turnActions.implementIn && (
-            <button
-              type="button"
-              className="secondary"
-              disabled={!turnActions.canAct}
-              onClick={() => post({ type: "implementPlan", shown: turnActions.shown })}
-            >
-              {turnActions.implementIn === "autoEdit"
-                ? l10n.t("Implement in Auto-edit mode")
-                : l10n.t("Implement in Ask mode")}
             </button>
           )}
         </>
@@ -1332,7 +1412,8 @@ function CodeBlock({ node, ...props }: ComponentProps<"pre"> & ExtraProps) {
 }
 
 const ANSWER_COMPONENTS: Components = { pre: CodeBlock };
-const ANSWER_PLUGINS = [remarkFenceClosed];
+// [>]: GitHub Flavored Markdown, as models write it: tables, strikethrough, task lists, and bare links.
+const ANSWER_PLUGINS = [remarkGfm, remarkFenceClosed];
 
 /** The text of a rendered node: its own value, or its children's, in order. */
 function textOf(node: { value?: unknown; children?: unknown[] }): string {
@@ -1400,7 +1481,8 @@ function ToolStep(props: { result: ChatEntry & { role: "tool" } } | PendingCall)
     return (
       <div className="step">
         <div className={stepRowClass(call.name)}>
-          <StepHead name={call.name} args={call.args} />
+          {/* [>]: A question shows whole right under its row, so the row names the tool only. */}
+          <StepHead name={call.name} args={outcome === "asking" ? {} : call.args} />
           {outcome === "running" ? (
             // [>]: Not a live region: the panel's announcer says which tool runs, and on what.
             <span className="step-status loading">{l10n.t("running…")}</span>
@@ -1424,7 +1506,10 @@ function ToolStep(props: { result: ChatEntry & { role: "tool" } } | PendingCall)
     <details className="step">
       <summary className={stepRowClass(result.name)}>
         {malformed ? <span className="step-tool">{l10n.t("malformed call")}</span> : <StepHead {...result} />}
-        <span className={result.status === "ok" ? "step-status" : "step-status failed"}>
+        {/* [>]: A rejection is the user's own decision, not a failure: it keeps the ordinary look. */}
+        <span
+          className={result.status === "ok" || result.approval === "rejected" ? "step-status" : "step-status failed"}
+        >
           {describeToolStep(result)}
         </span>
       </summary>
@@ -1443,6 +1528,53 @@ function stepRowClass(tool: string): string {
   return tool === RUN_COMMAND ? "step-row command" : "step-row";
 }
 
+/**
+ * ⌘Enter accepts or runs, and ⌘Backspace rejects, the approval open, while the focus is in the panel and not in a field
+ * holding text: in a field these keys keep their editing meaning. They click the decision block's own buttons, so a
+ * rejection carries the reason typed, exactly as a click does. A held key never repeats a decision.
+ */
+function useDecisionKeys(open: boolean) {
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      const decision = decisionKey(event, document.activeElement);
+      if (!decision) return;
+      const buttons = document.querySelectorAll<HTMLButtonElement>(".decision .approval .actions button");
+      const target = buttons[decision === "approve" ? 0 : 1];
+      if (!target) return;
+      event.preventDefault();
+      target.click();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open]);
+}
+
+/**
+ * The decision a key press asks for: `approve` for ⌘Enter, `reject` for ⌘Backspace, with no other modifier, not
+ * repeated, not composing; `undefined` when `active` is a field holding text (an input, a text area, an editable
+ * element), except the message box left empty, where the focus rests while a request waits.
+ */
+export function decisionKey(
+  event: Pick<
+    globalThis.KeyboardEvent,
+    "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey" | "repeat" | "isComposing"
+  >,
+  active: Element | null,
+): "approve" | "reject" | undefined {
+  if (!event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || event.repeat || event.isComposing) {
+    return undefined;
+  }
+  const decision = event.key === "Enter" ? "approve" : event.key === "Backspace" ? "reject" : undefined;
+  if (!decision) return undefined;
+  const emptyMessageBox = active instanceof HTMLTextAreaElement && active.closest(".composer") && active.value === "";
+  const field =
+    active instanceof HTMLInputElement ||
+    active instanceof HTMLTextAreaElement ||
+    (active instanceof HTMLElement && active.isContentEditable);
+  return field && !emptyMessageBox ? undefined : decision;
+}
+
 /** The open approval request's controls, holding the reason typed until the user decides. */
 function Approval({ approval }: { approval: PendingApproval }) {
   const [reason, setReason] = useState("");
@@ -1450,7 +1582,8 @@ function Approval({ approval }: { approval: PendingApproval }) {
 }
 
 /**
- * Accept, Reject, and the optional reason sent with a rejection, for `approval`. Each decision carries the request's
+ * A write's line counts and Show change, which brings its diff back, then Accept, Reject, and the optional reason sent
+ * with a rejection, for `approval`. Each decision carries the request's
  * id, so the host ignores one for a request already closed; a blank reason is left out.
  */
 export function ApprovalControls({
@@ -1475,6 +1608,19 @@ export function ApprovalControls({
         command ? l10n.t("Run or reject this command") : l10n.t("Approve {0} on {1}", approval.tool, approval.summary)
       }
     >
+      {(approval.lines || approval.preview) && (
+        <div className="approval-change">
+          {approval.lines && (
+            <span className="changed-counts">{`+${approval.lines.added} \u2212${approval.lines.removed}`}</span>
+          )}
+          {approval.preview && (
+            // [>]: The diff tab may have been closed: Accept must never be a blind write.
+            <button type="button" className="link" onClick={() => post({ type: "showChange", id })}>
+              {l10n.t("Show change")}
+            </button>
+          )}
+        </div>
+      )}
       <input
         type="text"
         className="approval-reason"
@@ -1483,16 +1629,28 @@ export function ApprovalControls({
         aria-label={l10n.t("Reason for rejecting (optional)")}
         onChange={(event) => setReason(event.target.value)}
         onKeyDown={(event) => {
-          if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+          const modified = event.metaKey || event.ctrlKey || event.altKey || event.shiftKey;
+          if (event.key !== "Enter" || modified || event.nativeEvent.isComposing) return;
           event.preventDefault();
           reject();
         }}
       />
       <div className="actions">
-        <button type="button" onClick={() => post({ type: "approve", id })}>
+        <button
+          type="button"
+          title={command ? l10n.t("Run (⌘Enter)") : l10n.t("Accept (⌘Enter)")}
+          aria-keyshortcuts="Meta+Enter"
+          onClick={() => post({ type: "approve", id })}
+        >
           {command ? l10n.t("Run") : l10n.t("Accept")}
         </button>
-        <button type="button" className="secondary" onClick={reject}>
+        <button
+          type="button"
+          className="secondary"
+          title={l10n.t("Reject (⌘Backspace)")}
+          aria-keyshortcuts="Meta+Backspace"
+          onClick={reject}
+        >
           {l10n.t("Reject")}
         </button>
       </div>
@@ -1781,6 +1939,7 @@ function Composer({
   quoting,
   takeQuoting = () => {},
   replaces,
+  sentReplacement = () => {},
 }: {
   state: ChatState;
   historyOpen: boolean;
@@ -1792,6 +1951,7 @@ function Composer({
   quoting?: string;
   takeQuoting?: () => void;
   replaces?: ShownEntries;
+  sentReplacement?: () => void;
 }) {
   const [text, setText] = useState("");
   const [caret, setCaret] = useState(0);
@@ -2001,6 +2161,7 @@ function Composer({
     const mentions = pickedInText(picked, text);
     // [>]: Only a send replaces: a queued message waits behind a reply, which ended the replacing state.
     post(type === "send" && replaces !== undefined ? { type, text, mentions, replaces } : { type, text, mentions });
+    if (type === "send" && replaces !== undefined) sentReplacement();
     clear();
   };
 
@@ -2012,6 +2173,9 @@ function Composer({
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    // [!]: An empty box hands ⌘Enter and ⌘Backspace to the decision keys (`useDecisionKeys`) while a request is
+    // open; otherwise ⌘Enter sends, as Enter does.
+    if (state.approval && decisionKey(event.nativeEvent, event.currentTarget)) return;
     const pressed = {
       key: event.key,
       shift: event.shiftKey,
@@ -2092,6 +2256,7 @@ function Composer({
         />
         {/* [!]: After the message box, so Shift+Tab from it still reaches an open request's controls first. */}
         <ModeSelect mode={state.mode} disabled={replying || state.modePending} />
+        {state.model !== undefined && <EffortSelect state={state} replying={replying} />}
         {/* [>]: During a reply Send queues, so it stays beside Stop, secondary: Stop is the region's primary button. */}
         <button
           type="button"

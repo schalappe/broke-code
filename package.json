@@ -99,6 +99,36 @@
         "command": "broke-code.fixDiagnostic",
         "title": "%command.fixDiagnostic.title%",
         "category": "broke-code"
+      },
+      {
+        "command": "broke-code.acceptChange",
+        "title": "%command.acceptChange.title%",
+        "category": "broke-code"
+      },
+      {
+        "command": "broke-code.runCommand",
+        "title": "%command.runCommand.title%",
+        "category": "broke-code"
+      },
+      {
+        "command": "broke-code.reject",
+        "title": "%command.reject.title%",
+        "category": "broke-code"
+      },
+      {
+        "command": "broke-code.showChange",
+        "title": "%command.showChange.title%",
+        "category": "broke-code"
+      },
+      {
+        "command": "broke-code.stop",
+        "title": "%command.stop.title%",
+        "category": "broke-code"
+      },
+      {
+        "command": "broke-code.newChat",
+        "title": "%command.newChat.title%",
+        "category": "broke-code"
       }
     ],
     "menus": {
@@ -114,6 +144,30 @@
         {
           "command": "broke-code.rejectEdit",
           "when": "false"
+        },
+        {
+          "command": "broke-code.acceptChange",
+          "when": "broke-code.approval == write"
+        },
+        {
+          "command": "broke-code.runCommand",
+          "when": "broke-code.approval == command"
+        },
+        {
+          "command": "broke-code.reject",
+          "when": "broke-code.approval == write || broke-code.approval == command"
+        },
+        {
+          "command": "broke-code.showChange",
+          "when": "broke-code.approval == write"
+        },
+        {
+          "command": "broke-code.stop",
+          "when": "broke-code.replying"
+        },
+        {
+          "command": "broke-code.newChat",
+          "when": "broke-code.hasEntries"
         }
       ],
       "editor/context": [
@@ -264,7 +318,8 @@
     "@vscode/l10n": "0.0.18",
     "react": "19.3.1",
     "react-dom": "19.3.1",
-    "react-markdown": "10.1.0"
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.6",

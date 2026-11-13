@@ -60,7 +60,8 @@ This file specifies how conversations are saved, listed, pruned, and reopened, a
   conversation shown and the user's actions (`storageProblem`: save, delete, open, not found), so the panel can show
   both and neither hides or clears the other; it is cleared only by the next listing that succeeds. Stop ends a reply at
   once even when a step it waits on cannot be aborted (such as a CA file read on a FIFO): the reply is stopped and
-  saved, and late reply text or outcome is dropped. A row is dropped only once its delete has succeeded. Deleting the
+  saved, and late reply text or outcome is dropped. A row's Delete asks first: its first click turns it into "Confirm delete", with Cancel after it, and only
+  the second click posts `deleteConversation`; Cancel posts nothing. A row is dropped only once its delete has succeeded. Deleting the
   conversation shown shows a new one first. New chat, opening another conversation, and deleting the one shown also
   empty the queue at request time, not when they run, so a turn ending `done` meanwhile sends nothing; opening the
   conversation shown, deleting another row, and pruning leave it. The controller returns the queued texts to the
