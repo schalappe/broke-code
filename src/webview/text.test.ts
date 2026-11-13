@@ -17,6 +17,7 @@ import {
   describeUndoOutcome,
   formatConversationDate,
   mainArgument,
+  stepNote,
 } from "./text";
 import { type FoldCounts, foldTurns, STEP_KINDS, type StepKind } from "./turns";
 
@@ -207,18 +208,28 @@ describe("describeFold", () => {
   const command = (extra: Partial<ChatEntry & { role: "tool" }> = {}) => step("run_command", { command: "ls" }, extra);
   const malformed = () => step("read_file", {}, { status: "malformed", text: "Malformed." });
 
-  /** The row of the fold of one ended turn holding `steps`. */
+  /** The row of the fold of one ended turn holding `steps`, its failed part after " | " when there is one. */
   function rowOf(...steps: ChatEntry[]): string {
     const part = foldTurns([user, ...steps, reply]).find((each) => each.kind === "fold");
     if (part?.kind !== "fold") throw new Error("no fold");
-    return describeFold(part.counts);
+    return flat(describeFold(part.counts));
   }
 
-  /** Counts with `steps` steps of one kind, each its own path, and the failed and rejected ones. */
-  function countsOf(kind: StepKind | "other", steps: number, failed = 0, rejected = 0): FoldCounts {
+  function flat({ done, failed }: { done: string; failed?: string }): string {
+    return failed === undefined ? done : `${done} | ${failed}`;
+  }
+
+  /** Counts with `steps` steps of one kind, each its own path, and the failed (of `failedTools`) and rejected ones. */
+  function countsOf(
+    kind: StepKind | "other",
+    steps: number,
+    failed = 0,
+    rejected = 0,
+    failedTools = failed > 0 ? ["run_command"] : [],
+  ): FoldCounts {
     const kinds = Object.fromEntries(STEP_KINDS.map((each) => [each, { shown: 0, steps: 0 }])) as FoldCounts["kinds"];
     if (kind !== "other") kinds[kind] = { shown: steps, steps };
-    return { steps, failed, rejected, kinds, otherSteps: kind === "other" ? steps : 0 };
+    return { steps, failed, failedTools, rejected, kinds, otherSteps: kind === "other" ? steps : 0 };
   }
 
   const table = () => ({
@@ -261,11 +272,13 @@ describe("describeFold", () => {
     expect(rowOf(read("a.ts"), read("b.ts"), list("."), list("src"), search(), search(), ...fiveEdits, command())).toBe(
       "Read 2 files, changed 1 file, ran 1 command, 4 other steps",
     );
-    expect(table().sixth).toBe("Read 1 file, listed 1 folder, searched 1 time, 5 other steps, 4 failed");
+    expect(table().sixth).toBe(
+      "Read 1 file, listed 1 folder, searched 1 time, 5 other steps | 4 failed (read_file, write_file)",
+    );
     expect(rowOf(list("."), command({ status: "error", approval: "rejected" }))).toBe(
       "Listed 1 folder, ran 1 command, 1 rejected",
     );
-    expect(rowOf(malformed(), malformed())).toBe("2 steps, 2 failed");
+    expect(rowOf(malformed(), malformed())).toBe("2 steps | 2 failed (read_file)");
     expect(rowOf(step("write_file", { path: "a.ts" }, { undone: true }), step("write_file", { path: "a.ts" }))).toBe(
       "Changed 1 file",
     );
@@ -287,29 +300,37 @@ describe("describeFold", () => {
       ["ran", "Ran 1 command", "Ran 2 commands"],
     ];
     for (const [kind, one, two] of rows) {
-      expect(describeFold(countsOf(kind, 1))).toBe(one);
-      expect(describeFold(countsOf(kind, 2))).toBe(two);
+      expect(describeFold(countsOf(kind, 1))).toEqual({ done: one });
+      expect(describeFold(countsOf(kind, 2))).toEqual({ done: two });
     }
     const oneOther = countsOf("read", 1);
     oneOther.otherSteps = 1;
     oneOther.steps = 2;
-    expect(describeFold(oneOther)).toBe("Read 1 file, 1 other step");
-    expect(describeFold(countsOf("other", 3))).toBe("3 steps");
+    expect(describeFold(oneOther)).toEqual({ done: "Read 1 file, 1 other step" });
+    expect(describeFold(countsOf("other", 3))).toEqual({ done: "3 steps" });
   });
 
-  test("adds the failed and the rejected ones when there are any", () => {
-    expect(describeFold(countsOf("ran", 3, 1))).toBe("Ran 3 commands, 1 failed");
-    expect(describeFold(countsOf("ran", 3, 2, 1))).toBe("Ran 3 commands, 2 failed, 1 rejected");
-    expect(describeFold(countsOf("ran", 4, 0, 1))).toBe("Ran 4 commands, 1 rejected");
-    expect(describeFold(countsOf("ran", 5, 0, 2))).toBe("Ran 5 commands, 2 rejected");
+  test("adds the rejected ones, then the failed ones apart, naming each failed tool once", () => {
+    expect(flat(describeFold(countsOf("ran", 3, 1)))).toBe("Ran 3 commands | 1 failed (run_command)");
+    expect(flat(describeFold(countsOf("ran", 3, 2, 1)))).toBe("Ran 3 commands, 1 rejected | 2 failed (run_command)");
+    expect(flat(describeFold(countsOf("ran", 4, 0, 1)))).toBe("Ran 4 commands, 1 rejected");
+    expect(flat(describeFold(countsOf("ran", 5, 0, 2)))).toBe("Ran 5 commands, 2 rejected");
+    const failing = rowOf(
+      command({ status: "error", text: "exit code 1" }),
+      edit("a.ts", { status: "error" }),
+      command({ status: "error", text: "exit code 2" }),
+    );
+    expect(failing).toBe("Changed 1 file, ran 2 commands | 3 failed (run_command, edit_file)");
   });
 
   test("reads in French with the French bundle loaded", () => {
     l10n.config({ contents: french });
     try {
       expect(table().first).toBe("3 fichiers lus, 1 fichier modifié, 1 commande exécutée");
-      expect(table().sixth).toBe("1 fichier lu, 1 dossier listé, 1 recherche, 5 autres étapes, 4 échecs");
-      expect(describeFold(countsOf("other", 2, 0, 2))).toBe("2 étapes, 2 refus");
+      expect(table().sixth).toBe(
+        "1 fichier lu, 1 dossier listé, 1 recherche, 5 autres étapes | 4 échecs (read_file, write_file)",
+      );
+      expect(flat(describeFold(countsOf("other", 2, 0, 2)))).toBe("2 étapes, 2 refus");
     } finally {
       l10n.config({ contents: {} });
     }
@@ -401,19 +422,24 @@ describe("describeToolStep", () => {
 });
 
 describe("describeToolStep for the user's own decisions", () => {
-  test("an answered question shows the answer; an unanswered or failed one keeps the ordinary status", () => {
+  test("an answered question says so, its answer as the note; an unanswered or failed one keeps the ordinary status", () => {
     const asked = { role: "tool", name: "ask_user", args: { question: "Which?" }, status: "ok" } as const;
-    expect(describeToolStep({ ...asked, text: "The user answered: src/b.ts" })).toBe("you answered: src/b.ts");
-    expect(describeToolStep({ ...asked, status: "error", text: "ask_user: no question." })).toBe("error, 1 line");
+    const answered = { ...asked, text: "The user answered: src/b.ts" };
+    expect(describeToolStep(answered)).toBe("you answered");
+    expect(stepNote(answered)).toBe("src/b.ts");
+    const failed = { ...asked, status: "error", text: "ask_user: no question." } as const;
+    expect(describeToolStep(failed)).toBe("error, 1 line");
+    expect(stepNote(failed)).toBeUndefined();
   });
 
-  test("a rejection says it was the user's, with the reason typed when there is one", () => {
+  test("a rejection says it was the user's; the reason typed, when there is one, is the note", () => {
     const step = { role: "tool", name: "edit_file", args: { path: "a.ts" }, status: "error" } as const;
     const rejected = { ...step, approval: "rejected" } as const;
     expect(describeToolStep({ ...rejected, text: "The user rejected this change." })).toBe("rejected by you");
-    expect(describeToolStep({ ...rejected, text: "The user rejected this change.\nKeep it." })).toBe(
-      "rejected by you: Keep it.",
-    );
+    expect(stepNote({ ...rejected, text: "The user rejected this change." })).toBeUndefined();
+    const reason = { ...rejected, text: "The user rejected this change.\nKeep it." };
+    expect(describeToolStep(reason)).toBe("rejected by you");
+    expect(stepNote(reason)).toBe("Keep it.");
   });
 });
 
@@ -510,6 +536,16 @@ describe("describeAnnouncement", () => {
   test("reads the agent's question", () => {
     const asked = state([ask, reply("streaming")], { question: { id: 3, question: "Which file?", options: [] } });
     expect(describeAnnouncement(state([ask, reply("streaming")]), asked)).toBe("The agent asks: Which file?");
+    const options = (count: number) =>
+      state([ask, reply("streaming")], {
+        question: { id: 4, question: "Which file?", options: ["a", "b", "c"].slice(0, count) },
+      });
+    expect(describeAnnouncement(state([ask, reply("streaming")]), options(1))).toBe(
+      "The agent asks: Which file? (1 option)",
+    );
+    expect(describeAnnouncement(state([ask, reply("streaming")]), options(3))).toBe(
+      "The agent asks: Which file? (3 options)",
+    );
   });
 
   describe("a call, through the states the controller publishes", () => {

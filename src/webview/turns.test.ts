@@ -72,6 +72,19 @@ describe("foldTurns", () => {
   test("counts a rejected step as rejected only and an error as failed", () => {
     const parts = foldTurns([U, A(), T(), A(), T("error"), A(), T("error", "rejected"), A("done")]);
     expect(shape(parts)).toEqual(["0", "fold 1-7 3/1/1", "7"]);
+    expect(parts[1]?.kind === "fold" && parts[1].counts.failedTools).toEqual(["read_file"]);
+  });
+
+  test("names each failed tool once, in the order it first failed", () => {
+    const command: ChatEntry = {
+      role: "tool",
+      name: "run_command",
+      args: { command: "ls" },
+      status: "error",
+      text: "x",
+    };
+    const parts = foldTurns([U, A(), command, A(), T("malformed"), A(), command, A("done")]);
+    expect(parts[1]?.kind === "fold" && parts[1].counts.failedTools).toEqual(["run_command", "read_file"]);
   });
 
   test("leaves a turn with one step unfolded", () => {

@@ -2032,6 +2032,7 @@ describe("ChatController agent turn", () => {
 
     expect(calls).toEqual([]);
     expect(state().entries[1]).toMatchObject({ content: "Loaded.\n" });
+    expect(state().entries[1]).not.toHaveProperty("malformedCall");
     expect(state().entries[2]).toMatchObject({ role: "tool", name: "unknown", status: "malformed" });
     const history = sent()[1]!.messages;
     expect(history[2]).toEqual({ role: "assistant", content: "Loaded.\n" });
@@ -2129,6 +2130,10 @@ describe("ChatController agent turn", () => {
     );
     expect(state().entries.at(-2)).toMatchObject({ role: "assistant", status: "halted", haltReason: "malformedCalls" });
     expect(state().entries.at(-1)).toMatchObject({ role: "tool", name: "read_file", status: "malformed" });
+    // [>]: Each malformed block keeps its place in the answer, so the chat can show it as written.
+    const unclosed = malformedReply.content;
+    expect(state().entries[1]).toMatchObject({ content: unclosed, malformedCall: { start: 0, end: unclosed.length } });
+    expect(state().entries[3]).toMatchObject({ content: "<nope>x</nope>", malformedCall: { start: 0, end: 14 } });
     expect(isReplying(state())).toBe(false);
     await settledSave(saved, 7);
     expect(saved()?.entries.at(-2)).toMatchObject({ status: "halted", haltReason: "malformedCalls" });
@@ -2608,6 +2613,8 @@ describe("ChatController agent turn", () => {
       expect(sent()).toHaveLength(4);
       expect(state().entries.at(-1)).toMatchObject({ role: "assistant", status: "halted", haltReason: "contextFull" });
       expect(state().context.leftOut).toBeUndefined();
+      // [>]: The next turn would halt the same way: the state says so, and the panel offers its ways out.
+      expect(state().context.full).toBe("halts");
     });
   });
 
@@ -4352,6 +4359,8 @@ describe("ChatController agent turn", () => {
       const { controller, state, sent } = await scripted([{ content: "never sent" }], undefined, undefined, on());
       await controller.send("x".repeat(4000));
       expect(sent()).toHaveLength(0);
+      // [>]: No summary can free this context, automatic or `/compact`: the state says both would halt.
+      expect(state().context.full).toBe("summaryHalts");
       expect(state().entries).toEqual([
         { role: "user", content: "x".repeat(4000), mentions: [] },
         { role: "assistant", reasoning: "", content: "", status: "halted", haltReason: "contextFull" },
@@ -4374,6 +4383,8 @@ describe("ChatController agent turn", () => {
         error: { kind: "rejected", status: 500 },
       });
       expect(isReplying(state())).toBe(false);
+      // [>]: The summary request fit: the next message summarizes first again.
+      expect(state().context.full).toBe("compacts");
     });
 
     test("an empty summary ends the turn contextFull", async () => {

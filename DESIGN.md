@@ -101,9 +101,11 @@ Each takes the color the theme gives that exact job, so a button is the theme's 
 | `--bc-tool` | `textLink.foreground` | A tool's name on the thread. Not a link: its row opens, and the name is also in the editor font, weight 600. |
 | `--bc-inverse-well`, `--bc-inverse-hover`, `--bc-inverse-line` | 14%, 16%, and 45% of `sideBar.background` | On the decision block, drawn in negative: the command's ground, a hovered Reject or option, their border. |
 | `--bc-inverse-button-hover` | 86% of `sideBar.background` over the foreground | The hovered Accept, Run, or Answer on the decision block. |
+| `--bc-inverse-dim` | 72% of `sideBar.background` | Secondary text on the decision block: the reason field's placeholder. |
+| `--bc-slider` | `scrollbarSlider.background`, then `--bc-line` | The thin bar of a block that scrolls sideways. |
 | `--bc-link`, `--bc-link-active` | `textLink.foreground`, `textLink.activeForeground` | Links, always underlined, so color is never the only cue. |
 | `--bc-code-fg` | `textPreformat.foreground`, then `--bc-fg` | Inline code. |
-| `--bc-error`, `--bc-warning` | `errorForeground`, `editorWarning.foreground` | Status text and marks. |
+| `--bc-error`, `--bc-warning` | 60% of `errorForeground` over the foreground; `editorWarning.foreground` | Status text and marks. The error color is drawn toward the foreground, since Light Modern's own fell to 3.2:1 as small text on the panel. |
 | `--bc-error-fill`, `--bc-warning-fill` | `inputValidation.errorBackground`, `.warningBackground` | The fill of an error or a warning block. |
 | `--bc-error-edge`, `--bc-warning-edge` | `contrastBorder`, then `inputValidation.errorBorder` or `.warningBorder` | Its border. |
 | `--bc-error-edge-soft` | `contrastBorder`, then 55% of `errorForeground` | The border of a failed chip. |
@@ -187,7 +189,10 @@ between its regions: header, notices, the conversation (or History in its place)
   one provider there is no provider picker. The reasoning effort is in the message box, beside the mode. Each keeps room for its native
   chevron at the right (`--bc-chevron`), so it never covers the name. The usage, Set context size after it when the
   model's size is unknown, and the buttons follow on the next line, wrapping when the panel is narrow. The unknown size is said in that link's tooltip, not in a line of its own, since a service that never
-  reports its size would keep such a line on screen for good.
+  reports its size would keep such a line on screen for good. From three quarters of the context size on, and
+  whenever the next request fills the context, the usage takes the full foreground in weight 600 (`.usage.nearly-full`):
+  its share is in words beside it, so the weight is never the only cue, and the warning color would fall under 4.5:1 on
+  a light panel at that size.
 - The conversation keeps 4px of side padding inside its scroll box, so a focus ring on a row at its edge is not
   clipped.
 - The conversation follows its bottom while the user is there (within 24px of it) and stays where it is once they
@@ -221,7 +226,8 @@ user's message). Borders and rules are 1px. No colored side stripe.
   and Send, which then queues, is secondary.
 - Header (New chat, History): secondary buttons shown as quiet text, dim and without a drawn box (`--bc-edge` only),
   until hovered, focused, or pressed, when they take the secondary look. The pickers follow the same rule: dim
-  text on the panel, one size down, their border back on hover and focus.
+  text on the panel, one size down, their border back on hover and focus. Disabled during a reply, the model picker keeps that dim
+  and drops the half opacity, since the model id is what the user reads there.
 - Secondary (New chat, History, Delete, Reject, a question's options, Retry, Add provider under the skipped providers, a queued message's
   Send now, Edit, and Remove, the turn's Retry, Retry anyway, Cancel, Continue, "Implement in ... mode", and Undo changes, the last message's Edit and the Cancel of its mark): a hairline box on the panel (`--bc-line`), the foreground as
   text; `--bc-fill-strong` when hovered or pressed (`aria-expanded="true"`).
@@ -236,7 +242,8 @@ user's message). Borders and rules are 1px. No colored side stripe.
   under the narration before a call), shown while text of that answer is selected. The row is not selectable. No room
   is kept for it, a written exception to the rule that a revealed control keeps its room, which covers controls
   revealed on hover: a row kept under every answer would cost more than the one-row move.
-- Disabled: half opacity. Header and History buttons are one size down.
+- Disabled: half opacity. A disabled primary button also drops the theme's button fill for the secondary hairline box
+  (`--bc-line`, the foreground as text), so a Send that cannot act never reads as the region's live action at rest. Header and History buttons are one size down.
 
 ### Fields
 
@@ -255,7 +262,8 @@ effort picker follows it, drawn the same way: both set the next turn, so the hea
 
 Under the message box, outside its field: one row per queued message, in order, on `--bc-fill` with `--bc-edge`,
 radius 6px, one size down. The text is cut to one line with an ellipsis (its tooltip holds it whole), then Edit and
-Remove at the right; while the queue is paused, the first row leads its actions with Send now, disabled when Send
+Remove at the right; below 340px the text takes up to two lines of its own, then an ellipsis, and the buttons wrap
+under it at the right, since three buttons beside it left a few letters; while the queue is paused, the first row leads its actions with Send now, disabled when Send
 would not act. Above the rows, a notice line says "The queue is paused." when no reply is in flight, and another
 "The queue is full: 10 messages at most." at the cap. Nothing went wrong in either case, so no block.
 
@@ -276,9 +284,12 @@ would not act. Above the rows, a notice line says "The queue is paused." when no
   10-12, 3 lines"); its kind marker is a pair of brackets (side borders only), and with no active editor, an empty
   selection, or a file outside the workspace it is a failed chip.
 - Reply: Markdown flush on the panel, inside `.answer`, the only place the Markdown rules apply.
-- A tool step the user rejected says "rejected by you" (with the reason typed after a colon) in the row's ordinary
-  dim color, on an ordinary node: the user's own decision is not a failure, so it never takes the error color. An
-  answered question's row says "you answered: <answer>". A block of code or a step result that scrolls sideways
+- A tool step the user rejected says "rejected by you" in the full foreground (`.step-status.rejected`), on an ordinary
+  node: the user's own decision is not a failure, so it never takes the error color, but the reply after it may claim
+  the change was made, so it is not dim either. An answered question's row says "you answered". The reason typed, or
+  the answer given, is the user's own words: a small dim line of its own under the row (`.step-note`), shown open or
+  closed, wrapped, never cut, so a long one never pushes the row past the panel. In a row, the argument gives way
+  before the status (`.step-arg` shrinks first), so a status is cut last. A block of code or a step result that scrolls sideways
   shows a thin bar in the theme's slider color.
 - The decision block's Accept or Run and Reject name their keys, ⌘Enter and ⌘Backspace, in their tooltip.
 - Code block of a reply: once its text is final, its frame (`.code-block`: `--bc-fill`, `--bc-edge`, radius 6px)
@@ -293,7 +304,9 @@ would not act. Above the rows, a notice line says "The queue is paused." when no
 - The thread: a reply that holds a tool step, and a folded turn, sit 20px in, beside one drawn 1px line
   (`--bc-line`) that runs from one to the next. Each row that opens is a node on it, a 7px ring filled with the
   panel's color: plain for a tool step, dotted for reasoning, a double ring for a folded turn, in the error color for
-  a failed step (its status says so in words). What the agent says before a call is narration: small and dim. A
+  a failed step (its status says so in words). What the agent says before a call is narration: small and dim. A call
+  the parser could not read shows in that narration as the model wrote it (`.malformed-block`): the code block's frame,
+  the editor font, its line breaks kept, wrapping instead of scrolling. A
   reply without a step, the turn's answer, leaves the thread and runs flush at full size. Opened, a fold's entries
   move back onto the line.
 - A row that opens (reasoning, a tool step, a folded turn) ends with its chevron, turned down once open.
@@ -308,7 +321,9 @@ would not act. Above the rows, a notice line says "The queue is paused." when no
 - Folded turn: an ended turn's steps and intermediate replies under one small dim row, a double-ring node on the
   thread, between the user's message and the final reply: what the steps did, "Read 3 files, changed 1 file, ran 1
   command, 1 failed", the counts in words, never in color alone, a path counted once after a lexical cleanup (`a.ts` and
-  `./a.ts` are one file); it wraps, never cut. Closed when the turn ends; opened, the entries show exactly as they
+  `./a.ts` are one file); it wraps, never cut. The failed steps come last, apart (`.fold-failed`), in the error color
+  and naming each tool that failed ("2 failed (run_command, edit_file)"), and the row's double ring takes the error
+  color too (`.turn-fold-row.failed`), since the final reply may claim a success a failed step contradicts. Closed when the turn ends; opened, the entries show exactly as they
   rendered before. Its rules use the child combinator (`.turn-fold > summary`), so the reasoning and step rows inside
   keep their own chevrons.
 - Summary (`/compact`): its reply sits under a separator (`.summary-separator`), small dim words between two 1px
@@ -365,23 +380,29 @@ as its ground, the panel's color as its text. It is the one element of the conve
 and the thread ends on its solid 9px node. "Waiting for your decision" is in weight 600, and the row wraps so the
 path or command is never cut. Under it, for a write: its line counts (`+N −M`, in the editor font) and Show change,
 a link in the block's text color that brings the diff back, on a line of their own; then one line with the reason
-field, a compact row one size down in the theme's input colors, taking the room left, and Accept or Run and Reject
-after it; below about 300px the buttons wrap under the field. The field never outweighs Accept. On this block Accept or Run is the panel's own ground with the foreground as text, weight 600, since the
+field, a compact row one size down, taking the room left, and Accept or Run and Reject after it; below about 300px the
+buttons wrap under the field. The field never outweighs Accept: it has no fill, an outline in `--bc-inverse-line` like
+Reject's, the block's text color, its placeholder in `--bc-inverse-dim`, and its focus ring in the panel's color. No
+key in it decides, Enter included. On this block Accept or Run is the panel's own ground with the foreground as text, weight 600, since the
 theme's button color is not chosen for this ground and a high-contrast theme gives it no fill; Reject is outlined in
 the panel's color. A focus ring on its buttons is the panel's color.
 
 A question of the agent (`ask_user`) uses the same block, since it holds the turn the same way: the row says "waiting
-for your answer", then the question in full with its line breaks (`.question-text`), one button per option, each on
+for your answer", then the question in full with its line breaks (`.question-text`), text in backticks as inline code
+on the block's well (`--bc-inverse-well`, the editor font, the block's text color), one button per option, each on
 its own line at the block's width, outlined in the panel's color like Reject and wrapping when long
 (`.question-option`), then the answer field, in the theme's input colors, with Answer after it on the same line.
 Answer is the block's primary button, drawn like Accept, and is disabled, at half opacity, while the field is blank.
 
 ### Menus and History
 
-- The `@` and `/` menus overlay the conversation above the message box. The highlighted row takes the theme's active
+- The `@` and `/` menus overlay the conversation above the message box. In the `/` menu, the first skill under the
+  built-in commands carries a small dim heading, "Skills", over a 1px rule in `--bc-line` (`.menu-group`): seen, not
+  read (`aria-hidden`), since each row's description says what it is. The highlighted row takes the theme's active
   selection, or `--bc-fill-strong` where the theme has none, and `--bc-edge-active` in high contrast.
 - History: the search field ("Search conversations") on top, at full width, then one row per conversation, title over
-  date, Delete at the right: quiet like the header's buttons, shown only on the row the pointer or the focus is on
+  date, Delete at the right. The title takes two lines at most, then an ellipsis; the date line says the time and how
+  many messages the conversation holds ("· 3 messages"), so two rows with one title tell apart: quiet like the header's buttons, shown only on the row the pointer or the focus is on
   (opacity, so it stays in the tab order), so the titles lead. Its first click asks: the same button reads "Confirm
   delete" and Cancel follows it, both shown, since a delete cannot be undone. A row found by its messages only carries its excerpt between title and date: one line,
   dim, one size down, cut with an ellipsis, plain text without a highlight. Only the rows scroll; the field stays in
@@ -396,14 +417,14 @@ Each kind of state has one look, distinct from the others at a glance:
 
 | State | Look |
 | --- | --- |
-| Loading (waiting for the reply, thinking, tool running, models loading, History's "Searching…") | Dim steady text; a line of its own leads with a dot that breathes, and a running step's node breathes. The pickers and the mode selector are disabled. While a mode change is being written, the mode selector and Send are disabled, with no other sign: the write takes a moment. While an undo runs, its button reads "Undoing changes…" and is disabled, and so is Send. |
+| Loading (waiting for the reply, thinking, tool running, models loading, History's "Searching…", text still streaming) | Dim steady text; a line of its own leads with a dot that breathes; while an answer's text arrives, the dot alone breathes on a line after it (`.streaming-mark`, not read aloud); and a running step's node breathes. The pickers and the mode selector are disabled. While a mode change is being written, the mode selector and Send are disabled, with no other sign: the write takes a moment. While an undo runs, its button reads "Undoing changes…" and is disabled, and so is Send. |
 | Empty (no provider, new conversation, empty History, no History row left by the search) | One dim line, centered in the room it has; a link under it when there is something to do. No provider: Add provider (primary) and the Open provider settings link side by side under it. |
 | Notice (older tool results left out of the next request, the queue paused or full, an undo that put every file back) | One small dim line. Nothing went wrong, so no block. An unknown context size is the header's Set context size link instead. |
-| Warning (skipped providers and skills, an undo that skipped files, conversations History could not search) | A block on the theme's warning fill; under skipped providers, Add provider (secondary) below the block, only while a valid provider exists: without one, the empty state's Add provider is the panel's only one. |
-| Error (models unavailable, failed reply, storage and listing problems, an undo that failed unexpectedly) | A block on the theme's error fill: the message, its technical detail in the editor font, then its actions. |
+| Warning (skipped providers and skills, an undo that skipped files, conversations History could not search, a full context) | A block on the theme's warning fill; under skipped providers, Add provider (secondary) below the block, only while a valid provider exists: without one, the empty state's Add provider is the panel's only one. |
+| Error (models unavailable, failed reply, storage and listing problems, an undo that failed unexpectedly) | A block on the theme's error fill: the message, its technical detail in the editor font and the block's own text color (a dim tint fell under 4.5:1 on the light error fill), then its actions. |
 | Failed step or chip | The error color on the status text; no block. |
 | Waiting for a decision or an answer | The decision block, in negative, on the thread's solid node. |
-| Turn ending (Stopped, halted) | A short rule, then small dim text. |
+| Turn ending (Stopped, halted) | A short rule, then small dim text. A halt on a full context is a warning block instead (`p.warning`): every new message would end the same way until the user acts. Over the message box, one warning line, "The conversation fills the model's context.", with "Summarize (/compact)" under it, secondary (`.warning.context-full`); New chat stays in the header only. From three quarters of the size, one notice line there points at `/compact`. |
 | Folded turn (an ended turn of two steps or more) | One small dim row on a double-ring node: what the steps did ("Read 3 files, changed 1 file, ran 1 command"), "N steps" for a fold of other steps only, then the failed and rejected counts in words, then the chevron; it wraps, never cut. |
 | Replacing (Edit on the last message) | The last turn as a group under one line in the full foreground saying that sending replaces it, with Cancel; not dimmed. |
 | Summarized (a summary, and the entries it replaces) | A separator of dim words between two rules above the summary; the entries before it as a group under one dim line saying they are no longer sent, not dimmed; the turn's message an automatic summary quotes with a dim line saying it is still sent. |

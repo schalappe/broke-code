@@ -58,7 +58,13 @@ describe("conversation record", () => {
           call: { name: "read_file", args: { path: "a.ts" }, start: 13, end: answer.length },
         },
         { role: "tool", name: "read_file", args: { path: "a.ts" }, status: "ok", text: "@a.ts (file, 1 line)" },
-        { role: "assistant", reasoning: "", content: "<read_file>", status: "done" },
+        {
+          role: "assistant",
+          reasoning: "",
+          content: "<read_file>",
+          status: "done",
+          malformedCall: { start: 0, end: 11 },
+        },
         { role: "tool", name: "read_file", args: {}, status: "malformed", text: "The <read_file> tag never closes." },
         { role: "assistant", reasoning: "", content: "<nope></nope>", status: "halted", haltReason: "malformedCalls" },
         { role: "tool", name: "unknown", args: {}, status: "error", text: "boom" },
@@ -361,6 +367,10 @@ describe("conversation record", () => {
       { ...reply, call: { name: "a", args: {}, start: 5, end: 2 } },
       { ...reply, call: { name: "a", args: {}, start: -1, end: 2 } },
       { ...reply, call: { name: "a", start: 0, end: 2 } },
+      { ...reply, malformedCall: { start: 0, end: 99 } },
+      { ...reply, malformedCall: { start: 5, end: 2 } },
+      { ...reply, malformedCall: { start: "0", end: 2 } },
+      { ...reply, malformedCall: null },
       { ...reply, status: "halted" },
       { ...reply, status: "halted", haltReason: "tired" },
       { ...reply, status: "done", haltReason: "stepLimit" },
@@ -435,8 +445,8 @@ describe("conversation title", () => {
     expect(conversationTitle([user("😀".repeat(61))])).toBe(`${"😀".repeat(60)}…`);
   });
 
-  test("summarizes a record by id, title, and update time", () => {
-    expect(summarize(record())).toEqual({ id: ID, title: "explain @a.ts", updatedAt: 2000 });
+  test("summarizes a record by id, title, update time, and count of user messages", () => {
+    expect(summarize(record())).toEqual({ id: ID, title: "explain @a.ts", updatedAt: 2000, messages: 1 });
   });
 });
 
@@ -446,8 +456,14 @@ describe("conversation summary", () => {
 
   test("reads back the row it wrote, under the record's version", () => {
     const text = serializeSummary(record());
-    expect(JSON.parse(text)).toEqual({ version: 2, id: ID, title: "explain @a.ts", updatedAt: 2000 });
-    expect(parseSummary(text)).toEqual({ id: ID, title: "explain @a.ts", updatedAt: 2000 });
+    expect(JSON.parse(text)).toEqual({ version: 2, id: ID, title: "explain @a.ts", updatedAt: 2000, messages: 1 });
+    expect(parseSummary(text)).toEqual({ id: ID, title: "explain @a.ts", updatedAt: 2000, messages: 1 });
+  });
+
+  test("reads a summary written before the message count without one, and refuses a count that is not whole", () => {
+    expect(summary()).toEqual({ id: ID, title: "t", updatedAt: 2000 });
+    expect(summary({ messages: 0 })).toEqual({ id: ID, title: "t", updatedAt: 2000, messages: 0 });
+    for (const messages of [-1, 1.5, "2", null]) expect(summary({ messages })).toBeUndefined();
   });
 
   test("refuses a summary of a version 1 record, so the record reports its own version", () => {

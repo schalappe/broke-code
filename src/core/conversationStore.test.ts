@@ -43,11 +43,12 @@ describe("ConversationStore", () => {
       id: old.id,
       title: "old",
       updatedAt: 1000,
+      messages: 1,
     });
     expect(await store.list()).toEqual({
       conversations: [
-        { id: recent.id, title: "recent", updatedAt: 2000 },
-        { id: old.id, title: "old", updatedAt: 1000 },
+        { id: recent.id, title: "recent", updatedAt: 2000, messages: 1 },
+        { id: old.id, title: "old", updatedAt: 1000, messages: 1 },
       ],
       unreadable: [],
     });
@@ -63,7 +64,7 @@ describe("ConversationStore", () => {
     await store.save(saved);
     files.files.delete(`${saved.id}.summary.json`);
     expect(await new ConversationStore(files).list()).toEqual({
-      conversations: [{ id: saved.id, title: "kept", updatedAt: 1000 }],
+      conversations: [{ id: saved.id, title: "kept", updatedAt: 1000, messages: 1 }],
       unreadable: [],
     });
   });
@@ -89,9 +90,9 @@ describe("ConversationStore", () => {
     });
     expect(listed).toEqual({
       conversations: [
-        { id: locked.id, title: "locked", updatedAt: 3000 },
-        { id: foreign.id, title: "foreign", updatedAt: 2000 },
-        { id: corrupt.id, title: "corrupt", updatedAt: 1000 },
+        { id: locked.id, title: "locked", updatedAt: 3000, messages: 1 },
+        { id: foreign.id, title: "foreign", updatedAt: 2000, messages: 1 },
+        { id: corrupt.id, title: "corrupt", updatedAt: 1000, messages: 1 },
       ],
       unreadable: [],
     });
@@ -154,7 +155,7 @@ describe("ConversationStore", () => {
       listed = await store.list();
     });
     expect(listed).toEqual({
-      conversations: [{ id: good.id, title: "message at 1000", updatedAt: 1000 }],
+      conversations: [{ id: good.id, title: "message at 1000", updatedAt: 1000, messages: 1 }],
       unreadable: [],
     });
     expect(logged).toHaveLength(2);
@@ -179,7 +180,7 @@ describe("ConversationStore", () => {
       return read(name);
     };
     expect(await new ConversationStore(files).list()).toEqual({
-      conversations: [{ id: good.id, title: "message at 1000", updatedAt: 1000 }],
+      conversations: [{ id: good.id, title: "message at 1000", updatedAt: 1000, messages: 1 }],
       unreadable: [{ id: locked.id, cause: "Error: EACCES: permission denied" }],
     });
   });
@@ -376,7 +377,7 @@ describe("ConversationStore", () => {
     expect(await store.load(saved.id)).toMatchObject({ updatedAt: 2000 });
     expect(files.files.has(`${saved.id}.summary.json`)).toBe(false);
     expect((await new ConversationStore(files).list()).conversations).toEqual([
-      { id: saved.id, title: "first", updatedAt: 2000 },
+      { id: saved.id, title: "first", updatedAt: 2000, messages: 1 },
     ]);
   });
 
@@ -399,7 +400,7 @@ describe("ConversationStore", () => {
     files.write = write;
     expect([...files.files.keys()]).toEqual([`${saved.id}.json`]);
     expect((await new ConversationStore(files).list()).conversations).toEqual([
-      { id: saved.id, title: "first", updatedAt: 2000 },
+      { id: saved.id, title: "first", updatedAt: 2000, messages: 1 },
     ]);
   });
 
@@ -415,7 +416,9 @@ describe("ConversationStore", () => {
     };
     await expect(store.save({ ...saved, updatedAt: 2000 })).rejects.toThrow("EPERM");
     expect(await store.load(saved.id)).toMatchObject({ updatedAt: 1000 });
-    expect((await store.list()).conversations).toEqual([{ id: saved.id, title: "first", updatedAt: 1000 }]);
+    expect((await store.list()).conversations).toEqual([
+      { id: saved.id, title: "first", updatedAt: 1000, messages: 1 },
+    ]);
     files.remove = remove;
     expect(await store.save({ ...saved, updatedAt: 3000 })).toBe(true);
     expect((await new ConversationStore(files).list()).conversations).toMatchObject([{ updatedAt: 3000 }]);

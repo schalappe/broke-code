@@ -30,6 +30,7 @@ import {
   type ChangedFile,
   type ChatEntry,
   type ChatState,
+  type ContextUsage,
   type DraftInsert,
   type HostMessage,
   isMode,
@@ -49,11 +50,12 @@ import {
   type ShownEntries,
   searchNeedle,
   sendWouldAct,
+  type TextRange,
   type UndoState,
 } from "../core/protocol";
 import type { ProviderError } from "../core/providerError";
 import { isNothingToAttach, type ReservedMention, reservedMention } from "../core/reservedMentions";
-import { BUILT_IN_COMMANDS, type BuiltInCommand, builtInCommand, type SlashCommand } from "../core/suggestions";
+import { BUILT_IN_COMMANDS, type BuiltInCommand, builtInCommand } from "../core/suggestions";
 import {
   applyDraft,
   composerKeyAction,
@@ -67,6 +69,7 @@ import {
   menuView,
   openMenuToken,
   pickedInText,
+  pickKeepsToken,
   quoteDraft,
   type RecallPlace,
   recallHolds,
@@ -88,6 +91,7 @@ import {
   describeListFailure,
   describeMention,
   describeProviderError,
+  describeRowDetails,
   describeSkillWarning,
   describeSkippedProvider,
   describeStorageProblem,
@@ -97,10 +101,11 @@ import {
   describeUndoOutcome,
   describeWaiting,
   type ErrorText,
-  formatConversationDate,
   mainArgument,
+  splitInlineCode,
+  stepNote,
 } from "./text";
-import { type ConversationPart, foldTurns } from "./turns";
+import { type ConversationPart, type FoldCounts, foldTurns } from "./turns";
 import { post } from "./vscodeApi";
 
 /**
@@ -142,6 +147,11 @@ export function App({
   useEffect(() => {
     if (replacing && !replacingNow) setReplacing(undefined);
   }, [replacing, replacingNow]);
+
+  const startNewChat = () => {
+    setHistoryOpen(false);
+    post({ type: "newChat" });
+  };
 
   const edit = (entry: ChatEntry & { role: "user" }) => {
     setReplacing({ conversationId: state.conversationId, entries: state.entries.length });
@@ -202,7 +212,9 @@ export function App({
               question={state.question}
               undo={state.undo}
               changedFiles={state.changedFiles}
-              canAct={sendWouldAct(state)}
+              // [>]: On a full context that halts, Retry, Continue, Edit, and "Implement in ... mode" would start a turn
+              // that ends at once, as a new message would.
+              canAct={sendWouldAct(state) && !turnHalts(state.context)}
               implementIn={state.mode === "plan" ? state.settingMode : undefined}
               hidden={historyOpen}
               replacing={replacingNow !== undefined}
@@ -212,6 +224,9 @@ export function App({
             />
           </Announce.Provider>
         </QuoteTarget.Provider>
+      )}
+      {composerShown && state.model !== undefined && (
+        <ContextNotice context={state.context} canAct={sendWouldAct(state)} />
       )}
       {composerShown && (
         <Composer
@@ -225,10 +240,7 @@ export function App({
           takeQuoting={() => setQuoting(undefined)}
           replaces={replacingNow}
           sentReplacement={() => setReplacementsSent((count) => count + 1)}
-          startNewChat={() => {
-            setHistoryOpen(false);
-            post({ type: "newChat" });
-          }}
+          startNewChat={startNewChat}
         />
       )}
     </main>
@@ -317,7 +329,7 @@ export function Header({
     <header className="header">
       {state.providers.length > 0 && <Pickers state={state} />}
       {state.model !== undefined && (
-        <span className="usage" title={describeContextTitle(state.context, language)}>
+        <span className={usageClass(state.context)} title={describeContextTitle(state.context, language)}>
           {describeContextUsage(state.context, language)}
         </span>
       )}
@@ -402,6 +414,9 @@ function EffortSelect({ state, replying }: { state: ChatState; replying: boolean
     <select
       className="effort-picker"
       aria-label={l10n.t("Reasoning effort")}
+      title={l10n.t(
+        "How much the model reasons before it answers. Default effort sends nothing; a service that refuses the setting answers with an error, so pick Default effort again.",
+      )}
       value={state.reasoningEffort ?? ""}
       disabled={replying}
       onChange={(event) => {
@@ -483,6 +498,66 @@ function LeftOutNotice({ count }: { count: number }) {
         ? l10n.t("1 older tool result is left out of the request to save context.")
         : l10n.t("{0} older tool results are left out of the request to save context.", count)}
     </p>
+  );
+}
+
+/** The share of the context from which the usage takes the warning color: some room is still left for a reply. */
+const NEARLY_FULL = 3 / 4;
+
+/**
+ * The usage's look: the warning color once the next request nears the context size, and once it fills it; the share
+ * itself is in words, so the color is never the only cue.
+ */
+function usageClass(context: ContextUsage): string {
+  return context.full || isNearlyFull(context) ? "usage nearly-full" : "usage";
+}
+
+function isNearlyFull({ used, size }: ContextUsage): boolean {
+  return used >= size * NEARLY_FULL;
+}
+
+/** A full context on which a new turn would halt before sending (`ContextUsage.full`), with or without a summary way out. */
+function turnHalts(context: ContextUsage): boolean {
+  return context.full === "halts" || context.full === "summaryHalts";
+}
+
+/**
+ * What the panel says about a context near or past its size, over the message box. Full, when a turn would halt on it
+ * (`ContextUsage.full`), one warning line and the summary (`/compact`), the one way out that keeps the conversation;
+ * New chat stays in the header, and the message box sends nothing else until then. Full, when even the summary would
+ * halt, one warning line that names New chat, the only way out, and no summary button. Full, when the turn summarizes
+ * first (`brokeCode.autoCompact`), one notice line. Nearly full, one notice line that points at the summary before the
+ * wall. No live region: a halt is announced as the reply ends, and these lines change with the usage at every delta.
+ * `canAct`: Send would act, which the summary needs too.
+ */
+function ContextNotice({ context, canAct }: { context: ContextUsage; canAct: boolean }) {
+  if (context.full === "compacts") {
+    return (
+      <p className="notice">{l10n.t("The context is full: the next message summarizes the conversation first.")}</p>
+    );
+  }
+  if (context.full === "summaryHalts") {
+    return (
+      <section className="warning context-full">
+        <p>
+          {l10n.t("The conversation fills the model's context, even for a summary. Start a new chat with New chat.")}
+        </p>
+      </section>
+    );
+  }
+  if (context.full === "halts") {
+    return (
+      <section className="warning context-full">
+        <p>{l10n.t("The conversation fills the model's context.")}</p>
+        <button type="button" className="secondary" disabled={!canAct} onClick={() => post({ type: "compact" })}>
+          {l10n.t("Summarize (/compact)")}
+        </button>
+      </section>
+    );
+  }
+  if (!isNearlyFull(context)) return null;
+  return (
+    <p className="notice">{l10n.t("The context is nearly full: /compact summarizes the conversation to free it.")}</p>
   );
 }
 
@@ -711,7 +786,7 @@ export function ConversationList({
                   {!titled.has(conversation.id) && excerpts.has(conversation.id) && (
                     <span className="history-excerpt">{excerpts.get(conversation.id)}</span>
                   )}
-                  <span className="history-date">{formatConversationDate(conversation.updatedAt, language)}</span>
+                  <span className="history-date">{describeRowDetails(conversation, language)}</span>
                 </button>
                 {/* [>]: The same button asks, then confirms, so the focus stays on it between the two clicks. */}
                 <button
@@ -888,13 +963,9 @@ function Conversation({
         entry(part.index)
       )
     ) : (
-      // [>]: Uncontrolled, as the reasoning block: the user's choice holds while the conversation stays shown.
-      <details key={`fold-${part.start}`} className="turn-fold">
-        <summary className="turn-fold-row">{describeFold(part.counts)}</summary>
-        <div className="turn-fold-entries">
-          {Array.from({ length: part.end - part.start }, (_, offset) => entry(part.start + offset))}
-        </div>
-      </details>
+      <Fold key={`fold-${part.start}`} counts={part.counts}>
+        {Array.from({ length: part.end - part.start }, (_, offset) => entry(part.start + offset))}
+      </Fold>
     );
   const at = (part: ConversationPart) => (part.kind === "entry" ? part.index : part.start);
   // [>]: A user message is never folded and no fold crosses one, so the replaced turn starts a part of its own.
@@ -966,6 +1037,31 @@ function Conversation({
       )}
       <div ref={end} />
     </section>
+  );
+}
+
+/**
+ * An ended turn's steps under one row that says what they did, then which failed, in the error color and on an error
+ * node: the turn's final reply may claim success, and the failure must not hide in a closed fold. Uncontrolled, as the
+ * reasoning block: the user's choice holds while the conversation stays shown.
+ */
+function Fold({ counts, children }: { counts: FoldCounts; children: ReactNode }) {
+  const { done, failed } = describeFold(counts);
+  return (
+    <details className="turn-fold">
+      <summary className={failed ? "turn-fold-row failed" : "turn-fold-row"}>
+        <span>
+          {done}
+          {failed && (
+            <>
+              {", "}
+              <span className="fold-failed">{failed}</span>
+            </>
+          )}
+        </span>
+      </summary>
+      <div className="turn-fold-entries">{children}</div>
+    </details>
   );
 }
 
@@ -1078,7 +1174,11 @@ function Reply({
   return (
     <div className="message assistant">
       {entry.reasoning !== "" && <Reasoning key="reasoning" entry={entry} />}
-      {answer !== "" && <Answer answer={answer} ended={!inFlight} />}
+      {entry.malformedCall ? (
+        <MalformedAnswer content={entry.content} block={entry.malformedCall} />
+      ) : (
+        answer !== "" && <Answer answer={answer} ended={!inFlight} />
+      )}
       {step ? (
         <ToolStep result={step} />
       ) : deciding && call ? (
@@ -1098,15 +1198,23 @@ function Reply({
       ) : (
         call && <ToolStep call={call} outcome={unfinished} />
       )}
+      {/* [>]: Text still arriving: a breathing mark after it, so a stalled stream and a live one look different. Not a
+      live region: the reply's end is announced. */}
+      {entry.status === "streaming" && answer !== "" && !call && <span className="streaming-mark" aria-hidden="true" />}
       {entry.status === "waiting" && (
         <p className="loading" role="status">
           {l10n.t("Waiting for the reply…")}
         </p>
       )}
       {entry.status === "stopped" && <p className="mark">{l10n.t("Stopped")}</p>}
-      {entry.status === "halted" && entry.haltReason && (
-        <p className="mark">{describeHalt(entry.haltReason, entry.summary)}</p>
-      )}
+      {entry.status === "halted" &&
+        entry.haltReason &&
+        // [>]: A full context is no ordinary ending: every new message would end the same way until the user acts.
+        (entry.haltReason === "contextFull" ? (
+          <p className="warning">{describeHalt(entry.haltReason, entry.summary)}</p>
+        ) : (
+          <p className="mark">{describeHalt(entry.haltReason, entry.summary)}</p>
+        ))}
       {entry.summary && entry.status === "done" && entry.content.trim() === "" && (
         <p className="mark">{describeEmptySummary()}</p>
       )}
@@ -1115,6 +1223,25 @@ function Reply({
       {undone && <UndoOutcome outcome={undone} />}
       {(turnActions || undo) && <TurnActions turnActions={turnActions} undo={undo} />}
     </div>
+  );
+}
+
+/**
+ * An answer whose call could not be read: the text before and after the block as Markdown, and the block itself as
+ * the model wrote it, in the editor font with its line breaks, since it is code the user reads to see what went wrong.
+ * The reply has ended: its malformed step follows it.
+ */
+function MalformedAnswer({ content, block }: { content: string; block: TextRange }) {
+  const before = content.slice(0, block.start).trim();
+  const after = content.slice(block.end).trim();
+  return (
+    <>
+      {before !== "" && <Answer answer={before} ended />}
+      <pre className="malformed-block">
+        <code>{content.slice(block.start, block.end)}</code>
+      </pre>
+      {after !== "" && <Answer answer={after} ended />}
+    </>
   );
 }
 
@@ -1502,21 +1629,30 @@ function ToolStep(props: { result: ChatEntry & { role: "tool" } } | PendingCall)
   }
   const { result } = props;
   const malformed = result.status === "malformed";
+  const note = stepNote(result);
+  const rejected = result.approval === "rejected";
   return (
-    <details className="step">
-      <summary className={stepRowClass(result.name)}>
-        {malformed ? <span className="step-tool">{l10n.t("malformed call")}</span> : <StepHead {...result} />}
-        {/* [>]: A rejection is the user's own decision, not a failure: it keeps the ordinary look. */}
-        <span
-          className={result.status === "ok" || result.approval === "rejected" ? "step-status" : "step-status failed"}
-        >
-          {describeToolStep(result)}
-        </span>
-      </summary>
-      <pre className="step-result">
-        <code>{result.text}</code>
-      </pre>
-    </details>
+    <>
+      <details className="step">
+        <summary className={stepRowClass(result.name)}>
+          {malformed ? <span className="step-tool">{l10n.t("malformed call")}</span> : <StepHead {...result} />}
+          {/* [>]: A rejection is the user's own decision, not a failure: no error color, but the full foreground, since
+        the reply after it may claim the change was made. */}
+          <span
+            className={
+              rejected ? "step-status rejected" : result.status === "ok" ? "step-status" : "step-status failed"
+            }
+          >
+            {describeToolStep(result)}
+          </span>
+        </summary>
+        <pre className="step-result">
+          <code>{result.text}</code>
+        </pre>
+      </details>
+      {/* [>]: Under the row, open or closed: the user's own words, wrapped, never cut. */}
+      {note !== undefined && <p className="step-note">{note}</p>}
+    </>
   );
 }
 
@@ -1583,8 +1719,8 @@ function Approval({ approval }: { approval: PendingApproval }) {
 
 /**
  * A write's line counts and Show change, which brings its diff back, then Accept, Reject, and the optional reason sent
- * with a rejection, for `approval`. Each decision carries the request's
- * id, so the host ignores one for a request already closed; a blank reason is left out.
+ * with a rejection, for `approval`. Each decision carries the request's id, so the host ignores one for a request
+ * already closed; a blank reason is left out. Only the buttons decide: no key in the reason field does.
  */
 export function ApprovalControls({
   approval,
@@ -1627,13 +1763,9 @@ export function ApprovalControls({
         value={reason}
         placeholder={l10n.t("Reason for rejecting (optional)")}
         aria-label={l10n.t("Reason for rejecting (optional)")}
+        // [!]: No key decides here: Enter after a note is a form habit, and a rejection must be a deliberate click
+        // (or ⌘Backspace outside the field).
         onChange={(event) => setReason(event.target.value)}
-        onKeyDown={(event) => {
-          const modified = event.metaKey || event.ctrlKey || event.altKey || event.shiftKey;
-          if (event.key !== "Enter" || modified || event.nativeEvent.isComposing) return;
-          event.preventDefault();
-          reject();
-        }}
       />
       <div className="actions">
         <button
@@ -1685,7 +1817,12 @@ export function QuestionControls({
   };
   return (
     <fieldset className="question" aria-label={l10n.t("Answer the agent's question")}>
-      <p className="question-text">{question.question}</p>
+      <p className="question-text">
+        {splitInlineCode(question.question).map((part, index) =>
+          // biome-ignore lint/suspicious/noArrayIndexKey: the parts of one fixed text, never reordered.
+          part.code ? <code key={index}>{part.text}</code> : part.text,
+        )}
+      </p>
       {question.options.length > 0 && (
         <div className="question-options">
           {question.options.map((option) => (
@@ -1846,11 +1983,15 @@ export function SlashMenu({
   highlighted,
   onPick,
 }: {
-  items: SlashCommand[];
+  items: SlashRow[];
   failed: boolean;
   highlighted: number;
   onPick: (index: number) => void;
 }) {
+  // [>]: The built-in commands lead; the first skill under them starts a group of its own, so a long list of skills
+  // never hides them.
+  const firstSkill = items.findIndex((item) => !item.builtIn);
+  const grouped = firstSkill > 0 ? firstSkill : -1;
   const notices = [
     ...(failed ? [l10n.t("Could not list the skills")] : []),
     ...(!failed && items.length === 0 ? [l10n.t("No match")] : []),
@@ -1861,7 +2002,12 @@ export function SlashMenu({
       trigger="/"
       label={l10n.t("Commands and skills")}
       // [>]: Keyed by position: a skill may share a built-in's name, and the rows only change as a whole.
-      items={items.map((item, index) => ({ key: `${index}`, label: item.name, description: item.description }))}
+      items={items.map((item, index) => ({
+        key: `${index}`,
+        label: item.name,
+        description: item.description,
+        ...(index === grouped ? { group: l10n.t("Skills") } : {}),
+      }))}
       highlighted={highlighted}
       onPick={onPick}
       notices={notices}
@@ -2125,6 +2271,10 @@ function Composer({
   const canSend = sendWouldAct(state);
   // [>]: Only a reply in flight queues; with no model or a mode change pending, Send does nothing either way.
   const canQueue = ready && replying && !state.modePending && state.queue.length < MAX_QUEUED_MESSAGES;
+  // [>]: A message would end its turn at once on a full context: only the built-in commands, `/compact` and `/new`
+  // among them, still go. The block over the box says why.
+  const contextFull = turnHalts(state.context);
+  const blocked = (draft: string) => contextFull && !builtInCommand(draft);
 
   const clear = () => {
     setDraft({ text: "", caret: 0, picked: [] });
@@ -2151,14 +2301,17 @@ function Composer({
     setDraft({ ...replaceToken(text, token, caret, inserted), picked: paths });
   };
 
-  const send = () => {
+  /** Send the box; `typedPath`: a path typed whole whose menu row Enter skipped, sent as if picked. */
+  const send = (typedPath?: string) => {
     if (text.trim() === "") return;
     const command = builtInCommand(text);
     if (canSend && command) return run(command);
+    if (blocked(text)) return;
     // [>]: A built-in is never queued: during a reply it stays text in the box.
     const type = canSend ? "send" : canQueue && !command ? "queueMessage" : undefined;
     if (!type) return;
-    const mentions = pickedInText(picked, text);
+    const all = typedPath === undefined || picked.includes(typedPath) ? picked : [...picked, typedPath];
+    const mentions = pickedInText(all, text);
     // [>]: Only a send replaces: a queued message waits behind a reply, which ended the replacing state.
     post(type === "send" && replaces !== undefined ? { type, text, mentions, replaces } : { type, text, mentions });
     if (type === "send" && replaces !== undefined) sentReplacement();
@@ -2196,8 +2349,12 @@ function Composer({
       case "move":
         setHighlighted((current) => moveHighlight(current, action.step, rows ?? 0));
         return;
-      case "pick":
+      case "pick": {
+        // [>]: The path typed whole is what the row would insert: Enter sends it, as it would without the menu.
+        const row = mentionMenu?.items[highlighted];
+        if (event.key === "Enter" && row && token && pickKeepsToken(row, token)) return send(mentionPick(row).picked);
         return pick(highlighted);
+      }
       case "dismiss":
         return setDismissed(token);
       case "send":
@@ -2261,8 +2418,8 @@ function Composer({
         <button
           type="button"
           className={replying ? "secondary" : undefined}
-          disabled={!(canSend || canQueue) || text.trim() === ""}
-          onClick={send}
+          disabled={!(canSend || canQueue) || text.trim() === "" || blocked(text)}
+          onClick={() => send()}
         >
           {l10n.t("Send")}
         </button>
@@ -2272,7 +2429,7 @@ function Composer({
           </button>
         )}
       </footer>
-      {state.queue.length > 0 && <QueuedMessages state={state} canSend={canSend} edit={edit} />}
+      {state.queue.length > 0 && <QueuedMessages state={state} canSend={canSend && !contextFull} edit={edit} />}
     </>
   );
 }

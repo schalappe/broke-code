@@ -383,6 +383,8 @@ export class ChatController {
    * instruction files are the workspace's, not a conversation's; before the first send, the one without them.
    */
   private systemPrompt: string;
+  /** Instruction files the usage display's summary request counts: the last ones a send or `/compact` read. */
+  private instructionFiles: readonly InstructionFile[] = [];
 
   constructor(ports: ChatPorts) {
     this.apiKeys = ports.apiKeys;
@@ -1002,6 +1004,7 @@ export class ChatController {
       const tools = offeredTools(this.tools.tools, discovery.skills, mode);
       const system = composeSystemPrompt(tools, instructions, discovery.skills, mode);
       this.systemPrompt = system;
+      this.instructionFiles = instructions;
       // [>]: The display counts the instruction files and skills now, not at the first reply delta.
       this.emit();
       let steps = 0;
@@ -1108,6 +1111,7 @@ export class ChatController {
           // [!]: A result the model invented never reaches the chat or the history, or the model would read it back
           // as true on the next request.
           if (parsed.forged) run.reply.content = run.reply.content.slice(0, parsed.start);
+          else if (parsed.end > parsed.start) run.reply.malformedCall = { start: parsed.start, end: parsed.end };
           step = {
             role: "tool",
             name: malformedToolName(run.reply.content, parsed),
@@ -1411,6 +1415,7 @@ export class ChatController {
       );
       if (!prepared) return settle("stopped");
       const [access, instructions] = prepared;
+      this.instructionFiles = instructions;
       const messages = this.summaryMessages(entries, instructions);
       const ratio = this.providerSupport.ratio(provider, model);
       if (fillsContext(estimateTokens(messages, ratio), contextSize)) return settle("halted", "contextFull");
@@ -1989,19 +1994,30 @@ export class ChatController {
 
   /**
    * Estimate of the next request of the conversation shown, as it would be sent, against `model`'s context size, and
-   * the count of tool results it leaves out, when any.
+   * the count of tool results it leaves out, when any. Full, the summary request is sized too, as a turn and `/compact`
+   * size it: when it does not fit either, no summary can free the context (`summaryHalts`).
    */
   private contextUsage(provider: Provider | undefined, model: string | undefined): ContextUsage {
     const context = contextOf(this.limits, model);
     const ratio = this.ratioOf(provider, model);
     const budget = { system: this.systemPrompt, contextSize: context.size, ratio };
     const { messages, leftOut } = this.requestMessages(this.conversation, budget);
+    const used = estimateTokens(messages, ratio);
+    const full = fillsContext(used, context.size) ? this.fullContextOutcome(context.size, ratio) : undefined;
     return {
-      used: estimateTokens(messages, ratio),
+      used,
       ...context,
       ...(leftOut > 0 ? { leftOut } : {}),
       ...(this.reported ? { reported: this.reported } : {}),
+      ...(full ? { full } : {}),
     };
+  }
+
+  /** What the next turn does on a full context: summarize first, halt, or halt with no summary able to fit. */
+  private fullContextOutcome(contextSize: number, ratio: number): NonNullable<ContextUsage["full"]> {
+    const summary = this.summaryMessages(this.conversation.entries, this.instructionFiles);
+    if (fillsContext(estimateTokens(summary, ratio), contextSize)) return "summaryHalts";
+    return this.limits.autoCompact ? "compacts" : "halts";
   }
 
   private emit(): void {

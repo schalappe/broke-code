@@ -92,6 +92,14 @@ export function mentionPick(row: MentionRow): { text: string; picked?: string } 
   return { text: `@${path} `, picked: path };
 }
 
+/**
+ * Whether picking `row` would leave the `@` token `token` as typed, the space after it aside: the user wrote the whole
+ * path, so Enter sends rather than picks. Tab still picks.
+ */
+export function pickKeepsToken(row: MentionRow, token: MenuToken): boolean {
+  return token.trigger === "@" && mentionPick(row).text === `@${token.query} `;
+}
+
 /** Host answer to the skill query of the open `/` menu. `failed`: the skills could not be listed. */
 export type SkillAnswer = { items: SlashCommand[]; failed: boolean };
 
