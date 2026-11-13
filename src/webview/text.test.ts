@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import type { SkillProblem } from "../core/protocol";
+import * as l10n from "@vscode/l10n";
+import french from "../../l10n/bundle.l10n.fr.json";
+import type { ChatEntry, SkillProblem } from "../core/protocol";
 import {
+  describeContextTitle,
   describeContextUsage,
   describeFold,
   describeHalt,
@@ -13,6 +16,7 @@ import {
   describeUndoOutcome,
   formatConversationDate,
 } from "./text";
+import { type FoldCounts, foldTurns, STEP_KINDS, type StepKind } from "./turns";
 
 describe("describeProviderError", () => {
   test("names the model list, not a reply, when the list download is cut off", () => {
@@ -146,6 +150,16 @@ describe("describeContextUsage", () => {
   });
 });
 
+describe("describeContextTitle", () => {
+  test("names the estimate, then the reported counts in the display language when there are any", () => {
+    expect(describeContextTitle({ used: 1, size: 2, known: true }, "en")).toBe("Estimated size of the next request");
+    const reported = { used: 1, size: 2, known: true, reported: { prompt: 12001, completion: 345 } };
+    expect(describeContextTitle(reported, "fr")).toBe(
+      "Estimated size of the next request. Last reply: 12\u202f001 prompt tokens, 345 completion tokens",
+    );
+  });
+});
+
 describe("describeSkillWarning", () => {
   test("names the file and each problem", () => {
     const path = "app/.agents/skills/x/SKILL.md";
@@ -179,12 +193,118 @@ describe("describeSkillWarning", () => {
 });
 
 describe("describeFold", () => {
-  test("says the steps, then the failed and rejected ones when there are any", () => {
-    expect(describeFold({ steps: 2, failed: 0, rejected: 0 })).toBe("2 steps");
-    expect(describeFold({ steps: 3, failed: 1, rejected: 0 })).toBe("3 steps, 1 failed");
-    expect(describeFold({ steps: 3, failed: 2, rejected: 1 })).toBe("3 steps, 2 failed, 1 rejected");
-    expect(describeFold({ steps: 4, failed: 0, rejected: 1 })).toBe("4 steps, 1 rejected");
-    expect(describeFold({ steps: 5, failed: 0, rejected: 2 })).toBe("5 steps, 2 rejected");
+  const user: ChatEntry = { role: "user", content: "Hi", mentions: [] };
+  const reply: ChatEntry = { role: "assistant", reasoning: "", content: "Done.", status: "done" };
+  const step = (name: string, args: Record<string, string> = {}, extra: Partial<ChatEntry & { role: "tool" }> = {}) =>
+    ({ role: "tool", name, args, status: "ok", text: "x", ...extra }) as ChatEntry;
+  const read = (path: string) => step("read_file", { path });
+  const list = (path: string) => step("list_files", { path });
+  const search = () => step("search", { pattern: "x" });
+  const skill = () => step("load_skill", { name: "s" });
+  const edit = (path: string, extra: Partial<ChatEntry & { role: "tool" }> = {}) => step("edit_file", { path }, extra);
+  const command = (extra: Partial<ChatEntry & { role: "tool" }> = {}) => step("run_command", { command: "ls" }, extra);
+  const malformed = () => step("read_file", {}, { status: "malformed", text: "Malformed." });
+
+  /** The row of the fold of one ended turn holding `steps`. */
+  function rowOf(...steps: ChatEntry[]): string {
+    const part = foldTurns([user, ...steps, reply]).find((each) => each.kind === "fold");
+    if (part?.kind !== "fold") throw new Error("no fold");
+    return describeFold(part.counts);
+  }
+
+  /** Counts with `steps` steps of one kind, each its own path, and the failed and rejected ones. */
+  function countsOf(kind: StepKind | "other", steps: number, failed = 0, rejected = 0): FoldCounts {
+    const kinds = Object.fromEntries(STEP_KINDS.map((each) => [each, { shown: 0, steps: 0 }])) as FoldCounts["kinds"];
+    if (kind !== "other") kinds[kind] = { shown: steps, steps };
+    return { steps, failed, rejected, kinds, otherSteps: kind === "other" ? steps : 0 };
+  }
+
+  const table = () => ({
+    first: rowOf(read("a.ts"), read("b.ts"), read("c.ts"), edit("x.ts"), edit("x.ts"), command()),
+    sixth: rowOf(
+      read("a.ts"),
+      list("src"),
+      search(),
+      skill(),
+      malformed(),
+      malformed(),
+      malformed(),
+      step("write_file", {}, { status: "error", text: "Plan mode." }),
+    ),
+  });
+
+  test("words each row of the contract's table", () => {
+    expect(table().first).toBe("Read 3 files, edited 1 file, ran 1 command");
+    const bigLog = read("big.log");
+    expect(rowOf(bigLog, bigLog, bigLog, bigLog, command())).toBe("Read 1 file, ran 1 command");
+    expect(
+      rowOf(
+        read("a.ts"),
+        read("b.ts"),
+        list("."),
+        search(),
+        search(),
+        search(),
+        search(),
+        skill(),
+        edit("x.ts"),
+        edit("x.ts"),
+        edit("y.ts"),
+      ),
+    ).toBe("Read 2 files, searched 4 times, edited 2 files, 2 other steps");
+    expect(rowOf(read("a.ts"), list("."), search(), skill(), edit("a.ts"), command())).toBe(
+      "Read 1 file, edited 1 file, ran 1 command, 3 other steps",
+    );
+    const fiveEdits = Array.from({ length: 5 }, () => edit("a.ts"));
+    expect(rowOf(read("a.ts"), read("b.ts"), list("."), list("src"), search(), search(), ...fiveEdits, command())).toBe(
+      "Read 2 files, edited 1 file, ran 1 command, 4 other steps",
+    );
+    expect(table().sixth).toBe("Read 1 file, listed 1 folder, searched 1 time, 5 other steps, 4 failed");
+    expect(rowOf(list("."), command({ status: "error", approval: "rejected" }))).toBe(
+      "Listed 1 folder, ran 1 command, 1 rejected",
+    );
+    expect(rowOf(malformed(), malformed())).toBe("2 steps, 2 failed");
+    expect(rowOf(step("write_file", { path: "a.ts" }, { undone: true }), step("write_file", { path: "a.ts" }))).toBe(
+      "Edited 1 file",
+    );
+  });
+
+  test("words each kind in the singular and the plural", () => {
+    const rows: [StepKind | "other", string, string][] = [
+      ["read", "Read 1 file", "Read 2 files"],
+      ["listed", "Listed 1 folder", "Listed 2 folders"],
+      ["searched", "Searched 1 time", "Searched 2 times"],
+      ["loaded", "Loaded 1 skill", "Loaded 2 skills"],
+      ["edited", "Edited 1 file", "Edited 2 files"],
+      ["ran", "Ran 1 command", "Ran 2 commands"],
+    ];
+    for (const [kind, one, two] of rows) {
+      expect(describeFold(countsOf(kind, 1))).toBe(one);
+      expect(describeFold(countsOf(kind, 2))).toBe(two);
+    }
+    const oneOther = countsOf("read", 1);
+    oneOther.otherSteps = 1;
+    oneOther.steps = 2;
+    expect(describeFold(oneOther)).toBe("Read 1 file, 1 other step");
+    expect(describeFold(countsOf("other", 3))).toBe("3 steps");
+  });
+
+  test("adds the failed and the rejected ones when there are any", () => {
+    expect(describeFold(countsOf("ran", 3, 1))).toBe("Ran 3 commands, 1 failed");
+    expect(describeFold(countsOf("ran", 3, 2, 1))).toBe("Ran 3 commands, 2 failed, 1 rejected");
+    expect(describeFold(countsOf("ran", 4, 0, 1))).toBe("Ran 4 commands, 1 rejected");
+    expect(describeFold(countsOf("ran", 5, 0, 2))).toBe("Ran 5 commands, 2 rejected");
+  });
+
+  test("reads in French with the French bundle loaded", () => {
+    l10n.config({ contents: french });
+    try {
+      expect(table().first).toBe("3 fichiers lus, 1 fichier modifié, 1 commande exécutée");
+      expect(table().sixth).toBe("1 fichier lu, 1 dossier listé, 1 recherche, 5 autres étapes, 4 échecs");
+      expect(describeFold(countsOf("other", 2, 0, 2))).toBe("2 étapes, 2 refus");
+    } finally {
+      l10n.config({ contents: {} });
+    }
   });
 });
 

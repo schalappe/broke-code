@@ -13,7 +13,12 @@ import {
   useState,
 } from "react";
 import Markdown, { type Components, type ExtraProps } from "react-markdown";
-import { type ConversationSummary, filterConversations } from "../core/conversation";
+import {
+  type ConversationMatch,
+  type ConversationSummary,
+  filterConversations,
+  shownAnswer,
+} from "../core/conversation";
 import { historyStart, isAutomaticSummary, sentEntries } from "../core/history";
 import { type LastTurnActions, lastTurnActions, unrevertedEffects } from "../core/lastTurn";
 import { codeBlockText, FENCE_CLOSED, hasTextAfter, remarkFenceClosed } from "../core/markdownCode";
@@ -34,6 +39,7 @@ import {
   type QueuedMessage,
   type ReplyCall,
   type ShownEntries,
+  searchNeedle,
   sendWouldAct,
   type UndoState,
 } from "../core/protocol";
@@ -53,6 +59,9 @@ import {
   menuView,
   openMenuToken,
   pickedInText,
+  quoteDraft,
+  type RecallPlace,
+  recallHolds,
   replaceToken,
   type SkillAnswer,
   type SlashRow,
@@ -62,6 +71,7 @@ import {
 } from "./composer";
 import { moveHighlight, optionId, SuggestionMenu } from "./SuggestionMenu";
 import {
+  describeContextTitle,
   describeContextUsage,
   describeFold,
   describeHalt,
@@ -88,7 +98,8 @@ import { post } from "./vscodeApi";
  * unapplied, never held for a box that may never come. Queued texts the host returns (`paragraph` drafts) close
  * nothing, and wait for the message box when it is absent, since the user typed them: they are never dropped.
  * Edit on the last user message starts the replacing state (what the panel showed then), held here because the conversation shows
- * its mark and the composer's Send carries it; it ends on Cancel and once `stillReplacing` fails.
+ * its mark and the composer's Send carries it; it ends on Cancel and once `stillReplacing` fails. Quote's text travels
+ * from an answer to the message box the same way as Edit's draft, and only while the panel has a message box.
  */
 export function App({
   state,
@@ -108,6 +119,8 @@ export function App({
   const [replacing, setReplacing] = useState<ShownEntries>();
   /** Edit's draft until the message box has applied it, once: a composer mounted later never applies it again. */
   const [editing, setEditing] = useState<DraftInsert>();
+  /** Text Quote read from an answer until the message box has applied it, once. */
+  const [quoting, setQuoting] = useState<string>();
   const replacingNow = replacing && stillReplacing(replacing, state) ? replacing : undefined;
 
   // [>]: Once it fails, the state ends for good: a later snapshot that matches again (a Retry ending on as many
@@ -164,19 +177,21 @@ export function App({
       {(configured || state.entries.length > 0) && (
         // [>]: Keyed by conversation: another one starts with fresh scroll and collapsed reasoning blocks. Hidden, not
         // unmounted, while History shows, so the reason typed for an open approval survives.
-        <Conversation
-          key={state.conversationId}
-          conversationId={state.conversationId}
-          entries={state.entries}
-          approval={state.approval}
-          undo={state.undo}
-          changedFiles={state.changedFiles}
-          canAct={sendWouldAct(state)}
-          hidden={historyOpen}
-          replacing={replacingNow !== undefined}
-          edit={edit}
-          cancelEdit={() => setReplacing(undefined)}
-        />
+        <QuoteTarget.Provider value={composerShown ? setQuoting : undefined}>
+          <Conversation
+            key={state.conversationId}
+            conversationId={state.conversationId}
+            entries={state.entries}
+            approval={state.approval}
+            undo={state.undo}
+            changedFiles={state.changedFiles}
+            canAct={sendWouldAct(state)}
+            hidden={historyOpen}
+            replacing={replacingNow !== undefined}
+            edit={edit}
+            cancelEdit={() => setReplacing(undefined)}
+          />
+        </QuoteTarget.Provider>
       )}
       {composerShown && (
         <Composer
@@ -186,6 +201,8 @@ export function App({
           takeDrafts={takeDrafts}
           editing={editing}
           takeEditing={() => setEditing(undefined)}
+          quoting={quoting}
+          takeQuoting={() => setQuoting(undefined)}
           replaces={replacingNow}
           startNewChat={() => {
             setHistoryOpen(false);
@@ -243,7 +260,7 @@ export function Header({
     <header className="header">
       {state.providers.length > 0 && <Pickers state={state} />}
       {state.model !== undefined && (
-        <span className="usage" title={l10n.t("Estimated size of the next request")}>
+        <span className="usage" title={describeContextTitle(state.context, language)}>
           {describeContextUsage(state.context, language)}
         </span>
       )}
@@ -399,7 +416,7 @@ function ErrorBlock({ error, retry }: { error: ProviderError; retry?: () => void
 /**
  * History list wired to the host: a pick closes it and asks to open that conversation, even the one shown, since a
  * pending open may be about to replace it; the controller skips an open of the conversation shown when it runs.
- * Delete deletes. `dismiss`: Escape in an empty filter field, which closes History and focuses its toggle.
+ * Delete deletes. `dismiss`: Escape in an empty search field, which closes History and focuses its toggle.
  */
 export function HistoryPanel({
   state,
@@ -427,12 +444,73 @@ export function HistoryPanel({
   );
 }
 
+/** How long a searchable needle must stay the same before History asks the host to search the conversations. */
+const SEARCH_WAIT_MS = 300;
+
 /**
- * Saved conversations of the workspace, in the order given (newest first), under a filter field when there is one.
- * A row's title reopens it; the one shown is marked `aria-current`. Mounted only while History is open, so the filter
- * starts empty at each opening and takes the focus then (a focus move DESIGN.md allows); it keeps its text while
- * the list changes. In the field, Enter opens the first row listed; Escape clears the text, or calls `onDismiss` when
- * there is none.
+ * Last content search request id, for the whole panel: History unmounts when closed, so an id kept per mount would be
+ * reused by the next opening and take a late answer to the earlier one.
+ */
+let lastSearchId = 0;
+
+/** The host's answer to the content search the webview asked last. */
+type ContentAnswer = { items: ConversationMatch[]; unreadableCount: number };
+
+/**
+ * History's content search for the field's `query`. Once its needle (`searchNeedle`) is searchable and has stayed the
+ * same for 300 ms, asks the host to search the conversations. Each change of the needle takes a new request id and
+ * drops the earlier answer at once, so only an answer to the latest needle shows; unmounting cancels the wait.
+ * `changeQuery` must carry every change of the field, so the drop lands in the same render as the new text.
+ */
+function useContentSearch(): {
+  query: string;
+  changeQuery: (next: string) => void;
+  answer: ContentAnswer | undefined;
+  awaited: boolean;
+} {
+  const [query, setQuery] = useState("");
+  const [answer, setAnswer] = useState<ContentAnswer>();
+  // [>]: -1 is no request id, so no answer counts before this opening's first needle change.
+  const latest = useRef({ id: -1, needle: "" });
+  const { needle, searchable } = searchNeedle(query);
+
+  const changeQuery = (next: string) => {
+    setQuery(next);
+    const nextNeedle = searchNeedle(next).needle;
+    if (nextNeedle === latest.current.needle) return;
+    lastSearchId += 1;
+    latest.current = { id: lastSearchId, needle: nextNeedle };
+    setAnswer(undefined);
+  };
+
+  useEffect(() => {
+    if (!searchable) return;
+    const { id } = latest.current;
+    const timer = setTimeout(() => post({ type: "searchConversations", query: needle, id }), SEARCH_WAIT_MS);
+    return () => clearTimeout(timer);
+  }, [needle, searchable]);
+
+  useEffect(() => {
+    const onMessage = (event: MessageEvent<HostMessage>) => {
+      const message = event.data;
+      if (message.type !== "conversationMatches" || message.id !== latest.current.id) return;
+      setAnswer({ items: message.items, unreadableCount: message.unreadableCount });
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
+
+  return { query, changeQuery, answer, awaited: searchable && answer === undefined };
+}
+
+/**
+ * Saved conversations of the workspace, in the order given (newest first), under a search field when there is one.
+ * The rows whose title holds the field's text (`filterConversations`) come first, at once; then the rows the host's
+ * content search found and the title did not, in the order given, each with its excerpt (`useContentSearch`). A row's
+ * title reopens it; the one shown is marked `aria-current`. Mounted only while History is open, so the field starts
+ * empty at each opening and takes the focus then (a focus move DESIGN.md allows); it keeps its text while the list
+ * changes. In the field, Enter opens the first row shown; Escape clears the text, or calls `onDismiss` when there is
+ * none.
  */
 export function ConversationList({
   conversations,
@@ -449,7 +527,7 @@ export function ConversationList({
   onDelete: (id: string) => void;
   onDismiss: () => void;
 }) {
-  const [query, setQuery] = useState("");
+  const { query, changeQuery, answer, awaited } = useContentSearch();
   const field = useRef<HTMLInputElement>(null);
   // [>]: On mount only: a field that shows later, when a first conversation is saved, never takes the focus.
   useEffect(() => field.current?.focus(), []);
@@ -461,7 +539,12 @@ export function ConversationList({
       </section>
     );
   }
-  const listed = filterConversations(conversations, query);
+  const byTitle = filterConversations(conversations, query);
+  const titled = new Set(byTitle.map((conversation) => conversation.id));
+  const excerpts = new Map(answer?.items.map((item) => [item.id, item.excerpt]));
+  const byContent = conversations.filter(({ id }) => excerpts.has(id) && !titled.has(id));
+  const listed = [...byTitle, ...byContent];
+  const unreadable = answer?.unreadableCount ?? 0;
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.nativeEvent.isComposing) return;
     if (event.key === "Enter") {
@@ -470,7 +553,7 @@ export function ConversationList({
     } else if (event.key === "Escape") {
       event.preventDefault();
       if (query === "") onDismiss();
-      else setQuery("");
+      else changeQuery("");
     }
   };
   return (
@@ -480,15 +563,30 @@ export function ConversationList({
         type="text"
         className="history-filter"
         value={query}
-        placeholder={l10n.t("Filter by title")}
-        aria-label={l10n.t("Filter by title")}
-        onChange={(event) => setQuery(event.target.value)}
+        placeholder={l10n.t("Search conversations")}
+        aria-label={l10n.t("Search conversations")}
+        onChange={(event) => changeQuery(event.target.value)}
         onKeyDown={onKeyDown}
       />
+      {unreadable > 0 && (
+        <ul className="warnings" role="status">
+          <li>
+            {unreadable === 1
+              ? l10n.t("1 conversation could not be searched")
+              : l10n.t("{0} conversations could not be searched", unreadable)}
+          </li>
+        </ul>
+      )}
       {listed.length === 0 ? (
-        <p className="history-none">{l10n.t("No match")}</p>
+        awaited ? (
+          <p className="loading history-searching" role="status">
+            {l10n.t("Searching…")}
+          </p>
+        ) : (
+          <p className="history-none">{l10n.t("No match")}</p>
+        )
       ) : (
-        <ul>
+        <ul className="history-rows">
           {listed.map((conversation) => {
             const current = conversation.id === currentId;
             return (
@@ -500,6 +598,9 @@ export function ConversationList({
                   onClick={() => onOpen(conversation.id)}
                 >
                   <span className="history-title">{conversation.title}</span>
+                  {!titled.has(conversation.id) && excerpts.has(conversation.id) && (
+                    <span className="history-excerpt">{excerpts.get(conversation.id)}</span>
+                  )}
                   <span className="history-date">{formatConversationDate(conversation.updatedAt, language)}</span>
                 </button>
                 <button type="button" className="secondary" onClick={() => onDelete(conversation.id)}>
@@ -795,23 +896,14 @@ function Reply({
   turnActions?: TurnActionsProps;
 }) {
   const { call } = entry;
-  const answer = call ? (entry.content.slice(0, call.start) + entry.content.slice(call.end)).trim() : entry.content;
+  const answer = shownAnswer(entry);
   const inFlight = entry.status === "waiting" || entry.status === "streaming";
   const deciding = inFlight && call !== undefined && step === undefined ? approval : undefined;
   const unfinished: PendingCall["outcome"] = inFlight ? "running" : entry.status === "stopped" ? "stopped" : "noResult";
   return (
     <div className="message assistant">
       {entry.reasoning !== "" && <Reasoning key="reasoning" entry={entry} />}
-      {answer !== "" && (
-        // [>]: The Markdown rules of the stylesheet apply inside this block only, never to the rows and blocks beside it.
-        <div className="answer">
-          <AnswerSource.Provider value={{ source: answer, ended: !inFlight }}>
-            <Markdown components={ANSWER_COMPONENTS} remarkPlugins={ANSWER_PLUGINS}>
-              {answer}
-            </Markdown>
-          </AnswerSource.Provider>
-        </div>
-      )}
+      {answer !== "" && <Answer answer={answer} ended={!inFlight} />}
       {step ? (
         <ToolStep result={step} />
       ) : deciding && call ? (
@@ -995,6 +1087,83 @@ function UndoOutcome({ outcome: { files, error } }: { outcome: UndoOutcomeState 
       )}
     </div>
   );
+}
+
+/**
+ * Puts the text selected in an answer into the message box, for Quote; absent while the panel has no message box, so
+ * no Quote shows then.
+ */
+const QuoteTarget = createContext<((selected: string) => void) | undefined>(undefined);
+
+/**
+ * An answer's rendered Markdown, then Quote in a row of its own while the page's selected text lies in it
+ * (`holdsSelection`). The check runs on every selection change and after every render, since a removed node changes
+ * the selection without an event. Quote reads the selected text at the click, as rendered, and hands it to the message
+ * box; it moves no focus when it goes.
+ */
+function Answer({ answer, ended }: { answer: string; ended: boolean }) {
+  const quote = useContext(QuoteTarget);
+  const block = useRef<HTMLDivElement>(null);
+  const row = useRef<HTMLDivElement>(null);
+  const [selected, setSelected] = useState(false);
+
+  useEffect(() => {
+    const check = () =>
+      setSelected(
+        quote !== undefined &&
+          block.current !== null &&
+          holdsSelection(block.current, row.current, document.getSelection()),
+      );
+    check();
+    document.addEventListener("selectionchange", check);
+    return () => document.removeEventListener("selectionchange", check);
+  });
+
+  const onQuote = () => {
+    const selection = document.getSelection();
+    // [>]: The selection can have gone without an event since the last check: a click with nothing left does nothing.
+    if (!quote || !block.current || !selection || !holdsSelection(block.current, row.current, selection)) return;
+    quote(selection.toString());
+  };
+
+  return (
+    <>
+      {/* [>]: The Markdown rules of the stylesheet apply inside this block only, never to the rows and blocks beside it. */}
+      <div className="answer" ref={block}>
+        <AnswerSource.Provider value={{ source: answer, ended }}>
+          <Markdown components={ANSWER_COMPONENTS} remarkPlugins={ANSWER_PLUGINS}>
+            {answer}
+          </Markdown>
+        </AnswerSource.Provider>
+      </div>
+      {/* [!]: Before the reply's tool step and approval, so nothing focusable comes between those and the message box. */}
+      {selected && (
+        <div className="quote-row" ref={row}>
+          <button type="button" className="secondary" onClick={onQuote}>
+            {l10n.t("Quote")}
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
+/**
+ * Whether `selection` is text of the answer `block`: not collapsed, more than whitespace, starting inside `block`, and
+ * covering only whitespace outside it, as a triple click on its last paragraph does by ending in the next block.
+ * Quote's own `row` is skipped, so its showing cannot hide it again. A selection in a text field reports collapsed.
+ */
+function holdsSelection(block: Element, row: Element | null, selection: Selection | null): boolean {
+  if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return false;
+  if (selection.toString().trim() === "") return false;
+  const range = selection.getRangeAt(0);
+  if (!block.contains(range.startContainer)) return false;
+  const end = range.endContainer;
+  if (block.contains(end) || row?.contains(end)) return true;
+  const outside = document.createRange();
+  outside.setStartAfter(row ?? block);
+  outside.setEnd(end, range.endOffset);
+  return outside.toString().trim() === "";
 }
 
 /**
@@ -1209,7 +1378,7 @@ function StepHead({ name, args }: { name: string; args: Record<string, string> }
       </>
     );
   }
-  const argument = mainArgument(args);
+  const argument = mainArgument(name, args);
   return (
     <>
       <span className="step-tool">{name}</span>
@@ -1391,11 +1560,13 @@ function Reasoning({ entry }: { entry: ChatEntry & { role: "assistant" } }) {
  * Picking a built-in row, or sending exactly `/new`, `/model`, or `/compact`, runs it when Send would act (`startNewChat`,
  * the editor's model list through `chooseModel`, or the summary request `compact`) and empties the box; otherwise, or with text after the token, the pick
  * inserts `/<name> `. When a reply ends, the message box takes the focus, unless History is open (`historyOpen`): the
- * focus then stays where the user has it, so typing keeps going to the History filter. `drafts` from the editor are
+ * focus then stays where the user has it, so typing keeps going to the History search. `drafts` from the editor are
  * applied in order (`applyDraft`), whatever the reply's state, then taken, and the message box takes the focus.
  * While a reply is in flight, Send and Enter queue the message instead (`queueMessage`), up to `MAX_QUEUED_MESSAGES`,
  * a built-in command excepted, which stays text in the box; the queue shows under the box (`QueuedMessages`). Queued
  * texts the host returns arrive as `paragraph` drafts, applied like the editor's but without moving the focus.
+ * ArrowUp in a blank box recalls the earlier user messages of the conversation shown, and ArrowDown goes back
+ * (`composerKeyAction`); the box remembers the place recalled until a send, a draft, a quote, or another conversation ends it.
  */
 function Composer({
   state,
@@ -1405,6 +1576,8 @@ function Composer({
   takeDrafts,
   editing,
   takeEditing = () => {},
+  quoting,
+  takeQuoting = () => {},
   replaces,
 }: {
   state: ChatState;
@@ -1414,6 +1587,8 @@ function Composer({
   takeDrafts: (taken: readonly DraftInsert[]) => void;
   editing?: DraftInsert;
   takeEditing?: () => void;
+  quoting?: string;
+  takeQuoting?: () => void;
   replaces?: ShownEntries;
 }) {
   const [text, setText] = useState("");
@@ -1425,6 +1600,8 @@ function Composer({
   const [highlighted, setHighlighted] = useState(0);
   /** Token closed with Escape; typing on reopens the menu. */
   const [dismissed, setDismissed] = useState<MenuToken>();
+  /** Place of the message recalled with ArrowUp; forgotten for good once it no longer holds (`recallHolds`). */
+  const [recalled, setRecalled] = useState<RecallPlace>();
   /** Latest file query; an answer counts only for it. */
   const latest = useRef<{ id: number; query: string | undefined }>({ id: 0, query: undefined });
   /** Latest skill query; an answer counts only for it, while its menu stays open. */
@@ -1479,6 +1656,12 @@ function Composer({
     if (slashQuery !== undefined) setHighlighted(0);
   }, [slashQuery]);
 
+  // [>]: Another conversation shown, or the message recalled gone, ends the recall for good: coming back does not
+  // resume it, and the text stays in the box as a plain draft.
+  useEffect(() => {
+    if (recalled && !recallHolds(recalled, state)) setRecalled(undefined);
+  }, [recalled, state]);
+
   const hasToken = token !== undefined;
   useEffect(() => {
     if (!hasToken) setDismissed(undefined);
@@ -1515,6 +1698,7 @@ function Composer({
   useEffect(() => {
     if (drafts.length === 0) return;
     setDraft(drafts.reduce(applyDraft, { text, caret, picked }));
+    setRecalled(undefined);
     takeDrafts(drafts);
     if (!drafts.some(fromEditor)) return;
     input.current?.focus();
@@ -1529,10 +1713,22 @@ function Composer({
     takeEditing();
     const next = applyDraft({ text, caret, picked }, editing);
     setDraft(next);
+    setRecalled(undefined);
     // [>]: A message ending on a mention puts the caret on its token: its menu stays closed until the user types on.
     setDismissed(menuToken(next.text, next.caret, next.picked));
     input.current?.focus();
   }, [editing]);
+
+  // [>]: Quote puts the selected text in the box on Edit's path and focuses it, since the user asked to quote there.
+  // The quote ends with a blank line, so the caret follows whitespace and no menu opens.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a quote applies once, to the box as it stands.
+  useEffect(() => {
+    if (quoting === undefined) return;
+    takeQuoting();
+    setDraft(quoteDraft({ text, caret, picked }, quoting));
+    setRecalled(undefined);
+    input.current?.focus();
+  }, [quoting]);
 
   // [!]: The view's focus command settles before the workbench has focused the webview, so a draft can land first:
   // the workbench's focus then blurs the box and gives the panel back its focus with nothing focused inside (#68,
@@ -1568,7 +1764,10 @@ function Composer({
   // [>]: Only a reply in flight queues; with no model or a mode change pending, Send does nothing either way.
   const canQueue = ready && replying && !state.modePending && state.queue.length < MAX_QUEUED_MESSAGES;
 
-  const clear = () => setDraft({ text: "", caret: 0, picked: [] });
+  const clear = () => {
+    setDraft({ text: "", caret: 0, picked: [] });
+    setRecalled(undefined);
+  };
 
   const run = (command: BuiltInCommand) => {
     if (command === "new") startNewChat();
@@ -1611,8 +1810,19 @@ function Composer({
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    const pressed = { key: event.key, shift: event.shiftKey, composing: event.nativeEvent.isComposing };
-    const action = composerKeyAction(pressed, rows);
+    const pressed = {
+      key: event.key,
+      shift: event.shiftKey,
+      alt: event.altKey,
+      control: event.ctrlKey,
+      meta: event.metaKey,
+      composing: event.nativeEvent.isComposing,
+    };
+    // [!]: The selection is read from the box itself: a caret set by `setSelectionRange` fires no `onSelect`.
+    const { selectionStart, selectionEnd } = event.currentTarget;
+    const { conversationId, entries } = state;
+    const box = { text, selectionStart, selectionEnd, conversationId, entries, recalled };
+    const action = composerKeyAction(pressed, rows, box);
     if (action.type === "none") return;
     event.preventDefault();
     event.stopPropagation();
@@ -1626,6 +1836,14 @@ function Composer({
         return setDismissed(token);
       case "send":
         return send();
+      case "recall":
+        setDraft(action.draft);
+        setRecalled(action.place);
+        // [>]: A text ending on a `/` or `@` token opens no menu, so the next ArrowUp still recalls.
+        setDismissed(menuToken(action.draft.text, action.draft.caret, action.draft.picked));
+        return;
+      case "keep":
+        return;
     }
   };
 
@@ -1661,7 +1879,11 @@ function Composer({
             setText(event.target.value);
             setCaret(event.target.selectionStart);
           }}
-          onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
+          onSelect={(event) => {
+            // [!]: React's `onSelect` also fires on keydown, after the key handler, with the selection the key found.
+            // A draft set by that key (a pick, a recall) waits for its caret: the stale one would close the token.
+            if (nextCaret.current === undefined) setCaret(event.currentTarget.selectionStart);
+          }}
           onFocus={() => setFocused(true)}
           onBlur={() => setFocused(false)}
           onKeyDown={onKeyDown}

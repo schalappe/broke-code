@@ -184,7 +184,8 @@ between its regions: header, notices, the conversation (or History in its place)
   one turn sit 4px apart, and so do a folded turn's row and its final reply. Opened, the fold lays its entries out in
   a column of its own with the same spacing, 4px under its row.
 - Long content never widens the panel: a path or a title on one line is cut with an ellipsis; a message, a command,
-  and a chip wrap anywhere; a code block, a step result, and a table scroll inside themselves.
+  and a chip wrap anywhere; a folded turn's row wraps between words; a code block, a step result, and a table scroll
+  inside themselves.
 - The header is a running head over one rule (`--bc-line`): the two pickers share the first line; the usage and the
   buttons drop below once the pickers would fall under 16em.
 - The conversation keeps 4px of side padding inside its scroll box, so a focus ring on a row at its edge is not
@@ -224,7 +225,11 @@ user's message). Borders and rules are 1px. No colored side stripe.
 - Link (Open provider settings, Set context size): the link color, underlined.
 - Code block action (Copy, Insert at cursor): a secondary button two pixels down (`--bc-fs-xs`), at least a row high
   (`--bc-row`). Never primary, so the decision block keeps the conversation's one primary button. Copy shows its
-  outcome, "Copied" or "Copy failed", in place of its label for about two seconds.
+  outcome, "Copied" or "Copy failed", in place of its label for about two seconds. Their header is not selectable.
+- Quote: a secondary button in a row of its own (`.quote-row`) directly under an answer's Markdown, 4px under it (2px
+  under the narration before a call), shown while text of that answer is selected. The row is not selectable. No room
+  is kept for it, a written exception to the rule that a revealed control keeps its room, which covers controls
+  revealed on hover: a row kept under every answer would cost more than the one-row move.
 - Disabled: half opacity. Header and History buttons are one size down.
 
 ### Fields
@@ -267,6 +272,8 @@ would not act. Above the rows, a notice line says "The queue is paused." when no
 - Code block of a reply: once its text is final, its frame (`.code-block`: `--bc-fill`, `--bc-edge`, radius 6px)
   holds a header (`.code-actions`) with Copy and Insert at cursor at the right, then the code, which scrolls inside
   itself under the header. A block still growing renders as a bare code block, without the header.
+- Quote under a reply: its row sits between the answer's Markdown and the reply's tool step or decision block, so the
+  tool step moves down by one row while it shows.
 - The thread: a reply that holds a tool step, and a folded turn, sit 20px in, beside one drawn 1px line
   (`--bc-line`) that runs from one to the next. Each row that opens is a node on it, a 7px ring filled with the
   panel's color: plain for a tool step, dotted for reasoning, a double ring for a folded turn, in the error color for
@@ -276,16 +283,18 @@ would not act. Above the rows, a notice line says "The queue is paused." when no
 - A row that opens (reasoning, a tool step, a folded turn) ends with its chevron, turned down once open.
 - Reasoning: a small dim row; opened, its text sits behind a 1px rule. On the thread only when its reply holds a
   step.
-- Tool step: one small dim line: tool name (`--bc-tool`), main argument, status at the right, then the chevron. It opens to its result in a
+- Tool step: one small dim line: tool name (`--bc-tool`), main argument (a `read_file` range after its path, `big.log 2001-`), status at the right, then the chevron. It opens to its result in a
   code block. A command shows whole in a block under its line. A failed status is in the error color. A write that
   "Undo changes" put back says so first in its status, in words ("undone, ok, 1 line"), in the default look: nothing
   failed, and the line count stays the result's.
 - A call without a result has no chevron: its node is filled and breathing while it runs, hollow when it ended with
   no result.
 - Folded turn: an ended turn's steps and intermediate replies under one small dim row, a double-ring node on the
-  thread, between the user's message and the final reply: "3 steps, 1 failed, 1 rejected", the counts in words, never in color
-  alone. Closed when the turn ends; opened, the entries show exactly as they rendered before. Its rules use the child
-  combinator (`.turn-fold > summary`), so the reasoning and step rows inside keep their own chevrons.
+  thread, between the user's message and the final reply: what the steps did, "Read 3 files, edited 1 file, ran 1
+  command, 1 failed", the counts in words, never in color alone, a path counted once after a lexical cleanup (`a.ts` and
+  `./a.ts` are one file); it wraps, never cut. Closed when the turn ends; opened, the entries show exactly as they
+  rendered before. Its rules use the child combinator (`.turn-fold > summary`), so the reasoning and step rows inside
+  keep their own chevrons.
 - Summary (`/compact`): its reply sits under a separator (`.summary-separator`), small dim words between two 1px
   rules in `--bc-line` that run across the conversation: "Summarizing the conversation…" while it streams, then
   "Conversation summarized" ("Conversation summarized automatically" for one an agent turn ran itself), or
@@ -343,10 +352,13 @@ the panel's color. A focus ring on its buttons is the panel's color.
 
 - The `@` and `/` menus overlay the conversation above the message box. The highlighted row takes the theme's active
   selection, or `--bc-fill-strong` where the theme has none, and `--bc-edge-active` in high contrast.
-- History: the filter field ("Filter by title") on top, at full width, then one row per conversation, title over
-  date, Delete at the right. Only the rows scroll; the field stays in place. The current row has a fill, a title in
-  weight 600, and `--bc-edge-active` in high contrast. With no conversation saved, History shows its empty line and
-  no field; with no row left by the filter, "No match" as one dim centered line under the field.
+- History: the search field ("Search conversations") on top, at full width, then one row per conversation, title over
+  date, Delete at the right. A row found by its messages only carries its excerpt between title and date: one line,
+  dim, one size down, cut with an ellipsis, plain text without a highlight. Only the rows scroll; the field stays in
+  place. The current row has a fill, a title in weight 600, and `--bc-edge-active` in high contrast. With no
+  conversation saved, History shows its empty line and no field; with no row left, "No match" as one dim centered
+  line under the field, or "Searching…" in its place, in the Loading look, while a content search is awaited. The
+  count of conversations that could not be searched is a warning block between the field and the rows.
 
 ### States
 
@@ -354,15 +366,15 @@ Each kind of state has one look, distinct from the others at a glance:
 
 | State | Look |
 | --- | --- |
-| Loading (waiting for the reply, thinking, tool running, models loading) | Dim text that breathes; a line of its own leads with a dot. The pickers and the mode selector are disabled. While a mode change is being written, the mode selector and Send are disabled, with no other sign: the write takes a moment. While an undo runs, its button reads "Undoing changes…" and is disabled, and so is Send. |
-| Empty (no provider, new conversation, empty History, no History row left by the filter) | One dim line, centered in the room it has; a link under it when there is something to do. No provider: Add provider (primary) and the Open provider settings link side by side under it. |
+| Loading (waiting for the reply, thinking, tool running, models loading, History's "Searching…") | Dim text that breathes; a line of its own leads with a dot. The pickers and the mode selector are disabled. While a mode change is being written, the mode selector and Send are disabled, with no other sign: the write takes a moment. While an undo runs, its button reads "Undoing changes…" and is disabled, and so is Send. |
+| Empty (no provider, new conversation, empty History, no History row left by the search) | One dim line, centered in the room it has; a link under it when there is something to do. No provider: Add provider (primary) and the Open provider settings link side by side under it. |
 | Notice (unknown context size, older tool results left out of the next request, the queue paused or full, an undo that put every file back) | One small dim line, with a link when there is something to do (Set context size). Nothing went wrong, so no block. |
-| Warning (skipped providers and skills, an undo that skipped files) | A block on the theme's warning fill; under skipped providers, Add provider (secondary) below the block, only while a valid provider exists: without one, the empty state's Add provider is the panel's only one. |
+| Warning (skipped providers and skills, an undo that skipped files, conversations History could not search) | A block on the theme's warning fill; under skipped providers, Add provider (secondary) below the block, only while a valid provider exists: without one, the empty state's Add provider is the panel's only one. |
 | Error (models unavailable, failed reply, storage and listing problems, an undo that failed unexpectedly) | A block on the theme's error fill: the message, its technical detail in the editor font, then its actions. |
 | Failed step or chip | The error color on the status text; no block. |
 | Waiting for a decision | The decision block, in negative, on the thread's solid node. |
 | Turn ending (Stopped, halted) | A short rule, then small dim text. |
-| Folded turn (an ended turn of two steps or more) | One small dim row on a double-ring node, "N steps", then the failed and rejected counts in words, then the chevron. |
+| Folded turn (an ended turn of two steps or more) | One small dim row on a double-ring node: what the steps did ("Read 3 files, edited 1 file, ran 1 command"), "N steps" for a fold of other steps only, then the failed and rejected counts in words, then the chevron; it wraps, never cut. |
 | Replacing (Edit on the last message) | The last turn dimmed as a group under one line in the full foreground saying that sending replaces it, with Cancel; not dimmed in high contrast. |
 | Summarized (a summary, and the entries it replaces) | A separator of dim words between two rules above the summary; the entries before it dimmed as a group under one dim line saying they are no longer sent (not dimmed in high contrast); the turn's message an automatic summary quotes undimmed, with a dim line saying it is still sent. |
 
@@ -388,8 +400,8 @@ opacity over `--bc-fast`. Under `prefers-reduced-motion: reduce`, and when VS Co
   of ours. Folding at turn end moves no focus.
 - Focus never moves on its own. When an approval request opens, the focused element stays focused, so a key pressed
   at that moment cannot accept a write or run a command. A webview test pins this. Written exceptions: opening
-  History moves the focus into its filter field, since the user asked for History and no approval control sits
-  there. Escape in an empty filter field closes History and gives the focus back to the History button. And a draft
+  History moves the focus into its search field, since the user asked for History and no approval control sits
+  there. Escape in an empty search field closes History and gives the focus back to the History button. And a draft
   from the editor ("Add selection to chat", the quick fix "Fix with broke-code") closes History and moves the focus
   into the message box, since the user asked for it from the editor and the message box sends nothing on its own. The
   workbench may focus the panel just after the draft did, leaving nothing focused inside it; until the user clicks or
@@ -398,7 +410,9 @@ opacity over `--bc-fast`. Under `prefers-reduced-motion: reduce`, and when VS Co
   Edit on the last message moves the focus into the message box, where its text lands, since the user asked to edit
   there; the mention menu stays closed when the caret lands on a mention. Cancel on Retry's confirmation gives the
   focus back to Retry, since the button it was on goes; the confirmation itself renames the button the focus is on and
-  moves nothing. Last, Cancel on Edit's mark gives the focus back to Edit, for the same reason.
+  moves nothing. Last, Cancel on Edit's mark gives the focus back to Edit, for the same reason. Quote moves the focus
+  into the message box, caret at the end, since the user asked for it and the message box sends nothing on its own;
+  when the Quote button goes while it holds the focus, no focus is moved.
   Queuing a message moves no focus, and neither do the queued texts that come back to the box after New chat, an
   open, or a delete, or that the queue could not take: the request came from the panel, which already has the focus
   where the user put it, and History stays open. Such a text that arrives while the panel has no message box (no
@@ -411,7 +425,7 @@ opacity over `--bc-fast`. Under `prefers-reduced-motion: reduce`, and when VS Co
 - The `@` and `/` menus keep the focus in the message box (`aria-activedescendant`); the highlighted row is the
   visible focus there, so it must differ from its neighbours in every theme.
 - The message box takes the focus back when a reply ends, unless History is open: the focus then stays where the user
-  has it, so a key meant for the History filter never edits or sends the message.
+  has it, so a key meant for the History search never edits or sends the message.
 
 ## Do's and Don'ts
 

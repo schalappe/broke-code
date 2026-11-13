@@ -2,7 +2,7 @@
  * @module composer
  * Decisions of the message box, kept out of React so tests need no DOM: which token opens a menu (`@` mentions, `/`
  * commands), which menu rows to show, what a key does, which picked paths to send, and how a draft (an editor entry
- * point, queued texts returned, or the last message put back by Edit) edits the message box.
+ * point, queued texts returned, or the last message put back by Edit) edits the message box, and what Quote puts in it.
  */
 import { lastTurnActions } from "../core/lastTurn";
 import {
@@ -140,21 +140,54 @@ export function replaceToken(
 }
 
 /** A key press in the message box. `composing`: an input method (IME) is composing text. */
-export type ComposerKey = { key: string; shift: boolean; composing: boolean };
+export type ComposerKey = {
+  key: string;
+  shift: boolean;
+  alt: boolean;
+  control: boolean;
+  meta: boolean;
+  composing: boolean;
+};
 
-/** `none`: the textarea's default behavior. */
+/**
+ * Where the message recalled stands: its conversation, its index among the entries, and its text at the recall. The
+ * one thing a recall remembers; it is state of the message box.
+ */
+export type RecallPlace = { conversationId: string; index: number; text: string };
+
+/**
+ * The message box as a key decision reads it: its text and selection, the conversation shown and its entries, and the
+ * place of the message recalled, if any.
+ */
+export type ComposerBox = {
+  text: string;
+  selectionStart: number;
+  selectionEnd: number;
+  conversationId: string;
+  entries: readonly ChatEntry[];
+  recalled: RecallPlace | undefined;
+};
+
+/**
+ * `none`: the textarea's default behavior. `recall`: put `draft` in the box and remember `place`, none once ArrowDown
+ * empties the box past the newest message. `keep`: the key is consumed and nothing changes (ArrowUp at the oldest).
+ */
 export type KeyAction =
   | { type: "move"; step: 1 | -1 }
   | { type: "pick" }
   | { type: "dismiss" }
   | { type: "send" }
+  | { type: "recall"; draft: Draft; place: RecallPlace | undefined }
+  | { type: "keep" }
   | { type: "none" };
 
 /**
- * What `pressed` does. `rows`: rows the open menu shows, `undefined` when it is closed. With rows, the menu owns
- * the arrows, Enter, and Tab; Escape closes even a menu without rows; Enter sends otherwise, Shift+Enter never does.
+ * What `pressed` does in `box`. `rows`: rows the open menu shows, `undefined` when it is closed. With rows, the menu
+ * owns the arrows, Enter, and Tab; Escape closes even a menu without rows; Enter sends otherwise, Shift+Enter never
+ * does. With no row and no modifier, a collapsed selection, and a blank box, ArrowUp recalls the newest user message
+ * (`recallKey`); during a recall, ArrowUp on the first line goes older and ArrowDown on the last line goes newer.
  */
-export function composerKeyAction(pressed: ComposerKey, rows: number | undefined): KeyAction {
+export function composerKeyAction(pressed: ComposerKey, rows: number | undefined, box: ComposerBox): KeyAction {
   if (pressed.composing) return { type: "none" };
   if (rows !== undefined && pressed.key === "Escape") return { type: "dismiss" };
   if (rows !== undefined && rows > 0) {
@@ -163,7 +196,74 @@ export function composerKeyAction(pressed: ComposerKey, rows: number | undefined
     if (pressed.key === "Tab" || (pressed.key === "Enter" && !pressed.shift)) return { type: "pick" };
   }
   if (pressed.key === "Enter" && !pressed.shift) return { type: "send" };
+  if (pressed.key === "ArrowUp" || pressed.key === "ArrowDown") return recallKey(pressed, box);
   return { type: "none" };
+}
+
+/**
+ * Whether `place` still names a message of `state`: the conversation shown is its conversation and the entry at its
+ * index is a user message with its text. Once it fails the recall is over for good, even if a later state matches
+ * again (coming back to the conversation).
+ */
+export function recallHolds(
+  place: RecallPlace,
+  state: { conversationId: string; entries: readonly ChatEntry[] },
+): boolean {
+  const entry = state.entries[place.index];
+  return place.conversationId === state.conversationId && entry?.role === "user" && entry.content === place.text;
+}
+
+/** A recallable message: `index`, the newest of consecutive user messages with its text, and the oldest, `first`. */
+type Recallable = { first: number; index: number; entry: ChatEntry & { role: "user" } };
+
+/** The user messages of `entries` in order, consecutive messages with the same text counted once. */
+function recallables(entries: readonly ChatEntry[]): Recallable[] {
+  const list: Recallable[] = [];
+  entries.forEach((entry, index) => {
+    if (entry.role !== "user") return;
+    const last = list.at(-1);
+    if (last?.entry.content === entry.content) list[list.length - 1] = { ...last, index, entry };
+    else list.push({ first: index, index, entry });
+  });
+  return list;
+}
+
+/** The recall of `item`: its text with the caret at the end, and the picked paths Edit gives it. */
+function recallOf(item: Recallable, conversationId: string): KeyAction {
+  const draft = applyDraft({ text: "", caret: 0, picked: [] }, editDraft(item.entry));
+  return { type: "recall", draft, place: { conversationId, index: item.index, text: item.entry.content } };
+}
+
+/**
+ * ArrowUp or ArrowDown with no menu row. A recall is in progress while its place holds (`recallHolds`) and the box's
+ * text is exactly the message's, so an edit suspends it and undoing the edit resumes it. Lines are logical lines.
+ */
+function recallKey(pressed: ComposerKey, box: ComposerBox): KeyAction {
+  const none: KeyAction = { type: "none" };
+  if (pressed.shift || pressed.alt || pressed.control || pressed.meta) return none;
+  if (box.selectionStart !== box.selectionEnd) return none;
+  const list = recallables(box.entries);
+  const place = box.recalled;
+  const current =
+    place && box.text === place.text && recallHolds(place, box)
+      ? list.findIndex((item) => item.first <= place.index && place.index <= item.index)
+      : -1;
+  if (current === -1) {
+    const newest = list.at(-1);
+    if (pressed.key !== "ArrowUp" || box.text.trim() !== "" || !newest) return none;
+    return recallOf(newest, box.conversationId);
+  }
+  const caret = box.selectionStart;
+  if (pressed.key === "ArrowUp") {
+    if (box.text.slice(0, caret).includes("\n")) return none;
+    const older = list[current - 1];
+    return older ? recallOf(older, box.conversationId) : { type: "keep" };
+  }
+  if (box.text.slice(caret).includes("\n")) return none;
+  const newer = list[current + 1];
+  return newer
+    ? recallOf(newer, box.conversationId)
+    : { type: "recall", draft: { text: "", caret: 0, picked: [] }, place: undefined };
 }
 
 /**
@@ -222,4 +322,17 @@ export function applyDraft(draft: Draft, insert: DraftInsert): Draft {
   const lead = before === "" || /\s$/.test(before) ? "" : " ";
   const head = `${before}${lead}${insert.text}${/^\s/.test(after) ? after[0] : " "}`;
   return { text: head + (/^\s/.test(after) ? after.slice(1) : after), caret: head.length, picked: unique };
+}
+
+/**
+ * `draft` with the text selected in an answer quoted after it, for Quote. The selected text is trimmed, each line gets
+ * `> `, a blank inner line becomes `>` alone, and a blank line follows the quote. A blank box is filled; otherwise its
+ * trailing whitespace goes and a blank line separates it from the quote, so quotes in a row stay one blank line apart.
+ * The caret goes to the end and the picked paths stay.
+ */
+export function quoteDraft(draft: Draft, selected: string): Draft {
+  const lines = selected.trim().split("\n");
+  const quote = `${lines.map((line) => (line.trim() === "" ? ">" : `> ${line}`)).join("\n")}\n\n`;
+  const text = draft.text.trim() === "" ? quote : `${draft.text.trimEnd()}\n\n${quote}`;
+  return { text, caret: text.length, picked: draft.picked };
 }

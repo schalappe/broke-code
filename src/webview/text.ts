@@ -23,7 +23,7 @@ import {
 } from "../core/providerError";
 import type { SkippedProvider } from "../core/providers";
 import type { MentionKind } from "../core/reservedMentions";
-import type { FoldCounts } from "./turns";
+import { type FoldCounts, STEP_KINDS, type StepKind } from "./turns";
 
 export type { ErrorText };
 
@@ -175,8 +175,16 @@ function describeTruncated(kind: MentionKind, count: number): string {
   }
 }
 
-/** The argument a step row shows: a search's pattern, else the path, else the first value given. */
-export function mainArgument(args: Record<string, string>): string | undefined {
+/**
+ * The argument a step row shows: a search's pattern, else the path, else the first value given. A `read_file` given a
+ * line range shows it after the path as the model wrote it (`big.log 2001-4000`), its missing end left blank
+ * (`big.log 2001-`) and its missing start shown as 1 (`big.log 1-50`), so two reads of one file differ.
+ */
+export function mainArgument(name: string, args: Record<string, string>): string | undefined {
+  const { start_line: start, end_line: end } = args;
+  if (name === "read_file" && args.path !== undefined && (start !== undefined || end !== undefined)) {
+    return `${args.path} ${start ?? 1}-${end ?? ""}`;
+  }
   return args.pattern ?? args.path ?? Object.values(args)[0];
 }
 
@@ -213,18 +221,54 @@ function describeCommandEnding(text: string): string | undefined {
   return undefined;
 }
 
-/** The row of a folded turn: its steps, then the failed and the rejected ones when there are any, in words. */
+/** The most kinds a fold's row names; "N other steps" takes none of these places. */
+const MAX_NAMED_KINDS = 3;
+
+/** The kinds always named when not zero, so a fold never hides that the turn changed files or ran commands. */
+const ALWAYS_NAMED: readonly StepKind[] = ["edited", "ran"];
+
+/**
+ * The row of a folded turn, in words: at most three kinds, "edited" and "ran" always among them when not zero and the
+ * places left to the kinds with the largest number shown (a tie to the earlier kind), written in the order of
+ * `STEP_KINDS`; then the other steps, which add the steps of every kind not named; then the failed and the rejected
+ * ones when there are any. A fold of other steps alone says "N steps". The row may wrap; it is never cut.
+ */
 export function describeFold(counts: FoldCounts): string {
-  let text = l10n.t("{0} steps", counts.steps);
-  if (counts.failed > 0) {
-    const failed = counts.failed === 1 ? l10n.t("1 failed") : l10n.t("{0} failed", counts.failed);
-    text = l10n.t("{0}, {1}", text, failed);
-  }
+  const present = STEP_KINDS.filter((kind) => counts.kinds[kind].steps > 0);
+  const named = new Set(present.filter((kind) => ALWAYS_NAMED.includes(kind)));
+  const byNumber = present
+    .filter((kind) => !named.has(kind))
+    .sort((a, b) => counts.kinds[b].shown - counts.kinds[a].shown);
+  const places = MAX_NAMED_KINDS - named.size;
+  for (const kind of byNumber.slice(0, places)) named.add(kind);
+  const parts = present.filter((kind) => named.has(kind)).map((kind) => describeKind(kind, counts.kinds[kind].shown));
+  const other = byNumber.slice(places).reduce((sum, kind) => sum + counts.kinds[kind].steps, counts.otherSteps);
+  if (parts.length === 0) parts.push(l10n.t("{0} steps", counts.steps));
+  else if (other > 0) parts.push(other === 1 ? l10n.t("1 other step") : l10n.t("{0} other steps", other));
+  if (counts.failed > 0) parts.push(counts.failed === 1 ? l10n.t("1 failed") : l10n.t("{0} failed", counts.failed));
   if (counts.rejected > 0) {
-    const rejected = counts.rejected === 1 ? l10n.t("1 rejected") : l10n.t("{0} rejected", counts.rejected);
-    text = l10n.t("{0}, {1}", text, rejected);
+    parts.push(counts.rejected === 1 ? l10n.t("1 rejected") : l10n.t("{0} rejected", counts.rejected));
   }
-  return text;
+  const text = parts.reduce((joined, part) => l10n.t("{0}, {1}", joined, part));
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/** What the steps of `kind` did, `shown` their number in the unit of the kind. */
+function describeKind(kind: StepKind, shown: number): string {
+  switch (kind) {
+    case "read":
+      return shown === 1 ? l10n.t("read 1 file") : l10n.t("read {0} files", shown);
+    case "listed":
+      return shown === 1 ? l10n.t("listed 1 folder") : l10n.t("listed {0} folders", shown);
+    case "searched":
+      return shown === 1 ? l10n.t("searched 1 time") : l10n.t("searched {0} times", shown);
+    case "loaded":
+      return shown === 1 ? l10n.t("loaded 1 skill") : l10n.t("loaded {0} skills", shown);
+    case "edited":
+      return shown === 1 ? l10n.t("edited 1 file") : l10n.t("edited {0} files", shown);
+    case "ran":
+      return shown === 1 ? l10n.t("ran 1 command") : l10n.t("ran {0} commands", shown);
+  }
 }
 
 /**
@@ -319,7 +363,7 @@ function undoneStatus(file: UndoneStatus): string {
 /** The next request's estimate against the context size, as tokens and a share, numbers in `language` (BCP 47). */
 export function describeContextUsage({ used, size }: ContextUsage, language: string): string {
   const percent: Intl.NumberFormatOptions = { style: "percent", maximumFractionDigits: 0 };
-  const format = (locale: string | undefined) => {
+  return inLanguage(language, (locale) => {
     const number = new Intl.NumberFormat(locale);
     return l10n.t(
       "{0} / {1} tokens ({2})",
@@ -327,11 +371,30 @@ export function describeContextUsage({ used, size }: ContextUsage, language: str
       number.format(size),
       new Intl.NumberFormat(locale, percent).format(used / size),
     );
-  };
+  });
+}
+
+/**
+ * The usage line's tooltip: what the line estimates, then the counts the last chat request reported, when it reported
+ * any, numbers in `language` (BCP 47) like the line's.
+ */
+export function describeContextTitle({ reported }: ContextUsage, language: string): string {
+  if (reported === undefined) return l10n.t("Estimated size of the next request");
+  return inLanguage(language, (locale) => {
+    const number = new Intl.NumberFormat(locale);
+    return l10n.t(
+      "Estimated size of the next request. Last reply: {0} prompt tokens, {1} completion tokens",
+      number.format(reported.prompt),
+      number.format(reported.completion),
+    );
+  });
+}
+
+/** `format` with `language`, or with the runtime's language when Intl rejects the tag (RangeError). */
+function inLanguage(language: string, format: (locale: string | undefined) => string): string {
   try {
     return format(language);
   } catch {
-    // [>]: A tag Intl rejects (RangeError) still gets readable numbers.
     return format(undefined);
   }
 }

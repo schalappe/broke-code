@@ -1,6 +1,6 @@
 # Chat panel behavior
 
-This file specifies what the chat panel does around a turn: folding, code block actions, queued messages, Retry, Continue, and Edit. `DESIGN.md` holds the look; `docs/spec/harness.md` holds the turn itself.
+This file specifies what the chat panel does around a turn: folding, code block actions, Quote, queued messages, Retry, Continue, Edit, and the recall of earlier messages. `DESIGN.md` holds the look; `docs/spec/harness.md` holds the turn itself.
 
 ## Turn folding
 
@@ -8,16 +8,30 @@ This file specifies what the chat panel does around a turn: folding, code block 
   reply is in flight. An ended turn keeps its last reply, and any tool step after it (a `stepLimit` or `malformedCalls`
   halt), in view, and folds every entry between its user message and that reply under one row when the fold holds at
   least 2 tool steps (`foldTurns`); any other turn renders as before, with no wrapper. The row is an uncontrolled
-  `<details>`, closed when the turn ends, like the reasoning block: "N steps", N the tool steps inside the fold
-  (malformed calls and empty replies included), then ", M failed" (status `error` or `malformed`, not rejected) and
-  ", K rejected" (`approval` `rejected`) when not zero, in words. The turn in flight never folds, so a running step and
+  `<details>`, closed when the turn ends, like the reasoning block, whose row says what the steps did (below). The turn in flight never folds, so a running step and
   an open approval always show; a row opened inside comes back closed once its turn folds, since its entries remount.
   Entries before the first user message, and a turn with no reply, never fold. A summary entry is a boundary of its
   own: always rendered, never inside a fold, and never a turn's final reply, so the turn before it folds by the usual
   rule and keeps its own final reply. An automatic summary (`docs/spec/harness.md`) splits its turn the same way: the part before it
   folds as an ended turn, and the part after it, from the summary to the turn's final reply, folds once the turn has
   ended. Rendering only: the state, the record,
-  and the history sent to the model are unchanged. The conversation follows its bottom while the user is within 24px of
+  and the history sent to the model are unchanged.
+- The fold's row (`describeFold`) says what the tool steps inside did, counted in one pass (`foldTurns`). Each step has
+  exactly one kind, checked in this order: **other** for a `malformed` step whatever its name, a `read_file`,
+  `write_file`, or `edit_file` whose `path` is missing or empty once cleaned, a `run_command` without `command` (a call
+  Plan refused is recorded so), and a tool of none of the kinds below; then **read** (`read_file`), **listed**
+  (`list_files`), **searched** (`search`), **loaded** (`load_skill`), **edited** (`write_file`, `edit_file`), **ran**
+  (`run_command`), whatever the step's status (a failed read, a rejected write, and an undone write count). Read,
+  listed, and edited show distinct paths; searched, loaded, ran, and other show steps. Paths are cleaned lexically and
+  nothing more: empty and `.` segments are dropped, `..` removes the segment before it, a `..` with nothing before it
+  stays, and a leading `/` is kept, so `a.ts`, `./a.ts`, and `src/../a.ts` are one file, while `../a.ts` and `a.ts`,
+  `/a.ts` and `a.ts`, or two letter cases are two. A `list_files` without a path, `.`, and `./` are the workspace root.
+  The row names at most three kinds: edited and ran whenever not zero, the places left to read, listed, searched, and
+  loaded by largest number shown (a tie to the earlier one), written in that fixed order; then "N other steps", the
+  other steps plus the steps of every kind not named; then ", M failed" (status `error` or `malformed`, not rejected)
+  and ", K rejected" (`approval` `rejected`) when not zero. A fold of other steps alone says "N steps". The first letter
+  is upper case: "Read 3 files, edited 1 file, ran 1 command"; in French the number comes first ("3 fichiers lus, 1
+  fichier modifié, 1 commande exécutée"). The row wraps in a narrow panel; it is never cut. The conversation follows its bottom while the user is within 24px of
   it; scrolled up, a turn that folds keeps its question row (its user message) in place on screen, because nothing
   above it changes and the browser's scroll anchoring is off (`overflow-anchor: none`), which would otherwise re-anchor
   on a visible entry under the row (maintainer decision, 2026-11-11). Known limit: a fold that leaves too little
@@ -45,7 +59,41 @@ This file specifies what the chat panel does around a turn: folding, code block 
   throws each show a native error notification and change nothing. VS Code's `edit` settles `true` on a read-only
   document although nothing applied, so an edit counts as refused when it settles `false`, or when the document's
   version did not change and some selection does not already hold the text (then nothing needed changing: `done`). A
-  success shows nothing, and neither button moves the focus.
+  success shows nothing, and neither button moves the focus. The header holding Copy and Insert at cursor is not
+  selectable (`user-select: none`), so their labels are never part of selected text, in a quote or in a plain copy.
+
+## Quote
+
+- A "Quote" button (French "Citer", its accessible name) shows under an answer while the page's selected text lies in
+  that answer's rendered Markdown, code blocks included (`Answer`, `holdsSelection`). All of this must hold: the
+  selection is not collapsed and holds more than whitespace (a selection in the message box or another text field
+  reports collapsed); it starts inside one answer's `.answer` block; whatever it covers outside that block is whitespace
+  only, so a triple click on an answer's last paragraph, which ends at the start of the next block, counts; and the
+  panel has a message box (a provider is configured or a reply is in flight). The Quote row is skipped by that check
+  and is not selectable, so its label never joins the selected text and its showing cannot hide it again. Every
+  rendered answer counts: a final reply, the text before a tool call, a reply inside an opened fold, a summary. A
+  selection in a user message, a tool step, reasoning, or one that covers text of two entries shows nothing.
+- The check runs on every `selectionchange` and after every render, since removing the selected node changes the
+  selection without an event. The button goes when the selected text collapses, leaves the answer, or loses its text
+  because the answer's content was replaced; an unrelated render that leaves the selected text in place keeps it. So
+  Quote works for an older answer, or a finished paragraph, while a reply is in flight.
+- The button is a secondary `<button>` in a row of its own directly under the answer's Markdown, before that reply's
+  tool step and approval controls, so nothing focusable comes between the approval controls and the message box. No
+  room is kept for it: when it shows, what is under the answer moves down by one row, and the conversation's rule for
+  following its bottom applies unchanged. Tab from the selection reaches it; Enter or Space activates it, and the
+  selection survives until the quote is read. Escape does nothing new. When the button goes while it holds the focus,
+  no focus is moved.
+- A click reads the selected text as rendered (`Selection.toString`: no list markers, backticks, or emphasis marks)
+  and does nothing when no text of the answer is selected any more. `quoteDraft` trims it, prefixes each line with
+  `> `, writes a line that is empty or whitespace only as `>` alone, and ends the quote with a blank line. A blank
+  message box is filled with it; otherwise the box's text loses its trailing whitespace, then a blank line and the
+  quote follow. The message box takes the focus with the caret at the end, no menu opens, the picked paths stay, and
+  nothing is posted to the host: the text travels as webview state beside Edit's draft (`App`'s `quoting`), not as a
+  `DraftInsert`.
+- A quote is ordinary text of the draft: sent or queued as typed, a line starting with `> ` is no command, and the
+  host trims the trailing blank line at send. Mentions in it are read at send like any typed text (`@path` attaches,
+  a quoted `@dataclass` shows a failed chip). With Edit's replacing mark on, the quote is appended and Send still
+  replaces the last turn.
 
 ## Queued messages
 
@@ -160,3 +208,35 @@ This file specifies what the chat panel does around a turn: folding, code block 
   (`giveBack`), as for any send that cannot start a turn; during a reply the message is queued as an ordinary one;
   blank text is dropped. A completed `/compact` summary after the last user entry is kept, so Edit is not offered
   there (maintainer decision). `ChatState` and the record are unchanged.
+
+## Recall of earlier messages
+
+- Recall (#108): in the message box, ArrowUp and ArrowDown walk the user messages of the conversation shown, in the
+  webview only (`composerKeyAction` decides, `Composer` holds the place; no host message, no protocol or record
+  change). The list is every user entry of `ChatState.entries` in order, its text as stored for display (`content`,
+  never the composed text): a message with mentions, a `/<skill> args` message, a Continue entry (its label), messages
+  before a summary, and the message of the turn in flight. Consecutive entries with the same text count once, the
+  newest of them giving the mentions. `/new`, `/model`, `/compact`, a queued message, and a message Edit replaced have
+  no user entry, so they are not in it.
+- Start: ArrowUp with no input method composing, no menu showing rows, no Shift, Alt, Control, or Meta, a collapsed
+  selection, a blank box (whitespace only counts as blank), and a non-empty list puts the newest message in the box,
+  replacing that whitespace. Otherwise, and for ArrowDown in a blank box, the key keeps its default.
+- The recall remembers one thing (`RecallPlace`): the conversation, the index among the entries, and the text of the
+  message recalled. It is in progress while that conversation is shown, the entry at that index is still a user
+  message with that text (`recallHolds`), and the box's text is exactly that text: any edit suspends it, and undoing
+  the edit resumes it. With the same conditions on composition, menu, modifiers, and selection, ArrowUp with the caret
+  on the first line goes to the next older message, and at the oldest is consumed and changes nothing (no wrap);
+  ArrowDown with the caret on the last line goes to the next newer one, and past the newest empties the box. Lines are
+  logical lines, cut at line breaks (wrapped lines are not considered); with the caret elsewhere the arrows move it as
+  usual. Example with `A`, `b1⏎b2`, `C`: ArrowUp gives `C`, then `b1⏎b2`, then moves the caret into `b1`, then gives
+  `A`, then does nothing; ArrowDown gives `b1⏎b2`, `C`, then an empty box.
+- Every recall puts the caret at the end, and replaces the box's picked paths with those Edit computes for the message
+  (`editDraft`), the mentions the entry holds at that moment (the turn in flight may hold none yet: accepted); emptying
+  the box clears them. A text ending on a `/` or `@` token opens no menu (its token is dismissed, as after Edit), so the
+  next ArrowUp still recalls; the file query the box posts for an `@` token at the caret may still go.
+- The place is forgotten for good when the conversation shown changes (coming back does not resume; the text stays
+  as a plain draft), when a send or a built-in command clears the box, when ArrowDown empties it, when a draft is
+  applied (an editor entry point, a returned queued message, Edit, Quote), and when the entry at that index is gone
+  or holds another text. Erasing the box by hand does not forget it: ArrowUp in the blank box starts again from the newest
+  message. Sending a recalled message is an ordinary send (mentions read again, a `/<skill>` loaded again, a recalled
+  Continue sent as plain text, queued during a reply); while Edit's replacing state holds, Send still replaces.

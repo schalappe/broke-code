@@ -250,6 +250,14 @@ describe("readMention", () => {
     expect(formatMention(mention).endsWith("line 2000\n```\n[truncated: 1 more lines not shown]")).toBe(true);
   });
 
+  test("keeps the mention header and notice for a 3,000-line file, with no read_file range wording", async () => {
+    await writeFile(join(root.path, "longer.txt"), "x\n".repeat(3000));
+    const block = formatMention(await readMention([root], "longer.txt"));
+    await rm(join(root.path, "longer.txt"));
+    expect(block.startsWith("@longer.txt (file, 2000 lines, truncated)\n```\n")).toBe(true);
+    expect(block.endsWith("x\n```\n[truncated: 1000 more lines not shown]")).toBe(true);
+  });
+
   test("attaches a folder's listing, counted in entries", async () => {
     expect(await readMention([root], "src/")).toEqual({
       path: "src/",

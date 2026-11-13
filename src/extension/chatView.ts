@@ -22,6 +22,8 @@ export type ChatViewActions = {
   queryFiles: (query: string) => Promise<FileQueryAnswer>;
   /** The skills a send would discover, for the `/` menu; no log line, since nothing is sent. */
   querySkills: () => Promise<SkillDiscovery>;
+  /** Answer History's content search request `id` through `post` (`answerConversationSearch`); never rejects. */
+  searchConversations: (id: number, query: string, post: (message: HostMessage) => void) => Promise<void>;
   /** "broke-code: Add provider"; shows its own failures and never rejects. */
   addProvider: () => Promise<void>;
 };
@@ -171,6 +173,8 @@ export class ChatView implements vscode.WebviewViewProvider {
         return void this.answerQuery(message.query, message.id);
       case "querySkills":
         return void answerSkillQuery(message.id, this.actions.querySkills).then((answer) => this.post(answer));
+      case "searchConversations":
+        return void this.actions.searchConversations(message.id, message.query, (answer) => this.post(answer));
       case "stop":
         controller.stop();
         return;

@@ -252,3 +252,28 @@ rule (one command covers a whole folder tree, #120), `qwen-latest` on vLLM passe
 failed run on vLLM was traced to Qwen's garbled `<parameter>` form seen live on 2026-11-10, so it gets no parser rule.
 `glm-latest` stays unmeasured, a rented GPU for it being out of budget (maintainer decision): its reply ending mid-call
 gets no rule either, and the rule above stands: no parser change without eval evidence.
+
+## Addendum (2026-11-12): `read_file` takes a line range
+
+Decided by the maintainer (schalappe) on 2026-11-12 (#100). `read_file` gets two optional `oneLine` arguments,
+`start_line` and `end_line`, so the model can read past a file's first 2,000 lines. The call format is unchanged: they
+are ordinary named arguments in the body of the call, and the parser needs no new rule. A cut read without a range now
+gets the header `lines 1-2000 of T` and the notice `[truncated: N more lines not shown; read on with start_line 2001]`:
+the first read of a long file never has a range, so the notice is where the model learns it can read on. The bench's
+`range` scenario measures that the model follows it; the bench rejects its commands, since `tail -n 1` found the
+answer without the notice in 2 of 10 `gemma4` runs. Mentions and the other tools keep their wording.
+
+## Addendum (2026-11-13): the request asks for usage
+
+Decided by the maintainer (schalappe) on 2026-11-12 (#136, part of #105). Every chat completion request carries one
+optional field, `stream_options: { include_usage: true }`, so the provider reports the reply's token counts; the
+header's tooltip shows them beside the estimate. The body still never carries `tools`, and the call format is
+unchanged. A model of a provider that answers a request with the field by HTTP 400 or 422, before it has once taken the
+field, gets the same request once more without it, and is then sent none until a request with the field gets a started
+stream. The refusal is read from the status alone, not the error's wording: nobody has observed how the internal
+service words one, and a detector on the wording could fail every request there. Measured live on Ollama 0.40.16: with
+the field the stream ends with a usage chunk, without it none comes. vLLM's `StreamOptions` takes the field; the
+internal service's own answer to it is unknown.
+
+**Cost, accepted.** A provider that answers 400 for another reason (a request over its context) gets the request twice
+until one of its streams has started with the field; the second answer is the one shown.

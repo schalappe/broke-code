@@ -6,6 +6,7 @@ import {
   MAX_QUERY_LENGTH,
   parseWebviewMessage,
   REPLY_MAX_LENGTH,
+  searchNeedle,
 } from "./protocol";
 
 describe("parseWebviewMessage", () => {
@@ -146,6 +147,23 @@ describe("parseWebviewMessage", () => {
     expect(query({ query: "a".repeat(MAX_QUERY_LENGTH + 1), id: 1 })).toBeUndefined();
   });
 
+  test("accepts a conversation search with an integer id and a query", () => {
+    expect(parseWebviewMessage({ type: "searchConversations", query: "parser block", id: 3 })).toEqual({
+      type: "searchConversations",
+      query: "parser block",
+      id: 3,
+    });
+    const longest = "a".repeat(MAX_QUERY_LENGTH);
+    expect(parseWebviewMessage({ type: "searchConversations", query: longest, id: 0 })).toBeDefined();
+  });
+
+  test("rejects a conversation search with a non-integer id or a query over the limit", () => {
+    const search = (fields: Record<string, unknown>) => parseWebviewMessage({ type: "searchConversations", ...fields });
+    for (const id of [undefined, "1", 1.5, -1, Number.NaN]) expect(search({ query: "abc", id })).toBeUndefined();
+    expect(search({ id: 1 })).toBeUndefined();
+    expect(search({ query: "a".repeat(MAX_QUERY_LENGTH + 1), id: 1 })).toBeUndefined();
+  });
+
   test("accepts a skill query with an integer id and drops one without a valid id", () => {
     expect(parseWebviewMessage({ type: "querySkills", id: 4 })).toEqual({ type: "querySkills", id: 4 });
     expect(parseWebviewMessage({ type: "querySkills", id: 0 })).toEqual({ type: "querySkills", id: 0 });
@@ -274,5 +292,24 @@ describe("chatStateOf", () => {
 
   test("leaves the chat state alone for a draft", () => {
     expect(chatStateOf({ type: "insertDraft", text: "@selection", mode: "caret", picked: [] })).toBeUndefined();
+  });
+});
+
+describe("searchNeedle", () => {
+  test("trims, lower-cases, and collapses whitespace runs to one space", () => {
+    expect(searchNeedle("  Call \t\n SHAPED ")).toEqual({ needle: "call shaped", searchable: true });
+  });
+
+  test("a needle of fewer than 3 characters, counted as code points, is not searchable", () => {
+    expect(searchNeedle(" ab  ")).toEqual({ needle: "ab", searchable: false });
+    expect(searchNeedle("😀😀")).toEqual({ needle: "😀😀", searchable: false });
+    expect(searchNeedle("😀😀😀").searchable).toBe(true);
+    expect(searchNeedle("abc").searchable).toBe(true);
+  });
+
+  test("a needle over the query limit is not searchable", () => {
+    expect(searchNeedle("a".repeat(MAX_QUERY_LENGTH)).searchable).toBe(true);
+    expect(searchNeedle(` ${"a".repeat(MAX_QUERY_LENGTH)} `).searchable).toBe(true);
+    expect(searchNeedle("a".repeat(MAX_QUERY_LENGTH + 1)).searchable).toBe(false);
   });
 });

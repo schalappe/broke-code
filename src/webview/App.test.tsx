@@ -181,6 +181,17 @@ describe("agent turn", () => {
     expect(html).toContain("1 line");
   });
 
+  test("the main argument of a ranged read_file is its path, then the range as the model wrote it", () => {
+    const ranged = (range: Record<string, string>) =>
+      renderTurn([{ ...step, args: { path: "big.log", ...range }, text: "@big.log (file, line 1 of 9)\n```\nx\n```" }]);
+    expect(ranged({ start_line: "2001", end_line: "4000" })).toContain(
+      '<span class="step-arg">big.log 2001-4000</span>',
+    );
+    expect(ranged({ start_line: "2001" })).toContain('<span class="step-arg">big.log 2001-</span>');
+    expect(ranged({ end_line: "50" })).toContain('<span class="step-arg">big.log 1-50</span>');
+    expect(ranged({ start_line: "2001" })).toContain("ok, 4 lines");
+  });
+
   test("an error step says error and its size", () => {
     const html = renderTurn([callReply, { ...step, status: "error", text: "read_file: gone." }]);
     expect(html).toContain('class="step-status failed"');
@@ -347,9 +358,28 @@ describe("folded turn", () => {
     return html.slice(start, html.indexOf("</section>", start) + "</section>".length);
   }
 
-  test("the row says the steps, the failed ones, and the rejected ones", () => {
+  test("the row says what the steps did, the failed ones, and the rejected ones", () => {
     const html = conversationOf([user, call, ok, call, failed, call, rejected, final]);
-    expect(html).toContain('<summary class="turn-fold-row">3 steps, 1 failed, 1 rejected</summary>');
+    expect(html).toContain('<summary class="turn-fold-row">Read 1 file, 1 failed, 1 rejected</summary>');
+  });
+
+  test("the row names the files read, the files edited, and the commands run", () => {
+    const step = (name: string, args: Record<string, string>): ChatEntry => ({ ...ok, name, args });
+    const entries = [
+      user,
+      call,
+      step("read_file", { path: "a.ts" }),
+      call,
+      step("read_file", { path: "b.ts" }),
+      step("read_file", { path: "c.ts" }),
+      step("edit_file", { path: "x.ts" }),
+      step("edit_file", { path: "./x.ts" }),
+      step("run_command", { command: "ls" }),
+      final,
+    ];
+    expect(conversationOf(entries)).toContain(
+      '<summary class="turn-fold-row">Read 3 files, edited 1 file, ran 1 command</summary>',
+    );
   });
 
   test("the fold is a closed details and the final answer sits outside it, right after", () => {
@@ -1930,22 +1960,46 @@ describe("history filter", () => {
   ];
   const saved = stateWith(true, { conversations });
   const filterField = (host: HTMLElement) =>
-    host.querySelector<HTMLInputElement>('input[aria-label="Filter by title"]');
+    host.querySelector<HTMLInputElement>('input[aria-label="Search conversations"]');
   const titles = (host: HTMLElement) => [...host.querySelectorAll(".history-title")].map((title) => title.textContent);
   const historyButton = (host: HTMLElement) =>
     [...host.querySelectorAll("button")].find((element) => element.textContent === "History");
 
-  /** Open History over `state` and hand `run` the filter field. */
+  /** Open History over `state` and hand `run` the search field, with fake timers for the search's wait. */
   function withHistory(state: ChatState, run: (panel: Panel, field: HTMLInputElement) => Promise<void>) {
     return withPanel(state, async (panel) => {
       await panel.click("History");
       const field = filterField(panel.host);
-      if (!field) throw new Error("no filter field");
-      await run(panel, field);
+      if (!field) throw new Error("no search field");
+      jest.useFakeTimers();
+      try {
+        await run(panel, field);
+      } finally {
+        jest.useRealTimers();
+      }
     });
   }
+  /** The content searches posted so far. */
+  const searches = () =>
+    posted.filter((message) => (message as { type: string }).type === "searchConversations") as {
+      type: "searchConversations";
+      query: string;
+      id: number;
+    }[];
+  const lastSearchId = () => searches().at(-1)?.id ?? -1;
+  const advance = (ms: number) => act(async () => jest.advanceTimersByTime(ms));
+  const answer = (panel: Panel, items: { id: string; excerpt: string }[], unreadableCount = 0, id = lastSearchId()) =>
+    panel.receive({ type: "conversationMatches", id, items, unreadableCount });
+  /** Each row's title and excerpt, in order; `undefined` for a row without an excerpt. */
+  const rows = (host: HTMLElement) =>
+    [...host.querySelectorAll(".history-rows li")].map((row) => [
+      row.querySelector(".history-title")?.textContent,
+      row.querySelector(".history-excerpt")?.textContent,
+    ]);
+  const historyText = (host: HTMLElement) => host.querySelector(".history")?.textContent ?? "";
+  const warning = (host: HTMLElement) => host.querySelector(".history .warnings")?.textContent;
 
-  test("shows a text field labelled Filter by title above the rows, and none without a conversation", () => {
+  test("shows a text field labelled Search conversations above the rows, and none without a conversation", () => {
     const list = (rows: typeof conversations) =>
       renderToStaticMarkup(
         <ConversationList
@@ -1958,8 +2012,10 @@ describe("history filter", () => {
         />,
       );
     const html = list(conversations);
-    expect(html).toMatch(/<input type="text"[^>]*placeholder="Filter by title"[^>]*aria-label="Filter by title"/);
-    expect(html.indexOf("Filter by title")).toBeLessThan(html.indexOf("<ul"));
+    expect(html).toMatch(
+      /<input type="text"[^>]*placeholder="Search conversations"[^>]*aria-label="Search conversations"/,
+    );
+    expect(html.indexOf("Search conversations")).toBeLessThan(html.indexOf("<ul"));
     const empty = list([]);
     expect(empty).toContain("No past conversations.");
     expect(empty).not.toContain("<input");
@@ -1978,6 +2034,8 @@ describe("history filter", () => {
       expect(panel.host.querySelector(".history li.current")?.textContent).toContain("Fix the parser");
       await panel.fill(field, "deploy");
       expect(titles(panel.host)).toEqual([]);
+      await advance(300);
+      await answer(panel, []);
       expect(panel.host.querySelector(".history")?.textContent).toContain("No match");
       await panel.fill(field, "");
       expect(titles(panel.host)).toEqual(["Fix the parser", "Release notes", "Parse the logs"]);
@@ -2049,11 +2107,11 @@ describe("history filter", () => {
     entries: [question, { role: "assistant", reasoning: "", content: "Hello", status: "done" }],
   });
 
-  test("a reply that ends while History is open leaves the focus in the filter field", async () => {
+  test("a reply that ends while History is open leaves the focus in the search field", async () => {
     await withPanel(streaming, async (panel) => {
       await panel.click("History");
       const field = filterField(panel.host);
-      if (!field) throw new Error("no filter field");
+      if (!field) throw new Error("no search field");
       await panel.fill(field, "notes");
       await panel.show(replied);
       expect(document.activeElement).toBe(field);
@@ -2065,6 +2123,218 @@ describe("history filter", () => {
       historyButton(panel.host)?.focus();
       await panel.show(replied);
       expect(document.activeElement).toBe(panel.textarea);
+    });
+  });
+
+  test("fewer than 3 characters post no search", async () => {
+    await withHistory(saved, async (panel, field) => {
+      await panel.fill(field, " a  b");
+      await panel.fill(field, "ab");
+      await advance(1000);
+      expect(searches()).toEqual([]);
+      expect(historyText(panel.host)).toContain("No match");
+      expect(historyText(panel.host)).not.toContain("Searching…");
+    });
+  });
+
+  test("3 characters post one search 300 ms after the last change, whose query is the needle", async () => {
+    await withHistory(saved, async (panel, field) => {
+      await panel.fill(field, " LeX  er ");
+      await advance(299);
+      expect(searches()).toEqual([]);
+      await advance(1);
+      expect(searches()).toEqual([{ type: "searchConversations", query: "lex er", id: lastSearchId() }]);
+      await advance(1000);
+      expect(searches()).toHaveLength(1);
+    });
+  });
+
+  test("two needle changes within 300 ms post one search, for the last needle", async () => {
+    await withHistory(saved, async (panel, field) => {
+      await panel.fill(field, "lex");
+      await advance(200);
+      await panel.fill(field, "lexer");
+      await advance(299);
+      expect(searches()).toEqual([]);
+      await advance(1);
+      expect(searches().map((search) => search.query)).toEqual(["lexer"]);
+    });
+  });
+
+  test("a change that leaves the needle the same does not restart the wait", async () => {
+    await withHistory(saved, async (panel, field) => {
+      await panel.fill(field, "abc");
+      await advance(200);
+      await panel.fill(field, "ABC ");
+      await advance(100);
+      expect(searches().map((search) => search.query)).toEqual(["abc"]);
+      await advance(1000);
+      expect(searches()).toHaveLength(1);
+    });
+  });
+
+  test("a needle over the query limit posts no search and shows no Searching…", async () => {
+    await withHistory(saved, async (panel, field) => {
+      await panel.fill(field, "z".repeat(1025));
+      expect(historyText(panel.host)).not.toContain("Searching…");
+      expect(historyText(panel.host)).toContain("No match");
+      await advance(1000);
+      expect(searches()).toEqual([]);
+    });
+  });
+
+  test("Searching… shows while a search is awaited with no title row, and nothing more with title rows", async () => {
+    await withHistory(saved, async (panel, field) => {
+      await panel.fill(field, "deploy");
+      expect(panel.host.querySelector(".history p.loading")?.textContent).toBe("Searching…");
+      expect(historyText(panel.host)).not.toContain("No match");
+      await advance(300);
+      expect(historyText(panel.host)).toContain("Searching…");
+      await panel.fill(field, "parse");
+      expect(titles(panel.host)).toEqual(["Fix the parser", "Parse the logs"]);
+      expect(historyText(panel.host)).not.toContain("Searching…");
+    });
+  });
+
+  test("No match shows once the answer comes with nothing", async () => {
+    await withHistory(saved, async (panel, field) => {
+      await panel.fill(field, "deploy");
+      await advance(300);
+      await answer(panel, []);
+      expect(historyText(panel.host)).toContain("No match");
+      expect(historyText(panel.host)).not.toContain("Searching…");
+      expect(warning(panel.host)).toBeUndefined();
+    });
+  });
+
+  test("title rows come first without excerpt, then content rows in the list's order with theirs", async () => {
+    await withHistory(saved, async (panel, field) => {
+      await panel.fill(field, "parser");
+      await advance(300);
+      await answer(panel, [
+        { id: THIRD_ID, excerpt: "…the parser logs" },
+        { id: CONVERSATION_ID, excerpt: "Fix the parser" },
+        { id: OTHER_ID, excerpt: "the parser release" },
+      ]);
+      expect(rows(panel.host)).toEqual([
+        ["Fix the parser", undefined],
+        ["Release notes", "the parser release"],
+        ["Parse the logs", "…the parser logs"],
+      ]);
+      expect(historyText(panel.host)).not.toContain("Searching…");
+    });
+  });
+
+  test("content rows show only for conversations still listed", async () => {
+    await withHistory(saved, async (panel, field) => {
+      await panel.fill(field, "lexer");
+      await advance(300);
+      await answer(panel, [{ id: OTHER_ID, excerpt: "the lexer" }]);
+      await panel.show(stateWith(true, { conversations: conversations.filter(({ id }) => id !== OTHER_ID) }));
+      expect(rows(panel.host)).toEqual([]);
+      expect(historyText(panel.host)).toContain("No match");
+      expect(searches()).toHaveLength(1);
+    });
+  });
+
+  test("Enter opens the first row shown, a content row when no title matches", async () => {
+    await withHistory(saved, async (panel, field) => {
+      await panel.fill(field, "lexer");
+      await advance(300);
+      await answer(panel, [
+        { id: OTHER_ID, excerpt: "the lexer" },
+        { id: THIRD_ID, excerpt: "a lexer" },
+      ]);
+      await panel.press("Enter", field);
+      expect(posted.at(-1)).toEqual({ type: "openConversation", id: OTHER_ID });
+    });
+  });
+
+  test("the unreadable count shows as a warning, singular or plural, with rows or with No match", async () => {
+    await withHistory(saved, async (panel, field) => {
+      await panel.fill(field, "lexer");
+      await advance(300);
+      await answer(panel, [{ id: OTHER_ID, excerpt: "the lexer" }], 1);
+      expect(warning(panel.host)).toBe("1 conversation could not be searched");
+      expect(rows(panel.host)).toEqual([["Release notes", "the lexer"]]);
+      const html = panel.host.querySelector(".history")?.innerHTML ?? "";
+      expect(html.indexOf("warnings")).toBeGreaterThan(html.indexOf("<input"));
+      expect(html.indexOf("warnings")).toBeLessThan(html.indexOf("history-rows"));
+      await panel.fill(field, "lexers");
+      await advance(300);
+      await answer(panel, [], 3);
+      expect(warning(panel.host)).toBe("3 conversations could not be searched");
+      expect(historyText(panel.host)).toContain("No match");
+    });
+  });
+
+  test("a needle change removes the earlier answer's rows and count at once", async () => {
+    await withHistory(saved, async (panel, field) => {
+      await panel.fill(field, "lexer");
+      await advance(300);
+      await answer(panel, [{ id: OTHER_ID, excerpt: "the lexer" }], 2);
+      await panel.fill(field, "lexers");
+      expect(rows(panel.host)).toEqual([]);
+      expect(warning(panel.host)).toBeUndefined();
+      expect(historyText(panel.host)).toContain("Searching…");
+      await panel.fill(field, "lexer");
+      expect(rows(panel.host)).toEqual([]);
+      expect(historyText(panel.host)).toContain("Searching…");
+    });
+  });
+
+  test("an answer to an older search is ignored", async () => {
+    await withHistory(saved, async (panel, field) => {
+      await panel.fill(field, "lexer");
+      await advance(300);
+      const older = lastSearchId();
+      await panel.fill(field, "lexers");
+      await advance(300);
+      await answer(panel, [{ id: OTHER_ID, excerpt: "the lexer" }], 1, older);
+      expect(rows(panel.host)).toEqual([]);
+      expect(historyText(panel.host)).toContain("Searching…");
+      await answer(panel, [{ id: THIRD_ID, excerpt: "lexers" }]);
+      expect(rows(panel.host)).toEqual([["Parse the logs", "lexers"]]);
+    });
+  });
+
+  test("the answer to abc that comes after the field went back to ab is ignored", async () => {
+    await withHistory(saved, async (panel, field) => {
+      await panel.fill(field, "abc");
+      await advance(300);
+      await panel.fill(field, "ab");
+      await answer(panel, [{ id: OTHER_ID, excerpt: "abc" }], 1);
+      expect(rows(panel.host)).toEqual([]);
+      expect(warning(panel.host)).toBeUndefined();
+      expect(historyText(panel.host)).toContain("No match");
+    });
+  });
+
+  test("an answer from an earlier History opening is ignored", async () => {
+    await withHistory(saved, async (panel, field) => {
+      await panel.fill(field, "lexer");
+      await advance(300);
+      const earlier = lastSearchId();
+      await panel.click("History");
+      await panel.click("History");
+      const reopened = filterField(panel.host);
+      if (!reopened) throw new Error("no search field");
+      await panel.fill(reopened, "deploy");
+      await advance(300);
+      await answer(panel, [{ id: OTHER_ID, excerpt: "the lexer" }], 1, earlier);
+      expect(rows(panel.host)).toEqual([]);
+      expect(warning(panel.host)).toBeUndefined();
+      expect(historyText(panel.host)).toContain("Searching…");
+    });
+  });
+
+  test("closing History before 300 ms posts no search", async () => {
+    await withHistory(saved, async (panel, field) => {
+      await panel.fill(field, "lexer");
+      await advance(200);
+      await panel.click("History");
+      await advance(1000);
+      expect(searches()).toEqual([]);
     });
   });
 
@@ -2193,6 +2463,21 @@ describe("context usage", () => {
     expect(html.indexOf('aria-label="Model"')).toBeLessThan(html.indexOf("12,345 / 32,768 tokens"));
     expect(html.indexOf("12,345 / 32,768 tokens")).toBeLessThan(html.indexOf(">New chat<"));
     expect(html).not.toContain("Unknown context size");
+  });
+
+  test("the usage line's tooltip names the estimate only when the last reply reported no usage", () => {
+    const html = renderToStaticMarkup(
+      <App state={stateWith(true, { context: { ...usage, known: true } })} language="en" />,
+    );
+    expect(html).toContain('<span class="usage" title="Estimated size of the next request">');
+  });
+
+  test("the usage line's tooltip adds the counts the last reply reported, formatted like the line", () => {
+    const context = { ...usage, known: true, reported: { prompt: 12001, completion: 345 } };
+    const html = renderToStaticMarkup(<App state={stateWith(true, { context })} language="en" />);
+    expect(html).toContain(
+      'title="Estimated size of the next request. Last reply: 12,001 prompt tokens, 345 completion tokens"',
+    );
   });
 
   test("a model absent from the table shows the 32k notice with its link beside the usage", () => {
@@ -2863,7 +3148,7 @@ describe("undo changes", () => {
     await withPanel(stateWith(true, { entries: folded }), async ({ host }) => {
       const fold = host.querySelector<HTMLDetailsElement>("details.turn-fold");
       if (!fold) throw new Error("no fold");
-      expect(fold.querySelector(":scope > summary")?.textContent).toBe("2 steps");
+      expect(fold.querySelector(":scope > summary")?.textContent).toBe("Edited 1 file");
       await act(async () => fold.querySelector<HTMLElement>(":scope > summary")?.click());
       expect(fold.open).toBe(true);
       const rows = [...fold.querySelectorAll(".step-status")].map((row) => row.textContent);
@@ -3274,5 +3559,297 @@ describe("edit the last message", () => {
         expect(posted).toEqual([{ type: "send", text: "Fix @src/a b.ts and @problems", mentions: ["src/a b.ts"] }]);
       });
     }
+  });
+});
+
+describe("recall earlier messages", () => {
+  const user = (
+    content: string,
+    mentions: ChatEntry & { role: "user" } extends { mentions: infer M } ? M : never = [],
+  ) => ({ role: "user", content, mentions }) as ChatEntry;
+  const answer: ChatEntry = { role: "assistant", reasoning: "", content: "Done.", status: "done" };
+  const entries = [user("First\nline"), answer, user("Second"), answer];
+  /** Key down in the message box, returning the event so a test sees whether the panel consumed it. */
+  const keyDown = async (textarea: HTMLTextAreaElement, key: string) => {
+    const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+    await act(async () => {
+      textarea.dispatchEvent(event);
+    });
+    return event;
+  };
+  /** ArrowUp is not consumed: the event keeps its default and the box keeps its text. */
+  const expectDefault = async (textarea: HTMLTextAreaElement) => {
+    const before = textarea.value;
+    const event = await keyDown(textarea, "ArrowUp");
+    expect({ prevented: event.defaultPrevented, text: textarea.value }).toEqual({ prevented: false, text: before });
+  };
+
+  test("ArrowUp in an empty box fills it with the newest message, the caret at the end, and posts nothing", async () => {
+    await withPanel(stateWith(true, { entries }), async ({ textarea }) => {
+      const event = await keyDown(textarea, "ArrowUp");
+      expect(event.defaultPrevented).toBe(true);
+      expect(textarea.value).toBe("Second");
+      expect(textarea.selectionStart).toBe("Second".length);
+      expect(textarea.selectionEnd).toBe("Second".length);
+      expect(posted).toEqual([]);
+    });
+  });
+
+  test("a recalled text ending in /<name> or @<path> opens no menu, and the next ArrowUp goes older", async () => {
+    // [>]: `@pro` names the reserved `@problems` row, which shows without a host answer; mentions not read yet.
+    const shown = [user("Oldest"), answer, user("check @pro"), answer, user("/grilling"), answer];
+    await withPanel(stateWith(true, { entries: shown }), async ({ host, textarea }) => {
+      await keyDown(textarea, "ArrowUp");
+      expect(textarea.value).toBe("/grilling");
+      expect(host.querySelector('[role="listbox"]')).toBeNull();
+      await keyDown(textarea, "ArrowUp");
+      expect(textarea.value).toBe("check @pro");
+      expect(host.querySelector('[role="listbox"]')).toBeNull();
+      await keyDown(textarea, "ArrowUp");
+      expect(textarea.value).toBe("Oldest");
+      const queries = posted.filter((message) => (message as { type: string }).type === "queryFiles");
+      expect(queries.length).toBeLessThanOrEqual(1);
+      expect(posted.filter((message) => (message as { type: string }).type !== "queryFiles")).toEqual([]);
+    });
+  });
+
+  test("in a focused box, the select event a recall's key fires keeps the recalled caret: no menu opens", async () => {
+    // [>]: React fires `onSelect` on keydown in the focused box, after the key handler, with the caret the key found:
+    // the end of "/grilling", 9, which in the older text is the end of "@problems" and would open its menu.
+    const shown = [user("@problems later"), answer, user("/grilling"), answer];
+    await withPanel(stateWith(true, { entries: shown }), async ({ host, textarea }) => {
+      await act(async () => textarea.focus());
+      await keyDown(textarea, "ArrowUp");
+      await keyDown(textarea, "ArrowUp");
+      expect(textarea.value).toBe("@problems later");
+      expect(textarea.selectionStart).toBe("@problems later".length);
+      expect(host.querySelector('[role="listbox"]')).toBeNull();
+    });
+  });
+
+  test("another conversation shown, and coming back, leaves the text and ends the recall", async () => {
+    await withPanel(stateWith(true, { entries }), async ({ textarea, show }) => {
+      await keyDown(textarea, "ArrowUp");
+      await show(stateWith(true, { entries, conversationId: "other" }));
+      expect(textarea.value).toBe("Second");
+      await expectDefault(textarea);
+      await show(stateWith(true, { entries }));
+      expect(textarea.value).toBe("Second");
+      await expectDefault(textarea);
+    });
+  });
+
+  test("after a recalled message is sent, the same text typed by hand does not recall", async () => {
+    await withPanel(stateWith(true, { entries }), async ({ textarea, click, show, type }) => {
+      await keyDown(textarea, "ArrowUp");
+      await click("Send");
+      expect(posted).toEqual([{ type: "send", text: "Second", mentions: [] }]);
+      expect(textarea.value).toBe("");
+      await show(stateWith(true, { entries: [...entries, user("Second"), answer] }));
+      await type("Second");
+      await expectDefault(textarea);
+    });
+  });
+
+  test("after the box is erased by hand and Edit puts the same message back, ArrowUp does not recall", async () => {
+    await withPanel(stateWith(true, { entries }), async ({ textarea, click, type }) => {
+      await keyDown(textarea, "ArrowUp");
+      await type("");
+      await click("Edit");
+      expect(textarea.value).toBe("Second");
+      await expectDefault(textarea);
+    });
+  });
+});
+
+describe("quote a selection of an answer", () => {
+  const reply = (content: string, overrides: Partial<Reply> = {}): ChatEntry => ({
+    role: "assistant",
+    reasoning: "",
+    content,
+    status: "done",
+    ...overrides,
+  });
+  const ask = (content: string): ChatEntry => ({ role: "user", content, mentions: [] });
+
+  /** The first text node under `root` whose text contains `text`. */
+  function textNode(root: Element, text: string): Text {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (node.textContent?.includes(text)) return node as Text;
+    }
+    throw new Error(`no text node holding ${text}`);
+  }
+
+  /** Select from `start` to `end`, each a node and an offset, as the user's pointer does. */
+  const select = (start: [Node, number], end: [Node, number] = start) =>
+    act(async () => {
+      const range = document.createRange();
+      range.setStart(...start);
+      range.setEnd(...end);
+      const selection = document.getSelection()!;
+      selection.removeAllRanges();
+      selection.addRange(range);
+    });
+  /** Select the whole text of the first text node holding `text`. */
+  const selectText = (host: Element, text: string) => {
+    const node = textNode(host, text);
+    return select([node, 0], [node, node.length]);
+  };
+  const quoteButtons = (host: HTMLElement) =>
+    [...host.querySelectorAll("button")].filter((button) => button.textContent === "Quote");
+
+  test("a selection inside one answer shows Quote in a row under that answer's Markdown", async () => {
+    await withPanel(stateWith(true, { entries: [ask("Hi"), reply("Hello there")] }), async ({ host }) => {
+      expect(quoteButtons(host)).toEqual([]);
+      await selectText(host, "Hello there");
+      const [quote] = quoteButtons(host);
+      expect(quote).toBeDefined();
+      expect(quote?.parentElement?.previousElementSibling?.className).toBe("answer");
+    });
+  });
+
+  test("whitespace only, two replies, a tool step, reasoning, or a user message shows no Quote", async () => {
+    const answer = "Reading.\n<read_file>\n<path>a.ts</path>\n</read_file>";
+    const reading = reply(answer, {
+      reasoning: "Thinking hard",
+      call: { name: "read_file", args: { path: "a.ts" }, start: 9, end: answer.length },
+    });
+    const result: ChatEntry = {
+      role: "tool",
+      name: "read_file",
+      args: { path: "a.ts" },
+      status: "ok",
+      text: "file body",
+    };
+    const entries = [ask("Ask me"), reading, result, reply("First   answer"), ask("Next"), reply("Second")];
+    await withPanel(stateWith(true, { entries }), async ({ host }) => {
+      const spaced = textNode(host, "First   answer");
+      await select([spaced, 5], [spaced, 8]);
+      expect(quoteButtons(host)).toEqual([]);
+      await select([spaced, 0], [textNode(host, "Second"), 3]);
+      expect(quoteButtons(host)).toEqual([]);
+      const step = host.querySelector(".step");
+      expect(step).not.toBeNull();
+      await selectText(step!, (step!.textContent ?? "").trim().slice(0, 4));
+      expect(quoteButtons(host)).toEqual([]);
+      await selectText(host, "Thinking hard");
+      expect(quoteButtons(host)).toEqual([]);
+      await selectText(host, "Ask me");
+      expect(quoteButtons(host)).toEqual([]);
+      // [>]: The same answers do show it for a selection of their own text, so each case above is a real refusal.
+      await select([spaced, 0], [spaced, 5]);
+      expect(quoteButtons(host)).toHaveLength(1);
+    });
+  });
+
+  test("a selection ending at the start of the next block, as a triple click does, shows Quote and keeps it", async () => {
+    const state = stateWith(true, { entries: [ask("Hi"), reply("Last paragraph"), ask("Next")] });
+    await withPanel(state, async ({ host, show }) => {
+      const next = [...host.querySelectorAll(".message.user")].at(-1)!;
+      await select([textNode(host, "Last paragraph"), 0], [next, 0]);
+      expect(quoteButtons(host)).toHaveLength(1);
+      // [>]: The row now lies inside the range; another render checks again and keeps it.
+      await show(stateWith(true, { entries: [ask("Hi"), reply("Last paragraph"), ask("Next")] }));
+      expect(quoteButtons(host)).toHaveLength(1);
+    });
+  });
+
+  test("clearing the selection hides Quote", async () => {
+    await withPanel(stateWith(true, { entries: hi }), async ({ host }) => {
+      await selectText(host, "Hello");
+      expect(quoteButtons(host)).toHaveLength(1);
+      await act(async () => document.getSelection()?.removeAllRanges());
+      expect(quoteButtons(host)).toEqual([]);
+    });
+  });
+
+  test("without a message box no Quote shows", async () => {
+    await withPanel(stateWith(true, { entries: hi }), async ({ host, show }) => {
+      await show(stateWith(false, { entries: hi }));
+      expect(host.querySelector("textarea")).toBeNull();
+      await selectText(host, "Hello");
+      expect(quoteButtons(host)).toEqual([]);
+    });
+  });
+
+  test("Quote fills an empty box, focuses it with the caret at the end, opens no menu, and posts nothing", async () => {
+    await withPanel(
+      stateWith(true, { entries: [ask("Hi"), reply("Look at @src")] }),
+      async ({ host, textarea, click }) => {
+        await selectText(host, "Look at @src");
+        posted.length = 0;
+        await click("Quote");
+        expect(textarea.value).toBe("> Look at @src\n\n");
+        expect(document.activeElement).toBe(textarea);
+        expect(textarea.selectionStart).toBe(textarea.value.length);
+        expect(textarea.selectionEnd).toBe(textarea.value.length);
+        expect(host.querySelector('[role="listbox"]')).toBeNull();
+        expect(posted).toEqual([]);
+      },
+    );
+  });
+
+  test("Quote appends to a box holding text, each line of a code block quoted", async () => {
+    const entries = [ask("Hi"), reply("```\nlet a = 1;\nlet b = 2;\n```")];
+    await withPanel(stateWith(true, { entries }), async ({ host, textarea, type, click }) => {
+      await type("hello\n");
+      const code = host.querySelector(".answer pre code");
+      expect(code).not.toBeNull();
+      await selectText(code!, "let a");
+      await click("Quote");
+      expect(textarea.value).toBe("hello\n\n> let a = 1;\n> let b = 2;\n\n");
+      expect(textarea.selectionStart).toBe(textarea.value.length);
+    });
+  });
+
+  test("during a reply, a quote of an older answer then Enter queues the quote as typed", async () => {
+    const entries = [ask("Hi"), reply("a"), ask("More"), reply("", { status: "waiting" })];
+    await withPanel(stateWith(true, { entries }), async ({ host, click, press }) => {
+      await selectText(host.querySelector(".answer")!, "a");
+      await click("Quote");
+      posted.length = 0;
+      await press("Enter");
+      expect(posted).toEqual([{ type: "queueMessage", text: "> a\n\n", mentions: [] }]);
+    });
+  });
+
+  test("with an approval open, Quote leaves Reject right before the message box in the tab order", async () => {
+    const answer = "Renaming.\n<write_file>\n<path>a.ts</path>\n<content>\nx\n</content>\n</write_file>";
+    const writing = reply(answer, {
+      status: "streaming",
+      call: { name: "write_file", args: { path: "a.ts", content: "x" }, start: 10, end: answer.length },
+    });
+    const state = stateWith(true, {
+      entries: [hi[0]!, writing],
+      approval: { id: 1, kind: "write", tool: "write_file", summary: "a.ts" },
+    });
+    await withPanel(state, async ({ host, textarea }) => {
+      await selectText(host, "Renaming.");
+      const [quote] = quoteButtons(host);
+      expect(quote).toBeDefined();
+      const focusable = [...host.querySelectorAll<HTMLElement>("button, select, textarea, input, a[href], summary")];
+      const box = focusable.indexOf(textarea);
+      expect(focusable[box - 1]?.textContent).toBe("Reject");
+      expect(focusable.indexOf(quote!)).toBeLessThan(box - 1);
+    });
+  });
+
+  test("a quote applied during a recall ends it", async () => {
+    const entries = [ask("First"), reply("Hello there"), ask("Second"), reply("Done")];
+    await withPanel(stateWith(true, { entries }), async ({ host, textarea, type, press, click }) => {
+      await press("ArrowUp");
+      expect(textarea.value).toBe("Second");
+      await selectText(host, "Hello there");
+      await click("Quote");
+      expect(textarea.value).toBe("Second\n\n> Hello there\n\n");
+      // [>]: Erasing the quote by hand puts back the recalled text; a recall still in progress would go older here.
+      await type("Second");
+      const event = new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true, cancelable: true });
+      await act(async () => {
+        textarea.dispatchEvent(event);
+      });
+      expect({ prevented: event.defaultPrevented, text: textarea.value }).toEqual({ prevented: false, text: "Second" });
+    });
   });
 });

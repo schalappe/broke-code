@@ -35,6 +35,26 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
   `write_file` cannot create a file ending with an empty line; `edit_file` can.
 - The v1 tools are `read_file`, `list_files`, `search` (ripgrep), `write_file`, `edit_file`, `run_command`,
   and `load_skill`.
+- `read_file(path, start_line?, end_line?)` reads a file under the mention caps (binary or over 1 MiB refused whole)
+  and shows lines `start_line` to `end_line`, 1-based and inclusive, at most 2,000 of them (#100). Left out,
+  `start_line` is 1 and `end_line` the last line; either may come alone, and an `end_line` past the end reads to it.
+  Lines are counted as the 2,000-line cut counts them (`\n`, `\r\n`, and `\r` each end one; a final break ends the last
+  line, not a new one), each kept with its break as written.
+  - A read that shows the whole file is today's mention block, byte for byte: `@<path> (file, N lines)` and the fenced
+    text. A read that shows part of it, by its range or by the 2,000-line cut, has the header
+    `@<path> (file, lines A-B of T)` (`line A of T` for one line), `A` and `B` the lines shown and `T` the file's
+    count. When the cut stopped before the line asked for (`end_line`, or the last line), the result ends with
+    `[truncated: N more lines not shown; read on with start_line B+1]`, `N` the lines from `B+1` to that line; a range
+    that ended where asked has no notice. Mentions, `list_files`, `search`, `load_skill`, and the reserved mentions
+    keep `[truncated: N more lines not shown]`.
+  - Errors, as `error` results. Before any read: a value that, trimmed, is not digits only, at least 1, and a safe
+    integer (`read_file: start_line "2,001" is not a whole number of 1 or more.`, the value cut like other excerpts);
+    `end_line` before `start_line`. After the read: `start_line` past the last line, giving the line count
+    (`read_file: big.log: start_line 3001 is past the last line; the file has 3000 lines.`); an empty file reads from
+    line 1 as without a range and refuses a later `start_line` with 0 lines. A folder and every refusal of a path
+    (missing, outside, binary, over 1 MiB, unreadable) answer as without a range.
+  - The chat's step row shows the range after the path as the model wrote it: `big.log 2001-4000`, `big.log 2001-`
+    without `end_line`, `big.log 1-50` without `start_line`.
 - `edit_file` replaces exact text only, compared byte for byte, line endings included. If the text matches zero
   times or more than once (overlapping matches count), return an error to the model. Never guess the location.
 
@@ -347,29 +367,44 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
 ## Context budget and summaries
 
 - Before each request of an agent turn, the first included, the controller estimates its size as the characters of the
-  system prompt and of each history message's content (as `toHistory` builds it, joins included, reasoning excluded) divided by 4,
-  rounded up. Above `floor(size * 7 / 8)` of the model's context size (`fillsContext`, never a copy of its arithmetic),
+  system prompt and of each history message's content (as `toHistory` builds it, joins included, reasoning excluded) divided by
+  the model's characters per token (its ratio, next item), rounded up. Above `floor(size * 7 / 8)` of the model's context size (`fillsContext`, never a copy of its arithmetic),
   the history sent replaces the text of tool steps, oldest first over the whole conversation as sent (earlier turns
   included), with one line inside the same `<tool_result>` wrapper, same `tool` and `status`, leaving any text joined
   to that message whole:
   `[result left out to save context: N lines]` (`1 line` for one), N being the step row's line count
   (`resultLineCount`: a trailing line break dropped, then split; 0 for an empty text). It replaces the fewest steps
-  that make the estimate fit. Never replaced: the system prompt, user messages (a `/<name>` skill message included),
+  that make the estimate fit, rounded up to the next multiple of 4 (`LEFT_OUT_BLOCK`) and capped at the steps that
+  may be replaced: the count changes about once every 4 new steps, so the requests in between only add to the prompt
+  of the one before and a provider's prompt cache holds. Never replaced: the system prompt, user messages (a `/<name>` skill message included),
   assistant answers, the last 3 tool steps sent (`KEPT_RECENT_STEPS`), whatever turn they belong to,
   every `load_skill` step, whatever its status (a second load answers "already loaded" without the body), every undone
   step (a left-out line would tell the model the change stands; the estimate and the usage display count its added
   line), and a step whose replacement line is not shorter than its text; a malformed-call step follows the same rule as the others. The
-  choice is a pure function of the entries, the system prompt, and the context size, linear in the entries, since the
+  choice is a pure function of the entries, the system prompt, the context size, and the ratio, linear in the entries, since the
   usage display runs it at each streamed delta. Only what is sent changes: the record and the chat keep every result
   whole, and the loaded skills are still derived from the entries. When the estimate is still over with every eligible
   result replaced, the history goes whole, no request is sent, and the reply that would have carried it ends `halted`
   with reason `contextFull`, saved like the other halts; it is never a `ProviderError`, which means a request was sent.
   The usage display (`ChatState.context`) counts the request as it would be sent, and its optional `leftOut` counts the
   results left out; while it is set, the panel shows "N older tool results are left out of the request to save
-  context." in the place and look of the unknown-size notice, derived from the state, never saved or sent. Known cost,
-  accepted: once at the threshold, most requests replace one more old step, which changes the prompt's prefix and
-  defeats a provider's prompt cache. A turn reads the step limit, the context sizes, `brokeCode.autoCompact`, and Plan once, when it starts; a
-  settings change reaches the usage display at once (`limitsChanged`) and the turns from the next send. A mode change
+  context." in the place and look of the unknown-size notice, derived from the state, never saved or sent. Its
+  optional `reported` holds the counts the last chat request of the conversation shown reported (a turn's request or
+  a summary request; the commit message's never reaches the chat's state, see `docs/spec/provider.md`), which the
+  header's tooltip shows. While a request is in flight it keeps the counts of the request before it; when the request
+  ends, its counts replace them, or it is cleared when the request ended without reported usage (stopped, cut,
+  failed, or a reply that reported none). It is cleared too when the conversation shown changes (New chat, an open, a
+  delete of the conversation shown) and whenever the selected model is set or reset, even to the same model (a model
+  picked, a provider changed, a model list loaded again). Never saved: after a window reload there is none until the
+  next reply. The estimate does not read it. Known cost,
+  accepted: when fewer steps may be replaced than the rounded count, every one of them is replaced and the count
+  grows with the next step, which changes the prompt's prefix and defeats a provider's prompt cache for that request.
+  A context that keeps 3 or more replaceable results whole beside the last 3 steps never gets there; with 2, 1, or 0,
+  about 2, 3, or 4 requests in every 4 do, and a long turn drifts there as it nears a full context. Nothing is
+  remembered between requests but the model's ratio: an undo, a new context size, a mode change, a loaded skill, a new
+  summary, or a lower ratio recomputes the count and may change the prefix once. A turn reads the step limit, the context sizes, `brokeCode.autoCompact`, and Plan once, when it starts; a
+  settings change reaches the usage display at once (`limitsChanged`) and the turns from the next send. The ratio is
+  not read once: each request of a turn, and each estimate of the usage display, reads the model's ratio as it is then. A mode change
   cannot land during a turn (the selector is disabled and `setMode` ignored while a reply is in flight), and the
   usage display follows it at the next send, which composes the prompt of the new mode. The display counts the
   system prompt the last send composed, in any conversation shown, since instruction files and skills are the
@@ -377,6 +412,26 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
   request goes.
   Leaving results out is a deterministic cut, with no model call; a summary is asked for with `/compact` (below), or,
   with `brokeCode.autoCompact` on, by the turn itself (below).
+- The ratio (#137, ADR 0006): for each model of each provider (the provider's name and base URL and the model's name
+  together), `ProviderSupport` keeps one number of characters per token, in memory for the life of the extension host,
+  beside the usage field's state (`docs/spec/provider.md`). It starts at 4 (`DEFAULT_RATIO`) and only goes down. A
+  sample comes from a chat completion request whose reply completed (`done`) and reported `prompt_tokens` of at least
+  1,000 (`MIN_SAMPLE_TOKENS`): the request's characters (`charactersOf`: the UTF-16 lengths of the contents of every
+  message sent, what the estimate counts) divided by `prompt_tokens`, rounded down to one decimal. The ratio becomes
+  the smaller of itself and the sample, never under 2 (`MIN_RATIO`). `streamChat` takes the sample, so a turn's
+  requests, the summary requests of `/compact` and of automatic compaction, and the commit message's request all teach
+  it; a stopped, cut, or failed reply teaches nothing. Since it never goes up, a server that truncates an oversized
+  request without an error (it reports too few tokens, a high sample) changes nothing. The estimate of a text is
+  `ceil(characters * 10 / t)` and the most characters that fit a room of tokens are `floor(room * t / 10)`
+  (`largestFittingCharacters`), with `t` the ratio times 10, an integer from 20 to 40, so they are exact; the size
+  functions take the ratio as an input. A lower ratio takes effect at the next computation, inside a running turn too,
+  so the usage display and the request use the same ratio at the same moment. When a reply lowers the ratio of the
+  selected model, the controller publishes its state at once, with the same entries, so the header's estimate moves
+  before the reply settles. A lower ratio never puts back a result that was left out; when the request does not fit
+  even with every eligible result left out, the history goes whole and the turn ends on a full context or a summary,
+  as above. Selecting another model uses that model's ratio, or 4; a provider whose base URL was edited is another
+  provider and starts at 4. Nothing is saved: the record and the protocol are unchanged, the webview computes no
+  estimate, and after a window reload every ratio is 4 again.
 - `/compact` (#90) asks the model for a summary of the conversation shown. `ChatController.compact` sends one request,
   registered as a reply like `send`'s, so Stop, saving, navigation, and "a reply is in flight" (Send queues, the
   pickers and the mode selector are disabled) treat it as any reply. It returns `ignored` when Send would not act,
@@ -389,8 +444,8 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
   included (maintainer decision, 2026-11-12; cost: the summary sees the calls and answers, not the files read), then
   `SUMMARY_REQUEST`, a user message asking for the goal, the decisions, the files read or changed with their paths, and
   what remains to do, joined after a blank line to the history's last message when that one is a user message (a
-  tool result, or a user message whose reply was left out), by the history's one join rule. When its estimate still fills the
-  context (`fillsContext`), no request is sent and the entry ends `halted` with `contextFull`, its wording "Not
+  tool result, or a user message whose reply was left out), by the history's one join rule. When its estimate, at the
+  model's ratio, still fills the context (`fillsContext`), no request is sent and the entry ends `halted` with `contextFull`, its wording "Not
   summarized: …". Known cost: a prefix of its own defeats a provider's prompt cache for that request. The reply is an
   assistant entry with `summary: true`, streamed under a separator ("Summarizing the conversation…", then
   "Conversation summarized", or "Conversation not summarized" when it ended otherwise than `done` with text); it is
@@ -412,7 +467,8 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
   the source passes none, as the eval bench does, so the bench never compacts). Off, or set only in a workspace
   `settings.json`, nothing changes. On: before a request of an agent turn, when the estimate still fills the context
   after the leave-out rule, the controller builds `/compact`'s summary request (`summaryMessages`: the summary system
-  prompt with the send's instruction files, then `summaryHistory`); when that request fills the context too, nothing is
+  prompt with the send's instruction files, then `summaryHistory`); when that request fills the context too, at the
+  same ratio, nothing is
   sent and the waiting reply ends `halted` (`contextFull`), with no summary entry. Otherwise the summary entry
   (`summary: true`) takes the waiting reply's place and streams in the same turn: the turn stays in flight (Stop
   shows, `isReplying` holds, Send queues as during any reply), it is no tool step and counts nothing toward the step limit. Ended `done` with text, it

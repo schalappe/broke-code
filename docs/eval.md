@@ -6,7 +6,7 @@ This file describes `bun run eval`: what it runs, its sandbox, its scenarios, it
   on `qwen3.8:27b` then `gemma4:26b-a4b-it-qat`, all runs of one model before the next. Each run drives the
   chat controller with the read and write tools, `run_command`, and `load_skill` over a throwaway copy of the scenario's
   fixture, each write applied at once, each command approved at once through the run context (the bench plays the
-  model, not the user; nothing in the product auto-approves a command) and run with `/bin/sh` in the copy with a
+  model, not the user; nothing in the product auto-approves a command; `range` rejects each instead) and run with `/bin/sh` in the copy with a
   10-second timeout, no instruction file, and a step limit of 10. Since `--base-url` lets replies come from a remote
   server, a command runs with a minimal environment inside a macOS sandbox (`benchCommandEnv`): its environment holds
   only `PATH`, `LANG`, and each `LC_*` of the bench's when set there, `HOME`, the run's home copy, and `TMPDIR`, a
@@ -24,7 +24,13 @@ This file describes `bun run eval`: what it runs, its sandbox, its scenarios, it
   need `sandbox-exec` to apply a profile, so they fail inside a harness that is itself sandboxed. Skills are discovered as the extension
   does, but with a throwaway copy of the scenario's home fixture as the home folder, so the bench never reads the real
   `~/.agents`; a scenario without one gets no skill, and its prompt has neither the Skills section nor `load_skill`.
-  Seven scenarios, each judged on the turn ending `done` and on the workspace after it: every file the scenario writes
+  The bench drives the extension's chat controller and client, so its requests carry the usage field
+  (`stream_options: { include_usage: true }`) and follow its one-resend rule (`docs/spec/provider.md`); each run
+  starts with a fresh `ProviderSupport`, so what one run learns of the server never changes the next run's requests.
+  Within a run the bench learns each model's characters per token from the replies' reported usage as the extension
+  does (`docs/spec/harness.md`), starting at 4 in every run. Results measured before 2026-11-13 were taken without the
+  field, and every recorded result was measured at a fixed ratio of 4.
+  Eight scenarios, each judged on the turn ending `done` and on the workspace after it: every file the scenario writes
   holds its exact expected text, byte for byte, and every other entry is unchanged. The workspace is read back without
   following symlinks: every entry but a folder counts, a file by its text, a symlink by its target (`{ symlink }`), any
   other kind, such as a FIFO, by its kind (`{ special }`), so a command that adds a symlink fails `workspaceChanged`.
@@ -53,6 +59,24 @@ This file describes `bun run eval`: what it runs, its sandbox, its scenarios, it
     `depot-codes` stays off its list; judged the same way. It measures that the model follows a skill the user loaded
     although it was never listed to it, instead of refusing the loaded text as injected: live, a `load_skill` of it
     answered an error and the model refused (#50); it now answers "already loaded".
+  - `range`: `dispatch.log` holds 2,400 lines, `<depot> <state>` in plain words drawn from a fixed seed, and a README
+    names it; its last line, `nice seal VX7Q-K2RM`, alone holds a code. The message asks to read the file and give the
+    code on its last line, and names neither the tool, its arguments, a line number, nor a word of that line, so
+    `search` has no pattern for it. Passes when an `ok` `read_file` step called with a `start_line` holds the code, the
+    answer holds it, and no file changed; without such a step it is `wrongTool`, a `search` that found the code
+    included: it measures that the model follows the note of a cut read (#100). The bench rejects every command
+    approval of this scenario, as the user's Reject does (the model gets "The user rejected this command."); writes
+    are unchanged (maintainer decision, 2026-11-12). On 2bda260, before that rule, the full run passed 158 of 160 in
+    54 min 07 s: every other scenario 10/10 on both models, `range` 10/10 on `qwen3.8:27b` and 8/10 on `gemma4`, whose
+    two misses ran `tail -n 1 dispatch.log` with `run_command` and answered without reading the file, so they measured
+    nothing of the note. On ff1d075, with the rule, `range` alone took 16 min 12 s, 10/10 on both models: `qwen3.8:27b`
+    read the whole file, then read on with a `start_line` from 2001 to 2400 in every run; `gemma4` tried a command in
+    4 runs, got the rejection, and read on in all 10, once after a first read with `end_line` 1 whose header gave the
+    line count. The other seven scenarios were not rerun: the rule changes only `range`, and the system prompt is
+    the one of the 2bda260 run. The lines are plain words
+    because a first fixture of numbered random codes (`0001 98UJ-YCK7`) cost about 25,900 tokens for the first read on
+    `gemma4`, close to the 32,768-token context with the second, and its prefill took `qwen3.8:27b` over the
+    300-second reply timeout on its first run (twice in 2 tries).
 
   A failed run shows one category and a one-line detail: `malformed`, `wrongTool`, `wrongAnswer`, `stepLimit`,
   `contextFull`, `providerError`, `wrongEdit` (a file the scenario writes is missing or holds other text, with the

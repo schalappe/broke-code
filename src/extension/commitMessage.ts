@@ -14,18 +14,23 @@ import {
   type CommitSelection,
   type RepositoryLookup,
 } from "../core/commitMessage";
+import type { ProviderSupport } from "../core/providerSupport";
 import { type GitRepository, lookUpGit } from "./git";
 
 export const GENERATE_COMMIT_MESSAGE_COMMAND = "broke-code.generateCommitMessage";
 
 /**
- * Register the command. `selection` gives the chat's provider and model; the disposable aborts every run, so
- * deactivation writes nothing.
+ * Register the command. `selection` gives the chat's provider and model; `providerSupport` is the chat's memory of
+ * each model. The disposable aborts every run, so deactivation writes nothing.
  */
-export function registerCommitMessageCommand(selection: () => Promise<CommitSelection | undefined>): vscode.Disposable {
+export function registerCommitMessageCommand(
+  selection: () => Promise<CommitSelection | undefined>,
+  providerSupport: ProviderSupport,
+): vscode.Disposable {
   const ports: CommitMessagePorts = {
     selection,
     stream: streamChat,
+    providerSupport,
     confirmReplace: async (repository) => {
       const replace = vscode.l10n.t("Replace");
       const choice = await vscode.window.showWarningMessage(

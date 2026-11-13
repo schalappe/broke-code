@@ -212,7 +212,8 @@ The agent has three read tools. They run without asking you, inside the workspac
 skills loaded in the conversation (see [Skills](#skills)).
 
 - **read_file** reads a file, with the same limits as a mention. It refuses binary files and files over 1 MiB, and
-  cuts a file over 2,000 lines to its first 2,000.
+  shows at most 2,000 lines. It can read a range of lines, so the agent reads on past the first 2,000: a cut read
+  tells it the line to read on from, and the step's row shows the range after the path (`big.log 2001-4000`).
 - **list_files** lists the direct children of a folder.
 - **search** searches the workspace with ripgrep, either the copy your editor ships or the `rg` on your `PATH`. It
   skips hidden files, files that `.gitignore` ignores, and symlinks, and stops after 30 seconds.
@@ -293,7 +294,10 @@ Each tool call shows as a compact row under the model's text. The row shows the 
 search pattern, or the whole command), and whether it worked with the size of its result, or the exit code for a
 command. Click the row to see the result the model received.
 
-Once an agent turn ends, its steps fold under one row above the final answer, such as "3 steps, 1 failed, 1 rejected".
+Once an agent turn ends, its steps fold under one row above the final answer that says what they did, such as "Read 3
+files, edited 1 file, ran 1 command, 1 failed". Files count once however the model spelled their path (`a.ts`,
+`./a.ts`), but not across letter case or an absolute against a relative path; changed files and commands are always
+named, and the rest add up as "other steps". The row wraps in a narrow panel.
 The answer then sits right under your message. Click the row to see the steps again. If you scrolled up to read, your
 message stays where it is on screen when its turn folds, unless too little is left below to scroll. A turn with a
 single step stays unfolded. The turn in progress never folds, so a running step and a change that waits for you always
@@ -371,6 +375,13 @@ as a message you type, reading its mentions and `/<skill>` now.
 
 The chat does not offer Edit once `/compact` has summarized the conversation after your last message.
 
+### Recall an earlier message
+
+In an empty message box, press ArrowUp to bring back your last message of the conversation, with its file and folder
+mentions. Press ArrowUp again for older messages, and ArrowDown to come back; past your last message, the box empties.
+In a message of several lines, the arrows first move the caret to the first or last line. Once you change the text,
+the arrows move the caret again. Send it as is, or edit it first: it goes as a new message.
+
 ### See what a turn changed
 
 **Changed files** shows under the last reply of the latest turn that wrote a file, above **Undo changes**. It lists
@@ -420,16 +431,25 @@ broke-code tells the agent that you undid the change, so it reads the file again
 Next to the model picker, the panel header shows how much of the model's context the next request would use, in tokens
 and as a percentage. It is an estimate. broke-code counts the characters of everything the request sends (the
 instructions, your messages with their attachments, the model's answers, and the tool results, but not its reasoning)
-and divides by 4.
+and divides by the model's characters per token. That number starts at 4. Each reply that reports at least 1,000 prompt
+tokens teaches broke-code the model's real number, and the estimate uses the lowest one seen, never under 2, so code
+and text in other languages than English, which run near 3.5 characters per token, are not underestimated. broke-code
+learns it for each model of each provider separately, from chat and commit message replies alike, and forgets it when
+the window reloads. When the provider reports how many tokens the last reply used, the tooltip of that line shows the
+reported counts too: "Last reply: 12,001 prompt tokens, 345 completion tokens". broke-code asks every provider for these
+counts. A provider that refuses the request field gets the request again without it, and broke-code stops asking that
+model until the window reloads.
 
 Before each request of an agent turn, broke-code checks that estimate. If the request leaves less than one eighth of
-the context for the reply, broke-code leaves the oldest tool results out of that request, one at a time, until it
-fits. The model gets each result left out as a single line, `[result left out to save context: N lines]`.
+the context for the reply, broke-code leaves the oldest tool results out of that request, as few as make it fit,
+rounded up to a block of four, so that the requests that follow start with the same text and the provider can reuse
+its cache. The model gets each result left out as a single line, `[result left out to save context: N lines]`.
 
 broke-code always sends these whole:
 
 - the last three tool steps sent;
 - every skill load;
+- every change you undid with **Undo changes**;
 - your messages and the model's answers;
 - a result shorter than that line.
 
@@ -594,6 +614,14 @@ its fence is closed or the reply has ended.
   changes. The focus stays in the chat.
 - An empty block's buttons are disabled.
 
+## Quoting an answer
+
+Select text in an answer, and a **Quote** button shows under it. Press it, or press Tab then Enter, to put the selected
+text in the message box as a Markdown quote (each line starts with `> `), followed by a blank line for your question.
+The text is quoted as you see it, without Markdown marks. A quote is added after what the box already holds, and
+nothing is sent until you send it. Quote shows only for an answer's text, not for your messages, tool steps, or the
+model's reasoning.
+
 ## Commit messages
 
 In the Source Control view, the **Generate commit message** button (a sparkle) sits in the title of each git
@@ -611,8 +639,8 @@ Command Palette does the same for the only repository open, or for the one you p
 - A notification shows while the model writes. Its **Cancel** stops the request and leaves the box as it was. The
   message appears once the reply has ended, without the model's reasoning and without a code block or quotes around
   it.
-- The request uses the chat's provider, model, and context size. If the diff is too large for the model's context,
-  broke-code cuts it between files and keeps the first ones whole. If the first file alone is larger than the room,
+- The request uses the chat's provider, model, and context size, and the characters per token broke-code learned for
+  that model (see "Context size and step limit"). If the diff is too large for the model's context, broke-code cuts it between files and keeps the first ones whole. If the first file alone is larger than the room,
   broke-code cuts that file to fit. A notification then says the message covers only part of the changes.
 - It needs the Git extension built into VS Code and VSCodium. A notification says so, and the box stays as it was, when
   that extension is disabled, when nothing is staged, when no provider or model is chosen, or when the provider fails.
@@ -625,8 +653,11 @@ panel header lists the workspace's conversations, newest first. Each row shows t
 date of its last change, and the chat marks the one shown. Click a conversation to reopen it and continue where you
 left off, or click **Delete** to delete it.
 
-To find a conversation, type in **Filter by title** at the top of History. The list keeps the conversations whose
-title holds that text, ignoring case. Enter opens the first one listed. Escape clears the field, then closes History.
+To find a conversation, type in **Search conversations** at the top of History. The conversations whose title holds
+that text, ignoring case, show at once. From 3 characters, broke-code also searches your messages and the agent's
+answers (not tool results or reasoning) and adds the conversations found there, each with an excerpt of the match
+under its title. When some conversations cannot be read, a warning says how many could not be searched. Enter opens
+the first one listed. Escape clears the field, then closes History.
 
 **New chat** starts a new conversation and keeps the previous one in the list. History also works without a provider,
 but sending a message needs one. A workspace keeps its 50 most recent conversations, and broke-code deletes older ones.
@@ -642,7 +673,7 @@ with no folder open keeps its conversation in memory only.
 ## Tested models
 
 The eval bench measures broke-code's tool calls on two local models with Ollama, `qwen3.8:27b` and
-`gemma4:26b-a4b-it-qat`. It runs each task ten times, and a task passes at nine. The bench has seven tasks.
+`gemma4:26b-a4b-it-qat`. It runs each task ten times, and a task passes at nine. The bench has eight tasks.
 
 - **Read** answers with the value of a setting that only a file holds.
 - **Edit** renames a function in a source file and changes nothing else.
@@ -652,6 +683,7 @@ The eval bench measures broke-code's tool calls on two local models with Ollama,
 - **Slash** sends the skill task's question after `/` and the skill's name, which loads the skill for the model.
 - **Hidden** repeats the slash task with a skill kept from the model, which only you can load, next to an unrelated
   skill the model may load.
+- **Range** gives the code on the last line of a 2,400-line file, by reading on past its first 2,000 lines.
 
 In the latest full run, both models passed all 10 runs of every task. When a model thinks, then stops without a word,
 broke-code tells it so and asks again. Contributors run the bench with `bun run eval`.

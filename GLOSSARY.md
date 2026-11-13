@@ -47,8 +47,9 @@ One body tool call inside an agent turn and the result sent back to the model; a
 the message saying what is wrong count as a step too. The chat shows each step as a compact row. When a request would
 fill the model's context, the oldest steps' results go to the model as one line saying they were left out; the chat and
 the saved conversation keep them whole. Once an agent turn has ended, the steps and replies before its last reply fold
-under one row ("3 steps, 1 failed, 1 rejected") when they hold at least two steps; the last reply, and a step after it,
-stay in view.
+under one row that says what the steps did ("Read 3 files, edited 1 file, ran 1 command") when they hold at least two
+steps; the last reply, and a step after it, stay in view. Each step there has one kind (read, listed, searched, loaded,
+edited, ran, or other); paths count once after a lexical cleanup (`a.ts` and `./a.ts` are one file). The row wraps in a narrow panel.
 _Avoid_: tool use, action, iteration
 
 **Approval**:
@@ -94,6 +95,11 @@ One thread of messages in the chat panel, saved per workspace and listed in its 
 one.
 _Avoid_: session, thread, task, history item
 
+**Excerpt**:
+The line of a conversation's text that History shows under a row found by its messages rather than its title: the
+text around the first match, at most 120 characters, with "…" at each cut end, as plain text.
+_Avoid_: snippet, preview, extract
+
 **Reasoning**:
 The text a model writes before its answer to work the problem out, shown collapsed in the chat, never sent back
 to the model, and never read for body tool calls.
@@ -113,6 +119,17 @@ models through the OpenAI chat contract. Configured in the user settings, by han
 stores its key.
 _Avoid_: profile, endpoint, backend, connection
 
+**Reported usage**:
+The token counts a provider reports for one reply, its prompt tokens and its completion tokens, which broke-code asks
+every provider for. The header's tooltip shows those of the last reply of the conversation shown; they are never
+saved. Not the estimate, which broke-code computes from characters before a request is sent.
+_Avoid_: token count (alone), actual usage, real tokens
+
+**Ratio**:
+A model's characters per token, which the estimate divides a request's characters by. It starts at 4 and only goes
+down, to the lowest a reply's reported usage gave, never under 2; kept per model of each provider, in memory only.
+_Avoid_: tokenizer, chars ratio, compression
+
 ## Commands and skills
 
 **Mention**:
@@ -125,7 +142,9 @@ _Avoid_: context item, attachment, reference
 
 **Draft**:
 The text in the chat's message box, not sent yet, with the paths picked in it. "Add selection to chat" and the quick fix
-"Fix with broke-code" edit it from the editor and never send it.
+"Fix with broke-code" edit it from the editor and never send it. Quote appends the text selected in an answer to it as
+a Markdown quote. In a blank box, ArrowUp recalls the earlier messages of the conversation into it, newest first, and
+ArrowDown goes back.
 _Avoid_: prompt, input
 
 **Skill**:

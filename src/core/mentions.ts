@@ -125,19 +125,29 @@ export function formatMention(mention: ReadMention): string {
 
   const [one, many] = COUNT_UNITS[kind];
   const count = `${mention.range ? `${describeRange(mention.range)}, ` : ""}${plural(mention.lines ?? 0, one, many)}`;
-  const header = `@${path} (${kind}, ${count}${status === "truncated" ? ", truncated" : ""})`;
-  // [!]: No spread into Math.max: a 1 MiB file can hold more backtick runs than a call takes arguments.
-  const longestRun = (mention.content.match(/`+/g) ?? []).reduce((longest, run) => Math.max(longest, run.length), 0);
-  const fence = "`".repeat(Math.max(3, longestRun + 1));
-  const body = mention.content.endsWith("\n") || mention.content === "" ? mention.content : `${mention.content}\n`;
-  const block = `${header}\n${fence}\n${body}${fence}`;
+  const block = fencedBlock(
+    `@${path} (${kind}, ${count}${status === "truncated" ? ", truncated" : ""})`,
+    mention.content,
+  );
   const failures = (mention.folderFailures ?? []).map(
     ({ folder, cause }) => `Not attached for ${folder}: the ${kind} could not be read (${cause}).`,
   );
   return [block, ...(status === "truncated" ? [truncationNotice(mention.omitted)] : []), ...failures].join("\n");
 }
 
-/** The line closing a cut text, for mentions and tool results alike. */
+/**
+ * `header`, then `content` in a fence longer than any backtick run it holds. The closing fence follows the content's
+ * last line break as written (`\n`, `\r\n`, or `\r`); a `\n` is added only when the content ends without one.
+ */
+export function fencedBlock(header: string, content: string): string {
+  // [!]: No spread into Math.max: a 1 MiB file can hold more backtick runs than a call takes arguments.
+  const longestRun = (content.match(/`+/g) ?? []).reduce((longest, run) => Math.max(longest, run.length), 0);
+  const fence = "`".repeat(Math.max(3, longestRun + 1));
+  const body = content === "" || /[\r\n]$/.test(content) ? content : `${content}\n`;
+  return `${header}\n${fence}\n${body}${fence}`;
+}
+
+/** The line closing a cut text, for mentions and the tools other than a ranged `read_file`. */
 export function truncationNotice(omitted: number): string {
   return `[truncated: ${omitted} more lines not shown]`;
 }
@@ -226,7 +236,8 @@ export function cutOverByteCap(
   return { text: cut.text, lines, omitted: wholeLines - lines };
 }
 
-function plural(count: number, one: string, many: string): string {
+/** `count` and its unit, singular for 1: `1 line`, `3 lines`. */
+export function plural(count: number, one: string, many: string): string {
   return `${count} ${count === 1 ? one : many}`;
 }
 

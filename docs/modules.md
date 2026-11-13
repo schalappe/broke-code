@@ -14,12 +14,15 @@ This file says which file holds which responsibility. Update it when a module ga
   parser reads a new entry appended to the setting, the one rule of what may be added), the "Add provider" flow
   (`addProvider.ts`: the Ollama preset, the input boxes' validation, the key then the setting, over ports the host
   fills), the API key shape check, the provider
-  HTTP client, the CA trust and certificate error classification (`tls.ts`), the SSE reader, the typed provider
+  HTTP client (`client.ts`: the request body with the usage field, its one resend without it after a 400 or 422, and
+  the reply's reported usage in its outcome), the provider support memory (`providerSupport.ts`: `ProviderSupport`,
+  per provider name, base URL, and model, whether the usage field is taken and the characters per token the replies'
+  reported usage taught; one instance, made by the host, shared by the chat controller and the commit message), the CA trust and certificate error classification (`tls.ts`), the SSE reader, the typed provider
   errors and their wording (`providerError.ts`: `describeProviderError` with a translator, for the panel and the
   host's notifications), the generated commit message (`commitMessage.ts`: the request's system prompt, the diff cut to
   the context threshold, the reply's cleaning, and `CommitMessageGenerator`, the command over its git, provider
   request, and user interface ports), the chat controller (conversation state, the agent turn loop with its tool runner, instruction reader, and
-  skill reader ports, its limits source and step limits, the context budget check, streaming, Stop, saving, reopen, delete,
+  skill reader ports, its limits source and step limits, the context budget check, the usage display with the last reported usage (`ContextUsage.reported`), streaming, Stop, saving, reopen, delete,
   the queue of messages sent while a reply is in flight, with `mayStartTurn`, the one check a send, `/compact`, the
   queue, Retry, and Continue share, Retry and Continue (`retry`, `continueTurn`, over `startTurn` and `removeFrom`), a
   send replacing the last turn (`send`'s `replaces`, Edit, over the same checks and `removeFrom`), and "Undo changes": each turn's `RecordedChanges` on `ToolContext.changes`, the held turn with its
@@ -31,17 +34,21 @@ This file says which file holds which responsibility. Update it when a module ga
   left sides' text, the existence check, the error wording, an open cancelled when its file is closed meanwhile;
   `BEFORE_TURN_SCHEME`, their left side's scheme; `closeTurnDiffs`, which tabs to close), the conversation record
   (`conversation.ts`: version 2, its validation on load, title, id, the summary file's shape, `filterConversations`, the
-  History filter), its store
+  History title filter, `shownAnswer`, an answer as the chat shows it, and `conversationExcerpt`, History's content match
+  of one record and its excerpt), its store
   (`conversationStore.ts`: a record and a summary file per conversation, the list from the summaries, reads, writes,
-  and deletes in call order), and the store's file access (`conversationFiles.ts`:
+  and deletes in call order, and `search`, History's content search: one record read at a time through the queue,
+  stopped by a newer search, unreadable records counted; `answerConversationSearch`, the host's answer to it, an
+  unexpected failure logged and counted), and the store's file access (`conversationFiles.ts`:
   the file port, and its implementation over a local directory with `node:fs`: missing versus failed, regular files
   only, atomic writes, leftover temporary files), the dialog queue, the host-webview message
-  protocol and its validation (and `sendWouldAct`, the panel's one "Send would act" check; `send`'s optional
+  protocol and its validation (and `sendWouldAct`, the panel's one "Send would act" check; `searchNeedle`, History's
+  content search needle and whether it is searchable; `send`'s optional
   `replaces`, and `retry` and `continueTurn`, each carrying `ShownEntries`, the conversation and entries count the
   panel showed), the model list (`modelList.ts`: `emptyModelsLabel`, why the list is empty, for the
   header's select and the Quick Pick; `modelChoices`, the rows `/model` opens; `chooseModel`, the `/model` pick over a
   pick port the host fills with `showQuickPick`), workspace file access (`workspaceFiles.ts`: the inside-workspace check and its read-only
-  roots (the loaded skills' folders outside the workspace, for reads only), capped reads, one-level listings, line truncation, the write boundary and atomic writes, `removeWorkspaceFile`, the remove with the write's checks, with `node:fs`), mentions (`mentions.ts`: token detection, picked and typed
+  roots (the loaded skills' folders outside the workspace, for reads only), capped reads, one-level listings, line truncation and `cutLineRange`, the line range `read_file` shows, the write boundary and atomic writes, `removeWorkspaceFile`, the remove with the write's checks, with `node:fs`), mentions (`mentions.ts`: token detection, picked and typed
   mentions merged, reading, the text the model receives, and `cutToMentionCaps`, the cut of a reserved mention's text),
   the reserved mentions (`reservedMentions.ts`: `RESERVED_MENTIONS`, the table a new name is added to, `MentionKind`,
   `NOTHING_TO_ATTACH`, the statuses of a neutral chip, and
@@ -75,12 +82,13 @@ This file says which file holds which responsibility. Update it when a module ga
   skills, instruction files; `composeSummaryPrompt`, the summary request's own prompt; `offeredTools`, the tools a send
   offers, and `PLAN_BLOCKED_TOOLS`), the turn limits (`limits.ts`: `brokeCode.maxToolSteps`, `brokeCode.contextSizes`, and `brokeCode.autoCompact` parsing,
   `userLimits`, their user values only,
-  the token estimate, the context-full threshold, the typed size check, and `brokeCode.commandTimeoutSeconds` parsing),
+  the token estimate at a model's characters per token and the most characters that fit, exact in tenths, the
+  context-full threshold, the typed size check, and `brokeCode.commandTimeoutSeconds` parsing),
   the command tool (`commands.ts`: `RUN_COMMAND_TOOL`, `runCommandTool` checks the call and the folder and asks the
   approval, `runCommand` runs an approved command in its own process group with an injected shell and timeout, and,
   when given (the eval bench only), `environment`, the child's whole environment in place of the host's, and
   `launcher`, a program and its arguments placed before `<shell> -c <command>`, and
-  `commandShell` picks the shell), and the read tools (`tools.ts`: `read_file` and `list_files` over the mention reader, `search`
+  `commandShell` picks the shell), and the read tools (`tools.ts`: `list_files` over the mention reader, `read_file` over the same read and its own line range, header, and notice, `search`
   over ripgrep with its candidate paths, bounded `ok` or `error` results, each also reaching the loaded skills' folders
   by absolute path), the write tools (`writeTools.ts`:
   `write_file` and `edit_file` plan a change `{ path, target, before, after }` and never write; an applier port writes
@@ -124,7 +132,9 @@ This file says which file holds which responsibility. Update it when a module ga
   `brokeCode.autoApproveWrites` values it feeds the core decisions, and `writeAutoApproveWrites`, the user value the
   mode selector writes), the "Changed files" diffs in `turnDiffs.ts` (`registerTurnDiffs`: the core `TurnDiffs` over
   `vscode.diff`, `stat`, the tabs, and the error notifications, and the content provider of its left sides), the instruction reader and the skill reader from the home folder and the workspace folders, the latter logging the
-  skills of each send, and the same discovery, unlogged, for the `/` menu's `querySkills`; `chatView.ts` opens the
+  skills of each send, and the same discovery, unlogged, for the `/` menu's `querySkills`; `chatView.ts` answers
+  History's `searchConversations` through the action `extension.ts` binds to `answerConversationSearch` over the
+  controller's listed conversations, opens the
   Quick Pick of `chooseModel`, runs `insertCode` over the active text editor, shows a failed mode write, and wires the
   `DraftQueue` to the view's focus command and `postMessage` (`insertDraft`); `extension.ts` registers `broke-code.addSelectionToChat`,
   `broke-code.fixDiagnostic`, and the code action provider of the quick fix; `commitMessage.ts` registers `broke-code.generateCommitMessage`, its git port over the
@@ -137,17 +147,22 @@ This file says which file holds which responsibility. Update it when a module ga
   `ChatState.undo` names), Edit under the last turn's user message and the replacing state's mark with Cancel (held by
   `App`, the composer's Send carrying it), "Changed files" under the reply `ChatState.undo` names (`ChangedFiles`, a
   button per row posting `openChangeDiff`), and the last undo's outcome (`UndoOutcome`), and the answer's code blocks with Copy and Insert at cursor (`CodeBlock`,
-  the `pre` override of the answer's renderer) included. `SuggestionMenu.tsx` is the autocomplete list the `@` and
+  the `pre` override of the answer's renderer) included, and Quote under an answer whose text is selected (`Answer`,
+  `holdsSelection`; the quoted text reaches the composer as `App` state beside Edit's draft). `SuggestionMenu.tsx` is the autocomplete list the `@` and
   `/` menus share, a row with an optional description; `composer.ts` holds the message box's decisions without React
-  (the token at the caret, each menu's rows, what a key does, what picking a `/` row does (`slashPick`), `applyDraft`,
+  (the token at the caret, each menu's rows, what a key does, the recall of earlier messages with ArrowUp and
+  ArrowDown (`RecallPlace`, `recallHolds`), what picking a `/` row does (`slashPick`), `applyDraft`,
   how a host draft (an editor entry point's, or queued texts returned as a `paragraph`) edits the message box's text,
-  caret, and picked paths; `editDraft`, the draft Edit puts there; `Replacing` and `stillReplacing`, the replacing
-  state and when it ends). The queued messages render under the message box (`QueuedMessages`).
+  caret, and picked paths; `editDraft`, the draft Edit puts there; `quoteDraft`, what Quote puts there; `Replacing` and `stillReplacing`, the replacing
+  state and when it ends). The queued messages render under the message box (`QueuedMessages`). History is
+  `ConversationList`: the title filter, then the content search (`useContentSearch`: the 300 ms wait, the request id,
+  the latest answer), merged into title rows then content rows with their excerpt.
   `Root.tsx` is the panel's root: it posts `ready`, renders each state, and queues the `insertDraft` drafts for the
   message box; `main.tsx` mounts it. `turns.ts` groups the entries for rendering without React (`foldTurns`: each entry once,
-  an ended turn's fold and its step counts, a summary a boundary of its own), and `text.ts` words the fold's row (`describeFold`), the step row
-  (`describeToolStep`, "undone" included), and the undo's outcome (`describeUndoOutcome`, `describeUndoneFile`, each path a part of its own for the editor font,
-  `describeUndoFailure`).
+  an ended turn's fold and its step counts by kind, one pass, paths cleaned lexically, a summary a boundary of its own), and `text.ts` words the fold's row (`describeFold`, a row that may wrap), the step row
+  (`mainArgument`, a `read_file` range after its path; `describeToolStep`, "undone" included), and the undo's outcome (`describeUndoOutcome`, `describeUndoneFile`, each path a part of its own for the editor font,
+  `describeUndoFailure`), and the header's usage line and its tooltip with the reported usage (`describeContextUsage`,
+  `describeContextTitle`).
 - `src/l10n.test.ts`: checks that every `l10n.t` message has a French translation and that the
   `package.nls*.json` files match.
 - `l10n/bundle.l10n.fr.json`, `package.nls.json`, `package.nls.fr.json`: French strings for the host and
@@ -161,7 +176,8 @@ This file says which file holds which responsibility. Update it when a module ga
   `done`) and `judge`, the verdict and failure category of a run, which compares the workspace after the run with the
   fixture plus those writes; `run.ts` plays one run through the `ChatController` ports, with the read and write tools,
   `run_command`, and `load_skill` over a copy of the fixture under the system temporary directory, each write applied at
-  once by `fileApplier` and recorded for the dump, each command approved at once and run with `benchCommandEnv` (the
+  once by `fileApplier` and recorded for the dump, each command approved at once (rejected instead in a scenario with
+  `rejectCommands`, as a user's Reject would) and run with `benchCommandEnv` (the
   allow-listed environment and `sandbox-exec` with `BENCH_SANDBOX_PROFILE` as the launcher, the run's real paths as
   its parameters), and the skills discovered in a copy of the fixture home, never the real one;
   `report.ts` formats the scores; `bench.ts` is the CLI (`sandboxProblem`, its check before any run), guarded by `import.meta.main` so `bun test` never starts it.

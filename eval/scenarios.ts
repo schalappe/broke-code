@@ -63,7 +63,9 @@ export type Verdict = { pass: true } | { pass: false; category: FailureCategory;
  * model gets no skill. `message`: what the user sends. `writes`: the files the turn must leave in the workspace, each
  * with its exact text, byte for byte; every other fixture file must stay as it is and no other file may appear. Empty
  * for a scenario that changes nothing. `check`: what else a turn that ended `done` with the expected workspace must
- * show, from its entries; absent when the workspace says it all.
+ * show, from its entries; absent when the workspace says it all. `rejectCommands`: every `run_command` approval is
+ * rejected as the user's Reject does, so a command cannot stand in for the tool the scenario measures; absent, each is
+ * approved.
  */
 export type Scenario = {
   name: string;
@@ -72,6 +74,7 @@ export type Scenario = {
   message: string;
   writes: WorkspaceFiles;
   check?(entries: readonly ChatEntry[]): Verdict;
+  rejectCommands?: true;
 };
 
 /** The tools whose `ok` text is what the model read: a value in it came from a file. */
@@ -373,6 +376,62 @@ function numberTokens(text: string): string[] {
   return runs.filter((run) => /\d/.test(run)).map((run) => run.replace(/[.,]+$/, ""));
 }
 
+const DISPATCH_LOG = "dispatch.log";
+const DISPATCH_LINES = 2400;
+const SEAL_CODE = "VX7Q-K2RM";
+const DEPOTS = ["lyon", "brest", "lille", "nantes", "rouen", "dijon"];
+const STATES = ["sent", "held", "late"];
+
+/**
+ * One dispatch per line, `<depot> <state>`, at most 13 characters with the line break, drawn from a fixed seed so the
+ * fixture is the same on every run; the last line, `nice seal <code>`, alone holds a code.
+ *
+ * [!]: Plain words, not numbered codes: a line of digits and random letters costs about 12 tokens, so 2,000 of them
+ * (about 25,000 tokens) left no room for the second read in the bench's 32,768-token context, and their prefill took
+ * `qwen3.8:27b` over the 300-second reply timeout on the first run.
+ */
+function dispatchLog(): string {
+  // [>]: The Park-Miller generator: its products stay under 2^53, so every step is exact.
+  let seed = 2_400_100;
+  const pick = (words: readonly string[]) => {
+    seed = (seed * 48_271) % 2_147_483_647;
+    return words[seed % words.length];
+  };
+  const lines = Array.from({ length: DISPATCH_LINES - 1 }, () => `${pick(DEPOTS)} ${pick(STATES)}`);
+  return [...lines, `nice seal ${SEAL_CODE}`, ""].join("\n");
+}
+
+/**
+ * Read past the first 2,000 lines: the code on the last line of a 2,400-line log. The first read is cut at line 2,000
+ * and its note names the `start_line` to read on from; the message names neither the tool, its arguments, a line
+ * number, nor a word of the last line, so `search` has no pattern to find it. Passes when an `ok` `read_file` step
+ * called with a `start_line` holds the code, the answer holds it, and no file changed; without such a step it is
+ * `wrongTool`, a `search` that found the code included: the scenario measures that the model follows the note. Every
+ * command is rejected, as `tail -n 1` would find the code without reading the file.
+ */
+export const RANGE_SCENARIO: Scenario = {
+  name: "range",
+  files: {
+    "README.md": `# Courier\n\n${DISPATCH_LOG} records the day's dispatches, one per line.\n`,
+    [DISPATCH_LOG]: dispatchLog(),
+  },
+  message: `Read ${DISPATCH_LOG} and tell me the code on its last line. Reply with the exact code.`,
+  writes: {},
+  rejectCommands: true,
+  check(entries) {
+    const steps = entries.filter((entry) => entry.role === "tool");
+    const readOn = steps.some(
+      (step) =>
+        step.name === "read_file" &&
+        step.status === "ok" &&
+        step.args.start_line !== undefined &&
+        step.text.includes(SEAL_CODE),
+    );
+    if (!readOn) return { pass: false, category: "wrongTool", detail: `steps: ${describeSteps(steps)}` };
+    return answerHolds(entries, SEAL_CODE);
+  },
+};
+
 /** Every scenario the bench plays, in order. */
 export const SCENARIOS: readonly Scenario[] = [
   READ_SCENARIO,
@@ -382,6 +441,7 @@ export const SCENARIOS: readonly Scenario[] = [
   COMMAND_SCENARIO,
   SLASH_SCENARIO,
   HIDDEN_SCENARIO,
+  RANGE_SCENARIO,
 ];
 
 /**

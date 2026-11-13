@@ -7,7 +7,8 @@
  * call starts, after each tool step, and when the turn ends, so a reload or crash loses at most the reply streaming.
  * vscode-free: host passes key store, workspace memento, mention reader, conversation store, tool runner, instruction
  * file reader, skill reader, limits source, the auto-approve setting's reader and writer, the undo's workspace
- * roots and unsaved check, and the changed files' diff editor through ports.
+ * roots and unsaved check, the changed files' diff editor, and the provider support memory through ports. The usage
+ * display carries the counts the last chat request of the conversation shown reported.
  */
 import type { ApprovalRequest, Decision, Preview } from "./approval";
 import { type ChatMessage, lateReasoning, listModels, type ProviderAccess, streamChat } from "./client";
@@ -24,7 +25,7 @@ import {
 import type { ConversationStore } from "./conversationStore";
 import { type HistoryBudget, historyStart, sentEntries, summaryHistory, toHistory } from "./history";
 import { CONTINUE_TEXT, type LastTurnActions, lastTurnActions } from "./lastTurn";
-import { contextOf, estimateTokens, fillsContext, parseLimits, type TurnLimits } from "./limits";
+import { contextOf, DEFAULT_RATIO, estimateTokens, fillsContext, parseLimits, type TurnLimits } from "./limits";
 import { type LineCounts, lineDiffCount } from "./lineDiff";
 import { composeUserMessage, findMentions, type MentionReader, type MentionResult, type ReadMention } from "./mentions";
 import { workspacePath } from "./problems";
@@ -39,12 +40,14 @@ import {
   MAX_QUEUED_MESSAGES,
   type Mode,
   type ReplyStatus,
+  type ReportedUsage,
   type ShownEntries,
   type StepApproval,
   type StorageProblem,
   type UndoneFile,
   type UndoState,
 } from "./protocol";
+import type { ProviderSupport } from "./providerSupport";
 import type { ParsedProviders, Provider } from "./providers";
 import { RecordedChanges, type RecordedFile, type RestoreOutcome } from "./recordedChanges";
 import { reservedMention } from "./reservedMentions";
@@ -165,7 +168,8 @@ export type LimitsSource = { read(): TurnLimits };
  * texts the controller takes out without sending them, or refuses to queue, so nothing typed is lost; absent, each is
  * logged as lost. `undo`: what "Undo changes" needs; absent (the eval), no turn is held and the button never shows.
  * `changeDiffs`: opens and closes the diffs of "Changed files"; absent, the rows still show and a click does nothing.
- * `now`: clock for record times, in milliseconds since the epoch.
+ * `now`: clock for record times, in milliseconds since the epoch. `providerSupport`: what is known of each model of
+ * each provider, read and taught by every chat request; the host shares it with the commit message.
  */
 export type ChatPorts = {
   apiKeys: KeyStore;
@@ -183,6 +187,7 @@ export type ChatPorts = {
   undo?: UndoHost;
   changeDiffs?: ChangeDiffHost;
   now?: () => number;
+  providerSupport: ProviderSupport;
 };
 
 /**
@@ -336,6 +341,12 @@ export class ChatController {
   private readonly undoHost: UndoHost | undefined;
   private readonly changeDiffs: ChangeDiffHost | undefined;
   private readonly now: () => number;
+  private readonly providerSupport: ProviderSupport;
+  /**
+   * What the last chat request of the conversation shown reported, kept while the next one is in flight. Replaced when
+   * a request ends, cleared when the conversation shown or the model is set. Memory only, never saved.
+   */
+  private reported: ReportedUsage | undefined;
   /** Limits the usage display reads, refreshed at each send and by `limitsChanged`. */
   private limits: TurnLimits;
   /** Plan is on in this workspace: restored from the workspace memento, winning over the setting while on. */
@@ -372,6 +383,7 @@ export class ChatController {
     this.undoHost = ports.undo;
     this.changeDiffs = ports.changeDiffs;
     this.now = ports.now ?? Date.now;
+    this.providerSupport = ports.providerSupport;
     this.plan = this.workspaceState.get<unknown>(PLAN_KEY) === true;
     // [>]: Instruction files and skills are read only at a send, never just to refresh the display.
     this.systemPrompt = composeSystemPrompt(offeredTools(this.tools.tools, []), [], []);
@@ -388,7 +400,7 @@ export class ChatController {
       conversations: [],
       listFailed: undefined,
       storageProblem: undefined,
-      context: this.contextUsage(undefined),
+      context: this.contextUsage(undefined, undefined),
       // [>]: The setting is read at `modeChanged`, which the host calls at activation as it applies the providers; the
       // constructor reads no setting.
       mode: "ask",
@@ -480,14 +492,14 @@ export class ChatController {
       return;
     }
     this.state.provider = next?.name;
-    this.state.model = undefined;
+    this.setModel(undefined);
     void this.loadModels();
   }
 
   selectProvider(name: string): void {
     if (isReplying(this.state) || name === this.state.provider || !this.state.providers.includes(name)) return;
     this.state.provider = name;
-    this.state.model = undefined;
+    this.setModel(undefined);
     this.remember();
     void this.loadModels();
   }
@@ -495,9 +507,18 @@ export class ChatController {
   selectModel(model: string): void {
     if (isReplying(this.state) || this.state.models.status !== "loaded" || !this.state.models.models.includes(model))
       return;
-    this.state.model = model;
+    this.setModel(model);
     this.remember();
     this.emit();
+  }
+
+  /**
+   * Set or reset the selected model. The reported usage goes with it, even when the model is the same: it belonged to
+   * the request before, which a new listing or a provider change makes stale.
+   */
+  private setModel(model: string | undefined): void {
+    this.state.model = model;
+    this.reported = undefined;
   }
 
   /**
@@ -593,15 +614,16 @@ export class ChatController {
     if (id !== this.listingId) return;
     if (!listing.ok) {
       this.state.models = { status: "failed", error: listing.error };
-      this.state.model = undefined;
+      this.setModel(undefined);
       this.emit();
       return;
     }
     this.state.models = { status: "loaded", models: listing.models };
     const remembered = this.workspaceState.get<LastChoice>(LAST_CHOICE_KEY);
     const preferred = [this.state.model, remembered?.provider === provider.name ? remembered.model : undefined];
-    this.state.model =
-      preferred.find((model) => model !== undefined && listing.models.includes(model)) ?? listing.models[0];
+    this.setModel(
+      preferred.find((model) => model !== undefined && listing.models.includes(model)) ?? listing.models[0],
+    );
     this.remember();
     this.emit();
   }
@@ -899,12 +921,14 @@ export class ChatController {
       /** This request was already compacted: at most one automatic summary per request. */
       let compacted = false;
       for (;;) {
-        const { messages } = this.requestMessages(conversation, { system, contextSize });
+        // [!]: Read at each request, never once per turn: a reply that taught a lower ratio sizes the next request.
+        const ratio = this.providerSupport.ratio(provider, model);
+        const { messages } = this.requestMessages(conversation, { system, contextSize, ratio });
         // [>]: Never a provider error: no request goes. The reply that would have carried it ends halted.
-        if (fillsContext(estimateTokens(messages), contextSize)) {
+        if (fillsContext(estimateTokens(messages, ratio), contextSize)) {
           if (!autoCompact || compacted) return settle("halted", "contextFull");
           const summary = this.summaryMessages(conversation.entries, instructions);
-          if (fillsContext(estimateTokens(summary), contextSize)) return settle("halted", "contextFull");
+          if (fillsContext(estimateTokens(summary, ratio), contextSize)) return settle("halted", "contextFull");
           // [>]: The summary takes the place of the reply still waiting, which comes back after it once it ends done:
           // the turn stays in flight across it, and a failed or stopped summary ends the turn as its last entry.
           conversation.entries.pop();
@@ -1202,6 +1226,7 @@ export class ChatController {
     signal: AbortSignal,
   ) {
     const cut = new AbortController();
+    const ratioBefore = this.selectedRatio();
     let scanned = 0;
     const delta = (field: "content" | "reasoning") => (text: string) => {
       if (signal.aborted || cut.signal.aborted) return;
@@ -1233,11 +1258,17 @@ export class ChatController {
         model,
         messages,
         signal: AbortSignal.any([signal, cut.signal]),
+        support: this.providerSupport,
         onContent: delta("content"),
         onReasoning: delta("reasoning"),
       }),
       signal,
     );
+    // [>]: A request ended: its counts, or none. A reply stopped by navigation belongs to a conversation no longer shown.
+    if (conversation === this.conversation) this.reported = outcome?.status === "done" ? outcome.usage : undefined;
+    // [>]: `streamChat` taught the ratio from the reply's usage: the header's estimate moves now, with the same entries,
+    // not at the next one.
+    if (this.selectedRatio() < ratioBefore) this.emit();
     if (outcome && cut.signal.aborted) return { status: "done" as const };
     return outcome;
   }
@@ -1284,7 +1315,8 @@ export class ChatController {
       if (!prepared) return settle("stopped");
       const [access, instructions] = prepared;
       const messages = this.summaryMessages(entries, instructions);
-      if (fillsContext(estimateTokens(messages), contextSize)) return settle("halted", "contextFull");
+      const ratio = this.providerSupport.ratio(provider, model);
+      if (fillsContext(estimateTokens(messages, ratio), contextSize)) return settle("halted", "contextFull");
       // [!]: No tools: the answer is never parsed for a call, so a call-shaped block in it runs nothing.
       const outcome = await this.stream(access, model, messages, [], conversation, reply, signal);
       if (!outcome) return settle("stopped");
@@ -1634,6 +1666,7 @@ export class ChatController {
     this.lastTurn = undefined;
     this.heldTurn = undefined;
     this.undoOutcome = undefined;
+    this.reported = undefined;
     this.conversation = conversation;
     this.state.conversationId = conversation.id;
     this.state.entries = conversation.entries;
@@ -1721,6 +1754,16 @@ export class ChatController {
     return { messages: [{ role: "system", content: budget.system }, ...history.messages], leftOut: history.leftOut };
   }
 
+  /** Characters per token of `model` of `provider` (`ProviderSupport.ratio`); 4 without both. */
+  private ratioOf(provider: Provider | undefined, model: string | undefined): number {
+    return provider && model ? this.providerSupport.ratio(provider, model) : DEFAULT_RATIO;
+  }
+
+  /** Characters per token of the selected model. */
+  private selectedRatio(): number {
+    return this.ratioOf(this.currentProvider(), this.state.model);
+  }
+
   private currentProvider(): Provider | undefined {
     return this.providers.find((provider) => provider.name === this.state.provider);
   }
@@ -1750,15 +1793,21 @@ export class ChatController {
    * Estimate of the next request of the conversation shown, as it would be sent, against `model`'s context size, and
    * the count of tool results it leaves out, when any.
    */
-  private contextUsage(model: string | undefined): ContextUsage {
+  private contextUsage(provider: Provider | undefined, model: string | undefined): ContextUsage {
     const context = contextOf(this.limits, model);
-    const budget = { system: this.systemPrompt, contextSize: context.size };
+    const ratio = this.ratioOf(provider, model);
+    const budget = { system: this.systemPrompt, contextSize: context.size, ratio };
     const { messages, leftOut } = this.requestMessages(this.conversation, budget);
-    return { used: estimateTokens(messages), ...context, ...(leftOut > 0 ? { leftOut } : {}) };
+    return {
+      used: estimateTokens(messages, ratio),
+      ...context,
+      ...(leftOut > 0 ? { leftOut } : {}),
+      ...(this.reported ? { reported: this.reported } : {}),
+    };
   }
 
   private emit(): void {
-    this.state.context = this.contextUsage(this.state.model);
+    this.state.context = this.contextUsage(this.currentProvider(), this.state.model);
     this.state.undo = this.undoState();
     this.state.changedFiles = this.changedRows().map(({ realPath: _, ...row }) => row);
     this.closeGoneDiffs();
