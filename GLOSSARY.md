@@ -47,8 +47,9 @@ One body tool call inside an agent turn and the result sent back to the model; a
 the message saying what is wrong count as a step too. The chat shows each step as a compact row. When a request would
 fill the model's context, the oldest steps' results go to the model as one line saying they were left out; the chat and
 the saved conversation keep them whole. Once an agent turn has ended, the steps and replies before its last reply fold
-under one row ("3 steps, 1 failed, 1 rejected") when they hold at least two steps; the last reply, and a step after it,
-stay in view.
+under one row that says what the steps did ("Read 3 files, edited 1 file, ran 1 command") when they hold at least two
+steps; the last reply, and a step after it, stay in view. Each step there has one kind (read, listed, searched, loaded,
+edited, ran, or other); paths count once after a lexical cleanup (`a.ts` and `./a.ts` are one file). The row wraps in a narrow panel.
 _Avoid_: tool use, action, iteration
 
 **Approval**:
@@ -136,7 +137,9 @@ _Avoid_: context item, attachment, reference
 
 **Draft**:
 The text in the chat's message box, not sent yet, with the paths picked in it. "Add selection to chat" and the quick fix
-"Fix with broke-code" edit it from the editor and never send it.
+"Fix with broke-code" edit it from the editor and never send it. Quote appends the text selected in an answer to it as
+a Markdown quote. In a blank box, ArrowUp recalls the earlier messages of the conversation into it, newest first, and
+ArrowDown goes back.
 _Avoid_: prompt, input
 
 **Skill**:

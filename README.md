@@ -294,7 +294,10 @@ Each tool call shows as a compact row under the model's text. The row shows the 
 search pattern, or the whole command), and whether it worked with the size of its result, or the exit code for a
 command. Click the row to see the result the model received.
 
-Once an agent turn ends, its steps fold under one row above the final answer, such as "3 steps, 1 failed, 1 rejected".
+Once an agent turn ends, its steps fold under one row above the final answer that says what they did, such as "Read 3
+files, edited 1 file, ran 1 command, 1 failed". Files count once however the model spelled their path (`a.ts`,
+`./a.ts`), but not across letter case or an absolute against a relative path; changed files and commands are always
+named, and the rest add up as "other steps". The row wraps in a narrow panel.
 The answer then sits right under your message. Click the row to see the steps again. If you scrolled up to read, your
 message stays where it is on screen when its turn folds, unless too little is left below to scroll. A turn with a
 single step stays unfolded. The turn in progress never folds, so a running step and a change that waits for you always
@@ -371,6 +374,13 @@ as a message you type, reading its mentions and `/<skill>` now.
 - you hide the panel or reload the window, which also clears the box.
 
 The chat does not offer Edit once `/compact` has summarized the conversation after your last message.
+
+### Recall an earlier message
+
+In an empty message box, press ArrowUp to bring back your last message of the conversation, with its file and folder
+mentions. Press ArrowUp again for older messages, and ArrowDown to come back; past your last message, the box empties.
+In a message of several lines, the arrows first move the caret to the first or last line. Once you change the text,
+the arrows move the caret again. Send it as is, or edit it first: it goes as a new message.
 
 ### See what a turn changed
 
@@ -603,6 +613,14 @@ its fence is closed or the reply has ended.
   edit (a read-only file, or the diff of a change that waits for your decision), a notification says so and nothing
   changes. The focus stays in the chat.
 - An empty block's buttons are disabled.
+
+## Quoting an answer
+
+Select text in an answer, and a **Quote** button shows under it. Press it, or press Tab then Enter, to put the selected
+text in the message box as a Markdown quote (each line starts with `> `), followed by a blank line for your question.
+The text is quoted as you see it, without Markdown marks. A quote is added after what the box already holds, and
+nothing is sent until you send it. Quote shows only for an answer's text, not for your messages, tool steps, or the
+model's reasoning.
 
 ## Commit messages
 

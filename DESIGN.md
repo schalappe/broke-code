@@ -184,7 +184,8 @@ between its regions: header, notices, the conversation (or History in its place)
   one turn sit 4px apart, and so do a folded turn's row and its final reply. Opened, the fold lays its entries out in
   a column of its own with the same spacing, 4px under its row.
 - Long content never widens the panel: a path or a title on one line is cut with an ellipsis; a message, a command,
-  and a chip wrap anywhere; a code block, a step result, and a table scroll inside themselves.
+  and a chip wrap anywhere; a folded turn's row wraps between words; a code block, a step result, and a table scroll
+  inside themselves.
 - The header is a running head over one rule (`--bc-line`): the two pickers share the first line; the usage and the
   buttons drop below once the pickers would fall under 16em.
 - The conversation keeps 4px of side padding inside its scroll box, so a focus ring on a row at its edge is not
@@ -224,7 +225,11 @@ user's message). Borders and rules are 1px. No colored side stripe.
 - Link (Open provider settings, Set context size): the link color, underlined.
 - Code block action (Copy, Insert at cursor): a secondary button two pixels down (`--bc-fs-xs`), at least a row high
   (`--bc-row`). Never primary, so the decision block keeps the conversation's one primary button. Copy shows its
-  outcome, "Copied" or "Copy failed", in place of its label for about two seconds.
+  outcome, "Copied" or "Copy failed", in place of its label for about two seconds. Their header is not selectable.
+- Quote: a secondary button in a row of its own (`.quote-row`) directly under an answer's Markdown, 4px under it (2px
+  under the narration before a call), shown while text of that answer is selected. The row is not selectable. No room
+  is kept for it, a written exception to the rule that a revealed control keeps its room, which covers controls
+  revealed on hover: a row kept under every answer would cost more than the one-row move.
 - Disabled: half opacity. Header and History buttons are one size down.
 
 ### Fields
@@ -267,6 +272,8 @@ would not act. Above the rows, a notice line says "The queue is paused." when no
 - Code block of a reply: once its text is final, its frame (`.code-block`: `--bc-fill`, `--bc-edge`, radius 6px)
   holds a header (`.code-actions`) with Copy and Insert at cursor at the right, then the code, which scrolls inside
   itself under the header. A block still growing renders as a bare code block, without the header.
+- Quote under a reply: its row sits between the answer's Markdown and the reply's tool step or decision block, so the
+  tool step moves down by one row while it shows.
 - The thread: a reply that holds a tool step, and a folded turn, sit 20px in, beside one drawn 1px line
   (`--bc-line`) that runs from one to the next. Each row that opens is a node on it, a 7px ring filled with the
   panel's color: plain for a tool step, dotted for reasoning, a double ring for a folded turn, in the error color for
@@ -283,9 +290,11 @@ would not act. Above the rows, a notice line says "The queue is paused." when no
 - A call without a result has no chevron: its node is filled and breathing while it runs, hollow when it ended with
   no result.
 - Folded turn: an ended turn's steps and intermediate replies under one small dim row, a double-ring node on the
-  thread, between the user's message and the final reply: "3 steps, 1 failed, 1 rejected", the counts in words, never in color
-  alone. Closed when the turn ends; opened, the entries show exactly as they rendered before. Its rules use the child
-  combinator (`.turn-fold > summary`), so the reasoning and step rows inside keep their own chevrons.
+  thread, between the user's message and the final reply: what the steps did, "Read 3 files, edited 1 file, ran 1
+  command, 1 failed", the counts in words, never in color alone, a path counted once after a lexical cleanup (`a.ts` and
+  `./a.ts` are one file); it wraps, never cut. Closed when the turn ends; opened, the entries show exactly as they
+  rendered before. Its rules use the child combinator (`.turn-fold > summary`), so the reasoning and step rows inside
+  keep their own chevrons.
 - Summary (`/compact`): its reply sits under a separator (`.summary-separator`), small dim words between two 1px
   rules in `--bc-line` that run across the conversation: "Summarizing the conversation…" while it streams, then
   "Conversation summarized" ("Conversation summarized automatically" for one an agent turn ran itself), or
@@ -362,7 +371,7 @@ Each kind of state has one look, distinct from the others at a glance:
 | Failed step or chip | The error color on the status text; no block. |
 | Waiting for a decision | The decision block, in negative, on the thread's solid node. |
 | Turn ending (Stopped, halted) | A short rule, then small dim text. |
-| Folded turn (an ended turn of two steps or more) | One small dim row on a double-ring node, "N steps", then the failed and rejected counts in words, then the chevron. |
+| Folded turn (an ended turn of two steps or more) | One small dim row on a double-ring node: what the steps did ("Read 3 files, edited 1 file, ran 1 command"), "N steps" for a fold of other steps only, then the failed and rejected counts in words, then the chevron; it wraps, never cut. |
 | Replacing (Edit on the last message) | The last turn dimmed as a group under one line in the full foreground saying that sending replaces it, with Cancel; not dimmed in high contrast. |
 | Summarized (a summary, and the entries it replaces) | A separator of dim words between two rules above the summary; the entries before it dimmed as a group under one dim line saying they are no longer sent (not dimmed in high contrast); the turn's message an automatic summary quotes undimmed, with a dim line saying it is still sent. |
 
@@ -398,7 +407,9 @@ opacity over `--bc-fast`. Under `prefers-reduced-motion: reduce`, and when VS Co
   Edit on the last message moves the focus into the message box, where its text lands, since the user asked to edit
   there; the mention menu stays closed when the caret lands on a mention. Cancel on Retry's confirmation gives the
   focus back to Retry, since the button it was on goes; the confirmation itself renames the button the focus is on and
-  moves nothing. Last, Cancel on Edit's mark gives the focus back to Edit, for the same reason.
+  moves nothing. Last, Cancel on Edit's mark gives the focus back to Edit, for the same reason. Quote moves the focus
+  into the message box, caret at the end, since the user asked for it and the message box sends nothing on its own;
+  when the Quote button goes while it holds the focus, no focus is moved.
   Queuing a message moves no focus, and neither do the queued texts that come back to the box after New chat, an
   open, or a delete, or that the queue could not take: the request came from the panel, which already has the focus
   where the user put it, and History stays open. Such a text that arrives while the panel has no message box (no

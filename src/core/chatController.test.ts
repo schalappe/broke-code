@@ -506,6 +506,14 @@ describe("ChatController mentions", () => {
     expect(JSON.stringify(controller.snapshot)).not.toContain("export const a");
   });
 
+  test("sends a quoted answer as typed: a line starting with `> ` is ordinary text", async () => {
+    const { reader } = fakeReader();
+    const { controller } = await ready(mentionsProvider, reader);
+    await controller.send("> a\n> b\n\nwhy?");
+
+    expect(lastRequest().messages.at(-1)).toEqual({ role: "user", content: "> a\n> b\n\nwhy?" });
+  });
+
   test("keeps a @selection's path and line range in the state, which the record saves", async () => {
     const range = { path: "src/app.ts", start: 10, end: 12 };
     const reader: MentionReader = {
@@ -6235,13 +6243,15 @@ describe("ChatController undo", () => {
       const second = controller.send("second");
       await until(state, (s) => isReplying(s));
       expect(state().changedFiles).toEqual([]);
+      // [>]: Waits for the second write's step to end, not for its file on disk: the turn records the write after the
+      // file lands, and a Stop between the two would leave the first turn's rows.
       await until(
-        () => ({ ...state(), model: text("b.txt") }),
-        (s) => s.model === "b1\nb2\n",
+        state,
+        (s) => s.entries.filter((entry) => entry.role === "tool" && entry.status === "ok").length === 2,
       );
+      expect(text("b.txt")).toBe("b1\nb2\n");
       controller.stop();
       await second;
-      await until(state, (s) => s.changedFiles.length > 0);
       expect(state().changedFiles).toEqual([{ path: "b.txt", kind: "edited", added: 2, removed: 1 }]);
     });
 

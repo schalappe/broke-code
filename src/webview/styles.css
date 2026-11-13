@@ -689,7 +689,7 @@ button.history-open:hover:not(:disabled) {
   margin-bottom: 0;
 }
 
-.answer + * {
+:is(.answer, .quote-row) + * {
   margin-top: var(--bc-space-3);
 }
 
@@ -838,6 +838,8 @@ button.history-open:hover:not(:disabled) {
   padding: var(--bc-space-2) var(--bc-space-2) 0;
   opacity: 0;
   transition: opacity var(--bc-fast) var(--bc-ease);
+  /* Their labels are never part of selected text, in a quote or in a plain copy. */
+  user-select: none;
 }
 
 .code-block:hover .code-actions,
@@ -1312,8 +1314,19 @@ summary.step-row:hover,
   font-size: var(--bc-fs-sm);
 }
 
-.message.assistant:has(.step) .answer + * {
+.message.assistant:has(.step) :is(.answer, .quote-row) + * {
   margin-top: var(--bc-space-1);
+}
+
+/*
+ * Quote, in a row of its own 4px under the answer while text of it is selected; what followed the answer keeps its
+ * gap under the row. No room is kept for it: what is under the answer moves down by one row. Not selectable, so its
+ * label never joins the selected text.
+ */
+.quote-row {
+  display: flex;
+  margin-top: var(--bc-space-2);
+  user-select: none;
 }
 
 /* A folded turn's node is a double ring: several steps in one. */

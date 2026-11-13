@@ -3,19 +3,26 @@ import { type ChatEntry, type ChatState, type DraftInsert, MAX_QUERY_LENGTH } fr
 import type { SlashCommand, Suggestion } from "../core/suggestions";
 import {
   applyDraft,
+  type ComposerBox,
+  type ComposerKey,
   composerKeyAction,
   editDraft,
+  type KeyAction,
   type MenuAnswer,
   mentionPick,
   menuToken,
   menuView,
   openMenuToken,
   pickedInText,
+  quoteDraft,
+  recallHolds,
   replaceToken,
   slashMenuView,
   slashPick,
   stillReplacing,
 } from "./composer";
+
+type MentionResult = Extract<ChatEntry, { role: "user" }>["mentions"][number];
 
 const file = (path: string): Suggestion => ({ path, kind: "file" });
 
@@ -102,47 +109,231 @@ describe("mentionPick", () => {
 });
 
 describe("composerKeyAction", () => {
-  const key = (name: string, fields: { shift?: boolean; composing?: boolean } = {}) => ({
+  const key = (name: string, fields: Partial<ComposerKey> = {}): ComposerKey => ({
     key: name,
-    shift: fields.shift ?? false,
-    composing: fields.composing ?? false,
+    shift: false,
+    alt: false,
+    control: false,
+    meta: false,
+    composing: false,
+    ...fields,
   });
+  /** A box with no text and no recall, in a conversation with no user message. */
+  const idle: ComposerBox = {
+    text: "",
+    selectionStart: 0,
+    selectionEnd: 0,
+    conversationId: "c1",
+    entries: [],
+    recalled: undefined,
+  };
 
   test("Escape dismisses an open menu, rows or not, and does nothing without one", () => {
-    expect(composerKeyAction(key("Escape"), 3)).toEqual({ type: "dismiss" });
-    expect(composerKeyAction(key("Escape"), 0)).toEqual({ type: "dismiss" });
-    expect(composerKeyAction(key("Escape"), undefined)).toEqual({ type: "none" });
+    expect(composerKeyAction(key("Escape"), 3, idle)).toEqual({ type: "dismiss" });
+    expect(composerKeyAction(key("Escape"), 0, idle)).toEqual({ type: "dismiss" });
+    expect(composerKeyAction(key("Escape"), undefined, idle)).toEqual({ type: "none" });
   });
 
   test("ArrowDown and ArrowUp move the highlight in opposite directions", () => {
-    expect(composerKeyAction(key("ArrowDown"), 3)).toEqual({ type: "move", step: 1 });
-    expect(composerKeyAction(key("ArrowUp"), 3)).toEqual({ type: "move", step: -1 });
+    expect(composerKeyAction(key("ArrowDown"), 3, idle)).toEqual({ type: "move", step: 1 });
+    expect(composerKeyAction(key("ArrowUp"), 3, idle)).toEqual({ type: "move", step: -1 });
   });
 
   test("Enter and Tab pick the highlighted row when the menu has rows", () => {
-    expect(composerKeyAction(key("Enter"), 2)).toEqual({ type: "pick" });
-    expect(composerKeyAction(key("Tab"), 2)).toEqual({ type: "pick" });
+    expect(composerKeyAction(key("Enter"), 2, idle)).toEqual({ type: "pick" });
+    expect(composerKeyAction(key("Tab"), 2, idle)).toEqual({ type: "pick" });
   });
 
   test("Shift+Enter inserts a new line, with or without the menu", () => {
-    expect(composerKeyAction(key("Enter", { shift: true }), 2)).toEqual({ type: "none" });
-    expect(composerKeyAction(key("Enter", { shift: true }), undefined)).toEqual({ type: "none" });
+    expect(composerKeyAction(key("Enter", { shift: true }), 2, idle)).toEqual({ type: "none" });
+    expect(composerKeyAction(key("Enter", { shift: true }), undefined, idle)).toEqual({ type: "none" });
   });
 
   test("IME composition never triggers a menu action or a send", () => {
     for (const name of ["Escape", "ArrowDown", "ArrowUp", "Enter", "Tab"]) {
-      expect(composerKeyAction(key(name, { composing: true }), 2)).toEqual({ type: "none" });
+      expect(composerKeyAction(key(name, { composing: true }), 2, idle)).toEqual({ type: "none" });
     }
-    expect(composerKeyAction(key("Enter", { composing: true }), undefined)).toEqual({ type: "none" });
+    expect(composerKeyAction(key("Enter", { composing: true }), undefined, idle)).toEqual({ type: "none" });
   });
 
-  test("Enter sends when the menu is closed or shows no row, and Tab and arrows keep their default", () => {
-    expect(composerKeyAction(key("Enter"), undefined)).toEqual({ type: "send" });
-    expect(composerKeyAction(key("Enter"), 0)).toEqual({ type: "send" });
+  test("Enter sends when the menu is closed or shows no row, and Tab and arrows keep their default without a recall", () => {
+    expect(composerKeyAction(key("Enter"), undefined, idle)).toEqual({ type: "send" });
+    expect(composerKeyAction(key("Enter"), 0, idle)).toEqual({ type: "send" });
     for (const name of ["Tab", "ArrowDown", "ArrowUp"]) {
-      expect(composerKeyAction(key(name), 0)).toEqual({ type: "none" });
-      expect(composerKeyAction(key(name), undefined)).toEqual({ type: "none" });
+      expect(composerKeyAction(key(name), 0, idle)).toEqual({ type: "none" });
+      expect(composerKeyAction(key(name), undefined, idle)).toEqual({ type: "none" });
     }
+  });
+
+  describe("recall", () => {
+    const user = (content: string, mentions: MentionResult[] = []): ChatEntry => ({ role: "user", content, mentions });
+    const reply = (content: string): ChatEntry => ({ role: "assistant", reasoning: "", content, status: "done" });
+    /** `A`, then `b1⏎b2`, then `C`, each answered. */
+    const entries = [user("A"), reply("a"), user("b1\nb2"), reply("b"), user("C"), reply("c")];
+    const box = (fields: Partial<ComposerBox> = {}): ComposerBox => ({ ...idle, entries, ...fields });
+    /** The box once `action`, a recall, applied, the caret at the end as a recall puts it. */
+    const after = (action: KeyAction, base: ComposerBox = box()): ComposerBox => {
+      if (action.type !== "recall") throw new Error(`expected a recall, got ${action.type}`);
+      const { text, caret } = action.draft;
+      return { ...base, text, selectionStart: caret, selectionEnd: caret, recalled: action.place };
+    };
+    /** What each key in `keys` does from `start`: the box's text after a recall, else what happened. */
+    const texts = (start: ComposerBox, keys: string[]): string[] => {
+      const seen: string[] = [];
+      let current = start;
+      for (const name of keys) {
+        const action = composerKeyAction(key(name), undefined, current);
+        if (action.type === "keep") seen.push("(kept)");
+        else if (action.type === "none") {
+          // The default behavior moves the caret to the first line's start or the last line's end.
+          const caret = name === "ArrowUp" ? 0 : current.text.length;
+          current = { ...current, selectionStart: caret, selectionEnd: caret };
+          seen.push("(default)");
+        } else {
+          current = after(action, current);
+          seen.push(current.text);
+        }
+      }
+      return seen;
+    };
+
+    test("ArrowUp in a blank box recalls the newest message, the caret at its end, whitespace replaced", () => {
+      const action = composerKeyAction(
+        key("ArrowUp"),
+        undefined,
+        box({ text: "  \n ", selectionStart: 2, selectionEnd: 2 }),
+      );
+      expect(action).toEqual({
+        type: "recall",
+        draft: { text: "C", caret: 1, picked: [] },
+        place: { conversationId: "c1", index: 4, text: "C" },
+      });
+    });
+
+    test("repeated ArrowUp goes older and stops at the oldest; ArrowDown goes newer, then empties the box", () => {
+      const keys = ["ArrowUp", "ArrowUp", "ArrowUp", "ArrowUp", "ArrowUp", "ArrowDown", "ArrowDown", "ArrowDown"];
+      expect(texts(box(), keys)).toEqual(["C", "b1\nb2", "(default)", "A", "(kept)", "b1\nb2", "C", ""]);
+      const emptied = composerKeyAction(
+        key("ArrowDown"),
+        undefined,
+        after(composerKeyAction(key("ArrowUp"), undefined, box())),
+      );
+      expect(emptied).toEqual({ type: "recall", draft: { text: "", caret: 0, picked: [] }, place: undefined });
+    });
+
+    test("an empty list and ArrowDown in a blank box keep the default", () => {
+      expect(composerKeyAction(key("ArrowUp"), undefined, box({ entries: [reply("only a reply")] }))).toEqual({
+        type: "none",
+      });
+      expect(composerKeyAction(key("ArrowDown"), undefined, box())).toEqual({ type: "none" });
+    });
+
+    test("consecutive identical messages count once, the newest giving the mentions", () => {
+      const mention: MentionResult = { path: "a.ts", kind: "file", status: "attached", lines: 1 };
+      const repeated = [user("X"), user("Go on"), reply("1"), user("Go on", [mention]), reply("2")];
+      expect(texts(box({ entries: repeated }), ["ArrowUp", "ArrowUp", "ArrowUp"])).toEqual(["Go on", "X", "(kept)"]);
+      const newest = composerKeyAction(key("ArrowUp"), undefined, box({ entries: repeated }));
+      expect(newest).toMatchObject({ draft: { picked: ["a.ts"] }, place: { index: 3 } });
+    });
+
+    test("with messages A, B, A, three ArrowUp give A, B, A and a fourth changes nothing", () => {
+      const aba = [user("A"), reply("1"), user("B"), reply("2"), user("A"), reply("3")];
+      expect(texts(box({ entries: aba }), ["ArrowUp", "ArrowUp", "ArrowUp", "ArrowUp"])).toEqual([
+        "A",
+        "B",
+        "A",
+        "(kept)",
+      ]);
+    });
+
+    test("an open menu with rows and a composition take precedence", () => {
+      expect(composerKeyAction(key("ArrowUp"), 2, box())).toEqual({ type: "move", step: -1 });
+      expect(composerKeyAction(key("ArrowUp", { composing: true }), undefined, box())).toEqual({ type: "none" });
+      const recalled = after(composerKeyAction(key("ArrowUp"), undefined, box()));
+      expect(composerKeyAction(key("ArrowUp"), 2, recalled)).toEqual({ type: "move", step: -1 });
+      expect(composerKeyAction(key("ArrowDown", { composing: true }), undefined, recalled)).toEqual({ type: "none" });
+    });
+
+    test("Shift, Alt, Control, or Meta held keeps the default", () => {
+      const recalled = after(composerKeyAction(key("ArrowUp"), undefined, box()));
+      for (const modifier of ["shift", "alt", "control", "meta"] as const) {
+        expect(composerKeyAction(key("ArrowUp", { [modifier]: true }), undefined, box())).toEqual({ type: "none" });
+        expect(composerKeyAction(key("ArrowUp", { [modifier]: true }), undefined, recalled)).toEqual({ type: "none" });
+        expect(composerKeyAction(key("ArrowDown", { [modifier]: true }), undefined, recalled)).toEqual({
+          type: "none",
+        });
+      }
+    });
+
+    test("a range selection keeps the default", () => {
+      const recalled = after(composerKeyAction(key("ArrowUp"), undefined, box()));
+      expect(composerKeyAction(key("ArrowUp"), undefined, { ...recalled, selectionStart: 0 })).toEqual({
+        type: "none",
+      });
+      expect(composerKeyAction(key("ArrowDown"), undefined, { ...recalled, selectionStart: 0 })).toEqual({
+        type: "none",
+      });
+    });
+
+    test("a multi-line text needs the caret on its first line for ArrowUp and on its last line for ArrowDown", () => {
+      const twoLines = after(
+        composerKeyAction(key("ArrowUp"), undefined, after(composerKeyAction(key("ArrowUp"), undefined, box()))),
+      );
+      expect(twoLines.text).toBe("b1\nb2");
+      const at = (caret: number) => ({ ...twoLines, selectionStart: caret, selectionEnd: caret });
+      expect(composerKeyAction(key("ArrowUp"), undefined, at(5))).toEqual({ type: "none" });
+      expect(composerKeyAction(key("ArrowUp"), undefined, at(2))).toMatchObject({ draft: { text: "A" } });
+      expect(composerKeyAction(key("ArrowDown"), undefined, at(2))).toEqual({ type: "none" });
+      expect(composerKeyAction(key("ArrowDown"), undefined, at(3))).toMatchObject({ draft: { text: "C" } });
+    });
+
+    test("a box whose text differs from the recalled message keeps the default, and an equal text resumes", () => {
+      const recalled = after(composerKeyAction(key("ArrowUp"), undefined, box()));
+      const edited = { ...recalled, text: "Cx", selectionStart: 2, selectionEnd: 2 };
+      expect(composerKeyAction(key("ArrowUp"), undefined, edited)).toEqual({ type: "none" });
+      expect(composerKeyAction(key("ArrowDown"), undefined, edited)).toEqual({ type: "none" });
+      expect(composerKeyAction(key("ArrowUp"), undefined, recalled)).toMatchObject({ draft: { text: "b1\nb2" } });
+    });
+
+    test("a box erased by hand during a recall starts again from the newest message", () => {
+      const older = after(
+        composerKeyAction(key("ArrowUp"), undefined, after(composerKeyAction(key("ArrowUp"), undefined, box()))),
+      );
+      const erased = { ...older, text: "", selectionStart: 0, selectionEnd: 0 };
+      expect(composerKeyAction(key("ArrowUp"), undefined, erased)).toMatchObject({ draft: { text: "C" } });
+    });
+
+    test("a recalled message removed from the entries, or another conversation shown, ends the recall", () => {
+      const recalled = after(composerKeyAction(key("ArrowUp"), undefined, box()));
+      const place = recalled.recalled;
+      if (!place) throw new Error("expected a place");
+      const state = { conversationId: "c1", entries };
+      expect(recallHolds(place, state)).toBe(true);
+      expect(recallHolds(place, { ...state, entries: entries.slice(0, 4) })).toBe(false);
+      expect(recallHolds(place, { ...state, entries: [...entries.slice(0, 4), user("D")] })).toBe(false);
+      expect(recallHolds(place, { ...state, conversationId: "c2" })).toBe(false);
+      expect(composerKeyAction(key("ArrowUp"), undefined, { ...recalled, entries: entries.slice(0, 4) })).toEqual({
+        type: "none",
+      });
+    });
+
+    test("the picked paths are those Edit computes for the message, replace the box's, and clear when emptied", () => {
+      const mentions: MentionResult[] = [
+        { path: "my app.ts", kind: "file", status: "attached", lines: 3 },
+        { path: "problems", kind: "problems", status: "noProblems" },
+      ];
+      const message = user("Fix this problem in @my app.ts, at line 12", mentions);
+      const withMention = [message, reply("done"), user("plain"), reply("ok")];
+      const start = box({ entries: withMention });
+      const plain = after(composerKeyAction(key("ArrowUp"), undefined, start), start);
+      expect(plain.text).toBe("plain");
+      const action = composerKeyAction(key("ArrowUp"), undefined, plain);
+      if (action.type !== "recall" || message.role !== "user") throw new Error("expected a recall");
+      expect(action.draft).toEqual(applyDraft({ text: "", caret: 0, picked: [] }, editDraft(message)));
+      expect(action.draft.picked).toEqual(["my app.ts"]);
+      const back = after(composerKeyAction(key("ArrowDown"), undefined, after(action, plain)), plain);
+      expect(composerKeyAction(key("ArrowDown"), undefined, back)).toMatchObject({ draft: { picked: [] } });
+    });
   });
 });
 
@@ -375,5 +566,29 @@ describe("stillReplacing", () => {
     expect(stillReplacing(replacing, state([question, reply("waiting")]))).toBe(false);
     const summary: ChatEntry = { role: "assistant", reasoning: "", content: "S.", status: "done", summary: true };
     expect(stillReplacing({ ...replacing, entries: 3 }, state([question, reply("done"), summary]))).toBe(false);
+  });
+});
+
+describe("quoteDraft", () => {
+  const quoted = (box: string, selected: string) => quoteDraft({ text: box, caret: 0, picked: [] }, selected);
+
+  test.each([
+    ["an empty box", "", "a\nb", "> a\n> b\n\n"],
+    ["a box holding text", "hello", "a", "hello\n\n> a\n\n"],
+    ["a box ending with a line break", "hello\n", "a", "hello\n\n> a\n\n"],
+    ["a box holding only whitespace", " \n\t", "a", "> a\n\n"],
+    ["a box holding a first quote", "> a\n\n", "b", "> a\n\n> b\n\n"],
+    ["an empty box, a blank line inside the selection", "", "a\n\nb", "> a\n>\n> b\n\n"],
+    ["an empty box, a triple click's trailing blank lines", "", "a\n\n", "> a\n\n"],
+  ])("%s", (_case, box, selected, expected) => {
+    expect(quoted(box, selected)).toEqual({ text: expected, caret: expected.length, picked: [] });
+  });
+
+  test("a whitespace-only inner line becomes `>` alone", () => {
+    expect(quoted("", "a\n  \nb").text).toBe("> a\n>\n> b\n\n");
+  });
+
+  test("keeps the picked paths", () => {
+    expect(quoteDraft({ text: "see @a b.ts", caret: 3, picked: ["a b.ts"] }, "x").picked).toEqual(["a b.ts"]);
   });
 });
