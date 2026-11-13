@@ -190,7 +190,9 @@ class EditDiffs implements vscode.TextDocumentContentProvider, vscode.Disposable
     const tabs = editTabs().filter((tab) => id === undefined || diffIdOf(diffSide(tab)) === id);
     if (id === undefined) this.texts.clear();
     else this.release(id);
-    if (tabs.length > 0) await vscode.window.tabGroups.close(tabs);
+    if (tabs.length === 0) return;
+    const closed = await vscode.window.tabGroups.close(tabs);
+    if (!closed) throw new Error("VS Code did not close every edit diff tab.");
   }
 
   release(id: string): void {
