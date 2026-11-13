@@ -358,9 +358,28 @@ describe("folded turn", () => {
     return html.slice(start, html.indexOf("</section>", start) + "</section>".length);
   }
 
-  test("the row says the steps, the failed ones, and the rejected ones", () => {
+  test("the row says what the steps did, the failed ones, and the rejected ones", () => {
     const html = conversationOf([user, call, ok, call, failed, call, rejected, final]);
-    expect(html).toContain('<summary class="turn-fold-row">3 steps, 1 failed, 1 rejected</summary>');
+    expect(html).toContain('<summary class="turn-fold-row">Read 1 file, 1 failed, 1 rejected</summary>');
+  });
+
+  test("the row names the files read, the files edited, and the commands run", () => {
+    const step = (name: string, args: Record<string, string>): ChatEntry => ({ ...ok, name, args });
+    const entries = [
+      user,
+      call,
+      step("read_file", { path: "a.ts" }),
+      call,
+      step("read_file", { path: "b.ts" }),
+      step("read_file", { path: "c.ts" }),
+      step("edit_file", { path: "x.ts" }),
+      step("edit_file", { path: "./x.ts" }),
+      step("run_command", { command: "ls" }),
+      final,
+    ];
+    expect(conversationOf(entries)).toContain(
+      '<summary class="turn-fold-row">Read 3 files, edited 1 file, ran 1 command</summary>',
+    );
   });
 
   test("the fold is a closed details and the final answer sits outside it, right after", () => {
@@ -2889,7 +2908,7 @@ describe("undo changes", () => {
     await withPanel(stateWith(true, { entries: folded }), async ({ host }) => {
       const fold = host.querySelector<HTMLDetailsElement>("details.turn-fold");
       if (!fold) throw new Error("no fold");
-      expect(fold.querySelector(":scope > summary")?.textContent).toBe("2 steps");
+      expect(fold.querySelector(":scope > summary")?.textContent).toBe("Edited 1 file");
       await act(async () => fold.querySelector<HTMLElement>(":scope > summary")?.click());
       expect(fold.open).toBe(true);
       const rows = [...fold.querySelectorAll(".step-status")].map((row) => row.textContent);
