@@ -291,9 +291,10 @@ would not act. Above the rows, a notice line says "The queue is paused." when no
   no result.
 - Folded turn: an ended turn's steps and intermediate replies under one small dim row, a double-ring node on the
   thread, between the user's message and the final reply: what the steps did, "Read 3 files, edited 1 file, ran 1
-  command, 1 failed", the counts in words, never in color alone; it wraps, never cut. Closed when the turn ends;
-  opened, the entries show exactly as they rendered before. Its rules use the child combinator
-  (`.turn-fold > summary`), so the reasoning and step rows inside keep their own chevrons.
+  command, 1 failed", the counts in words, never in color alone, a path counted once after a lexical cleanup (`a.ts` and
+  `./a.ts` are one file); it wraps, never cut. Closed when the turn ends; opened, the entries show exactly as they
+  rendered before. Its rules use the child combinator (`.turn-fold > summary`), so the reasoning and step rows inside
+  keep their own chevrons.
 - Summary (`/compact`): its reply sits under a separator (`.summary-separator`), small dim words between two 1px
   rules in `--bc-line` that run across the conversation: "Summarizing the conversation…" while it streams, then
   "Conversation summarized" ("Conversation summarized automatically" for one an agent turn ran itself), or
@@ -370,7 +371,7 @@ Each kind of state has one look, distinct from the others at a glance:
 | Failed step or chip | The error color on the status text; no block. |
 | Waiting for a decision | The decision block, in negative, on the thread's solid node. |
 | Turn ending (Stopped, halted) | A short rule, then small dim text. |
-| Folded turn (an ended turn of two steps or more) | One small dim row on a double-ring node, "N steps", then the failed and rejected counts in words, then the chevron. |
+| Folded turn (an ended turn of two steps or more) | One small dim row on a double-ring node: what the steps did ("Read 3 files, edited 1 file, ran 1 command"), "N steps" for a fold of other steps only, then the failed and rejected counts in words, then the chevron; it wraps, never cut. |
 | Replacing (Edit on the last message) | The last turn dimmed as a group under one line in the full foreground saying that sending replaces it, with Cancel; not dimmed in high contrast. |
 | Summarized (a summary, and the entries it replaces) | A separator of dim words between two rules above the summary; the entries before it dimmed as a group under one dim line saying they are no longer sent (not dimmed in high contrast); the turn's message an automatic summary quotes undimmed, with a dim line saying it is still sent. |
 
