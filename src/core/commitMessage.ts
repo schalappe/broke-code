@@ -6,14 +6,16 @@
  */
 import {
   type ChatMessage,
+  type ChatModel,
   type ChatOutcome,
+  collectReply,
   lateReasoning,
   type ProviderAccess,
   type StreamChatOptions,
 } from "./client";
 import { largestFittingCharacters } from "./limits";
 import type { Translator } from "./modelList";
-import { describeProviderError, type ErrorText } from "./providerError";
+import type { ErrorText } from "./providerError";
 import type { ProviderSupport } from "./providerSupport";
 
 export const COMMIT_MESSAGE_PROMPT = [
@@ -142,9 +144,6 @@ export type RepositoryLookup =
   | { kind: "noRepository" }
   | { kind: "dismissed" };
 
-/** The provider and model selected in the chat, and that model's context size in tokens. */
-export type CommitSelection = { access: ProviderAccess; model: string; contextSize: number };
-
 /**
  * What the command needs from the host. `selection`: the chat's provider and model, `undefined` when either is not
  * chosen. `stream`: `streamChat`. `providerSupport`: the memory the chat's requests share, passed to every request; the
@@ -154,7 +153,7 @@ export type CommitSelection = { access: ProviderAccess; model: string; contextSi
  * `showError` and `showWarning`: native notifications.
  */
 export type CommitMessagePorts = {
-  selection(): Promise<CommitSelection | undefined>;
+  selection(): Promise<ChatModel | undefined>;
   stream(access: ProviderAccess, options: StreamChatOptions): Promise<ChatOutcome>;
   providerSupport: ProviderSupport;
   confirmReplace(repository: CommitRepository): Promise<boolean>;
@@ -272,7 +271,7 @@ export class CommitMessageGenerator {
    */
   private async request(
     repository: CommitRepository,
-    selection: CommitSelection,
+    selection: ChatModel,
     agreed: string,
     signal: AbortSignal,
   ): Promise<RequestResult> {
@@ -305,21 +304,14 @@ export class CommitMessageGenerator {
         },
       };
     }
-    let reply = "";
-    const outcome = await this.ports.stream(selection.access, {
-      model: selection.model,
-      messages: request.messages,
-      signal,
-      support: this.ports.providerSupport,
-      onContent: (text) => {
-        reply += text;
-      },
-      // [>]: Reasoning never reaches the message.
-      onReasoning: () => {},
-    });
-    if (signal.aborted || outcome.status === "stopped") return { kind: "stopped" };
-    if (outcome.status === "failed") return { kind: "error", text: describeProviderError(outcome.error, l10n) };
-    const message = cleanCommitMessage(reply);
+    const reply = await collectReply(
+      this.ports.stream,
+      selection.access,
+      { model: selection.model, messages: request.messages, signal, support: this.ports.providerSupport },
+      l10n,
+    );
+    if (reply.kind !== "reply") return reply;
+    const message = cleanCommitMessage(reply.text);
     if (message === undefined) {
       return { kind: "error", text: { message: l10n.t("The model's reply held no commit message.") } };
     }

@@ -15,9 +15,11 @@ This file says which file holds which responsibility. Update it when a module ga
   (`addProvider.ts`: the Ollama preset, the input boxes' validation, the key then the setting, over ports the host
   fills), the API key shape check, the provider
   HTTP client (`client.ts`: the request body with the usage field, its one resend without it after a 400 or 422, and
-  the reply's reported usage in its outcome), the provider support memory (`providerSupport.ts`: `ProviderSupport`,
+  the reply's reported usage in its outcome; `collectReply`, one reply read whole for the commit message and "Edit
+  selection"), the provider support memory (`providerSupport.ts`: `ProviderSupport`,
   per provider name, base URL, and model, whether the usage field is taken and the characters per token the replies'
-  reported usage taught; one instance, made by the host, shared by the chat controller and the commit message), the CA trust and certificate error classification (`tls.ts`), the SSE reader, the typed provider
+  reported usage taught; one instance, made by the host, shared by the chat controller, the commit message, and
+  "Edit selection"), the CA trust and certificate error classification (`tls.ts`), the SSE reader, the typed provider
   errors and their wording (`providerError.ts`: `describeProviderError` with a translator, for the panel and the
   host's notifications), the sentences of a halted turn and of an empty summary (`turnEndText.ts`: `describeHalt` and
   `describeEmptySummary` with a translator, for the panel and the host's notifications), the turn notifications
@@ -26,7 +28,17 @@ This file says which file holds which responsibility. Update it when a module ga
   value of `brokeCode.notifications`, its severity and text, a command cut to its first line, and "Show chat" over the
   host's ports), the generated commit message (`commitMessage.ts`: the request's system prompt, the diff cut to
   the context threshold, the reply's cleaning, and `CommitMessageGenerator`, the command over its git, provider
-  request, and user interface ports), the chat controller (conversation state, the agent turn loop with its tool runner, instruction reader, and
+  request, and user interface ports), "Edit selection" (`editSelection.ts`: `composeEditRequest`, the request's
+  system prompt and the lines around the selection cut to the context threshold, half and half then pooled;
+  `cleanEditReply`, the reply's reasoning, one wrapping fence, the re-based indentation, and line breaks;
+  `requestPath`, the document's name in the request; `isWritableDocument`, the writable check of the active editor's
+  document; `EDIT_SCHEME`, the scheme of its diff's sides; `EDIT_PRESETS`
+  and `editInstruction`, the three presets' fixed instructions by command and each command's instruction; and
+  `SelectionEditor`, the command and its presets over its provider request, document, diff, and user interface ports: the checks in
+  order, the caller's instruction, the change watch of the document from the read to the run's end, the document read
+  again before the request, one run per document, Accept's check of the watch and of the text through the range's end
+  and one edit, Reject, a closed tab,
+  and dispose), the chat controller (conversation state, the agent turn loop with its tool runner, instruction reader, and
   skill reader ports, its limits source and step limits, the context budget check, the usage display with the last reported usage (`ContextUsage.reported`), streaming, Stop, saving, reopen, delete,
   the queue of messages sent while a reply is in flight, with `mayStartTurn`, the one check a send, `/compact`, the
   queue, Retry, Continue, and "Implement in ... mode" share, Retry and Continue (`retry`, `continueTurn`, over `startTurn` and `removeFrom`), leaving Plan from a plan's final answer (`implementPlan`, over `startTurn`), a
@@ -151,7 +163,11 @@ This file says which file holds which responsibility. Update it when a module ga
   `DraftQueue` to the view's focus command and `postMessage` (`insertDraft`); `extension.ts` registers `broke-code.addSelectionToChat`,
   `broke-code.fixDiagnostic`, and the code action provider of the quick fix; `commitMessage.ts` registers `broke-code.generateCommitMessage`, its git port over the
   built-in Git extension's API, the repository Quick Pick, the replace question, the progress notification, and the
-  notifications).
+  notifications; `progress.ts` holds the cancellable progress notification both run their request under; `editSelection.ts` registers `broke-code.editSelection`, its presets `broke-code.refactorSelection`,
+  `broke-code.documentSelection`, and `broke-code.typeSelection`, and the diff's `broke-code.acceptEdit` and
+  `broke-code.rejectEdit`: the active editor read with the writable check, the instruction's input box, the progress
+  notification, the diff's content provider of `EDIT_SCHEME`, the closing of its tabs and the watch of
+  `tabGroups.onDidChangeTabs` for a tab the user closed, the change watch over `workspace.onDidChangeTextDocument`, and the edit as one `WorkspaceEdit` on the document's URI).
 - `src/webview/`: the React chat panel and its CSS (`styles.css`: a token layer, then rules that consume it, every color
   from a `--vscode-*` variable; see `DESIGN.md`), the thread that carries a turn's tool steps as nodes, the latest
   user message in the theme's button colors and the earlier ones outlined (`Entry`'s `earlier`), tool step rows, the approval controls, the mode selector after the message box (`ModeSelect`), the turn's actions row (`TurnActions`: Retry, its
@@ -176,7 +192,9 @@ This file says which file holds which responsibility. Update it when a module ga
   `describeUndoFailure`), and the header's usage line and its tooltip with the reported usage (`describeContextUsage`,
   `describeContextTitle`).
 - `src/l10n.test.ts`: checks that every `l10n.t` message has a French translation and that the
-  `package.nls*.json` files match.
+  `package.nls*.json` files match. `src/manifest.test.ts`: checks the manifest's editor menus: the `broke-code`
+  submenu and the order of its five entries, the presets in the Command Palette, and Accept and Reject on the edit
+  diff's title bar only.
 - `l10n/bundle.l10n.fr.json`, `package.nls.json`, `package.nls.fr.json`: French strings for the host and
   webview, and the English and French manifest strings. English messages are the keys of `l10n.t`.
 - `scripts/build.ts`: `bun run build` writes the host bundle (`dist/extension.js`, CommonJS) and the webview

@@ -34,6 +34,7 @@ Most changes touch `src/core/chatController.ts`, `src/core/protocol.ts`, `src/we
 | Saved conversations, navigation, History | `docs/spec/conversations.md` |
 | Skill discovery, `load_skill`, `/<name>` | `docs/spec/skills.md` |
 | "Generate commit message" | `docs/spec/commit-message.md` |
+| "Edit selection", its diff, Accept and Reject | `docs/spec/edit-selection.md` |
 
 ## Commands
 

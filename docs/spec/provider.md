@@ -8,7 +8,7 @@ This file specifies how broke-code talks to a provider: the HTTP contract, the s
 - Every chat completion request (a turn's requests, the summary requests of `/compact` and of automatic compaction,
   the commit message request, and so the eval bench's) has the body `model`, `messages`, `stream: true`, and
   `stream_options: { include_usage: true }`, the one optional field, which asks the provider to report the reply's
-  token counts (ADR 0001, addendum of 2026-11-13). `ProviderSupport`, one object for the chat and the commit message,
+  token counts (ADR 0001, addendum of 2026-11-13). `ProviderSupport`, one object for the chat, the commit message, and "Edit selection",
   remembers per model of a provider (the provider's name and base URL and the model's name together) whether the
   field is taken, in memory for the life of the extension host: unknown at the start, then accepts or refuses. A
   request to a model that refuses is built without the field; any other carries it. The same record keeps the

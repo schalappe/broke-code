@@ -6,16 +6,16 @@
  */
 import { basename } from "node:path";
 import * as vscode from "vscode";
-import { streamChat } from "../core/client";
+import { type ChatModel, streamChat } from "../core/client";
 import {
   CommitMessageGenerator,
   type CommitMessagePorts,
   type CommitRepository,
-  type CommitSelection,
   type RepositoryLookup,
 } from "../core/commitMessage";
 import type { ProviderSupport } from "../core/providerSupport";
 import { type GitRepository, lookUpGit } from "./git";
+import { withCancellableProgress } from "./progress";
 
 export const GENERATE_COMMIT_MESSAGE_COMMAND = "broke-code.generateCommitMessage";
 
@@ -24,7 +24,7 @@ export const GENERATE_COMMIT_MESSAGE_COMMAND = "broke-code.generateCommitMessage
  * each model. The disposable aborts every run, so deactivation writes nothing.
  */
 export function registerCommitMessageCommand(
-  selection: () => Promise<CommitSelection | undefined>,
+  selection: () => Promise<ChatModel | undefined>,
   providerSupport: ProviderSupport,
 ): vscode.Disposable {
   const ports: CommitMessagePorts = {
@@ -40,19 +40,7 @@ export function registerCommitMessageCommand(
       );
       return choice === replace;
     },
-    withProgress: async (task) =>
-      await vscode.window.withProgress(
-        {
-          location: vscode.ProgressLocation.Notification,
-          title: vscode.l10n.t("Generating the commit message…"),
-          cancellable: true,
-        },
-        (_progress, token) => {
-          const cancel = new AbortController();
-          token.onCancellationRequested(() => cancel.abort());
-          return task(cancel.signal);
-        },
-      ),
+    withProgress: (task) => withCancellableProgress(vscode.l10n.t("Generating the commit message…"), task),
     showError: ({ message, detail }) => void vscode.window.showErrorMessage(detail ? `${message} ${detail}` : message),
     showWarning: (message) => void vscode.window.showWarningMessage(message),
   };

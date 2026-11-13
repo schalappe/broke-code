@@ -1,9 +1,9 @@
 /**
  * @module providerSupport
  * What the extension has learned about each model of each provider, in memory for the life of the extension host.
- * One instance is shared by the chat and the commit message, so a request of either teaches the other. A model is
- * keyed by the provider's name and base URL and the model's name together: an edited base URL under the same name is
- * another provider, and behind a proxy two models of one provider may reach servers that differ.
+ * One instance is shared by the chat, the commit message, and "Edit selection", so a request of any teaches the
+ * others. A model is keyed by the provider's name and base URL and the model's name together: an edited base URL under
+ * the same name is another provider, and behind a proxy two models of one provider may reach servers that differ.
  */
 import { DEFAULT_RATIO, MIN_RATIO } from "./limits";
 import type { Provider } from "./providers";
