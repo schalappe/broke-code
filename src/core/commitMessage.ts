@@ -307,7 +307,13 @@ export class CommitMessageGenerator {
     const reply = await collectReply(
       this.ports.stream,
       selection.access,
-      { model: selection.model, messages: request.messages, signal, support: this.ports.providerSupport },
+      {
+        model: selection.model,
+        messages: request.messages,
+        reasoningEffort: selection.reasoningEffort,
+        signal,
+        support: this.ports.providerSupport,
+      },
       l10n,
     );
     if (reply.kind !== "reply") return reply;

@@ -56,6 +56,7 @@ function render(reply: Omit<Reply, "role">): string {
     provider: "P",
     models: { status: "loaded", models: ["m"] },
     model: "m",
+    reasoningEffort: undefined,
     entries: [
       { role: "user", content: "Hi", mentions: [] },
       { role: "assistant", ...reply },
@@ -121,6 +122,7 @@ describe("agent turn", () => {
       provider: "P",
       models: { status: "loaded", models: ["m"] },
       model: "m",
+      reasoningEffort: undefined,
       entries: [{ role: "user", content: "Hi", mentions: [] }, ...entries],
     };
     return renderToStaticMarkup(<App state={state} language="en" />);
@@ -988,6 +990,7 @@ describe("error actions", () => {
       provider: "P",
       models: { status: "failed", error },
       model: undefined,
+      reasoningEffort: undefined,
       entries: [],
     };
     return renderToStaticMarkup(<App state={state} language="en" />);
@@ -1022,6 +1025,7 @@ describe("mentions", () => {
       provider: "P",
       models: { status: "loaded", models: ["m"] },
       model: "m",
+      reasoningEffort: undefined,
       entries: [{ role: "user", content: "look", mentions, ...(skill ? { skill } : {}) }],
     };
     return renderToStaticMarkup(<App state={state} language="en" />);
@@ -1315,6 +1319,7 @@ function stateWith(configured: boolean, overrides: Partial<ChatState> = {}): Cha
     provider: configured ? "P" : undefined,
     models: configured ? { status: "loaded", models: ["m"] } : { status: "noProvider" },
     model: configured ? "m" : undefined,
+    reasoningEffort: undefined,
     entries: [],
     ...overrides,
   };
@@ -1477,6 +1482,7 @@ describe("conversation history", () => {
       provider: "P",
       models: { status: "loaded", models: ["m"] },
       model: "m",
+      reasoningEffort: undefined,
       entries: [],
     };
     const html = renderToStaticMarkup(<App state={state} language="en" />);
@@ -2653,6 +2659,20 @@ describe("drafts from the editor", () => {
   });
 });
 
+describe("reasoning effort picker", () => {
+  test("offers Default and the three efforts once a model is selected, showing the pick", () => {
+    const html = renderToStaticMarkup(<App state={stateWith(true, { reasoningEffort: "high" })} language="en" />);
+    expect(html).toContain('aria-label="Reasoning effort"');
+    for (const label of ["Default effort", "Low effort", "Medium effort", "High effort"]) expect(html).toContain(label);
+    expect(html).toContain('<option value="high" selected="">High effort</option>');
+  });
+
+  test("is absent without a model", () => {
+    const html = renderToStaticMarkup(<App state={stateWith(true, { model: undefined })} language="en" />);
+    expect(html).not.toContain('aria-label="Reasoning effort"');
+  });
+});
+
 describe("context usage", () => {
   const usage = { used: 12345, size: 32768 };
 
@@ -2694,6 +2714,7 @@ describe("context usage", () => {
     const state = stateWith(true, {
       models: { status: "loading" },
       model: undefined,
+      reasoningEffort: undefined,
       context: { ...usage, known: false },
     });
     const html = renderToStaticMarkup(<App state={state} language="en" />);

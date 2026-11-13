@@ -277,3 +277,13 @@ internal service's own answer to it is unknown.
 
 **Cost, accepted.** A provider that answers 400 for another reason (a request over its context) gets the request twice
 until one of its streams has started with the field; the second answer is the one shown.
+
+## Addendum (2026-11-13): the request may carry a reasoning effort
+
+Decided by the maintainer (schalappe) on 2026-11-13. The body may carry a second optional field, `reasoning_effort`
+(`low`, `medium`, or `high`), when the user picks one in the panel header for the selected model; Default, the
+initial choice, sends nothing, so a provider that would reject the field sees the same requests as before. The body
+still never carries `tools`, and the call format is unchanged. Unlike the usage field, a refusal is not resent
+without the field: the user asked for it, and a silent drop would hide that it does nothing there. The internal
+service's answer to the field is unknown, and so is the effect of an effort on the measured models; nothing in the
+eval measures it.

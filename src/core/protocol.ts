@@ -222,6 +222,17 @@ export type UndoState = {
  */
 export type ChangedFile = { path: string; kind: "created" | "edited"; added: number; removed: number };
 
+/**
+ * Reasoning effort the user picked for a model, sent as the request's `reasoning_effort`. No pick ("Default") sends no
+ * field, so a provider that rejects it is unaffected until the user picks one.
+ */
+export const REASONING_EFFORTS = ["low", "medium", "high"] as const;
+export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
+
+export function isReasoningEffort(value: unknown): value is ReasoningEffort {
+  return REASONING_EFFORTS.some((effort) => effort === value);
+}
+
 export type ChatState = {
   providers: string[];
   skipped: SkippedProvider[];
@@ -230,6 +241,8 @@ export type ChatState = {
   provider: string | undefined;
   models: ModelsState;
   model: string | undefined;
+  /** Picked for the selected provider and model, remembered per pair in the workspace; `undefined`: Default. */
+  reasoningEffort: ReasoningEffort | undefined;
   /** Id of the conversation shown; `entries` are its entries. */
   conversationId: string;
   entries: ChatEntry[];
@@ -325,6 +338,8 @@ export type WebviewMessage =
   | { type: "ready" }
   | { type: "selectProvider"; provider: string }
   | { type: "selectModel"; model: string }
+  /** `undefined`: Default, which sends no `reasoning_effort`. */
+  | { type: "selectReasoningEffort"; effort: ReasoningEffort | undefined }
   | { type: "retryModels" }
   /**
    * `mentions`: paths picked in the menu; see `ChatController.send`. `replaces`: sent while the panel was replacing the
@@ -467,6 +482,12 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | undefined {
     case "selectModel": {
       const model = text("model");
       return model === undefined ? undefined : { type: "selectModel", model };
+    }
+    case "selectReasoningEffort": {
+      // [>]: Default goes as a missing field: `undefined` does not survive the webview's JSON.
+      const { effort } = message;
+      if (effort === undefined) return { type: "selectReasoningEffort", effort: undefined };
+      return isReasoningEffort(effort) ? { type: "selectReasoningEffort", effort } : undefined;
     }
     case "setContextSize": {
       // [!]: The name becomes a key of a user setting: an empty one is refused.

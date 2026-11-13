@@ -1946,6 +1946,18 @@ describe("ChatController agent turn", () => {
   }
   const isInFlight = (status: string) => status === "waiting" || status === "streaming";
 
+  test("sends the reasoning effort picked for the model, and no field on Default", async () => {
+    const { controller, state, sent } = await scripted([{ content: "a" }, { content: "b" }]);
+    controller.selectReasoningEffort("high");
+    expect(state().reasoningEffort).toBe("high");
+    await controller.send("one");
+    controller.selectReasoningEffort(undefined);
+    await controller.send("two");
+    const bodies = sent() as Record<string, unknown>[];
+    expect(bodies[0]?.reasoning_effort).toBe("high");
+    expect(bodies[1]).not.toHaveProperty("reasoning_effort");
+  });
+
   test("runs the call and sends the reply verbatim and its result back, without the reasoning", async () => {
     const answer = `I will read it.\n${readCall("README.md")}`;
     const { runner, calls } = okRunner();
@@ -4811,6 +4823,36 @@ describe("ChatController context usage", () => {
     await controller.newChat();
     expect(state().entries).toEqual([]);
     expect(state().context.used - before).toBeGreaterThanOrEqual(1000);
+  });
+
+  test("remembers the reasoning effort per model in the workspace", async () => {
+    const workspaceState = memoryStore();
+    const open = async () => {
+      const controller = new ChatController({
+        apiKeys: { get: async () => undefined },
+        workspaceState,
+        publish: () => {},
+        mentions: noMentions,
+        store: new ConversationStore(undefined),
+        providerSupport: new ProviderSupport(),
+        ...noTools,
+      });
+      controller.setProviders({ providers: [twoModels], skipped: [] });
+      await until(
+        () => controller.snapshot,
+        (s) => s.model === "m",
+      );
+      return controller;
+    };
+    const first = await open();
+    first.selectReasoningEffort("low");
+    first.selectModel("n");
+    expect(first.snapshot.reasoningEffort).toBeUndefined();
+    first.selectModel("m");
+    expect(first.snapshot.reasoningEffort).toBe("low");
+
+    const reloaded = await open();
+    expect(reloaded.snapshot.reasoningEffort).toBe("low");
   });
 
   test("changes after the model changes", async () => {

@@ -14,7 +14,7 @@ This file says which file holds which responsibility. Update it when a module ga
   parser reads a new entry appended to the setting, the one rule of what may be added), the "Add provider" flow
   (`addProvider.ts`: the Ollama preset, the input boxes' validation, the key then the setting, over ports the host
   fills), the API key shape check, the provider
-  HTTP client (`client.ts`: the request body with the usage field, its one resend without it after a 400 or 422, and
+  HTTP client (`client.ts`: the request body with the reasoning effort and the usage field, its one resend without it after a 400 or 422, and
   the reply's reported usage in its outcome; `collectReply`, one reply read whole for the commit message and "Edit
   selection"), the provider support memory (`providerSupport.ts`: `ProviderSupport`,
   per provider name, base URL, and model, whether the usage field is taken and the characters per token the replies'

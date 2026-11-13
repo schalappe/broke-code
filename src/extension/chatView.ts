@@ -160,6 +160,9 @@ export class ChatView implements vscode.WebviewViewProvider {
       case "selectModel":
         controller.selectModel(message.model);
         return;
+      case "selectReasoningEffort":
+        controller.selectReasoningEffort(message.effort);
+        return;
       case "retryModels":
         return void controller.loadModels();
       case "send":

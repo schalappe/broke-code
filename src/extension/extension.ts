@@ -122,13 +122,14 @@ export function activate(context: vscode.ExtensionContext): void {
     addProvider: () => addProvider(),
   });
 
-  // [>]: The chat's provider and model, its key, and its context size, read when a commit message or edit run starts.
+  // [>]: The chat's provider and model, its key, context size, and reasoning effort, read when a commit message or edit
+  // run starts.
   const chatModel = async (): Promise<ChatModel | undefined> => {
-    const { provider: name, model } = controller.snapshot;
+    const { provider: name, model, reasoningEffort } = controller.snapshot;
     const provider = readProviders().providers.find((entry) => entry.name === name);
     if (!provider || model === undefined) return undefined;
     const access = { provider, apiKey: await apiKeys.get(provider.name) };
-    return { access, model, contextSize: contextOf(readLimits(), model).size };
+    return { access, model, contextSize: contextOf(readLimits(), model).size, reasoningEffort };
   };
 
   const applySettings = () => {

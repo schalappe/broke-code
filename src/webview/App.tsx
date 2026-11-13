@@ -31,6 +31,7 @@ import {
   type HostMessage,
   isMode,
   isQueuePaused,
+  isReasoningEffort,
   isReplying,
   MAX_ANSWER_LENGTH,
   MAX_QUEUED_MESSAGES,
@@ -39,6 +40,8 @@ import {
   type PendingApproval,
   type PendingQuestion,
   type QueuedMessage,
+  REASONING_EFFORTS,
+  type ReasoningEffort,
   type ReplyCall,
   type ShownEntries,
   searchNeedle,
@@ -330,8 +333,37 @@ function Pickers({ state }: { state: ChatState }) {
           <option value="">{emptyModelsLabel(models, l10n, "blank")}</option>
         )}
       </select>
+      {state.model !== undefined && (
+        <select
+          aria-label={l10n.t("Reasoning effort")}
+          value={state.reasoningEffort ?? ""}
+          disabled={replying}
+          onChange={(event) => {
+            const effort = event.target.value;
+            post({ type: "selectReasoningEffort", effort: isReasoningEffort(effort) ? effort : undefined });
+          }}
+        >
+          <option value="">{l10n.t("Default effort")}</option>
+          {REASONING_EFFORTS.map((effort) => (
+            <option key={effort} value={effort}>
+              {effortLabel(effort)}
+            </option>
+          ))}
+        </select>
+      )}
     </div>
   );
+}
+
+function effortLabel(effort: ReasoningEffort): string {
+  switch (effort) {
+    case "low":
+      return l10n.t("Low effort");
+    case "medium":
+      return l10n.t("Medium effort");
+    case "high":
+      return l10n.t("High effort");
+  }
 }
 
 /**

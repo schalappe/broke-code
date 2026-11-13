@@ -125,6 +125,13 @@ describe("buildChatRequest", () => {
     expect(body).toEqual({ model: "m", messages: [{ role: "user", content: "Hi" }], stream: true });
   });
 
+  test("adds reasoning_effort only when one is picked", () => {
+    const picked = JSON.parse(String(buildChatRequest(access, "m", messages, false, "low").body));
+    expect(picked.reasoning_effort).toBe("low");
+    const unpicked = JSON.parse(String(buildChatRequest(access, "m", messages, false, undefined).body));
+    expect(unpicked).not.toHaveProperty("reasoning_effort");
+  });
+
   test("passes a system message through first, still with no tools key", () => {
     const withSystem = [{ role: "system" as const, content: "You are a coding agent." }, ...messages];
     const body = JSON.parse(String(buildChatRequest(access, "m", withSystem, true).body));

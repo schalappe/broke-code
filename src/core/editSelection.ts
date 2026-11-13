@@ -547,6 +547,7 @@ export class SelectionEditor {
         {
           model: model.model,
           messages: request.messages,
+          reasoningEffort: model.reasoningEffort,
           signal: AbortSignal.any([stop.signal, cancelled]),
           support: ports.providerSupport,
         },

@@ -291,5 +291,10 @@
   "Edit selection": "Modifier la sélection",
   "Describe the change to make to the selection in {0}.": "Décrivez la modification à apporter à la sélection dans {0}.",
   "For example: handle an empty list": "Par exemple : gérer une liste vide",
-  "{0} (edited selection)": "{0} (sélection modifiée)"
+  "{0} (edited selection)": "{0} (sélection modifiée)",
+  "Reasoning effort": "Effort de raisonnement",
+  "Default effort": "Effort par défaut",
+  "Low effort": "Effort faible",
+  "Medium effort": "Effort moyen",
+  "High effort": "Effort élevé"
 }

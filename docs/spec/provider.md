@@ -6,9 +6,9 @@ This file specifies how broke-code talks to a provider: the HTTP contract, the s
   internal service and Ollama.
 - Never send `tools` or read `tool_calls`, even to a provider that supports them. See ADR 0001.
 - Every chat completion request (a turn's requests, the summary requests of `/compact` and of automatic compaction,
-  the commit message request, and so the eval bench's) has the body `model`, `messages`, `stream: true`, and
-  `stream_options: { include_usage: true }`, the one optional field, which asks the provider to report the reply's
-  token counts (ADR 0001, addendum of 2026-11-13). `ProviderSupport`, one object for the chat, the commit message, and "Edit selection",
+  the commit message request, the "Edit selection" request, and so the eval bench's) has the body `model`, `messages`,
+  `stream: true`, and two optional fields: `reasoning_effort`, below, and `stream_options: { include_usage: true }`,
+  which asks the provider to report the reply's token counts (ADR 0001, addendum of 2026-11-13). `ProviderSupport`, one object for the chat, the commit message, and "Edit selection",
   remembers per model of a provider (the provider's name and base URL and the model's name together) whether the
   field is taken, in memory for the life of the extension host: unknown at the start, then accepts or refuses. A
   request to a model that refuses is built without the field; any other carries it. The same record keeps the
@@ -24,6 +24,15 @@ This file specifies how broke-code talks to a provider: the HTTP contract, the s
   stream, or a request built without the field. A refusal is never told apart by its wording: how the internal
   service words one is unknown. An edited base URL under the same name, and another model, start unknown. Docs and
   code call this a resend; Retry is the user's action.
+- `reasoning_effort` is `low`, `medium`, or `high`, as picked in the panel header's reasoning effort picker for the
+  selected provider and model, and is absent on Default, the picker's first choice. The pick is remembered per
+  provider name and model name in the workspace state, and a model without one is on Default. It applies to every
+  request to that model from the chat panel, the commit message, and "Edit selection", from the next request on; the
+  picker is disabled while a reply is in flight, like the model picker. A provider or model that refuses the field gets
+  no resend without it: its error is shown as any provider error, and the user goes back to Default. A 400 or 422 to a
+  request that also carries the usage field still gets the usage resend above, with the effort kept, so its second
+  answer is the one shown. What the effort changes is the model's: vLLM passes it to the chat template, which some
+  templates ignore, and Ollama maps it to its `think` option. The eval bench never sends it.
 - A reply's reported usage is read from any chunk that carries a `usage` object, with or without choices, the last
   valid one winning, whether or not the request asked for it (a proxy may add it). It is kept when `prompt_tokens` and
   `completion_tokens` are both non-negative safe integers; a `usage` that is `null`, absent, or of another shape is
