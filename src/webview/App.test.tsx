@@ -3373,6 +3373,20 @@ describe("recall earlier messages", () => {
     });
   });
 
+  test("in a focused box, the select event a recall's key fires keeps the recalled caret: no menu opens", async () => {
+    // [>]: React fires `onSelect` on keydown in the focused box, after the key handler, with the caret the key found:
+    // the end of "/grilling", 9, which in the older text is the end of "@problems" and would open its menu.
+    const shown = [user("@problems later"), answer, user("/grilling"), answer];
+    await withPanel(stateWith(true, { entries: shown }), async ({ host, textarea }) => {
+      await act(async () => textarea.focus());
+      await keyDown(textarea, "ArrowUp");
+      await keyDown(textarea, "ArrowUp");
+      expect(textarea.value).toBe("@problems later");
+      expect(textarea.selectionStart).toBe("@problems later".length);
+      expect(host.querySelector('[role="listbox"]')).toBeNull();
+    });
+  });
+
   test("another conversation shown, and coming back, leaves the text and ends the recall", async () => {
     await withPanel(stateWith(true, { entries }), async ({ textarea, show }) => {
       await keyDown(textarea, "ArrowUp");
