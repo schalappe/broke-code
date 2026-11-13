@@ -294,7 +294,10 @@ Each tool call shows as a compact row under the model's text. The row shows the 
 search pattern, or the whole command), and whether it worked with the size of its result, or the exit code for a
 command. Click the row to see the result the model received.
 
-Once an agent turn ends, its steps fold under one row above the final answer, such as "3 steps, 1 failed, 1 rejected".
+Once an agent turn ends, its steps fold under one row above the final answer that says what they did, such as "Read 3
+files, edited 1 file, ran 1 command, 1 failed". Files count once however the model spelled their path (`a.ts`,
+`./a.ts`), but not across letter case or an absolute against a relative path; changed files and commands are always
+named, and the rest add up as "other steps". The row wraps in a narrow panel.
 The answer then sits right under your message. Click the row to see the steps again. If you scrolled up to read, your
 message stays where it is on screen when its turn folds, unless too little is left below to scroll. A turn with a
 single step stays unfolded. The turn in progress never folds, so a running step and a change that waits for you always

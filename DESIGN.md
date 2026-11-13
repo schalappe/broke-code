@@ -184,7 +184,8 @@ between its regions: header, notices, the conversation (or History in its place)
   one turn sit 4px apart, and so do a folded turn's row and its final reply. Opened, the fold lays its entries out in
   a column of its own with the same spacing, 4px under its row.
 - Long content never widens the panel: a path or a title on one line is cut with an ellipsis; a message, a command,
-  and a chip wrap anywhere; a code block, a step result, and a table scroll inside themselves.
+  and a chip wrap anywhere; a folded turn's row wraps between words; a code block, a step result, and a table scroll
+  inside themselves.
 - The header is a running head over one rule (`--bc-line`): the two pickers share the first line; the usage and the
   buttons drop below once the pickers would fall under 16em.
 - The conversation keeps 4px of side padding inside its scroll box, so a focus ring on a row at its edge is not
@@ -283,9 +284,10 @@ would not act. Above the rows, a notice line says "The queue is paused." when no
 - A call without a result has no chevron: its node is filled and breathing while it runs, hollow when it ended with
   no result.
 - Folded turn: an ended turn's steps and intermediate replies under one small dim row, a double-ring node on the
-  thread, between the user's message and the final reply: "3 steps, 1 failed, 1 rejected", the counts in words, never in color
-  alone. Closed when the turn ends; opened, the entries show exactly as they rendered before. Its rules use the child
-  combinator (`.turn-fold > summary`), so the reasoning and step rows inside keep their own chevrons.
+  thread, between the user's message and the final reply: what the steps did, "Read 3 files, edited 1 file, ran 1
+  command, 1 failed", the counts in words, never in color alone; it wraps, never cut. Closed when the turn ends;
+  opened, the entries show exactly as they rendered before. Its rules use the child combinator
+  (`.turn-fold > summary`), so the reasoning and step rows inside keep their own chevrons.
 - Summary (`/compact`): its reply sits under a separator (`.summary-separator`), small dim words between two 1px
   rules in `--bc-line` that run across the conversation: "Summarizing the conversation…" while it streams, then
   "Conversation summarized" ("Conversation summarized automatically" for one an agent turn ran itself), or

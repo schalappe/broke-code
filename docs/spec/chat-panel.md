@@ -8,16 +8,30 @@ This file specifies what the chat panel does around a turn: folding, code block 
   reply is in flight. An ended turn keeps its last reply, and any tool step after it (a `stepLimit` or `malformedCalls`
   halt), in view, and folds every entry between its user message and that reply under one row when the fold holds at
   least 2 tool steps (`foldTurns`); any other turn renders as before, with no wrapper. The row is an uncontrolled
-  `<details>`, closed when the turn ends, like the reasoning block: "N steps", N the tool steps inside the fold
-  (malformed calls and empty replies included), then ", M failed" (status `error` or `malformed`, not rejected) and
-  ", K rejected" (`approval` `rejected`) when not zero, in words. The turn in flight never folds, so a running step and
+  `<details>`, closed when the turn ends, like the reasoning block, whose row says what the steps did (below). The turn in flight never folds, so a running step and
   an open approval always show; a row opened inside comes back closed once its turn folds, since its entries remount.
   Entries before the first user message, and a turn with no reply, never fold. A summary entry is a boundary of its
   own: always rendered, never inside a fold, and never a turn's final reply, so the turn before it folds by the usual
   rule and keeps its own final reply. An automatic summary (`docs/spec/harness.md`) splits its turn the same way: the part before it
   folds as an ended turn, and the part after it, from the summary to the turn's final reply, folds once the turn has
   ended. Rendering only: the state, the record,
-  and the history sent to the model are unchanged. The conversation follows its bottom while the user is within 24px of
+  and the history sent to the model are unchanged.
+- The fold's row (`describeFold`) says what the tool steps inside did, counted in one pass (`foldTurns`). Each step has
+  exactly one kind, checked in this order: **other** for a `malformed` step whatever its name, a `read_file`,
+  `write_file`, or `edit_file` whose `path` is missing or empty once cleaned, a `run_command` without `command` (a call
+  Plan refused is recorded so), and a tool of none of the kinds below; then **read** (`read_file`), **listed**
+  (`list_files`), **searched** (`search`), **loaded** (`load_skill`), **edited** (`write_file`, `edit_file`), **ran**
+  (`run_command`), whatever the step's status (a failed read, a rejected write, and an undone write count). Read,
+  listed, and edited show distinct paths; searched, loaded, ran, and other show steps. Paths are cleaned lexically and
+  nothing more: empty and `.` segments are dropped, `..` removes the segment before it, a `..` with nothing before it
+  stays, and a leading `/` is kept, so `a.ts`, `./a.ts`, and `src/../a.ts` are one file, while `../a.ts` and `a.ts`,
+  `/a.ts` and `a.ts`, or two letter cases are two. A `list_files` without a path, `.`, and `./` are the workspace root.
+  The row names at most three kinds: edited and ran whenever not zero, the places left to read, listed, searched, and
+  loaded by largest number shown (a tie to the earlier one), written in that fixed order; then "N other steps", the
+  other steps plus the steps of every kind not named; then ", M failed" (status `error` or `malformed`, not rejected)
+  and ", K rejected" (`approval` `rejected`) when not zero. A fold of other steps alone says "N steps". The first letter
+  is upper case: "Read 3 files, edited 1 file, ran 1 command"; in French the number comes first ("3 fichiers lus, 1
+  fichier modifié, 1 commande exécutée"). The row wraps in a narrow panel; it is never cut. The conversation follows its bottom while the user is within 24px of
   it; scrolled up, a turn that folds keeps its question row (its user message) in place on screen, because nothing
   above it changes and the browser's scroll anchoring is off (`overflow-anchor: none`), which would otherwise re-anchor
   on a visible entry under the row (maintainer decision, 2026-11-11). Known limit: a fold that leaves too little
