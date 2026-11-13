@@ -181,11 +181,10 @@ describe("the kinds a fold counts", () => {
     return out;
   }
 
-  test("a malformed step is other, whatever its name", () => {
-    expect(kinds(countsOf(step("read_file", { path: "a.ts" }, { status: "malformed" }), T()))).toEqual({
-      read: "1/1",
-      other: 1,
-    });
+  test("a malformed step counts only as failed, whatever its name", () => {
+    const counts = countsOf(step("read_file", { path: "a.ts" }, { status: "malformed" }), T());
+    expect(kinds(counts)).toEqual({ read: "1/1" });
+    expect(counts.failed).toBe(1);
   });
 
   test("a write without a path, a read of `.`, a command without one, and an unknown tool are other", () => {
@@ -197,8 +196,8 @@ describe("the kinds a fold counts", () => {
       step("run_command", {}, { status: "error" }),
       step("open_browser", { url: "x" }),
     );
-    expect(kinds(counts)).toEqual({ other: 6 });
-    expect(counts.steps).toBe(6);
+    expect(kinds(counts)).toEqual({ other: 4 });
+    expect([counts.steps, counts.failed]).toEqual([6, 2]);
   });
 
   test("edits of one path under two spellings are one file, `../a.ts` and `a.ts` two", () => {
@@ -238,7 +237,7 @@ describe("the kinds a fold counts", () => {
     expect(kinds(counts)).toEqual({ listed: "2/5" });
   });
 
-  test("an undone write and a rejected write count as edited; searches, skills, and commands count steps", () => {
+  test("an undone write counts as edited, a rejected or failed step in no kind; searches, skills, and commands count steps", () => {
     const counts = countsOf(
       step("write_file", { path: "a.ts" }, { undone: true }),
       step("edit_file", { path: "b.ts" }, { status: "error", approval: "rejected" }),
@@ -248,7 +247,7 @@ describe("the kinds a fold counts", () => {
       step("run_command", { command: "ls" }),
       step("run_command", { command: "ls" }, { status: "error" }),
     );
-    expect(kinds(counts)).toEqual({ edited: "2/2", searched: "2/2", loaded: "1/1", ran: "2/2" });
+    expect(kinds(counts)).toEqual({ edited: "1/1", searched: "2/2", loaded: "1/1", ran: "1/1" });
     expect([counts.steps, counts.failed, counts.rejected]).toEqual([7, 1, 1]);
   });
 });

@@ -410,6 +410,7 @@ button:focus-visible {
   margin: 0;
   color: var(--bc-fg-dim);
   font-size: var(--bc-fs-sm);
+  text-wrap: pretty;
 }
 
 .warnings,
@@ -676,8 +677,10 @@ button.history-open:hover:not(:disabled) {
    up. Nothing above that row changes (earlier turns are already folded, entries only append), so with anchoring off the
    view stays put. On, the browser would re-anchor on whatever stays visible, such as the final reply, or a step that
    vanished into the fold, and move the view. */
+/* The conversation keeps a third of the panel whatever sits under it, so a decision waiting there stays in view. */
 .conversation {
   flex: 1 1 auto;
+  min-height: 33vh;
   overflow-y: auto;
   overflow-anchor: none;
   display: flex;
@@ -1137,10 +1140,12 @@ pre.malformed-block code {
   font-size: var(--bc-fs-xs);
 }
 
+/* When a chip runs out of width its status wraps under the path, so a short path like "@problems" never breaks. */
 .chip {
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--bc-space-2);
+  gap: 0 var(--bc-space-2);
   max-width: 100%;
   box-sizing: border-box;
   padding: 0 var(--bc-space-2);
@@ -1217,8 +1222,9 @@ pre.malformed-block code {
   border-color: var(--bc-error);
 }
 
-/* On the latest message's ground a chip is a tint of its text. A failed or neutral chip takes the panel's ground
-   back, where its own color reads. */
+/* On the latest message's ground a chip is a tint of its text. A failed chip takes the panel's ground back, where its
+   error color reads. A neutral chip keeps the message's text and no fill, its edge dashed: quieter than an attached
+   chip, never louder, and its status says why in words. */
 /* No fill of its own: a tint behind the text would lower its contrast with the message's ground. */
 .message.user:not(.earlier) .chip {
   background: transparent;
@@ -1239,8 +1245,8 @@ pre.malformed-block code {
 }
 
 .message.user:not(.earlier) .chip.neutral {
-  color: var(--bc-fg-dim);
-  background: var(--bc-bg);
+  color: inherit;
+  border-style: dashed;
 }
 
 /* ---------- Loading and turn endings ---------- */
@@ -1350,10 +1356,13 @@ p.loading::before {
   list-style: none;
 }
 
+/* When the path's longest name and the counts do not fit on one line, "created" and the counts go under it, at the
+   right, rather than split a name. */
 button.changed-file {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  gap: var(--bc-space-3);
+  gap: 0 var(--bc-space-3);
   box-sizing: border-box;
   width: 100%;
   padding: var(--bc-space-1) var(--bc-space-2);
@@ -1374,9 +1383,18 @@ button.changed-file:focus-visible {
 
 .changed-path {
   flex: 0 1 auto;
-  min-width: 0;
+  /* Never narrower than its longest name, never wider than the row. */
+  min-width: min-content;
+  max-width: 100%;
   font-family: var(--bc-mono);
   font-size: var(--bc-fs-mono);
+}
+
+/* One folder or file name and its "/": atomic, so the path wraps only between names; a name wider than the row still
+   wraps inside itself. */
+.path-segment {
+  display: inline-block;
+  max-width: 100%;
   overflow-wrap: anywhere;
 }
 
@@ -1650,10 +1668,12 @@ summary.step-row:hover,
   font-size: var(--bc-fs-sm);
 }
 
+/* The status goes to a line of its own, at the right, rather than leave the path fewer than ten characters. */
 .step-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  gap: var(--bc-space-3);
+  gap: 0 var(--bc-space-3);
   min-width: 0;
   min-height: var(--bc-row);
 }
@@ -1676,8 +1696,8 @@ div.step-row:has(.step-status.loading)::before {
 }
 
 .step-arg {
-  /* The path gives way first: a status is cut last. */
-  flex: 0 100 auto;
+  /* The path gives way first, down to ten characters: a status is cut last. */
+  flex: 1 100 10ch;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1838,6 +1858,14 @@ div.step-row:has(.step-status.loading)::before {
   color: var(--bc-inverse-dim);
 }
 
+/* The decision keys, in words, as the reason's placeholder is dim: help, never a control. */
+.approval-keys {
+  flex: 1 0 100%;
+  margin: 0;
+  color: var(--bc-inverse-dim);
+  font-size: var(--bc-fs-xs);
+}
+
 .approval-reason:focus-visible {
   outline-color: var(--bc-bg);
 }
@@ -1991,11 +2019,23 @@ button.next-step {
   font-size: var(--bc-fs-sm);
 }
 
+/* Away from Ask, what the mode does, on its own line at the end of the field: Auto-edit writes without asking, Plan
+   never writes, and neither may hide in the selector's tooltip. */
+.mode-hint {
+  flex: 1 1 100%;
+  margin: 0;
+  padding: 0 var(--bc-space-2);
+  color: var(--bc-fg-dim);
+  font-size: var(--bc-fs-xs);
+}
+
 /* ---------- Queued messages ---------- */
 
 /* Under the message box, after it in the tab order: a quiet line when paused or full, then one filled row per message,
-   its text cut to one line, its actions at the right. */
+   its text cut to one line, its actions at the right. The rows scroll in their own box past about three, so a long
+   queue never takes the conversation's room; Tab to a row's button scrolls it into view. */
 .queue {
+  flex: none;
   display: flex;
   flex-direction: column;
   gap: var(--bc-space-2);
@@ -2005,12 +2045,16 @@ button.next-step {
   display: flex;
   flex-direction: column;
   gap: var(--bc-space-1);
+  max-height: 20vh;
   margin: 0;
   padding: 0;
+  overflow-y: auto;
   list-style: none;
 }
 
 .queue li {
+  /* Rows keep their height in the capped list, which scrolls instead of squeezing them. */
+  flex: none;
   display: flex;
   align-items: center;
   gap: var(--bc-space-3);

@@ -273,11 +273,9 @@ describe("describeFold", () => {
       "Read 2 files, changed 1 file, ran 1 command, 4 other steps",
     );
     expect(table().sixth).toBe(
-      "Read 1 file, listed 1 folder, searched 1 time, 5 other steps | 4 failed (read_file, write_file)",
+      "Read 1 file, listed 1 folder, searched 1 time, 1 other step | 4 failed (read_file, write_file)",
     );
-    expect(rowOf(list("."), command({ status: "error", approval: "rejected" }))).toBe(
-      "Listed 1 folder, ran 1 command, 1 rejected",
-    );
+    expect(rowOf(list("."), command({ status: "error", approval: "rejected" }))).toBe("Listed 1 folder, 1 rejected");
     expect(rowOf(malformed(), malformed())).toBe("2 steps | 2 failed (read_file)");
     expect(rowOf(step("write_file", { path: "a.ts" }, { undone: true }), step("write_file", { path: "a.ts" }))).toBe(
       "Changed 1 file",
@@ -320,7 +318,7 @@ describe("describeFold", () => {
       edit("a.ts", { status: "error" }),
       command({ status: "error", text: "exit code 2" }),
     );
-    expect(failing).toBe("Changed 1 file, ran 2 commands | 3 failed (run_command, edit_file)");
+    expect(failing).toBe("3 steps | 3 failed (run_command, edit_file)");
   });
 
   test("reads in French with the French bundle loaded", () => {
@@ -328,7 +326,7 @@ describe("describeFold", () => {
     try {
       expect(table().first).toBe("3 fichiers lus, 1 fichier modifié, 1 commande exécutée");
       expect(table().sixth).toBe(
-        "1 fichier lu, 1 dossier listé, 1 recherche, 5 autres étapes | 4 échecs (read_file, write_file)",
+        "1 fichier lu, 1 dossier listé, 1 recherche, 1 autre étape | 4 échecs (read_file, write_file)",
       );
       expect(flat(describeFold(countsOf("other", 2, 0, 2)))).toBe("2 étapes, 2 refus");
     } finally {

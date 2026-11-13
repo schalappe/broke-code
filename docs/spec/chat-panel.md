@@ -16,12 +16,14 @@ This file specifies what the chat panel does around a turn: folding, code block 
   folds as an ended turn, and the part after it, from the summary to the turn's final reply, folds once the turn has
   ended. Rendering only: the state, the record,
   and the history sent to the model are unchanged.
-- The fold's row (`describeFold`) says what the tool steps inside did, counted in one pass (`foldTurns`). Each step has
-  exactly one kind, checked in this order: **other** for a `malformed` step whatever its name, a `read_file`,
+- The fold's row (`describeFold`) says what the tool steps inside did, counted in one pass (`foldTurns`). A rejected
+  step counts only as rejected and a failed one (any status but `ok`, a `malformed` call included) only as failed, so a
+  kind counts what really happened: "changed 1 file" means a file changed (maintainer decision, 2026-11-13). Each other
+  step has exactly one kind, checked in this order: **other** for a `read_file`,
   `write_file`, or `edit_file` whose `path` is missing or empty once cleaned, a `run_command` without `command` (a call
   Plan refused is recorded so), and a tool of none of the kinds below; then **read** (`read_file`), **listed**
   (`list_files`), **searched** (`search`), **loaded** (`load_skill`), **edited** (`write_file`, `edit_file`), **ran**
-  (`run_command`), whatever the step's status (a failed read, a rejected write, and an undone write count). Read,
+  (`run_command`); an undone write counts, since it did change the file. Read,
   listed, and edited show distinct paths; searched, loaded, ran, and other show steps. Paths are cleaned lexically and
   nothing more: empty and `.` segments are dropped, `..` removes the segment before it, a `..` with nothing before it
   stays, and a leading `/` is kept, so `a.ts`, `./a.ts`, and `src/../a.ts` are one file, while `../a.ts` and `a.ts`,
@@ -29,7 +31,7 @@ This file specifies what the chat panel does around a turn: folding, code block 
   The row names at most three kinds: edited (written "changed N files", the word of "Changed files") and ran whenever not zero, the places left to read, listed, searched, and
   loaded by largest number shown (a tie to the earlier one), written in that fixed order; then "N other steps", the
   other steps plus the steps of every kind not named; then ", K rejected" (`approval` `rejected`) when not zero. A fold
-  of other steps alone says "N steps". The first letter is upper case: "Read 3 files, changed 1 file, ran 1 command";
+  with no step of a kind and no other step (every step failed or was rejected, or the other steps alone) says "N steps". The first letter is upper case: "Read 3 files, changed 1 file, ran 1 command";
   in French the number comes first ("3 fichiers lus, 1 fichier modifié, 1 commande exécutée"). Last, apart
   (`describeFold`'s `failed`), the failed steps (status `error` or `malformed`, not rejected) when not zero, with the
   tools that failed, each once in the order it first failed (`FoldCounts.failedTools`; a malformed call's tag name):
@@ -157,7 +159,8 @@ This file specifies what the chat panel does around a turn: folding, code block 
   typed then (mentions read, a `/<name>` skill loaded, provider, model, mode, and limits of that moment). The next
   waits for that turn. When the check fails (the model gone after a failed listing), nothing is sent and it stays
   first. A turn ending `stopped`, `failed`, or `halted` sends nothing. The queue is paused when it holds a message and
-  no reply is in flight (`isQueuePaused`, derived, never stored): the panel says so and the first message has "Send
+  no reply is in flight (`isQueuePaused`, derived, never stored): the panel says so, with the rule (it moves on only
+  after a turn that completes) and the way on (Send now), and the first message has "Send
   now", `sendQueued { id }`, which acts only on the first message and only when Send would; its turn ending `done`
   resumes the queue. A message sent normally while paused goes first, and its `done` resumes the queue too.
   `removeQueued { id }` removes one; `editQueued { id }` (Edit) removes it and returns its text and picked paths to the

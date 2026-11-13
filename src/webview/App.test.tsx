@@ -251,12 +251,12 @@ describe("agent turn", () => {
     expect(limit).toContain(">Send<");
   });
 
-  test("a turn halted on a full context says so and names /compact and New chat", () => {
+  test("a turn halted on a full context says so as an ordinary ending and names /compact and New chat", () => {
     const html = renderTurn([
       { role: "assistant", reasoning: "", content: "", status: "halted", haltReason: "contextFull" },
     ]);
     expect(html).toContain(
-      '<p class="warning">Stopped: the conversation fills the model&#x27;s context. Summarize it with /compact, or start a new chat with New chat.</p>',
+      '<p class="mark">Stopped: the conversation fills the model&#x27;s context. Summarize it with /compact, or start a new chat with New chat.</p>',
     );
     expect(html).not.toContain("Waiting for the reply…");
     expect(renderTurn([{ ...callReply, status: "halted", haltReason: "stepLimit" }, step])).toContain(
@@ -1167,10 +1167,10 @@ describe("error actions", () => {
     for (const error of errors) expect(failedListing(error)).toContain(">Open provider settings<");
   });
 
-  test("does not offer the provider settings for an unreachable provider", () => {
-    expect(
-      failedListing({ kind: "unreachable", provider: "P", baseUrl: "http://p/v1", cause: "ECONNREFUSED" }),
-    ).not.toContain("Open provider settings");
+  test("offers the provider settings for an unreachable provider, where its base URL is set", () => {
+    const html = failedListing({ kind: "unreachable", provider: "P", baseUrl: "http://p/v1", cause: "ECONNREFUSED" });
+    expect(html).toContain('class="link">Open provider settings<');
+    expect(html).toContain("Check its base URL, your network or VPN, and the http.proxy setting.");
   });
 });
 
@@ -1779,6 +1779,30 @@ describe("mode selector", () => {
         select.dispatchEvent(new Event("change", { bubbles: true }));
       });
       expect(posted).toEqual([{ type: "setMode", mode: "plan" }]);
+    });
+  });
+
+  test("away from Ask, a line under the composer says what the mode does and describes the selector", async () => {
+    const AUTO_EDIT = "Changes are written without asking. Commands still wait for Run.";
+    await withPanel(stateWith(true), async ({ host, show }) => {
+      expect(host.querySelector(".mode-hint")).toBeNull();
+      expect(modeSelect(host).hasAttribute("aria-describedby")).toBe(false);
+
+      await show(stateWith(true, { mode: "autoEdit" }));
+      const hint = host.querySelector(".mode-hint");
+      expect(hint?.textContent).toBe(AUTO_EDIT);
+      expect(modeSelect(host).getAttribute("aria-describedby")).toBe(hint?.id ?? "");
+
+      await show(stateWith(true, { mode: "plan" }));
+      expect(host.querySelector(".mode-hint")?.textContent).toContain("It changes no file and runs no command.");
+    });
+  });
+
+  test("Escape in the message box stops a reply in flight", async () => {
+    const waiting: ChatEntry[] = [hi[0]!, { role: "assistant", reasoning: "", content: "", status: "waiting" }];
+    await withPanel(stateWith(true, { entries: waiting }), async ({ press }) => {
+      await press("Escape");
+      expect(posted).toContainEqual({ type: "stop" });
     });
   });
 
@@ -2965,12 +2989,16 @@ describe("context usage", () => {
     expect(html).not.toContain("Unknown context size");
   });
 
-  test("results left out of the next request show one notice with their count", () => {
+  test("results left out of the next request show one notice with their count, joined to the nearly-full one", () => {
     const plural = renderToStaticMarkup(
       <App state={stateWith(true, { context: { ...usage, known: true, leftOut: 4 } })} language="en" />,
     );
-    expect(plural).toContain(
-      '<p class="notice" role="status">4 older tool results are left out of the request to save context.</p>',
+    expect(plural).toContain('<p class="notice">4 older tool results are left out of the request to save context.</p>');
+    const nearlyFull = renderToStaticMarkup(
+      <App state={stateWith(true, { context: { used: 900, size: 1000, known: true, leftOut: 4 } })} language="en" />,
+    );
+    expect(nearlyFull).toContain(
+      '<p class="notice">4 older tool results are left out of the request to save context. The context is nearly full: /compact summarizes the conversation to free it.</p>',
     );
     const singular = renderToStaticMarkup(
       <App state={stateWith(true, { context: { ...usage, known: true, leftOut: 1 } })} language="en" />,
@@ -3466,7 +3494,7 @@ describe("queued messages", () => {
       expect(rows(host)).toEqual(["B", "C"]);
       expect(host.querySelectorAll(".queue li button")).toHaveLength(4);
       expect(buttonLabels(host)).not.toContain("Send now");
-      expect(host.textContent).not.toContain("The queue is paused.");
+      expect(host.textContent).not.toContain("The queue is paused");
       const focusable = [...host.querySelectorAll<HTMLElement>("button, select, textarea, input, a[href], summary")];
       const firstQueued = focusable.findIndex((element) => element.closest(".queue"));
       expect(firstQueued).toBeGreaterThan(focusable.indexOf(textarea));
@@ -3511,7 +3539,7 @@ describe("queued messages", () => {
 
   test("after a stop, a line says the queue is paused and the first message has Send now", async () => {
     await withPanel(stateWith(true, { entries: stopped, queue }), async ({ host, click }) => {
-      expect(host.textContent).toContain("The queue is paused.");
+      expect(host.textContent).toContain("The queue is paused");
       const rowButtons = [...host.querySelectorAll(".queue li")].map((row) =>
         [...row.querySelectorAll("button")].map((button) => button.textContent),
       );
@@ -3799,8 +3827,10 @@ describe("changed files", () => {
     expect(at).toBeLessThan(shown.indexOf('class="undo-outcome'));
     expect(shown.indexOf('class="undo-outcome')).toBeLessThan(shown.indexOf(">Undo changes</button>"));
     expect(shown.indexOf(">Undo changes</button>")).toBeLessThan(shown.indexOf("Other."));
-    expect(shown).toContain('<code class="changed-path">src/a.ts</code>');
-    expect(shown).toContain('<code class="changed-path">b.ts</code>');
+    expect(shown).toContain(
+      '<code class="changed-path"><span class="path-segment">src/</span><wbr/><span class="path-segment">a.ts</span></code>',
+    );
+    expect(shown).toContain('<code class="changed-path"><span class="path-segment">b.ts</span></code>');
     expect(shown.indexOf("src/a.ts")).toBeLessThan(shown.indexOf(">b.ts<"));
     expect(shown).toContain(">edited<");
     expect(shown).toContain(">created<");

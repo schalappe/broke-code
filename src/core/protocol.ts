@@ -326,12 +326,13 @@ export type ChatState = {
 /**
  * Text the host puts in the message box, never sent. From an editor entry point: `caret` inserts it at the box's
  * caret, spaced from the text around it; `fillOrAppend` fills a box empty or holding only whitespace, else appends it
- * after one line break; either closes History and focuses the box. From the queue: `paragraph`, the queued texts the
+ * after one line break; `focus` ("Focus the message box") changes no text; each closes History and focuses the box.
+ * From the queue: `paragraph`, the queued texts the
  * controller took out without sending them (navigation, Edit) or refused to queue, fills a blank box, else follows its
  * text after a blank line, and closes nothing and moves no focus. `picked`: the paths its mentions name, added to the
  * box's picked paths, so a path with spaces or trailing punctuation is one mention.
  */
-export type DraftInsert = { text: string; mode: "caret" | "fillOrAppend" | "paragraph"; picked: string[] };
+export type DraftInsert = { text: string; mode: "caret" | "fillOrAppend" | "paragraph" | "focus"; picked: string[] };
 
 /** L10n bundle as `vscode.l10n.bundle`: absent in English. */
 export type L10nBundle = Record<string, string>;

@@ -160,6 +160,8 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(CHAT_VIEW_ID, view),
     // [>]: The selection is read when the message is sent, so the editor's selection is left as it is.
+    // [>]: The view's own focus command focuses the webview, not the box inside it: an empty focus draft does both.
+    vscode.commands.registerCommand("broke-code.focusChat", () => insertDraft({ text: "", mode: "focus", picked: [] })),
     vscode.commands.registerCommand("broke-code.addSelectionToChat", () =>
       insertDraft({ text: "@selection", mode: "caret", picked: [] }),
     ),

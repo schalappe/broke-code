@@ -144,12 +144,22 @@ describe("composerKeyAction", () => {
     conversationId: "c1",
     entries: [],
     recalled: undefined,
+    replying: false,
   };
 
   test("Escape dismisses an open menu, rows or not, and does nothing without one", () => {
     expect(composerKeyAction(key("Escape"), 3, idle)).toEqual({ type: "dismiss" });
     expect(composerKeyAction(key("Escape"), 0, idle)).toEqual({ type: "dismiss" });
     expect(composerKeyAction(key("Escape"), undefined, idle)).toEqual({ type: "none" });
+  });
+
+  test("a bare Escape in an empty box stops a reply in flight when no menu is open", () => {
+    const replying = { ...idle, replying: true };
+    expect(composerKeyAction(key("Escape"), undefined, replying)).toEqual({ type: "stop" });
+    expect(composerKeyAction(key("Escape"), 2, replying)).toEqual({ type: "dismiss" });
+    expect(composerKeyAction(key("Escape", { shift: true }), undefined, replying)).toEqual({ type: "none" });
+    const typing = { ...replying, text: "@src/a.ts and then", selectionStart: 18, selectionEnd: 18 };
+    expect(composerKeyAction(key("Escape"), undefined, typing)).toEqual({ type: "none" });
   });
 
   test("ArrowDown and ArrowUp move the highlight in opposite directions", () => {
@@ -474,6 +484,11 @@ describe("replaceToken", () => {
 });
 
 describe("applyDraft", () => {
+  test("a focus draft leaves the text, the caret, and the picked paths as they are", () => {
+    const draft = { text: "half typed", caret: 4, picked: ["a.ts"] };
+    expect(applyDraft(draft, { text: "", mode: "focus", picked: [] })).toBe(draft);
+  });
+
   /** The draft `marked`, its caret at `|`, after inserting `@selection` at the caret. */
   const atCaret = (marked: string): string => {
     const caret = marked.indexOf("|");
