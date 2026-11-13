@@ -29,6 +29,8 @@
   /* Sizes that are not spacing: a one-line row, and a mark drawn in CSS (a dot, a chevron). */
   --bc-row: 22px;
   --bc-mark: 6px;
+  /* The room a native select's chevron takes at its right. */
+  --bc-chevron: 14px;
   /* The thread of an agent turn: the indent of what sits on it, a node, and the solid node of the call that waits. */
   --bc-thread-indent: 20px;
   --bc-node: 7px;
@@ -79,9 +81,10 @@
   --bc-button-border: var(--vscode-button-border, var(--bc-edge));
   --bc-button-border-hover: var(--vscode-contrastActiveBorder, var(--bc-button-border));
 
-  /* The latest user message sits on the button colors; an earlier one keeps their outline, and a chip is a tint. */
+  /* The latest user message sits on the button colors; an earlier one keeps their outline, and a chip is outlined in a
+   tint of their text. */
   --bc-accent-line: var(--vscode-button-background, var(--bc-edge));
-  --bc-accent-chip: color-mix(in srgb, var(--vscode-button-foreground) 18%, transparent);
+  --bc-accent-chip: color-mix(in srgb, var(--vscode-button-foreground) 45%, transparent);
   /* A tool's name on the thread. */
   --bc-tool: var(--vscode-textLink-foreground);
   /* The decision block is drawn in negative, the panel's color on the foreground: its tints of the panel. */
@@ -278,8 +281,7 @@ button:focus-visible {
 
 /* ---------- Header ---------- */
 
-/* A running head over one rule. The usage and the buttons wrap below the pickers once the pickers would fall under
-   16em, so model names stay readable. */
+/* A running head over one rule: the pickers on the first line, then the usage and the buttons, which wrap. */
 .header {
   display: flex;
   flex-wrap: wrap;
@@ -289,22 +291,31 @@ button:focus-visible {
   border-bottom: 1px solid var(--bc-line);
 }
 
+/* The pickers take the header's first line whole: a model id is long, and the one thing to read there. The reasoning
+   effort sits in the message box, beside the mode. */
 .pickers {
   display: flex;
-  flex: 1 1 16em;
+  flex: 1 1 100%;
   gap: var(--bc-space-2);
   min-width: 0;
 }
 
-/* The pickers and the header's buttons are quiet text until hovered or focused; high contrast keeps their edge. */
+/* The pickers and the header's buttons are quiet text until hovered or focused; high contrast keeps their edge. The
+   model takes the room first; the provider and the effort shrink to their names. The native chevron keeps its own
+   room at the right, so it never covers the name. */
 .pickers select {
-  flex: 1 1 0;
+  flex: 0 1 auto;
   min-width: 0;
   padding-left: 0;
+  padding-right: calc(var(--bc-space-2) + var(--bc-chevron));
   color: var(--bc-fg-dim);
   background: transparent;
   border-color: var(--bc-edge);
   font-size: var(--bc-fs-sm);
+}
+
+.pickers .model-picker {
+  flex: 1 1 auto;
 }
 
 .pickers select:hover:not(:disabled),
@@ -314,7 +325,7 @@ button:focus-visible {
 }
 
 .usage {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -338,6 +349,23 @@ button:focus-visible {
 .history button.secondary {
   padding: var(--bc-space-1) var(--bc-space-3);
   font-size: var(--bc-fs-sm);
+}
+
+/* Beside the usage it qualifies, at the usage's size, and never cut: dim like the usage, a dotted underline saying it
+   acts, the link color only when hovered or focused. Configuration, not news, so it never outranks the model. */
+.header button.usage-set {
+  flex: none;
+  padding: 0;
+  color: var(--bc-fg-dim);
+  font-size: var(--bc-fs-xs);
+  text-decoration-style: dotted;
+  white-space: nowrap;
+}
+
+.header button.usage-set:hover:not(:disabled),
+.header button.usage-set:focus-visible {
+  color: var(--bc-link-active);
+  text-decoration-style: solid;
 }
 
 .header button.secondary {
@@ -416,8 +444,20 @@ button:focus-visible {
   text-align: center;
 }
 
+/* Alone in the panel, the no-provider state takes the room and sits centered in it; above an earlier conversation
+   kept readable, it stays one block at the top. */
 .empty {
   padding: var(--bc-space-5) 0;
+}
+
+.empty:not(:has(~ .conversation)) {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--bc-space-3);
+  text-align: center;
 }
 
 .empty p,
@@ -494,6 +534,35 @@ p.history-searching {
   outline: 1px solid var(--bc-edge-active);
 }
 
+/* Delete is quiet and shows only on the row the pointer or the focus is on, so the titles lead; hidden by opacity, it
+   stays in the tab order. Asking to confirm, it and Cancel stay shown. */
+button.history-delete {
+  flex: none;
+  padding: var(--bc-space-1) var(--bc-space-2);
+  color: var(--bc-fg-dim);
+  border-color: var(--bc-edge);
+  font-size: var(--bc-fs-sm);
+  opacity: 0;
+  transition: opacity var(--bc-fast) var(--bc-ease);
+}
+
+.history-rows li:hover button.history-delete,
+.history-rows li:focus-within button.history-delete,
+button.history-delete.confirming {
+  opacity: 1;
+}
+
+button.history-delete.confirming {
+  color: var(--bc-fg);
+  border-color: var(--bc-line);
+}
+
+@media (hover: none) {
+  button.history-delete {
+    opacity: 1;
+  }
+}
+
 .history-rows li.current {
   background: var(--bc-row-current);
   outline: 1px solid var(--bc-edge-active);
@@ -561,6 +630,44 @@ button.history-open:hover:not(:disabled) {
   padding: var(--bc-space-1) var(--bc-space-2);
 }
 
+/*
+ * Scrolled up, one row stays at the bottom of the conversation's view: "Jump to latest", or what the reply waits on
+ * ("Waiting for your decision: ..."), in the full foreground and weight 600, since the turn holds until the user acts.
+ * On the panel's opaque ground, so the entries under it never show through.
+ */
+.jump-row {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  justify-content: center;
+  padding-top: var(--bc-space-2);
+  background: linear-gradient(transparent, var(--bc-bg) var(--bc-space-2));
+}
+
+button.jump {
+  max-width: 100%;
+  padding: var(--bc-space-1) var(--bc-space-3);
+  color: var(--bc-fg-dim);
+  background: var(--bc-bg);
+  border-color: var(--bc-line);
+  font-size: var(--bc-fs-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+button.jump:hover:not(:disabled) {
+  color: var(--bc-fg);
+  background: linear-gradient(var(--bc-fill-strong), var(--bc-fill-strong)), var(--bc-bg);
+  border-color: var(--bc-line-active);
+}
+
+button.jump.waiting {
+  color: var(--bc-fg);
+  border-color: var(--bc-fg);
+  font-weight: 600;
+}
+
 /* `display: flex` above would otherwise win over the `hidden` attribute. */
 .conversation[hidden] {
   display: none;
@@ -604,6 +711,18 @@ button.history-open:hover:not(:disabled) {
   display: flex;
   justify-content: flex-end;
   margin-top: calc(var(--bc-space-2) - var(--bc-space-4));
+}
+
+/* Quiet, as the header's buttons: Edit sits under every last message and must not outweigh the answer. */
+.user-actions button.secondary {
+  padding: var(--bc-space-1) var(--bc-space-2);
+  color: var(--bc-fg-dim);
+  border-color: var(--bc-edge);
+  font-size: var(--bc-fs-sm);
+}
+
+.user-actions button.secondary:hover:not(:disabled) {
+  color: var(--bc-fg);
 }
 
 /*
@@ -772,6 +891,56 @@ button.history-open:hover:not(:disabled) {
   padding: var(--bc-space-2) var(--bc-space-3);
   border: 1px solid var(--bc-line);
   text-align: left;
+  vertical-align: top;
+}
+
+.answer th {
+  background: var(--bc-fill);
+  font-weight: 600;
+}
+
+/* A cell keeps a readable width: a wide table scrolls instead of breaking its words into fragments. */
+.answer td {
+  min-width: 6em;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A task list keeps its boxes in the marker's place; they show the model's state and take no click. */
+.answer .contains-task-list {
+  padding-left: 0;
+  list-style: none;
+}
+
+/* Drawn, since the browser greys a disabled box whatever its accent: an outlined square, filled with the button color
+   and a check mark when ticked. */
+.answer .task-list-item input {
+  appearance: none;
+  display: inline-grid;
+  place-content: center;
+  box-sizing: border-box;
+  width: 1em;
+  height: 1em;
+  margin: 0 var(--bc-space-2) 0 0;
+  padding: 0;
+  vertical-align: -0.125em;
+  background: transparent;
+  border: 1px solid var(--bc-fg-dim);
+  border-radius: var(--bc-radius-sm);
+}
+
+.answer .task-list-item input:checked {
+  background: var(--bc-button-bg);
+  border-color: var(--bc-button-border);
+}
+
+.answer .task-list-item input:checked::before {
+  content: "";
+  width: 0.25em;
+  height: 0.5em;
+  margin-top: -0.1em;
+  border: solid var(--bc-button-fg);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
 }
 
 .answer img {
@@ -798,7 +967,8 @@ button.history-open:hover:not(:disabled) {
 .answer code {
   padding: 0 var(--bc-space-2);
   color: var(--bc-code-fg);
-  background: var(--bc-fill-strong);
+  /* The fainter fill: the theme's preformatted text color is dim already, and the stronger one took it under 4.5:1. */
+  background: var(--bc-fill);
   border-radius: var(--bc-radius-sm);
   font-family: var(--bc-mono);
   font-size: var(--bc-fs-mono);
@@ -809,6 +979,9 @@ button.history-open:hover:not(:disabled) {
   margin: 0 0 0.75em;
   padding: var(--bc-space-3) var(--bc-space-4);
   overflow-x: auto;
+  /* A thin bar in the theme's slider color: a block that scrolls sideways says so without a heavy track. */
+  scrollbar-width: thin;
+  scrollbar-color: var(--vscode-scrollbarSlider-background, var(--bc-line)) transparent;
   background: var(--bc-fill);
   border: 1px solid var(--bc-edge);
   border-radius: var(--bc-radius);
@@ -816,12 +989,14 @@ button.history-open:hover:not(:disabled) {
 }
 
 /*
- * A final code block of the answer: its frame holds a header with Copy and Insert at cursor, then the code, which
- * still scrolls inside itself. The header keeps its room, so revealing it moves nothing; its buttons show while the
- * pointer is over the block or the focus is inside it, and stay in the tab order when hidden. One class only, so
+ * A final code block of the answer: the code, which still scrolls inside itself, with Copy and Insert at cursor laid
+ * over its top right corner. They take no room, so the block at rest is the code alone and revealing them moves
+ * nothing; they show while the pointer is over the block or the focus is inside it, on the panel's opaque ground so
+ * the code under them never shows through, and stay in the tab order when hidden. One class only, so
  * `.answer > :last-child` still drops the last block's margin.
  */
 .code-block {
+  position: relative;
   margin: 0 0 0.75em;
   background: var(--bc-fill);
   border: 1px solid var(--bc-edge);
@@ -830,16 +1005,16 @@ button.history-open:hover:not(:disabled) {
 
 .code-block > pre {
   margin: 0;
-  padding-top: 0;
   background: none;
   border: none;
 }
 
 .code-actions {
+  position: absolute;
+  top: var(--bc-space-2);
+  right: var(--bc-space-2);
   display: flex;
-  justify-content: flex-end;
   gap: var(--bc-space-2);
-  padding: var(--bc-space-2) var(--bc-space-2) 0;
   opacity: 0;
   transition: opacity var(--bc-fast) var(--bc-ease);
   /* Their labels are never part of selected text, in a quote or in a plain copy. */
@@ -863,13 +1038,13 @@ button.code-action {
   padding: 0 var(--bc-space-3);
   min-height: var(--bc-row);
   color: var(--bc-fg);
-  background: transparent;
+  background: var(--bc-bg);
   border-color: var(--bc-line);
   font-size: var(--bc-fs-xs);
 }
 
 button.code-action:hover:not(:disabled) {
-  background: var(--bc-fill-strong);
+  background: linear-gradient(var(--bc-fill-strong), var(--bc-fill-strong)), var(--bc-bg);
   border-color: var(--bc-line-active);
 }
 
@@ -978,8 +1153,10 @@ button.code-action:hover:not(:disabled) {
 
 /* On the latest message's ground a chip is a tint of its text. A failed or neutral chip takes the panel's ground
    back, where its own color reads. */
+/* No fill of its own: a tint behind the text would lower its contrast with the message's ground. */
 .message.user:not(.earlier) .chip {
-  background: var(--bc-accent-chip);
+  background: transparent;
+  border-color: var(--bc-accent-chip);
 }
 
 .message.user:not(.earlier) .chip-status {
@@ -1526,11 +1703,14 @@ div.step-row:has(.step-status.loading)::before {
   font-weight: 600;
 }
 
-/* The reason field, then Accept or Run and Reject: Shift+Tab from the message box meets them in reverse. */
+/* A write's counts and Show change on a line of their own, then the reason field with Accept or Run and Reject after it
+   on one line, the field taking the room left; below about 300px the buttons wrap under it. The field is one quiet
+   row, never the block's largest element. Shift+Tab from the message box meets them in reverse. */
 .approval {
   display: flex;
-  flex-direction: column;
-  gap: var(--bc-space-3);
+  flex-wrap: wrap;
+  gap: var(--bc-space-2);
+  align-items: center;
   min-width: 0;
   margin: var(--bc-space-3) 0 0;
   padding: 0;
@@ -1538,8 +1718,31 @@ div.step-row:has(.step-status.loading)::before {
 }
 
 .approval-reason {
-  width: 100%;
+  flex: 1 1 9em;
   min-width: 0;
+  padding: var(--bc-space-1) var(--bc-space-2);
+  font-size: var(--bc-fs-sm);
+}
+
+/* A write's line counts, then Show change: the size of what Accept writes, and the way back to its diff. On the
+   negative block both take its text color; the theme's link color is drawn for the panel's ground, not this one. */
+.approval-change {
+  flex: 1 0 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--bc-space-1) var(--bc-space-3);
+  align-items: baseline;
+  font-size: var(--bc-fs-sm);
+}
+
+.decision .changed-counts {
+  margin-left: 0;
+  color: inherit;
+}
+
+.decision button.link,
+.decision button.link:hover:not(:disabled) {
+  color: inherit;
 }
 
 /* The question in full, its options, then the field and Answer: Shift+Tab from the message box meets them in reverse. */
@@ -1641,12 +1844,18 @@ div.step-row:has(.step-status.loading)::before {
   flex: none;
 }
 
+/* After a plan, carrying it out leads the row: secondary still, set apart by weight. */
+button.next-step {
+  font-weight: 600;
+}
+
 /* The buttons sit at the right: Send alone, or Send then Stop while a reply is in flight. */
 .composer > button:first-of-type {
   margin-left: auto;
 }
 
-.composer > select.mode {
+/* The mode, then the reasoning effort: the two settings of the next turn, at the left of Send. */
+.composer > select {
   flex: none;
   max-width: 100%;
   padding: var(--bc-space-1) var(--bc-space-2);

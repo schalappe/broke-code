@@ -4,6 +4,7 @@
  * history row saved beside the record, so a valid summary spares the list parsing the record. Files read from disk are
  * untrusted: `parseConversation` and `parseSummary` check every field and keep only known ones.
  */
+import type { LineCounts } from "./lineDiff";
 import type { LineRange, MentionResult, MentionStatus } from "./mentions";
 import type {
   ChatEntry,
@@ -266,8 +267,10 @@ function parseEntry(raw: unknown): StoredEntry | undefined {
     if (!TOOL_STEP_STATUSES.includes(raw.status as ToolStepStatus)) return undefined;
     if (raw.approval !== undefined && !STEP_APPROVALS.includes(raw.approval as StepApproval)) return undefined;
     if (raw.undone !== undefined && raw.undone !== true) return undefined;
+    if (!isOptional(raw.lines, isLineCounts)) return undefined;
     const status = raw.status as ToolStepStatus;
     const approval = raw.approval as StepApproval | undefined;
+    const lines = raw.lines as LineCounts | undefined;
     return {
       role: "tool",
       name: raw.name,
@@ -275,10 +278,18 @@ function parseEntry(raw: unknown): StoredEntry | undefined {
       status,
       text: raw.text,
       ...(approval !== undefined ? { approval } : {}),
+      ...(lines !== undefined ? { lines: { added: lines.added, removed: lines.removed } } : {}),
       ...(raw.undone === true ? { undone: true } : {}),
     };
   }
   return undefined;
+}
+
+/** A write's added and removed line counts: two whole numbers, neither negative. */
+function isLineCounts(raw: unknown): raw is LineCounts {
+  if (!isObject(raw)) return false;
+  const count = (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 0;
+  return count(raw.added) && count(raw.removed);
 }
 
 /** A reply's call, its range inside an answer of `length` code units. */

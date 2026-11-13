@@ -47,18 +47,21 @@ export class DiffPreviews implements vscode.TextDocumentContentProvider, vscode.
       this.texts.delete(before.toString());
       this.texts.delete(after.toString());
     };
+    const title = vscode.l10n.t("{0} (proposed change)", displayPath(change.path));
+    // [>]: Focus stays in the chat, where Accept and Reject are. Opening the same two URIs again brings the open diff
+    // to the front, or reopens it from the texts still held.
+    const show = () =>
+      vscode.commands.executeCommand("vscode.diff", before, after, title, { preview: false, preserveFocus: true });
     try {
-      const title = vscode.l10n.t("{0} (proposed change)", displayPath(change.path));
-      // [>]: Focus stays in the chat, where Accept and Reject are.
-      await vscode.commands.executeCommand("vscode.diff", before, after, title, {
-        preview: false,
-        preserveFocus: true,
-      });
+      await show();
     } catch (error) {
       release();
       throw error;
     }
     return {
+      show: async () => {
+        await show();
+      },
       close: async () => {
         try {
           await closeDiffs(after);

@@ -6,21 +6,26 @@
  * editor side, which the extension glue feeds with VS Code's tabs, documents, and settings: which change diffs to
  * close, whether an editor holds unsaved changes to the target, and whether the setting auto-approves writes.
  */
+import type { LineCounts } from "./lineDiff";
 
-/** What the user sees while deciding, such as a diff editor; closed once the request ends, whatever the decision. */
-export type Preview = { close(): PromiseLike<void> };
+/**
+ * What the user sees while deciding, such as a diff editor. `show`: brings it back, opened again if the user closed it,
+ * while the request is open. `close`: closes it once the request ends, whatever the decision.
+ */
+export type Preview = { show(): PromiseLike<void>; close(): PromiseLike<void> };
 
 /**
  * One approval request. `kind`: `write` for a change to a workspace file, which the auto-approve setting may accept
  * without asking; `command` for a command to run, which always waits for the user. `tool`: the tool asking.
- * `summary`: what it acts on, as the chat shows it, such as the path a write changes. `preview`: opens what the user
- * reviews; it is not opened when the request is accepted without asking, and a preview that fails to open fails the
- * request.
+ * `summary`: what it acts on, as the chat shows it, such as the path a write changes. `lines`: the lines a write adds
+ * and removes, as "Changed files" counts them. `preview`: opens what the user reviews; it is not opened when the
+ * request is accepted without asking, and a preview that fails to open fails the request.
  */
 export type ApprovalRequest = {
   kind: "write" | "command";
   tool: string;
   summary: string;
+  lines?: LineCounts;
   preview?: () => Promise<Preview>;
 };
 

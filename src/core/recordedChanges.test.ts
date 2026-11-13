@@ -76,7 +76,7 @@ describe("recordingApplier", () => {
     const changes = new RecordedChanges();
     const rejecting = approvalApplier(
       fileApplier([app]),
-      { preview: async () => ({ close: async () => {} }), hasUnsavedChanges: async () => false },
+      { preview: async () => ({ show: async () => {}, close: async () => {} }), hasUnsavedChanges: async () => false },
       async () => ({ kind: "reject" }),
     );
     expect(

@@ -187,6 +187,7 @@ describe("parseWebviewMessage", () => {
 
   test("accepts an approval decision by its request id, a rejection with or without a reason", () => {
     expect(parseWebviewMessage({ type: "approve", id: 3 })).toEqual({ type: "approve", id: 3 });
+    expect(parseWebviewMessage({ type: "showChange", id: 3 })).toEqual({ type: "showChange", id: 3 });
     expect(parseWebviewMessage({ type: "reject", id: 3 })).toEqual({ type: "reject", id: 3 });
     expect(parseWebviewMessage({ type: "reject", id: 3, reason: "Keep the old name." })).toEqual({
       type: "reject",
@@ -198,6 +199,7 @@ describe("parseWebviewMessage", () => {
   test("rejects an approval decision with a bad id or a reason that is not text", () => {
     for (const id of [undefined, "3", 1.5, -1, Number.NaN]) {
       expect(parseWebviewMessage({ type: "approve", id })).toBeUndefined();
+      expect(parseWebviewMessage({ type: "showChange", id })).toBeUndefined();
       expect(parseWebviewMessage({ type: "reject", id })).toBeUndefined();
     }
     for (const reason of [null, 3, ["no"]]) {

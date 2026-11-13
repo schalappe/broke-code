@@ -208,6 +208,20 @@ describe("conversation record", () => {
     }
   });
 
+  test("reads back a write step's line counts, and refuses counts of another shape", () => {
+    const step = { role: "tool", name: "edit_file", args: { path: "a.ts" }, status: "ok", text: "t" } as const;
+    const counted = record({
+      entries: [
+        { role: "user", content: "edit", mentions: [], modelText: "edit" },
+        { ...step, approval: "accepted", lines: { added: 4, removed: 0 } },
+      ],
+    });
+    expect(parseConversation(serializeConversation(counted))).toEqual({ ok: true, record: counted });
+    for (const lines of [null, 4, { added: 4 }, { added: -1, removed: 0 }, { added: 1.5, removed: 0 }, "4"]) {
+      expect(parse({ ...record(), entries: [{ ...step, lines }] })).toEqual({ ok: false, reason: "invalid entry 0" });
+    }
+  });
+
   test("reads back a summary entry, and refuses a summary mark of another shape", () => {
     const summarized = record({
       entries: [

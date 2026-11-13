@@ -3345,15 +3345,18 @@ describe("ChatController agent turn", () => {
 
     /**
      * Runner over the read and write tools on the temporary workspace, writes asking through `approvalApplier`. Counts
-     * the previews opened and closed.
+     * the previews opened, shown again, and closed.
      */
     function askingRunner() {
-      const previews = { opened: 0, closed: 0 };
+      const previews = { opened: 0, shown: 0, closed: 0 };
       const roots = [{ name: "ws", path: workspaceDir }];
       const host: WriteApprovalHost = {
         preview: async () => {
           previews.opened += 1;
           return {
+            show: async () => {
+              previews.shown += 1;
+            },
             close: async () => {
               previews.closed += 1;
             },
@@ -3388,14 +3391,21 @@ describe("ChatController agent turn", () => {
 
     test("an open request shows in the state with its diff open while the reply stays streaming", async () => {
       const { state, previews, controller, done } = await waiting();
-      expect(state().approval).toEqual({ id: expect.any(Number), kind: "write", tool: "write_file", summary: "a.txt" });
+      expect(state().approval).toEqual({
+        id: expect.any(Number),
+        kind: "write",
+        tool: "write_file",
+        summary: "a.txt",
+        lines: { added: 1, removed: 1 },
+        preview: true,
+      });
       expect(state().entries.at(-1)).toMatchObject({
         role: "assistant",
         status: "streaming",
         call: { name: "write_file" },
       });
       expect(isReplying(state())).toBe(true);
-      expect(previews).toEqual({ opened: 1, closed: 0 });
+      expect(previews).toEqual({ opened: 1, shown: 0, closed: 0 });
       expect(fileText()).toBe("old\n");
       controller.stop();
       await done;
@@ -3407,7 +3417,7 @@ describe("ChatController agent turn", () => {
       await done;
 
       expect(fileText()).toBe("new\n");
-      expect(previews).toEqual({ opened: 1, closed: 1 });
+      expect(previews).toEqual({ opened: 1, shown: 0, closed: 1 });
       expect(state().approval).toBeUndefined();
       expect(state().entries[2]).toEqual({
         role: "tool",
@@ -3416,6 +3426,7 @@ describe("ChatController agent turn", () => {
         status: "ok",
         text: "write_file: replaced a.txt.",
         approval: "accepted",
+        lines: { added: 1, removed: 1 },
       });
       expect(sent()[1]!.messages.at(-1)?.content).toBe(
         '<tool_result tool="write_file" status="ok">\nwrite_file: replaced a.txt.\n</tool_result>',
@@ -3429,8 +3440,9 @@ describe("ChatController agent turn", () => {
       await done;
 
       expect(fileText()).toBe("old\n");
-      expect(previews).toEqual({ opened: 1, closed: 1 });
+      expect(previews).toEqual({ opened: 1, shown: 0, closed: 1 });
       expect(state().entries[2]).toMatchObject({ status: "error", approval: "rejected" });
+      expect(state().entries[2]).not.toHaveProperty("lines");
       expect(sent()[1]!.messages.at(-1)?.content).toBe(
         '<tool_result tool="write_file" status="error">\nThe user rejected this change.\nKeep the old name.\n</tool_result>',
       );
@@ -3445,6 +3457,18 @@ describe("ChatController agent turn", () => {
           '<tool_result tool="write_file" status="error">\nThe user rejected this change.\n</tool_result>',
         );
       }
+    });
+
+    test("Show change shows the open request's diff again, and nothing for another id or once it closed", async () => {
+      const { state, previews, controller, done } = await waiting();
+      const id = state().approval!.id;
+      await controller.showChange(id + 1);
+      await controller.showChange(id);
+      expect(previews).toMatchObject({ opened: 1, shown: 1, closed: 0 });
+      controller.approve(id);
+      await done;
+      await controller.showChange(id);
+      expect(previews).toEqual({ opened: 1, shown: 1, closed: 1 });
     });
 
     test("a decision for another request id is ignored, and so is a second decision", async () => {
@@ -3468,7 +3492,7 @@ describe("ChatController agent turn", () => {
       await done;
 
       expect(state().approval).toBeUndefined();
-      expect(previews).toEqual({ opened: 1, closed: 1 });
+      expect(previews).toEqual({ opened: 1, shown: 0, closed: 1 });
       expect(state().entries.at(-1)).toMatchObject({
         role: "assistant",
         status: "stopped",
@@ -3491,7 +3515,7 @@ describe("ChatController agent turn", () => {
 
       expect(state().conversationId).not.toBe(turnId);
       expect(state().approval).toBeUndefined();
-      expect(previews).toEqual({ opened: 1, closed: 1 });
+      expect(previews).toEqual({ opened: 1, shown: 0, closed: 1 });
       controller.approve(id);
       await Bun.sleep(20);
       expect(fileText()).toBe("old\n");
@@ -3541,7 +3565,7 @@ describe("ChatController agent turn", () => {
       clearInterval(subscription);
 
       expect(fileText()).toBe("new\n");
-      expect(previews).toEqual({ opened: 0, closed: 0 });
+      expect(previews).toEqual({ opened: 0, shown: 0, closed: 0 });
       expect(published).toBe(false);
       expect(state().entries[2]).toMatchObject({ status: "ok", approval: "auto" });
     });
@@ -4018,6 +4042,7 @@ describe("ChatController agent turn", () => {
       controller.stop();
       await done;
       open({
+        show: async () => {},
         close: async () => {
           closed += 1;
         },
@@ -6119,7 +6144,7 @@ describe("ChatController undo", () => {
       return unsaved.has(target);
     };
     const host: WriteApprovalHost = {
-      preview: async () => ({ close: async () => {} }),
+      preview: async () => ({ show: async () => {}, close: async () => {} }),
       hasUnsavedChanges: async () => false,
     };
     const runner = workspaceToolRunner(

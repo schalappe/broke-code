@@ -52,7 +52,7 @@ One body tool call inside an agent turn and the result sent back to the model; a
 the message saying what is wrong count as a step too. The chat shows each step as a compact row. When a request would
 fill the model's context, the oldest steps' results go to the model as one line saying they were left out; the chat and
 the saved conversation keep them whole. Once an agent turn has ended, the steps and replies before its last reply fold
-under one row that says what the steps did ("Read 3 files, edited 1 file, ran 1 command") when they hold at least two
+under one row that says what the steps did ("Read 3 files, changed 1 file, ran 1 command") when they hold at least two
 steps; the last reply, and a step after it, stay in view. Each step there has one kind (read, listed, searched, loaded,
 edited, ran, or other); paths count once after a lexical cleanup (`a.ts` and `./a.ts` are one file). The row wraps in a narrow panel.
 _Avoid_: tool use, action, iteration
@@ -60,7 +60,8 @@ _Avoid_: tool use, action, iteration
 **Approval**:
 The user's Accept (Run, for a command) or Reject of a tool call that changes the workspace or runs a command, given in
 the chat while the agent turn waits; a rejection, with its optional reason, goes back to the model as the call's
-result. A setting can approve writes without asking, never commands.
+result. A write shows its line counts and Show change, which brings its diff back. The Command Palette offers the same
+decisions; in the panel, ⌘Enter accepts or runs and ⌘Backspace rejects. A setting can approve writes without asking, never commands.
 _Avoid_: confirmation, permission, consent
 
 **Question**:

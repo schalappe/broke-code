@@ -50,8 +50,17 @@ export type StepApproval = "accepted" | "rejected" | "auto";
  * The approval request open in the chat: the user's Accept or Reject of the call the reply runs. `id`: the request's,
  * carried by the decision, so a decision for a request no longer open is ignored. `kind`: `write` (Accept and Reject)
  * or `command` (Run and Reject). `summary`: what it acts on, such as the file a write changes or the whole command.
+ * `lines`: a write's added and removed lines. `preview`: a diff of the change opened beside the chat, which Show change
+ * brings back.
  */
-export type PendingApproval = { id: number; kind: "write" | "command"; tool: string; summary: string };
+export type PendingApproval = {
+  id: number;
+  kind: "write" | "command";
+  tool: string;
+  summary: string;
+  lines?: { added: number; removed: number };
+  preview?: true;
+};
 
 /**
  * The `ask_user` question open in the chat, which the reply in flight waits on. `id`: the question's, carried by the
@@ -90,8 +99,9 @@ export type ChatEntry =
     }
   /**
    * A tool step: one body tool call of the reply before it, or its malformed block, and the text the model got back.
-   * `approval`: set when the call asked for one. `undone`: a write step whose file "Undo changes" later restored or
-   * removed; the history tells the model so, and never leaves its result out.
+   * `approval`: set when the call asked for one. `lines`: the lines a write that went through added and removed, as
+   * its approval showed them. `undone`: a write step whose file "Undo changes" later restored or removed; the history
+   * tells the model so, and never leaves its result out.
    */
   | {
       role: "tool";
@@ -100,6 +110,7 @@ export type ChatEntry =
       status: ToolStepStatus;
       text: string;
       approval?: StepApproval;
+      lines?: { added: number; removed: number };
       undone?: true;
     };
 
@@ -387,6 +398,8 @@ export type WebviewMessage =
   /** The user's decision on approval request `id` (`ChatState.approval`); `reason`: optional, as typed. */
   | { type: "approve"; id: number }
   | { type: "reject"; id: number; reason?: string }
+  /** Show change: bring back the diff of approval request `id`, opened again if the user closed it. */
+  | { type: "showChange"; id: number }
   /** The user's answer to question `id` (`ChatState.question`); `text`: trimmed, never empty (`MAX_ANSWER_LENGTH`). */
   | { type: "answer"; id: number; text: string }
   /** Insert at cursor: replace every selection of the active text editor with a code block's `text`. */
@@ -542,6 +555,8 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | undefined {
     }
     case "approve":
       return isRequestId(message.id) ? { type: "approve", id: message.id } : undefined;
+    case "showChange":
+      return isRequestId(message.id) ? { type: "showChange", id: message.id } : undefined;
     case "reject": {
       const { id, reason } = message;
       if (!isRequestId(id) || (reason !== undefined && typeof reason !== "string")) return undefined;

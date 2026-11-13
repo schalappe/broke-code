@@ -79,8 +79,8 @@ It must print nothing.
 | `--bc-fg` | `--vscode-foreground` | Text people read. |
 | `--bc-fg-dim` | 72% of the foreground (88% in high contrast) | Secondary text and the drawn marks. 72% keeps 4.5:1 on the default light and dark themes. |
 | `--bc-rule` | 16% of the foreground | Hairlines. |
-| `--bc-fill` | 6% of the foreground | A surface a shade off the panel: a code block, a command, a queued message. |
-| `--bc-fill-strong` | 11% of the foreground | One step stronger: inline code, chips, a hovered or pressed secondary button. |
+| `--bc-fill` | 6% of the foreground | A surface a shade off the panel: a code block, inline code, a command, a queued message. |
+| `--bc-fill-strong` | 11% of the foreground | One step stronger: chips, a hovered or pressed secondary button. |
 
 ### Role tokens
 
@@ -97,7 +97,7 @@ Each takes the color the theme gives that exact job, so a button is the theme's 
 | `--bc-button-border` | `button.border`, then `--bc-edge` | Its border. |
 | `--bc-button-border-hover` | `contrastActiveBorder`, then `--bc-button-border` | Its border when hovered. |
 | `--bc-accent-line` | `button.background`, then `--bc-edge` | The outline of an earlier user message. The latest one takes the button tokens themselves. |
-| `--bc-accent-chip` | 18% of `button.foreground` | A chip on the latest user message. |
+| `--bc-accent-chip` | 45% of `button.foreground` | The outline of a chip on the latest user message, which has no fill of its own. |
 | `--bc-tool` | `textLink.foreground` | A tool's name on the thread. Not a link: its row opens, and the name is also in the editor font, weight 600. |
 | `--bc-inverse-well`, `--bc-inverse-hover`, `--bc-inverse-line` | 14%, 16%, and 45% of `sideBar.background` | On the decision block, drawn in negative: the command's ground, a hovered Reject or option, their border. |
 | `--bc-inverse-button-hover` | 86% of `sideBar.background` over the foreground | The hovered Accept, Run, or Answer on the decision block. |
@@ -128,7 +128,7 @@ high-contrast theme defines `--vscode-contrastBorder` and `--vscode-contrastActi
 
 - `--bc-edge` is `var(--vscode-contrastBorder, transparent)`. Every filled surface carries
   `border: 1px solid var(--bc-edge)`: invisible in light and dark themes, a visible boundary in high contrast. This
-  covers code blocks (the frame of a block with its header included), command blocks, chips, buttons, and the warning
+  covers code blocks (the frame of a block, its actions laid over it), command blocks, chips, buttons, and the warning
   and error blocks. The user's message takes the button's border (`--bc-button-border`), which is the contrast
   border there; a high-contrast theme whose button has no fill shows the latest message and the earlier ones alike,
   as outlined blocks, which is accepted: the difference is emphasis, not a state. The pickers and the header's
@@ -182,12 +182,19 @@ between its regions: header, notices, the conversation (or History in its place)
 - Long content never widens the panel: a path or a title on one line is cut with an ellipsis; a message, a command,
   and a chip wrap anywhere; a folded turn's row wraps between words; a code block, a step result, and a table scroll
   inside themselves.
-- The header is a running head over one rule (`--bc-line`): the two pickers share the first line; the usage and the
-  buttons drop below once the pickers would fall under 16em.
+- The header is a running head over one rule (`--bc-line`): the pickers take the first line whole, since a model id
+  is long and the one thing to read there: the model takes the room and the provider shrinks to what is left; with
+  one provider there is no provider picker. The reasoning effort is in the message box, beside the mode. Each keeps room for its native
+  chevron at the right (`--bc-chevron`), so it never covers the name. The usage, Set context size after it when the
+  model's size is unknown, and the buttons follow on the next line, wrapping when the panel is narrow. The unknown size is said in that link's tooltip, not in a line of its own, since a service that never
+  reports its size would keep such a line on screen for good.
 - The conversation keeps 4px of side padding inside its scroll box, so a focus ring on a row at its edge is not
   clipped.
 - The conversation follows its bottom while the user is there (within 24px of it) and stays where it is once they
-  scroll up. When a turn ends and folds while they are scrolled up, the turn's question row (the user's message above
+  scroll up; a message they send brings them back to the bottom. Scrolled up, one sticky row at the bottom of the view
+  (`.jump-row`) says "Jump to latest", dim, quiet like the header's buttons, on the panel's opaque ground with an 8px
+  fade above it; while the reply waits on the user it says what it waits on, in the full foreground, weight 600, edged
+  in the foreground, since the turn holds until they act. When a turn ends and folds while they are scrolled up, the turn's question row (the user's message above
   the fold) stays at the same place on screen. Nothing above that row changes, so the view need not move: the
   browser's own scroll anchoring is off (`overflow-anchor: none`), since it would re-anchor on the final reply or on a
   step that vanished into the fold and move the view. Known limit: when the fold leaves too little content under the
@@ -213,15 +220,18 @@ user's message). Borders and rules are 1px. No colored side stripe.
   decision block"). While a reply is in flight, Stop is the message box's primary button
   and Send, which then queues, is secondary.
 - Header (New chat, History): secondary buttons shown as quiet text, dim and without a drawn box (`--bc-edge` only),
-  until hovered, focused, or pressed, when they take the secondary look. The two pickers follow the same rule: dim
+  until hovered, focused, or pressed, when they take the secondary look. The pickers follow the same rule: dim
   text on the panel, one size down, their border back on hover and focus.
 - Secondary (New chat, History, Delete, Reject, a question's options, Retry, Add provider under the skipped providers, a queued message's
   Send now, Edit, and Remove, the turn's Retry, Retry anyway, Cancel, Continue, "Implement in ... mode", and Undo changes, the last message's Edit and the Cancel of its mark): a hairline box on the panel (`--bc-line`), the foreground as
   text; `--bc-fill-strong` when hovered or pressed (`aria-expanded="true"`).
-- Link (Open provider settings, Set context size): the link color, underlined.
+- Link (Open provider settings, Show change): the link color, underlined; on the decision block, the block's text
+  color, since the theme's link color is drawn for the panel's ground. Set context size is configuration, not news:
+  dim like the usage, with a dotted underline, the link color only when hovered or focused.
 - Code block action (Copy, Insert at cursor): a secondary button two pixels down (`--bc-fs-xs`), at least a row high
   (`--bc-row`). Never primary, so the decision block keeps the conversation's one primary button. Copy shows its
-  outcome, "Copied" or "Copy failed", in place of its label for about two seconds. Their header is not selectable.
+  outcome, "Copied" or "Copy failed", in place of its label for about two seconds. They sit on the panel's opaque
+  ground (`--bc-bg`), so code under them never shows through, and are not selectable.
 - Quote: a secondary button in a row of its own (`.quote-row`) directly under an answer's Markdown, 4px under it (2px
   under the narration before a call), shown while text of that answer is selected. The row is not selectable. No room
   is kept for it, a written exception to the rule that a revealed control keeps its room, which covers controls
@@ -238,7 +248,8 @@ focus.
 The mode selector is a native select one size down (`--bc-fs-sm`), "Ask", "Auto-edit", or "Plan", its tooltip saying
 what the mode does. It shows the mode the host holds (Plan from the workspace, the others from the setting): a pick
 shows only once the host has applied it, and a failed write leaves it as it was, with the error in a notification. Disabled (half opacity) while a reply is in flight, like the
-pickers, and while a mode change is being written, when Send is disabled too (Enter sends nothing).
+pickers, and while a mode change is being written, when Send is disabled too (Enter sends nothing). The reasoning
+effort picker follows it, drawn the same way: both set the next turn, so the header keeps its line for the model.
 
 ### Queued messages
 
@@ -254,8 +265,8 @@ would not act. Above the rows, a notice line says "The queue is paused." when no
   (`--bc-button-fg` on `--bc-button-bg`); a message a later one follows (`.earlier`) keeps only their outline
   (`--bc-accent-line`) on the panel, its text in the foreground, so the question in progress is the one filled block.
   Its chips sit under the text: a path in the editor font on `--bc-fill-strong`, then its status in dim text; a
-  failed chip is drawn in the error color. On the latest message a chip is a tint of the text (`--bc-accent-chip`)
-  with its status and marker in that text's color, and a failed or neutral chip takes the panel's ground back, where
+  failed chip is drawn in the error color. On the latest message a chip has no fill, so its text keeps the message's
+  contrast, and is outlined in a tint of the text (`--bc-accent-chip`), with its status and marker in that text's color, and a failed or neutral chip takes the panel's ground back, where
   its own color reads. A chip that found
   nothing to attach without failing (`@problems` with no error or warning, `@diff` with no change) is neutral: no fill
   and dim text, its edge kept for high contrast, its status in words. A `@diff` whose source is absent or off (no
@@ -265,9 +276,18 @@ would not act. Above the rows, a notice line says "The queue is paused." when no
   10-12, 3 lines"); its kind marker is a pair of brackets (side borders only), and with no active editor, an empty
   selection, or a file outside the workspace it is a failed chip.
 - Reply: Markdown flush on the panel, inside `.answer`, the only place the Markdown rules apply.
+- A tool step the user rejected says "rejected by you" (with the reason typed after a colon) in the row's ordinary
+  dim color, on an ordinary node: the user's own decision is not a failure, so it never takes the error color. An
+  answered question's row says "you answered: <answer>". A block of code or a step result that scrolls sideways
+  shows a thin bar in the theme's slider color.
+- The decision block's Accept or Run and Reject name their keys, ⌘Enter and ⌘Backspace, in their tooltip.
 - Code block of a reply: once its text is final, its frame (`.code-block`: `--bc-fill`, `--bc-edge`, radius 6px)
-  holds a header (`.code-actions`) with Copy and Insert at cursor at the right, then the code, which scrolls inside
-  itself under the header. A block still growing renders as a bare code block, without the header.
+  holds the code, which scrolls inside itself, with Copy and Insert at cursor (`.code-actions`) laid over its top right
+  corner, 4px in. They take no room, so a block at rest is its code alone. A block still growing renders as a bare
+  code block, without them. Tables are bordered in `--bc-line`, their head cells on `--bc-fill` in weight 600, cells
+  at least 6em wide with tabular figures, so a wide table scrolls rather than breaking its words; a task list's boxes
+  take the marker's place, drawn in CSS (the browser greys a disabled box whatever its accent): an outline in the dim
+  foreground, filled with the button color and a check mark in the button's text color when ticked.
 - Quote under a reply: its row sits between the answer's Markdown and the reply's tool step or decision block, so the
   tool step moves down by one row while it shows.
 - The thread: a reply that holds a tool step, and a folded turn, sit 20px in, beside one drawn 1px line
@@ -286,7 +306,7 @@ would not act. Above the rows, a notice line says "The queue is paused." when no
 - A call without a result has no chevron: its node is filled and breathing while it runs, hollow when it ended with
   no result.
 - Folded turn: an ended turn's steps and intermediate replies under one small dim row, a double-ring node on the
-  thread, between the user's message and the final reply: what the steps did, "Read 3 files, edited 1 file, ran 1
+  thread, between the user's message and the final reply: what the steps did, "Read 3 files, changed 1 file, ran 1
   command, 1 failed", the counts in words, never in color alone, a path counted once after a lexical cleanup (`a.ts` and
   `./a.ts` are one file); it wraps, never cut. Closed when the turn ends; opened, the entries show exactly as they
   rendered before. Its rules use the child combinator (`.turn-fold > summary`), so the reasoning and step rows inside
@@ -297,10 +317,11 @@ would not act. Above the rows, a notice line says "The queue is paused." when no
   "Conversation not summarized" when it failed, stopped, halted, or came back empty. A summary is never folded, and the
   turn before it folds by the usual rule.
 - The turn's actions (`.turn-actions`): one row of secondary buttons after how the turn ended, wrapping when narrow:
-  under the last turn's reply, Retry, then Continue when the turn was stopped or halted on the step limit or on
+  under the last turn's reply, Retry (after "Implement in ... mode", below, when it shows), then Continue when the turn was stopped or halted on the step limit or on
   malformed calls, both disabled when Send would not act; then, while Plan is on and the conversation ends on its
-  final answer, "Implement in Ask mode" or "Implement in Auto-edit mode", named after the mode the setting holds and
-  disabled like Retry (secondary too: only the decision block has a primary button); then, under the last reply of
+  final answer, "Implement in Ask mode" or "Implement in Auto-edit mode" leads the row, before Retry, in weight 600
+  (`.next-step`), since carrying the plan out is the step the user came for, named after the mode the setting holds
+  and disabled like Retry (secondary still: only the decision block has a primary button); then, under the last reply of
   the turn whose writes are held, "Undo changes", followed by the small dim hint "Commands this turn ran are not listed or undone." when the
   turn ran one.
   None shows while a reply is in flight, so nothing sits between an approval's controls and the message box. When
@@ -308,7 +329,8 @@ would not act. Above the rows, a notice line says "The queue is paused." when no
   (`.retry-warning`, one size down, in the full foreground, since it asks before acting) says Retry does not revert
   them and that Undo changes gets the files back, the same button reads "Retry anyway", and Cancel follows it. Not a
   modal: the question sits where the user clicked.
-- Edit: under the last user message, at its right and 4px below it (`.user-actions`), a secondary button, shown
+- Edit: under the last user message, at its right and 4px below it (`.user-actions`), a quiet secondary button like
+  the header's (one size down, dim text, `--bc-edge`), so it never outweighs the answer, shown
   where Retry is and disabled when Send would not act. A click fills the message box and marks the last turn: that
   message and everything after it sit in one group (`.replacing`) under a line of their own (`.replacing-head`): the
   words "Sending replaces this message and its replies.", one size down in the full foreground, since they say what
@@ -341,8 +363,10 @@ would not act. Above the rows, a notice line says "The queue is paused." when no
 The call that waits for the user and its controls share one block drawn in negative (`.decision`): the foreground
 as its ground, the panel's color as its text. It is the one element of the conversation that asks for attention,
 and the thread ends on its solid 9px node. "Waiting for your decision" is in weight 600, and the row wraps so the
-path or command is never cut. Under it: the reason field, in the theme's input colors, then Accept or Run and
-Reject. On this block Accept or Run is the panel's own ground with the foreground as text, weight 600, since the
+path or command is never cut. Under it, for a write: its line counts (`+N −M`, in the editor font) and Show change,
+a link in the block's text color that brings the diff back, on a line of their own; then one line with the reason
+field, a compact row one size down in the theme's input colors, taking the room left, and Accept or Run and Reject
+after it; below about 300px the buttons wrap under the field. The field never outweighs Accept. On this block Accept or Run is the panel's own ground with the foreground as text, weight 600, since the
 theme's button color is not chosen for this ground and a high-contrast theme gives it no fill; Reject is outlined in
 the panel's color. A focus ring on its buttons is the panel's color.
 
@@ -357,7 +381,9 @@ Answer is the block's primary button, drawn like Accept, and is disabled, at hal
 - The `@` and `/` menus overlay the conversation above the message box. The highlighted row takes the theme's active
   selection, or `--bc-fill-strong` where the theme has none, and `--bc-edge-active` in high contrast.
 - History: the search field ("Search conversations") on top, at full width, then one row per conversation, title over
-  date, Delete at the right. A row found by its messages only carries its excerpt between title and date: one line,
+  date, Delete at the right: quiet like the header's buttons, shown only on the row the pointer or the focus is on
+  (opacity, so it stays in the tab order), so the titles lead. Its first click asks: the same button reads "Confirm
+  delete" and Cancel follows it, both shown, since a delete cannot be undone. A row found by its messages only carries its excerpt between title and date: one line,
   dim, one size down, cut with an ellipsis, plain text without a highlight. Only the rows scroll; the field stays in
   place. The current row has a fill, a title in weight 600, and `--bc-edge-active` in high contrast. With no
   conversation saved, History shows its empty line and no field; with no row left, "No match" as one dim centered
@@ -372,13 +398,13 @@ Each kind of state has one look, distinct from the others at a glance:
 | --- | --- |
 | Loading (waiting for the reply, thinking, tool running, models loading, History's "Searching…") | Dim steady text; a line of its own leads with a dot that breathes, and a running step's node breathes. The pickers and the mode selector are disabled. While a mode change is being written, the mode selector and Send are disabled, with no other sign: the write takes a moment. While an undo runs, its button reads "Undoing changes…" and is disabled, and so is Send. |
 | Empty (no provider, new conversation, empty History, no History row left by the search) | One dim line, centered in the room it has; a link under it when there is something to do. No provider: Add provider (primary) and the Open provider settings link side by side under it. |
-| Notice (unknown context size, older tool results left out of the next request, the queue paused or full, an undo that put every file back) | One small dim line, with a link when there is something to do (Set context size). Nothing went wrong, so no block. |
+| Notice (older tool results left out of the next request, the queue paused or full, an undo that put every file back) | One small dim line. Nothing went wrong, so no block. An unknown context size is the header's Set context size link instead. |
 | Warning (skipped providers and skills, an undo that skipped files, conversations History could not search) | A block on the theme's warning fill; under skipped providers, Add provider (secondary) below the block, only while a valid provider exists: without one, the empty state's Add provider is the panel's only one. |
 | Error (models unavailable, failed reply, storage and listing problems, an undo that failed unexpectedly) | A block on the theme's error fill: the message, its technical detail in the editor font, then its actions. |
 | Failed step or chip | The error color on the status text; no block. |
 | Waiting for a decision or an answer | The decision block, in negative, on the thread's solid node. |
 | Turn ending (Stopped, halted) | A short rule, then small dim text. |
-| Folded turn (an ended turn of two steps or more) | One small dim row on a double-ring node: what the steps did ("Read 3 files, edited 1 file, ran 1 command"), "N steps" for a fold of other steps only, then the failed and rejected counts in words, then the chevron; it wraps, never cut. |
+| Folded turn (an ended turn of two steps or more) | One small dim row on a double-ring node: what the steps did ("Read 3 files, changed 1 file, ran 1 command"), "N steps" for a fold of other steps only, then the failed and rejected counts in words, then the chevron; it wraps, never cut. |
 | Replacing (Edit on the last message) | The last turn as a group under one line in the full foreground saying that sending replaces it, with Cancel; not dimmed. |
 | Summarized (a summary, and the entries it replaces) | A separator of dim words between two rules above the summary; the entries before it as a group under one dim line saying they are no longer sent, not dimmed; the turn's message an automatic summary quotes with a dim line saying it is still sent. |
 
@@ -387,7 +413,7 @@ Each kind of state has one look, distinct from the others at a glance:
 Small, and never needed to understand a state: the breathing of a loading mark (opacity, 1.6s), the turn of a
 chevron and the color change of a button (0.12s, ease-out). Only the mark breathes, the dot that leads a loading line
 or a running step's node; the loading text stays steady, since at the low point of the breath it fell under 2:1. Two tokens carry it: `--bc-breathe`, the animation's name, and `--bc-fast`,
-the duration of a transition. The reveal of controls shown on hover or focus (a code block's header) fades their
+the duration of a transition. The reveal of controls shown on hover or focus (a code block's actions) fades their
 opacity over `--bc-fast`. Under `prefers-reduced-motion: reduce`, and when VS Code sets `vscode-reduce-motion` on
 `body`, they become `none` and `0s`, so new motion that reads them stops there too.
 
@@ -395,8 +421,8 @@ opacity over `--bc-fast`. Under `prefers-reduced-motion: reduce`, and when VS Co
 
 - Every control is a native element in the tab order; the DOM order is the visual order.
 - A control revealed on hover is also revealed while the focus is inside its block (`:focus-within`), and hides with
-  `opacity` only, never `visibility` or `display`, so it stays in the tab order, and its room stays reserved, so the
-  reveal moves nothing. On a device without hover it always shows. A code block's Copy and Insert at cursor follow
+  `opacity` only, never `visibility` or `display`, so it stays in the tab order, and the reveal moves nothing: its
+  room stays reserved, or it is laid over the block. On a device without hover it always shows. A code block's Copy and Insert at cursor follow
   this rule, and neither moves the focus when clicked.
 - One focus ring: `1px solid var(--vscode-focusBorder)`. It sits inside a field or a row (offset -1px), which fill
   their line, and outside a button (offset 2px), where a ring on the button's own fill would not show. The message
@@ -424,7 +450,8 @@ opacity over `--bc-fast`. Under `prefers-reduced-motion: reduce`, and when VS Co
   provider) waits and lands in the box when it comes back; an editor draft is dropped instead.
 - From the message box, Shift+Tab reaches Reject, then Accept or Run, then the reason field: the reason field comes
   first in the DOM, then Accept or Run, then Reject, and nothing focusable may be added between them and the message
-  box. The mode selector therefore comes after the message box: Tab from the message box reaches it, then Send, then
+  box. The mode selector therefore comes after the message box: Tab from the message box reaches it, then the
+  reasoning effort, then Send, then
   Stop while a reply is in flight, then the queued messages' controls, which sit under the box for the same reason. A
   webview test pins this order, with and without a queue.
 - With a question open, Shift+Tab from the message box reaches Answer (unless the blank field disables it), then the

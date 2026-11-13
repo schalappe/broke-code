@@ -9,6 +9,7 @@
  */
 import { homedir } from "node:os";
 import * as vscode from "vscode";
+import { CHAT_COMMANDS, type ChatCommand, runChatCommand } from "../core/chatCommands";
 import { ChatController, type InstructionReader, type SkillReader } from "../core/chatController";
 import type { ChatModel } from "../core/client";
 import { type CommandEnv, commandShell, killRunningCommands } from "../core/commands";
@@ -32,7 +33,7 @@ import { approvalApplier, fileApplier, type WriteApprovalHost } from "../core/wr
 import { runAddProvider } from "./addProvider";
 import { ApiKeys } from "./apiKeys";
 import { DiffPreviews, hasUnsavedChanges, readAutoApproveWrites, writeAutoApproveWrites } from "./approval";
-import { CHAT_VIEW_ID, ChatView } from "./chatView";
+import { CHAT_VIEW_ID, ChatContextKeys, ChatView } from "./chatView";
 import { registerCommitMessageCommand } from "./commitMessage";
 import { askContextSize, LIMIT_SETTINGS, readCommandTimeoutSeconds, readLimits } from "./contextSizes";
 import { registerEditSelectionCommand } from "./editSelection";
@@ -88,10 +89,14 @@ export function activate(context: vscode.ExtensionContext): void {
   // [>]: One for the chat, the commit message, and "Edit selection": a request of any teaches the others which models
   // take a field.
   const providerSupport = new ProviderSupport();
+  const chatContext = new ChatContextKeys();
   const controller = new ChatController({
     apiKeys,
     workspaceState: context.workspaceState,
-    publish: (state) => view?.publish(state),
+    publish: (state) => {
+      view?.publish(state);
+      chatContext.update(state);
+    },
     mentions,
     store: conversations,
     tools,
@@ -171,6 +176,9 @@ export function activate(context: vscode.ExtensionContext): void {
       setApiKey(typeof provider === "string" ? provider : undefined),
     ),
     vscode.commands.registerCommand("broke-code.addProvider", addProvider),
+    ...Object.entries(CHAT_COMMANDS).map(([command, id]) =>
+      vscode.commands.registerCommand(id, () => runChatCommand(command as ChatCommand, controller)),
+    ),
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration("brokeCode.providers")) applySettings();
       if (LIMIT_SETTINGS.some((setting) => event.affectsConfiguration(setting))) controller.limitsChanged();
