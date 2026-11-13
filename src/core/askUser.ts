@@ -57,7 +57,7 @@ export async function askUser(
 
   let answer: QuestionAnswer;
   try {
-    answer = await untilAborted(context.requestAnswer(request), context.signal);
+    answer = await untilAborted(() => context.requestAnswer(request), context.signal);
   } catch (error) {
     console.error("broke-code: could not ask a question", error);
     return { status: "error", text: `${TOOL}: the question could not be asked (${excerpt(String(error))}).` };
@@ -72,7 +72,7 @@ export async function askUser(
   }
 }
 
-/** The request `call` asks, or the error result that refuses it. */
+/** Checked before anything is asked, so a refused call never reaches the user. */
 function answerRequest(call: ToolCall): AnswerRequest | ToolResult {
   const question = (call.args.question ?? "").trim();
   if (question === "") return { status: "error", text: `${TOOL}: the question is empty.` };
@@ -90,11 +90,21 @@ function answerRequest(call: ToolCall): AnswerRequest | ToolResult {
   return { question, options };
 }
 
-/** `work`'s answer, or a cancellation once `signal` aborts: a request that ignores the signal never holds the turn. */
-function untilAborted(work: Promise<QuestionAnswer>, signal: AbortSignal): Promise<QuestionAnswer> {
+/**
+ * The answer of the request `start` makes, or a cancellation once `signal` aborts: a request that ignores the signal
+ * never holds the turn. [!]: The listener is in place before `start` runs, so an abort fired while the request is being
+ * made still cancels it.
+ */
+function untilAborted(start: () => Promise<QuestionAnswer>, signal: AbortSignal): Promise<QuestionAnswer> {
   return new Promise((resolve, reject) => {
     const onAbort = () => resolve({ kind: "cancel" });
     signal.addEventListener("abort", onAbort, { once: true });
+    let work: Promise<QuestionAnswer>;
+    try {
+      work = start();
+    } catch (error) {
+      work = Promise.reject(error);
+    }
     work.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
   });
 }

@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import { type AnswerRequest, askUser, type QuestionAnswer } from "./askUser";
 import type { ToolCall } from "./tools";
 
-/** A run context whose question request answers `answer` and records each request it gets. */
 function answering(answer: QuestionAnswer, signal = new AbortController().signal) {
   const asked: AnswerRequest[] = [];
   return {
@@ -102,6 +101,22 @@ describe("askUser", () => {
     controller.abort();
     expect(await result).toEqual({ status: "error", text: "ask_user: stopped before it finished." });
     expect(asked).toBe(1);
+  });
+
+  test("gives the stopped error when the signal aborts while the request is being made", async () => {
+    const controller = new AbortController();
+    const context = {
+      signal: controller.signal,
+      requestAnswer: () => {
+        controller.abort();
+        return new Promise<QuestionAnswer>(() => {});
+      },
+    };
+    const timeout = new Promise<string>((resolve) => setTimeout(() => resolve("never settled"), 200));
+    expect(await Promise.race([askUser(call("Which?"), context), timeout])).toEqual({
+      status: "error",
+      text: "ask_user: stopped before it finished.",
+    });
   });
 
   test("asks nothing once the signal is aborted", async () => {

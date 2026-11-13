@@ -82,6 +82,21 @@ describe("workspaceToolRunner", () => {
     }
   });
 
+  test("with ask_user off, a direct call gets the unknown-tool result and asks nothing", async () => {
+    const { runner } = recordingRunner(undefined, false);
+    let asked = 0;
+    const counting: ToolContext = {
+      ...context,
+      requestAnswer: async () => {
+        asked++;
+        return { kind: "answer", text: "src/a.ts" };
+      },
+    };
+    const call = { name: "ask_user", args: { question: "Which file?" } };
+    expect(await runner.run(call, counting)).toEqual({ status: "error", text: "ask_user is not a read tool." });
+    expect(asked).toBe(0);
+  });
+
   test("with ask_user on, asks through the run's question request", async () => {
     const { runner } = recordingRunner(undefined, true);
     const call = { name: "ask_user", args: { question: "Which file?", options: "src/a.ts\nsrc/b.ts" } };
