@@ -41,8 +41,9 @@ supports them (ADR 0001), so one contract covers the internal service and Ollama
 - Small models with small contexts (32,768 tokens assumed when unknown): context usage, left-out tool results,
   `/compact`, and automatic compaction are everyday parts of use, not edge cases.
 - The workspace's own conventions: `AGENTS.md` instruction files and Agent Skills under `.agents/skills/`.
-- Entry points outside the chat: "Add selection to chat", the quick fix "Fix with broke-code", and "Generate commit
-  message" in Source Control.
+- Entry points outside the chat: the editor's "broke-code" submenu ("Add selection to chat" and "Edit selection", a
+  one-request rewrite of the selection shown as a diff, ADR 0007), the quick fix "Fix with broke-code", and "Generate
+  commit message" in Source Control.
 
 ## Capabilities and Constraints
 
@@ -59,7 +60,8 @@ supports them (ADR 0001), so one contract covers the internal service and Ollama
   component kit, no Tailwind. Every color comes from the active VS Code theme (see `DESIGN.md`).
 - Out of scope for v1, by maintainer decision: inline completion, multi-agent modes, MCP, code indexing and
   embeddings, a browser tool, git checkpoints, native or hybrid tool calling, skill directories other than
-  `.agents`, `CLAUDE.md`, `/clear`, `/help`.
+  `.agents`, `CLAUDE.md`, `/clear`, `/help`. "Edit selection" is not inline completion: nothing is suggested while
+  the user types (ADR 0007).
 - The domain vocabulary is in `GLOSSARY.md`; the decisions are in `docs/adr/`.
 
 ## Brand Commitments

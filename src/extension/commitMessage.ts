@@ -6,12 +6,11 @@
  */
 import { basename } from "node:path";
 import * as vscode from "vscode";
-import { streamChat } from "../core/client";
+import { type ChatModel, streamChat } from "../core/client";
 import {
   CommitMessageGenerator,
   type CommitMessagePorts,
   type CommitRepository,
-  type CommitSelection,
   type RepositoryLookup,
 } from "../core/commitMessage";
 import type { ProviderSupport } from "../core/providerSupport";
@@ -24,7 +23,7 @@ export const GENERATE_COMMIT_MESSAGE_COMMAND = "broke-code.generateCommitMessage
  * each model. The disposable aborts every run, so deactivation writes nothing.
  */
 export function registerCommitMessageCommand(
-  selection: () => Promise<CommitSelection | undefined>,
+  selection: () => Promise<ChatModel | undefined>,
   providerSupport: ProviderSupport,
 ): vscode.Disposable {
   const ports: CommitMessagePorts = {

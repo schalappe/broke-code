@@ -273,5 +273,18 @@
   "Sending replaces this message and its replies. It does not revert the files this turn wrote or the commands it ran. To get the files back, use Undo changes first.": "L'envoi remplace ce message et ses réponses. Il ne rétablit pas les fichiers que ce tour a écrits ni les commandes qu'il a lancées. Pour récupérer les fichiers, utilisez d'abord Annuler les modifications.",
   "{0} (changes of this turn)": "{0} (modifications de ce tour)",
   "Could not open the changes of {0}: the file no longer exists.": "Impossible d'ouvrir les modifications de {0} : le fichier n'existe plus.",
-  "Could not open the changes of {0}: {1}": "Impossible d'ouvrir les modifications de {0} : {1}"
+  "Could not open the changes of {0}: {1}": "Impossible d'ouvrir les modifications de {0} : {1}",
+  "Select the code to edit first.": "Sélectionnez d'abord le code à modifier.",
+  "broke-code can edit a selection only in a writable file or an untitled document.": "broke-code ne peut modifier une sélection que dans un fichier modifiable ou un document sans titre.",
+  "An edit is already in progress for {0}.": "Une modification est déjà en cours pour {0}.",
+  "The text changed since the request. Nothing was edited.": "Le texte a changé depuis la requête. Rien n'a été modifié.",
+  "The document could not be edited.": "Le document n'a pas pu être modifié.",
+  "The selection does not fit the model's context.": "La sélection ne tient pas dans le contexte du modèle.",
+  "The model returned no code.": "Le modèle n'a renvoyé aucun code.",
+  "Could not edit the selection.": "Impossible de modifier la sélection.",
+  "Editing the selection…": "Modification de la sélection…",
+  "Edit selection": "Modifier la sélection",
+  "Describe the change to make to the selection in {0}.": "Décrivez la modification à apporter à la sélection dans {0}.",
+  "For example: handle an empty list": "Par exemple : gérer une liste vide",
+  "{0} (edited selection)": "{0} (sélection modifiée)"
 }

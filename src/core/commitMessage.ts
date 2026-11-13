@@ -6,6 +6,7 @@
  */
 import {
   type ChatMessage,
+  type ChatModel,
   type ChatOutcome,
   lateReasoning,
   type ProviderAccess,
@@ -142,9 +143,6 @@ export type RepositoryLookup =
   | { kind: "noRepository" }
   | { kind: "dismissed" };
 
-/** The provider and model selected in the chat, and that model's context size in tokens. */
-export type CommitSelection = { access: ProviderAccess; model: string; contextSize: number };
-
 /**
  * What the command needs from the host. `selection`: the chat's provider and model, `undefined` when either is not
  * chosen. `stream`: `streamChat`. `providerSupport`: the memory the chat's requests share, passed to every request; the
@@ -154,7 +152,7 @@ export type CommitSelection = { access: ProviderAccess; model: string; contextSi
  * `showError` and `showWarning`: native notifications.
  */
 export type CommitMessagePorts = {
-  selection(): Promise<CommitSelection | undefined>;
+  selection(): Promise<ChatModel | undefined>;
   stream(access: ProviderAccess, options: StreamChatOptions): Promise<ChatOutcome>;
   providerSupport: ProviderSupport;
   confirmReplace(repository: CommitRepository): Promise<boolean>;
@@ -272,7 +270,7 @@ export class CommitMessageGenerator {
    */
   private async request(
     repository: CommitRepository,
-    selection: CommitSelection,
+    selection: ChatModel,
     agreed: string,
     signal: AbortSignal,
   ): Promise<RequestResult> {

@@ -28,6 +28,12 @@ export type ProviderAccess = {
   apiKey: string | undefined;
 };
 
+/**
+ * The provider and model selected in the chat, that provider's key, and the model's context size in tokens, read when
+ * a command outside the chat (the commit message, "Edit selection") starts its run and kept for that run.
+ */
+export type ChatModel = { access: ProviderAccess; model: string; contextSize: number };
+
 /** `system`: the system prompt, sent first. Tool results go back as `user` messages, never as the `tool` role (ADR 0001). */
 export type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
 

@@ -3,13 +3,14 @@
  * Activation entry point: wires settings, API keys, mentions (and the diagnostics `@problems`, the git diffs `@diff`,
  * and the selection `@selection` read), read tools, write tools and commands behind their approval, each turn's
  * written files recorded for "Undo changes" and listed in "Changed files" with their diffs, instruction files, skills, turn limits, file index, saved conversations, chat controller, chat view, `broke-code.setApiKey`,
- * `broke-code.addProvider`, `broke-code.generateCommitMessage`, the notifications of a turn that ended or waits while
+ * `broke-code.addProvider`, `broke-code.generateCommitMessage`, `broke-code.editSelection`, the notifications of a turn that ended or waits while
  * the chat is not in view, and the editor's entry points into the chat:
  * `broke-code.addSelectionToChat` and the quick fix "Fix with broke-code" (`broke-code.fixDiagnostic`).
  */
 import { homedir } from "node:os";
 import * as vscode from "vscode";
 import { ChatController, type InstructionReader, type SkillReader } from "../core/chatController";
+import type { ChatModel } from "../core/client";
 import { type CommandEnv, commandShell, killRunningCommands } from "../core/commands";
 import { directoryFiles } from "../core/conversationFiles";
 import { answerConversationSearch, ConversationStore } from "../core/conversationStore";
@@ -34,6 +35,7 @@ import { DiffPreviews, hasUnsavedChanges, readAutoApproveWrites, writeAutoApprov
 import { CHAT_VIEW_ID, ChatView } from "./chatView";
 import { registerCommitMessageCommand } from "./commitMessage";
 import { askContextSize, LIMIT_SETTINGS, readCommandTimeoutSeconds, readLimits } from "./contextSizes";
+import { registerEditSelectionCommand } from "./editSelection";
 import { WorkspaceFileIndex } from "./fileIndex";
 import { gitDiffs } from "./git";
 import { turnNotifier } from "./notifications";
@@ -81,7 +83,8 @@ export function activate(context: vscode.ExtensionContext): void {
   const conversations = new ConversationStore(directoryFiles(context.storageUri?.fsPath));
   let view: ChatView | undefined;
   const turnDiffs = registerTurnDiffs();
-  // [>]: One for the chat and the commit message: a request of either teaches the other which models take a field.
+  // [>]: One for the chat, the commit message, and "Edit selection": a request of any teaches the others which models
+  // take a field.
   const providerSupport = new ProviderSupport();
   const controller = new ChatController({
     apiKeys,
@@ -117,8 +120,8 @@ export function activate(context: vscode.ExtensionContext): void {
     addProvider: () => addProvider(),
   });
 
-  // [>]: The chat's selection, its key, and its context size, read when a commit message run starts.
-  const commitSelection = async () => {
+  // [>]: The chat's provider and model, its key, and its context size, read when a commit message or edit run starts.
+  const chatModel = async (): Promise<ChatModel | undefined> => {
     const { provider: name, model } = controller.snapshot;
     const provider = readProviders().providers.find((entry) => entry.name === name);
     if (!provider || model === undefined) return undefined;
@@ -172,7 +175,8 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     apiKeys.onDidChange((provider) => controller.keyChanged(provider)),
     fileIndex,
-    registerCommitMessageCommand(commitSelection, providerSupport),
+    registerCommitMessageCommand(chatModel, providerSupport),
+    registerEditSelectionCommand(chatModel, providerSupport, workspaceRoots),
     // [>]: Stop first, so an open approval request is cancelled before its diff closes with the others. Nothing queued
     // is sent. The changed files' diffs close too: the held turn does not survive a reload.
     {
