@@ -696,9 +696,7 @@ export class ChatController {
    */
   continueTurn(shown: ShownEntries, label: string): Promise<void> {
     if (!this.lastTurnNow(shown)?.continues) return Promise.resolve();
-    const user: UserEntry = { role: "user", content: label, mentions: [] };
-    this.modelText.set(user, CONTINUE_TEXT);
-    return this.startTurn({ kind: "continue", user });
+    return this.startFixedTextTurn(label, CONTINUE_TEXT);
   }
 
   /**
@@ -716,8 +714,16 @@ export class ChatController {
     if (!acts) return Promise.resolve();
     this.rememberPlan(false);
     this.modeChanged();
+    return this.startFixedTextTurn(label, IMPLEMENT_PLAN_TEXT);
+  }
+
+  /**
+   * Start a turn on a user entry a button sent: the chat shows `label`, and the model reads `modelText`, a fixed
+   * English text, in its place. The caller checks first that the button may act.
+   */
+  private startFixedTextTurn(label: string, modelText: string): Promise<void> {
     const user: UserEntry = { role: "user", content: label, mentions: [] };
-    this.modelText.set(user, IMPLEMENT_PLAN_TEXT);
+    this.modelText.set(user, modelText);
     return this.startTurn({ kind: "continue", user });
   }
 
