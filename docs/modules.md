@@ -106,10 +106,14 @@ This file says which file holds which responsibility. Update it when a module ga
   `restored`, `removed`, or `skipped` with its `RestoreRefusal`, as `UndoneFile` in `protocol.ts` plus the file's real
   path), the approval seam (`approval.ts`: the request a tool
   makes, the decision it gets, the rejection text, and the decisions of the editor side: which change diffs to close,
-  the unsaved-editor check over the open documents, the auto-approve setting from its user value), the tool runner (`toolRunner.ts`: the read and write tools over the
+  the unsaved-editor check over the open documents, the auto-approve setting from its user value), the question tool
+  (`askUser.ts`: `ASK_USER_TOOL`, `askUser` checks the question and the options and asks the run context's
+  `requestAnswer`, the request beside the approval request; the answer, `unanswerable`, or a cancellation on Stop), the
+  tool runner (`toolRunner.ts`: the read and write tools over the
   workspace folders, the read tools also over the run's `skillRoots`, each write handed to the applier the host builds
-  for the run, `run_command` with the command environment the host passes, read at each call, and `load_skill` over
-  the run's `skills`), the instruction files
+  for the run, `run_command` with the command environment the host passes, read at each call, `load_skill` over
+  the run's `skills`, and `ask_user` only when its caller turns it on, which the eval bench does and the extension does
+  not), the instruction files
   (`instructions.ts`: `~/.agents/AGENTS.md`, then each workspace folder's `AGENTS.md`, under the mention caps), and the
   skills (`skills.ts`: discovery in `~/.agents/skills/` and each workspace folder's `.agents/skills/`, the frontmatter
   subset, validation, precedence, warnings, the line the extension logs at each send; `LOAD_SKILL_TOOL`, `loadSkill`
@@ -181,14 +185,16 @@ This file says which file holds which responsibility. Update it when a module ga
   release workflow runs it as a CLI. Its tests sit next to it.
 - `eval/`: the Ollama eval bench (`bun run eval`). `scenarios.ts` holds each scenario (fixture files, an optional
   fixture home folder, message, the files it must write with their exact text, an optional check of a turn that ended
-  `done`) and `judge`, the verdict and failure category of a run, which compares the workspace after the run with the
+  `done`, an optional answer to `ask_user`, `DEFAULT_ANSWER` when absent), `withoutAskUser` (the scenarios judged
+  without the tool: `ask` on the workspace alone), and `judge`, the verdict and failure category of a run, which compares the workspace after the run with the
   fixture plus those writes; `run.ts` plays one run through the `ChatController` ports, with the read and write tools,
-  `run_command`, and `load_skill` over a copy of the fixture under the system temporary directory, each write applied at
-  once by `fileApplier` and recorded for the dump, each command approved at once (rejected instead in a scenario with
+  `run_command`, `load_skill`, and `ask_user` (unless the target leaves it out) over a copy of the fixture under the
+  system temporary directory, each write applied at once by `fileApplier` and recorded for the dump, each question
+  answered at once with the scenario's answer, each command approved at once (rejected instead in a scenario with
   `rejectCommands`, as a user's Reject would) and run with `benchCommandEnv` (the
   allow-listed environment and `sandbox-exec` with `BENCH_SANDBOX_PROFILE` as the launcher, the run's real paths as
   its parameters), and the skills discovered in a copy of the fixture home, never the real one;
-  `report.ts` formats the scores; `bench.ts` is the CLI (`sandboxProblem`, its check before any run), guarded by `import.meta.main` so `bun test` never starts it.
+  `report.ts` formats the scores; `bench.ts` is the CLI (`sandboxProblem`, its check before any run; `--no-ask-user`, the baseline without the tool), guarded by `import.meta.main` so `bun test` never starts it.
   Its unit tests sit next to them and need no Ollama.
 - `media/`: `logo.png` (256 px), the extension icon on Open VSX and the Visual Studio Marketplace (`icon` in
   `package.json`; the registries refuse SVG), rendered from its source `logo.svg` with

@@ -2,11 +2,12 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ASK_USER_TOOL } from "./askUser";
 import type { ToolContext } from "./chatController";
 import { type CommandEnv, RUN_COMMAND_TOOL } from "./commands";
 import { RecordedChanges } from "./recordedChanges";
 import { LOAD_SKILL_TOOL } from "./skills";
-import type { Skill } from "./systemPrompt";
+import { offeredTools, type Skill } from "./systemPrompt";
 import { workspaceToolRunner } from "./toolRunner";
 import { READ_TOOLS } from "./tools";
 import type { WorkspaceRoot } from "./workspaceFiles";
@@ -33,6 +34,7 @@ afterAll(() => rm(base, { recursive: true, force: true }));
 const context: ToolContext = {
   signal: new AbortController().signal,
   requestApproval: async () => ({ kind: "accept" }),
+  requestAnswer: async () => ({ kind: "answer", text: "src/a.ts" }),
   skills: [],
   skillRoots: [],
   sentSkillRoots: [],
@@ -40,7 +42,7 @@ const context: ToolContext = {
 };
 
 /** A runner over `root` whose applier records each change and the context it was built for, and writes nothing. */
-function recordingRunner(commandEnv?: () => CommandEnv) {
+function recordingRunner(commandEnv?: () => CommandEnv, askUser?: boolean) {
   const applied: { change: PlannedChange; roots: WorkspaceRoot[]; context: ToolContext }[] = [];
   const runner = workspaceToolRunner(
     () => [root],
@@ -50,6 +52,7 @@ function recordingRunner(commandEnv?: () => CommandEnv) {
       return { status: "ok", text: "applied" };
     },
     commandEnv,
+    askUser,
   );
   return { runner, applied };
 }
@@ -62,6 +65,42 @@ describe("workspaceToolRunner", () => {
   test("with a command environment, lists run_command before load_skill", () => {
     const { runner } = recordingRunner(() => ({ shell: "/bin/sh", timeoutMs: 10_000 }));
     expect(runner.tools).toEqual([...READ_TOOLS, ...WRITE_TOOLS, RUN_COMMAND_TOOL, LOAD_SKILL_TOOL]);
+  });
+
+  test("with ask_user on, lists it after load_skill and offers it in Ask and in Plan", () => {
+    const { runner } = recordingRunner(() => ({ shell: "/bin/sh", timeoutMs: 10_000 }), true);
+    expect(runner.tools).toEqual([...READ_TOOLS, ...WRITE_TOOLS, RUN_COMMAND_TOOL, LOAD_SKILL_TOOL, ASK_USER_TOOL]);
+    for (const mode of ["ask", "plan"] as const) {
+      expect(offeredTools(runner.tools, [], mode)).toContainEqual(ASK_USER_TOOL);
+    }
+  });
+
+  test("with ask_user off, offers it in no mode", () => {
+    const { runner } = recordingRunner(() => ({ shell: "/bin/sh", timeoutMs: 10_000 }), false);
+    for (const mode of ["ask", "plan"] as const) {
+      expect(offeredTools(runner.tools, [], mode).map((tool) => tool.name)).not.toContain("ask_user");
+    }
+  });
+
+  test("with ask_user off, a direct call gets the unknown-tool result and asks nothing", async () => {
+    const { runner } = recordingRunner(undefined, false);
+    let asked = 0;
+    const counting: ToolContext = {
+      ...context,
+      requestAnswer: async () => {
+        asked++;
+        return { kind: "answer", text: "src/a.ts" };
+      },
+    };
+    const call = { name: "ask_user", args: { question: "Which file?" } };
+    expect(await runner.run(call, counting)).toEqual({ status: "error", text: "ask_user is not a read tool." });
+    expect(asked).toBe(0);
+  });
+
+  test("with ask_user on, asks through the run's question request", async () => {
+    const { runner } = recordingRunner(undefined, true);
+    const call = { name: "ask_user", args: { question: "Which file?", options: "src/a.ts\nsrc/b.ts" } };
+    expect(await runner.run(call, context)).toEqual({ status: "ok", text: "The user answered: src/a.ts" });
   });
 
   test("runs an approved command in the workspace with the environment read at the call", async () => {

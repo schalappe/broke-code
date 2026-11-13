@@ -4,10 +4,12 @@ This file describes `bun run eval`: what it runs, its sandbox, its scenarios, it
 
 - `bun run eval` plays each scenario 10 times per model against the local Ollama at `http://localhost:11434/v1`,
   on `qwen3.8:27b` then `gemma4:26b-a4b-it-qat`, all runs of one model before the next. Each run drives the
-  chat controller with the read and write tools, `run_command`, and `load_skill` over a throwaway copy of the scenario's
-  fixture, each write applied at once, each command approved at once through the run context (the bench plays the
-  model, not the user; nothing in the product auto-approves a command; `range` rejects each instead) and run with `/bin/sh` in the copy with a
-  10-second timeout, no instruction file, and a step limit of 10. Since `--base-url` lets replies come from a remote
+  chat controller with the read and write tools, `run_command`, `load_skill`, and `ask_user` (which the extension does
+  not offer yet, `docs/spec/harness.md`) over a throwaway copy of the scenario's fixture, each write applied at once,
+  each `ask_user` question answered at once through the run context with the scenario's answer (`Decide yourself.` in
+  a scenario that defines none, so it keeps measuring what it measured), each command approved at once through the
+  run context (the bench plays the model, not the user; nothing in the product auto-approves a command; `range` and
+  `ask` reject each instead) and run with `/bin/sh` in the copy with a 10-second timeout, no instruction file, and a step limit of 10. Since `--base-url` lets replies come from a remote
   server, a command runs with a minimal environment inside a macOS sandbox (`benchCommandEnv`): its environment holds
   only `PATH`, `LANG`, and each `LC_*` of the bench's when set there, `HOME`, the run's home copy, and `TMPDIR`, a
   folder of the run's throwaway folder beside the workspace copy, removed with it (`BENCH_API_KEY` and everything else
@@ -30,7 +32,7 @@ This file describes `bun run eval`: what it runs, its sandbox, its scenarios, it
   Within a run the bench learns each model's characters per token from the replies' reported usage as the extension
   does (`docs/spec/harness.md`), starting at 4 in every run. Results measured before 2026-11-13 were taken without the
   field, and every recorded result was measured at a fixed ratio of 4.
-  Eight scenarios, each judged on the turn ending `done` and on the workspace after it: every file the scenario writes
+  Nine scenarios, each judged on the turn ending `done` and on the workspace after it: every file the scenario writes
   holds its exact expected text, byte for byte, and every other entry is unchanged. The workspace is read back without
   following symlinks: every entry but a folder counts, a file by its text, a symlink by its target (`{ symlink }`), any
   other kind, such as a FIFO, by its kind (`{ special }`), so a command that adds a symlink fails `workspaceChanged`.
@@ -77,6 +79,40 @@ This file describes `bun run eval`: what it runs, its sandbox, its scenarios, it
     because a first fixture of numbered random codes (`0001 98UJ-YCK7`) cost about 25,900 tokens for the first read on
     `gemma4`, close to the 32,768-token context with the second, and its prefill took `qwen3.8:27b` over the
     300-second reply timeout on its first run (twice in 2 tries).
+  - `ask`: `src/depots/labels.py` (labels for depot shelves) and `src/parcels/labels.py` (labels for parcels) each
+    define a function `build_label`, beside a README that favors neither; the message asks to rename "the function
+    build_label" to `make_label` and change nothing else, so nothing in the workspace or the message says which. The
+    bench answers every `ask_user` question with `Rename the one in src/parcels/labels.py.` and rejects every command
+    approval, as in `range`, so the rename goes through the write tools. Passes when the turn ends `done`,
+    `src/parcels/labels.py` holds exactly the rename, `src/depots/labels.py` is unchanged, and an `ok` `ask_user` step
+    came before the first write; a right rename without such a step is `wrongTool`, a wrong or double rename
+    `wrongEdit` or `workspaceChanged` as usual. Under `--no-ask-user` the tool is not offered and `ask` is judged on the
+    workspace alone. It measures that the model asks when only the user can choose, instead of guessing (#142, pull
+    request #147). Each measurement below is `--scenario ask`, 10 runs per model.
+    - Baseline without the tool (`--no-ask-user`), on cd6bc6a (the commits after it leave the path without the tool
+      unchanged), 14 min 16 s: 0/10 on both models. `qwen3.8:27b` failed 9 runs `workspaceChanged`
+      (`src/depots/labels.py` changed) and 1 `wrongEdit` (it renamed the depot function only), `gemma4` 10
+      `workspaceChanged`. The dumps show both models renaming both functions rather than picking one, which the judge
+      reports as the depot file changed; so the baseline came out 0/10, not the near 5/10 the issue expected from a
+      guess between two files, and it shows the fixture gives nothing away (that bar is 9/10).
+    - With the tool, three wordings of its description and of its rule in the system prompt, the most the issue
+      allowed. Wording 1, on 03d76b8, 15 min 27 s: description "Ask the user one question and wait for the answer.
+      Put the choices in options when there are a few. The result holds the user's answer.", rule "Call ask_user only
+      when the request cannot be carried out without a choice only the user can make, such as which of several
+      matching places to change."; `qwen3.8:27b` 3/10 (7 `workspaceChanged`: it renamed both without asking),
+      `gemma4` 0/10 (10 `workspaceChanged`). Wording 2, on 8a3bec1, 18 min 43 s: the description's second sentence
+      became "Use it when the request names one thing and several match it, so only the user can say which; put the
+      choices in options.", the rule "When the request names one thing and several match it, such as two functions
+      with the same name, call ask_user before any write instead of changing them all or picking one yourself;
+      otherwise do not ask."; `qwen3.8:27b` 10/10, `gemma4` 6/10 (4 `workspaceChanged`: it renamed both, its reasoning
+      taking the two definitions for one function). Wording 3, on 6c690db, 16 min 36 s: both say the matches are
+      distinct, the description "several distinct ones match it, such as two definitions of the same name", the rule
+      "several distinct ones match it, such as two functions defined with the same name in two files (two different
+      functions, not one), call ask_user to ask which before any write"; 10/10 on both models. That text is the one in
+      `src/core/askUser.ts` and `src/core/systemPrompt.ts`.
+    - Decision: bar met (the issue's bar: `ask` 9/10 on both models, and every other scenario kept at 9/10 in the full
+      run of the nine, recorded below). The tool, the scenario, and the flag are kept; the extension's tool list is
+      unchanged until the panel can answer a question (#143).
 
   A failed run shows one category and a one-line detail: `malformed`, `wrongTool`, `wrongAnswer`, `stepLimit`,
   `contextFull`, `providerError`, `wrongEdit` (a file the scenario writes is missing or holds other text, with the
@@ -85,7 +121,9 @@ This file describes `bun run eval`: what it runs, its sandbox, its scenarios, it
   any run when the sandbox cannot be applied, or Ollama is unreachable or does not list a model. `--model <name>`, `--scenario <name>` (both
   repeatable; an unknown scenario exits 1 naming the others), and `--runs <n>` shorten a local iteration;
   `--base-url <url>` plays against another OpenAI-compatible server instead of the local Ollama, such as a rented vLLM
-  started with `--max-model-len 32768` (#58), its key read from `BENCH_API_KEY`, never a flag; `--dump <file>` appends each run's entries (tool steps with their call's arguments), verdict,
+  started with `--max-model-len 32768` (#58), its key read from `BENCH_API_KEY`, never a flag; `--no-ask-user` leaves
+  `ask_user` out of every run's tools and system prompt and judges `ask` on the workspace alone, the baseline that
+  shows what the tool changes (its start line then says `ask_user not offered`); `--dump <file>` appends each run's entries (tool steps with their call's arguments), verdict,
   `planned` (each change handed to the applier, in call order: tool, path, `before` (`null` for a new file), `after`,
   and the applier's status), and `changes` (each entry that differs from the fixture after the run, with its text,
   `{ symlink }`, or `{ special }`, `null` when removed) as JSON Lines, to read the
@@ -111,5 +149,8 @@ This file describes `bun run eval`: what it runs, its sandbox, its scenarios, it
   rules; with the bare `</think>` rule, `create` 10/10 and `edit` 9/10, `command` still 8/10 (it walked `logs/` with
   `list_files` until the step limit). With the `run_command` sentence about folder trees (#120), `qwen-latest` passed
   70 of 70, `gemma-4-31b-it` 69 of 70 (one `edit` run halted on an invented `<tool_read_file>` tag written three
-  times), and the local bench 140 of 140. `glm-latest` is not measured: renting a GPU for GLM is out of budget
+  times), and the local bench 140 of 140. On 6c690db, with `ask_user` offered (#142, pull request #147), the nine
+  scenarios took 75 min 02 s, 10/10 for every scenario on both models (180 of 180 runs); `range` took the longest,
+  8 min 52 s on `qwen3.8:27b` and 12 min 32 s on `gemma4`, and no run of the eight other scenarios called `ask_user`,
+  so none needed a second run. `glm-latest` is not measured: renting a GPU for GLM is out of budget
   (maintainer decision, 2026-11-12), so no parser rule exists for its replies ending mid-call.

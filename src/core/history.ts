@@ -106,7 +106,8 @@ function isSentSummary(entry: ChatEntry): boolean {
  * message joined to it stays whole: the fewest steps that make the request fit, rounded up to a multiple of
  * `LEFT_OUT_BLOCK` and capped at the steps that may be replaced. The estimate counts the request as sent, joins
  * included. Never replaced: the last `KEPT_RECENT_STEPS` steps sent, every `load_skill` step (a second
- * load answers "already loaded" without the body, so the model could not get it back), every undone step, and a result
+ * load answers "already loaded" without the body, so the model could not get it back), every `ask_user` step (the
+ * user's decision must stay in front of the model), every undone step, and a result
  * no longer than its replacement line. When the request cannot fit even then, the history goes whole and `leftOut` is
  * 0: nothing is sent, so nothing is left out. Pure and linear in the entries, since the usage display runs it at each
  * streamed delta: the same entries, system prompt, context size, and ratio always leave the same results out. A lower
@@ -225,12 +226,16 @@ function replacedUndoneLines(entries: readonly ChatEntry[], start: number): stri
 /** Leads each undone step a summary replaces, after the summary's text. */
 const SUMMARY_UNDONE_LEAD = "The user undid this change, which the summary above may still describe:";
 
+/** The tools whose results always go whole: a skill's instructions, and the user's answer to a question. */
+const NEVER_LEFT_OUT: readonly string[] = ["load_skill", "ask_user"];
+
 /**
- * `step`'s message with its result left out, or `undefined` when it must go whole: `load_skill`, an undone step (a
- * left-out line would tell the model the change stands), or a result short enough.
+ * `step`'s message with its result left out, or `undefined` when it must go whole: `load_skill` and `ask_user` (the
+ * model could not get them back), an undone step (a left-out line would tell the model the change stands), or a
+ * result short enough.
  */
 function leftOutResult(step: ToolStep): string | undefined {
-  if (step.name === "load_skill" || step.undone) return undefined;
+  if (NEVER_LEFT_OUT.includes(step.name) || step.undone) return undefined;
   const line = leftOutLine(resultLineCount(step.text));
   return line.length >= step.text.length ? undefined : toolResultMessage(step, line);
 }

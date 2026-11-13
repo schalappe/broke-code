@@ -697,7 +697,7 @@ with no folder open keeps its conversation in memory only.
 ## Tested models
 
 The eval bench measures broke-code's tool calls on two local models with Ollama, `qwen3.8:27b` and
-`gemma4:26b-a4b-it-qat`. It runs each task ten times, and a task passes at nine. The bench has eight tasks.
+`gemma4:26b-a4b-it-qat`. It runs each task ten times, and a task passes at nine. The bench has nine tasks.
 
 - **Read** answers with the value of a setting that only a file holds.
 - **Edit** renames a function in a source file and changes nothing else.
@@ -708,6 +708,8 @@ The eval bench measures broke-code's tool calls on two local models with Ollama,
 - **Hidden** repeats the slash task with a skill kept from the model, which only you can load, next to an unrelated
   skill the model may load.
 - **Range** gives the code on the last line of a 2,400-line file, by reading on past its first 2,000 lines.
+- **Ask** renames a function that two files define under the same name, by asking which one first. The bench
+  answers the question; the extension does not offer this question tool yet.
 
 In the latest full run, both models passed all 10 runs of every task. When a model thinks, then stops without a word,
 broke-code tells it so and asks again. Contributors run the bench with `bun run eval`.

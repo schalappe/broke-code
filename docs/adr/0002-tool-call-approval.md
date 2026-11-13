@@ -123,3 +123,21 @@ an error notification says so, since the diff editor would show it as an empty f
 - The counts come from a minimal line diff written in the core with a fixed work bound (`LINE_DIFF_WORK_LIMIT`), no
   diff library (scouting decision): past the bound, the lines left after the common first and last lines count as all
   removed and all added.
+
+## Addendum (2026-11-13): a question request beside the approval request
+
+`ask_user` (#142) asks the user one question inside a turn and gives the answer to the model. It approves nothing, so
+it does not reuse `requestApproval`, whose answers are Accept, Reject, and Cancel: the run context gains a second kind
+of request beside it, `ToolContext.requestAnswer`, which takes the question and its options and settles with the
+answer text, `unanswerable` (no one can answer where the turn runs), or a cancellation.
+
+- The wait follows this record's rules: it is a wait inside the tool run, the reply stays `streaming`, the result is
+  an ordinary tool step that counts toward the step limit, and an abort of the turn cancels it at once, also while
+  the request is being made, so Stop stays instant.
+- Who answers is the caller's business, as for approvals. The eval bench answers by wrapping the run context, as it
+  decides command approvals. The controller's own request has no interface behind it yet and settles at once as
+  `unanswerable`; the extension does not offer the tool, through the runner's `offerAskUser` switch, until the panel
+  can answer (#143).
+- The tool was kept on eval evidence: without it, both bench models passed 0 of 10 runs of the `ask` scenario,
+  renaming without asking which function was meant; with it, 10/10 on both, and the other eight scenarios kept 10/10
+  (`docs/eval.md`, pull request #147).

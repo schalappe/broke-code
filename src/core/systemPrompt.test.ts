@@ -90,6 +90,13 @@ describe("composeSystemPrompt", () => {
     expect(composeSystemPrompt([TOOLS[0]!], [], [])).not.toContain(rule);
   });
 
+  test("states when to ask the user only when ask_user is listed", () => {
+    const rule =
+      "- When the request names one thing and several distinct ones match it, such as two functions defined with the same name in two files (two different functions, not one), call ask_user to ask which before any write instead of changing them all or picking one yourself; otherwise do not ask.";
+    expect(composeSystemPrompt([...TOOLS, toolNamed("ask_user")], [], []).split("# Tools")[0]).toContain(rule);
+    expect(composeSystemPrompt(TOOLS, [], [])).not.toContain(rule);
+  });
+
   test("never shows the format inside a code fence", () => {
     expect(composeSystemPrompt(TOOLS, [], [])).not.toContain("```");
   });

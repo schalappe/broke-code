@@ -2,12 +2,14 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { ASK_USER_TOOL } from "../src/core/askUser";
 import { RUN_COMMAND_TOOL } from "../src/core/commands";
 import { composeSystemPrompt } from "../src/core/systemPrompt";
 import { READ_TOOLS } from "../src/core/tools";
 import { WRITE_TOOLS } from "../src/core/writeTools";
 import { BENCH_SANDBOX_PROFILE, benchCommandEnv, playScenario } from "./run";
 import {
+  ASK_SCENARIO,
   COMMAND_SCENARIO,
   CREATE_SCENARIO,
   EDIT_SCENARIO,
@@ -118,10 +120,22 @@ describe("playScenario", () => {
     expect(new Set(authorizations)).toEqual(new Set([null]));
   });
 
-  test("sends the system prompt of the read and write tools and run_command without any instruction file", async () => {
+  test("sends the system prompt of the read and write tools, run_command, and ask_user without any instruction file", async () => {
     requests.length = 0;
     replies = ["No idea."];
     await playScenario(READ_SCENARIO, { baseUrl, apiKey: undefined, model: "m", maxToolSteps: 6 }, parent);
+
+    expect(requests[0]?.messages[0]).toEqual({
+      role: "system",
+      content: composeSystemPrompt([...READ_TOOLS, ...WRITE_TOOLS, RUN_COMMAND_TOOL, ASK_USER_TOOL], [], []),
+    });
+  });
+
+  test("leaves ask_user out of the system prompt when the target turns it off", async () => {
+    requests.length = 0;
+    replies = ["No idea."];
+    const target = { baseUrl, apiKey: undefined, model: "m", maxToolSteps: 6, withoutAskUser: true as const };
+    await playScenario(READ_SCENARIO, target, parent);
 
     expect(requests[0]?.messages[0]).toEqual({
       role: "system",
@@ -129,11 +143,52 @@ describe("playScenario", () => {
     });
   });
 
-  test("rejects every command of the range scenario as the user's Reject does, and approves one elsewhere", async () => {
+  test("answers a question with Decide yourself. in a scenario that defines no answer", async () => {
+    replies = ["<ask_user>\n<question>Which value?</question>\n</ask_user>", "No idea."];
+    const { entries } = await playScenario(
+      READ_SCENARIO,
+      { baseUrl, apiKey: undefined, model: "m", maxToolSteps: 6 },
+      parent,
+    );
+    expect(entries[2]).toMatchObject({
+      role: "tool",
+      name: "ask_user",
+      status: "ok",
+      text: "The user answered: Decide yourself.",
+    });
+  });
+
+  test("passes the ask scenario on a question answered with the file, then an edit_file call there", async () => {
+    const question =
+      "<ask_user>\n<question>Which build_label?</question>\n<options>src/depots/labels.py\nsrc/parcels/labels.py</options>\n</ask_user>";
+    const edit =
+      "<edit_file>\n<path>src/parcels/labels.py</path>\n<old>def build_label(</old>\n<new>def make_label(</new>\n</edit_file>";
+    replies = [question, edit, "Renamed."];
+    const { entries, after } = await playScenario(
+      ASK_SCENARIO,
+      { baseUrl, apiKey: undefined, model: "m", maxToolSteps: 6 },
+      parent,
+    );
+
+    expect(entries[2]).toMatchObject({
+      role: "tool",
+      name: "ask_user",
+      status: "ok",
+      text: "The user answered: Rename the one in src/parcels/labels.py.",
+    });
+    expect(judge(ASK_SCENARIO, entries, after)).toEqual({ pass: true });
+  });
+
+  test("rejects every command of the range and ask scenarios as the user's Reject does, and approves one elsewhere", async () => {
     const tail = "<run_command>\n<command>tail -n 1 dispatch.log</command>\n</run_command>";
     const target = { baseUrl, apiKey: undefined, model: "m", maxToolSteps: 6 };
     replies = [tail, "I could not read it."];
     const rejected = (await playScenario(RANGE_SCENARIO, target, parent)).entries[2];
+    replies = [tail, "I could not rename it."];
+    expect((await playScenario(ASK_SCENARIO, target, parent)).entries[2]).toMatchObject({
+      status: "error",
+      text: "The user rejected this command.",
+    });
     replies = ["<run_command>\n<command>tail -n 1 README.md</command>\n</run_command>", "61"];
     const approved = (await playScenario(COMMAND_SCENARIO, target, parent)).entries[2];
 

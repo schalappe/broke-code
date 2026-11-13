@@ -34,7 +34,7 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
   last line break is; content left empty writes an empty file. Accepted cost, by maintainer decision (ADR 0001):
   `write_file` cannot create a file ending with an empty line; `edit_file` can.
 - The v1 tools are `read_file`, `list_files`, `search` (ripgrep), `write_file`, `edit_file`, `run_command`,
-  and `load_skill`.
+  and `load_skill`. A runner may also offer `ask_user` (below); for now only the eval bench does.
 - `read_file(path, start_line?, end_line?)` reads a file under the mention caps (binary or over 1 MiB refused whole)
   and shows lines `start_line` to `end_line`, 1-based and inclusive, at most 2,000 of them (#100). Left out,
   `start_line` is 1 and `end_line` the last line; either may come alone, and an `end_line` past the end reads to it.
@@ -57,6 +57,28 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
     without `end_line`, `big.log 1-50` without `start_line`.
 - `edit_file` replaces exact text only, compared byte for byte, line endings included. If the text matches zero
   times or more than once (overlapping matches count), return an error to the model. Never guess the location.
+- `ask_user(question, options?)` asks the user one question inside the turn (#142). `question` comes first, may span
+  several lines, and is trimmed. `options`, when given, holds one choice per line: each line is trimmed, blank lines
+  are dropped, and a line equal to an earlier one is dropped. Before anything is asked, the call is an `error` result
+  when the question is empty after trimming or longer than 2,000 characters, when more than 6 options remain, or when
+  an option is longer than 200 characters. No parsing rule changes for it: an argument may already span several
+  lines.
+  - It asks through its run context with a request of its own beside the approval request,
+    `ToolContext.requestAnswer({ question, options })`, which settles with the answer text, `unanswerable`, or a
+    cancellation. The answer gives the `ok` result `The user answered: <text>`; `unanswerable` gives the `error`
+    result `No one can answer a question here.`; an abort of the turn's signal, also while the request is being made,
+    cancels it without waiting for the request and gives the stopped error (`ask_user: stopped before it finished.`).
+    A request that throws gives an `error` result saying the question could not be asked. The call is one tool step
+    toward the step limit, like any call.
+  - It changes nothing, so every mode offers it, Plan included, with its rule in the system prompt (System prompt,
+    below).
+  - `workspaceToolRunner` offers it only when its caller turns on its `offerAskUser` switch, a bare switch: unlike the
+    command environment that offers `run_command`, it carries nothing, since the answer comes from the run context.
+    The eval bench turns it on and answers each question by wrapping the run context, as it decides command approvals
+    (`docs/eval.md`). The extension leaves it off: its system prompt and tool list are unchanged, and a model that
+    writes an `ask_user` call there gets the malformed-call result for a tool that is not known, as before. The
+    controller's own `requestAnswer` has no interface behind it yet and settles at once as `unanswerable` (#143
+    replaces it).
 
 ## Write tools, atomic writes, and recorded changes
 
@@ -147,6 +169,9 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
     field. The webview's `approve { id }` and
     `reject { id, reason? }` are validated like the other messages, and a decision for a request no longer open is
     ignored. One request at a time, since one call runs per reply.
+  - The run context carries a second kind of request beside it, `ToolContext.requestAnswer`, the question of
+    `ask_user` (Body tool calls, above; ADR 0002, addendum of 2026-11-13). It approves nothing: it brings back the
+    user's answer as text, and an abort of the turn cancels it like an approval request.
   - A write opens the native VS Code diff editor beside the chat, titled with the path: the planned `before` text on
     the left (empty for a new file), the proposed text on the right, both from a content provider. Accept writes with
     the atomic applier below, never through `WorkspaceEdit`; the diff tab closes on Accept, Reject, and Cancel. Closing
@@ -358,7 +383,8 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
   vLLM once repeated one call for 24 minutes. An opening with no complete call before it stops nothing.
 - When a reply ends, its answer goes through the parser. Text and no call: the turn ends. A call: the answer is cut
   at the end of the call block, so the chat and the history never hold the text after it, then the tool runs with the
-  turn's context (`ToolRunner.run(call, { signal, requestApproval })`, the abort signal and the approval request), a tool step entry records its name, arguments, status, text, and approval, and the loop requests again.
+  turn's context (`ToolRunner.run(call, { signal, requestApproval, requestAnswer })`, the abort signal, the approval
+  request, and the question request), a tool step entry records its name, arguments, status, text, and approval, and the loop requests again.
   A malformed call or an empty reply: a step entry with the message (for an empty reply, "Your reply was empty. Call a
   tool, or write your answer to the user."), and the loop requests again. In a Plan turn, a closed block of
   `write_file`, `edit_file`, or `run_command` (`PLAN_BLOCKED_TOOLS`), which the parser reads as "not a known tool"
@@ -439,7 +465,8 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
   may be replaced: the count changes about once every 4 new steps, so the requests in between only add to the prompt
   of the one before and a provider's prompt cache holds. Never replaced: the system prompt, user messages (a `/<name>` skill message included),
   assistant answers, the last 3 tool steps sent (`KEPT_RECENT_STEPS`), whatever turn they belong to,
-  every `load_skill` step, whatever its status (a second load answers "already loaded" without the body), every undone
+  every `load_skill` step, whatever its status (a second load answers "already loaded" without the body), every
+  `ask_user` step, whatever its status (the user's decision must stay in front of the model), every undone
   step (a left-out line would tell the model the change stands; the estimate and the usage display count its added
   line), and a step whose replacement line is not shorter than its text; a malformed-call step follows the same rule as the others. The
   choice is a pure function of the entries, the system prompt, the context size, and the ratio, linear in the entries, since the
@@ -558,6 +585,10 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
   `load_skill` tool and its rule (reading a loaded skill's files by the absolute path the result gives, read-only
   outside the workspace): the
   controller offers the runner's tools less `load_skill` (`offeredTools`), so its call is then malformed.
+- When `ask_user` is offered, its rule follows the general rules: when the request names one thing and several
+  distinct ones match it, such as two functions defined with the same name in two files, call `ask_user` to ask which
+  before any write instead of changing them all or picking one; otherwise do not ask. Its wording was chosen on the
+  eval's `ask` scenario (`docs/eval.md`). Without the tool, the rule is absent and the prompt is the one before #142.
 - In a Plan turn, `offeredTools` also leaves out `write_file`, `edit_file`, and `run_command`, so their rules drop with
   them, and `composeSystemPrompt(tools, instructions, skills, mode)` replaces the role sentence with one saying the
   agent reads files, followed by a "Plan mode" paragraph: read what it needs, answer with a plan of the changes, file

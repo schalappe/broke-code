@@ -1,20 +1,22 @@
 /**
  * @module run
- * One run of a scenario: the chat controller the extension runs, hosted through its ports with the read and write
- * tools, `run_command`, and `load_skill` over a throwaway copy of the fixture under the system temporary directory, each
- * write applied at once and recorded, each command approved at once (rejected in a scenario that says so) and run with `/bin/sh` in the copy, inside the
- * macOS sandbox with an allow-listed environment (`benchCommandEnv`: a reply may come from a remote server, so a
- * command gets none of the bench's variables, reads nothing under the user's home, and writes only in the run's
- * folder; see `BENCH_SANDBOX_PROFILE` for what stays readable), the skills discovered as the extension does but
- * in a throwaway copy of the scenario's home fixture (never the real home), no instruction file, an in-memory
- * conversation store, and the bench's step limit. The run's folder, holding both copies and the commands' `TMPDIR`, is
- * removed when the run ends, also when it throws.
+ * One run of a scenario: the chat controller the extension runs, hosted through its ports with the read and
+ * write tools, `run_command`, `load_skill`, and `ask_user` (unless the target leaves it out) over a throwaway copy of
+ * the fixture under the system temporary directory, each write applied at once and recorded, each question answered at
+ * once with the scenario's answer, each command approved at once (rejected in a scenario that says so) and run with
+ * `/bin/sh` in the copy, inside the macOS sandbox with an allow-listed environment (`benchCommandEnv`: a reply may come
+ * from a remote server, so a command gets none of the bench's variables, reads nothing under the user's home, and
+ * writes only in the run's folder; see `BENCH_SANDBOX_PROFILE` for what stays readable), the skills discovered as the
+ * extension does but in a throwaway copy of the scenario's home fixture (never the real home), no instruction file, an
+ * in-memory conversation store, and the bench's step limit. The run's folder, holding both copies and the commands'
+ * `TMPDIR`, is removed when the run ends, also when it throws.
  */
 import type { Dirent } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, readlink, realpath, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, relative, sep } from "node:path";
 import type { Decision } from "../src/core/approval";
+import type { QuestionAnswer } from "../src/core/askUser";
 import { ChatController, type ChoiceStore, type ToolRunner } from "../src/core/chatController";
 import type { CommandEnv } from "../src/core/commands";
 import { ConversationStore } from "../src/core/conversationStore";
@@ -25,7 +27,7 @@ import { readSkills } from "../src/core/skills";
 import { workspaceToolRunner } from "../src/core/toolRunner";
 import { ripgrepCandidates } from "../src/core/tools";
 import { type ChangeApplier, fileApplier, type PlannedChange } from "../src/core/writeTools";
-import type { Scenario, WorkspaceFiles, WorkspaceSnapshot } from "./scenarios";
+import { DEFAULT_ANSWER, type Scenario, type WorkspaceFiles, type WorkspaceSnapshot } from "./scenarios";
 
 /**
  * The macOS sandbox a bench command runs in: no network, no write outside the run's folder (`/dev/null` excepted), no
@@ -88,9 +90,16 @@ export function benchCommandEnv(paths: BenchCommandPaths, benchEnv: NodeJS.Proce
 
 /**
  * Where and how a run plays. `baseUrl`: an OpenAI-compatible provider; `apiKey`: its key, `undefined` for none (local
- * Ollama). `maxToolSteps`: the turn's step limit, small so a looping model fails fast.
+ * Ollama). `maxToolSteps`: the turn's step limit, small so a looping model fails fast. `withoutAskUser`: `ask_user` is
+ * not offered, for the baseline that shows what the tool changes; absent, it is.
  */
-export type RunTarget = { baseUrl: string; apiKey: string | undefined; model: string; maxToolSteps: number };
+export type RunTarget = {
+  baseUrl: string;
+  apiKey: string | undefined;
+  model: string;
+  maxToolSteps: number;
+  withoutAskUser?: true;
+};
 
 /**
  * A change a write tool handed to the applier, as the dump records it: `before` is `null` for a new file, `status` the
@@ -148,13 +157,14 @@ export async function playScenario(scenario: Scenario, target: RunTarget, tmpRoo
         },
       },
       store: new ConversationStore(undefined),
-      tools: decidingCommands(
-        scenario.rejectCommands === true,
+      tools: answeringAsUser(
+        scenario,
         workspaceToolRunner(
           () => [root],
           toolEnv,
           (roots) => recording(fileApplier(roots), planned),
           () => commandEnv,
+          target.withoutAskUser !== true,
         ),
       ),
       instructions: { read: async () => [] },
@@ -183,16 +193,19 @@ export async function playScenario(scenario: Scenario, target: RunTarget, tmpRoo
 }
 
 /**
- * `runner`, with every approval request of its runs decided at once: accepted, or rejected as the user's Reject does
- * when `reject` (a scenario's `rejectCommands`). The bench plays the model, not the user, and the product never
- * auto-approves a command, so this lives in the run context the bench hands the tools, not in a setting. Only
- * `run_command` asks; a write goes straight to the bench's applier.
+ * `runner`, with every request of its runs answered at once as the user would: an approval accepted, or rejected as
+ * the user's Reject does when the scenario sets `rejectCommands`; a question answered with the scenario's `answer`, or
+ * `DEFAULT_ANSWER`. The bench plays the model, not the user, and the product never auto-approves a command, so this
+ * lives in the run context the bench hands the tools, not in a setting. Only `run_command` asks an approval; a write
+ * goes straight to the bench's applier.
  */
-function decidingCommands(reject: boolean, runner: ToolRunner): ToolRunner {
-  const decision: Decision = reject ? { kind: "reject" } : { kind: "accept" };
+function answeringAsUser(scenario: Scenario, runner: ToolRunner): ToolRunner {
+  const decision: Decision = scenario.rejectCommands ? { kind: "reject" } : { kind: "accept" };
+  const answer: QuestionAnswer = { kind: "answer", text: scenario.answer ?? DEFAULT_ANSWER };
   return {
     tools: runner.tools,
-    run: (call, context) => runner.run(call, { ...context, requestApproval: async () => decision }),
+    run: (call, context) =>
+      runner.run(call, { ...context, requestApproval: async () => decision, requestAnswer: async () => answer }),
   };
 }
 

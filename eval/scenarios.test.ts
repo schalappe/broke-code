@@ -5,8 +5,10 @@ import { dirname, join } from "node:path";
 import type { ChatEntry } from "../src/core/protocol";
 import { readSkills } from "../src/core/skills";
 import {
+  ASK_SCENARIO,
   COMMAND_SCENARIO,
   CREATE_SCENARIO,
+  DEFAULT_ANSWER,
   EDIT_SCENARIO,
   fileAt,
   HIDDEN_SCENARIO,
@@ -16,6 +18,7 @@ import {
   SCENARIOS,
   SKILL_SCENARIO,
   SLASH_SCENARIO,
+  withoutAskUser,
   workspaceChanges,
 } from "./scenarios";
 
@@ -757,8 +760,11 @@ describe("range scenario fixture", () => {
   });
 });
 
-test("only the range scenario rejects commands", () => {
-  expect(SCENARIOS.filter((scenario) => scenario.rejectCommands).map((scenario) => scenario.name)).toEqual(["range"]);
+test("only the range and ask scenarios reject commands", () => {
+  expect(SCENARIOS.filter((scenario) => scenario.rejectCommands).map((scenario) => scenario.name)).toEqual([
+    "range",
+    "ask",
+  ]);
 });
 
 describe("judge on the range scenario", () => {
@@ -794,7 +800,98 @@ describe("judge on the range scenario", () => {
   });
 });
 
-test("SCENARIOS holds read, edit, create, skill, command, slash, hidden, and range, in that order", () => {
+const ASKED_FILE = "src/parcels/labels.py";
+const OTHER_FILE = "src/depots/labels.py";
+const askUser: ChatEntry = { role: "user", content: ASK_SCENARIO.message, mentions: [] };
+const asked: ChatEntry[] = [
+  {
+    ...answer("<ask_user>\n<question>Which build_label?</question>\n</ask_user>"),
+    call: { name: "ask_user", args: { question: "Which build_label?" }, start: 0, end: 0 },
+  },
+  {
+    role: "tool",
+    name: "ask_user",
+    args: { question: "Which build_label?" },
+    status: "ok",
+    text: `The user answered: ${ASK_SCENARIO.answer}`,
+  },
+];
+const renameStep: ChatEntry[] = [callReply("edit_file", ASKED_FILE), step("edit_file", ASKED_FILE, "replaced")];
+const renamedFiles = { ...ASK_SCENARIO.files, ...ASK_SCENARIO.writes };
+const renamedIn = (path: string) => ({
+  ...ASK_SCENARIO.files,
+  [path]: (fileAt(ASK_SCENARIO.files, path) ?? "").replace("def build_label(", "def make_label("),
+});
+
+describe("ask scenario fixture", () => {
+  test("defines build_label once in each of two files, and the message names neither file", () => {
+    const definers = Object.entries(ASK_SCENARIO.files).filter(([, text]) => text.includes("def build_label("));
+    expect(definers.map(([path]) => path).sort()).toEqual([OTHER_FILE, ASKED_FILE]);
+    for (const [, text] of definers) expect(text.split("build_label")).toHaveLength(2);
+    expect(ASK_SCENARIO.message).toContain("the function build_label");
+    for (const hint of ["depot", "parcel", "src/", "labels.py"]) {
+      expect(ASK_SCENARIO.message.toLowerCase()).not.toContain(hint);
+    }
+  });
+
+  test("answers with the file to change, and expects the rename there alone", () => {
+    expect(ASK_SCENARIO.answer).toContain(ASKED_FILE);
+    expect(Object.keys(ASK_SCENARIO.writes)).toEqual([ASKED_FILE]);
+    expect(fileAt(ASK_SCENARIO.writes, ASKED_FILE)).toBe(fileAt(renamedIn(ASKED_FILE), ASKED_FILE));
+  });
+
+  test("a scenario without its own answer gets the default one", () => {
+    expect(DEFAULT_ANSWER).toBe("Decide yourself.");
+    expect(SCENARIOS.filter((scenario) => scenario.answer !== undefined).map((scenario) => scenario.name)).toEqual([
+      "ask",
+    ]);
+  });
+});
+
+describe("judge on the ask scenario", () => {
+  test("passes a turn that asked, then renamed the function in the answered file", () => {
+    const entries = [askUser, ...asked, ...renameStep, answer("Renamed.")];
+    expect(judge(ASK_SCENARIO, entries, renamedFiles)).toEqual({ pass: true });
+  });
+
+  test("wrongTool: the right rename without an ok ask_user step before the first write", () => {
+    const entries = [askUser, ...renameStep, ...asked, answer("Renamed.")];
+    expect(judge(ASK_SCENARIO, entries, renamedFiles)).toMatchObject({ pass: false, category: "wrongTool" });
+    const refused = asked.map((entry) => (entry.role === "tool" ? { ...entry, status: "error" as const } : entry));
+    expect(judge(ASK_SCENARIO, [askUser, ...refused, ...renameStep, answer("Renamed.")], renamedFiles)).toMatchObject({
+      pass: false,
+      category: "wrongTool",
+    });
+  });
+
+  test("wrongEdit: the rename went to the other file, or to both", () => {
+    const entries = [askUser, ...asked, ...renameStep, answer("Renamed.")];
+    expect(judge(ASK_SCENARIO, entries, renamedIn(OTHER_FILE))).toMatchObject({ pass: false, category: "wrongEdit" });
+    const both = { ...renamedFiles, [OTHER_FILE]: fileAt(renamedIn(OTHER_FILE), OTHER_FILE) ?? "" };
+    expect(judge(ASK_SCENARIO, entries, both)).toMatchObject({
+      pass: false,
+      category: "workspaceChanged",
+      detail: `changed: ${OTHER_FILE}`,
+    });
+  });
+
+  test("without the tool offered, judges the workspace alone", () => {
+    const baseline = withoutAskUser(SCENARIOS).find((scenario) => scenario.name === "ask");
+    if (baseline === undefined) throw new Error("no ask scenario");
+    expect(judge(baseline, [askUser, ...renameStep, answer("Renamed.")], renamedFiles)).toEqual({ pass: true });
+    expect(judge(baseline, [askUser, ...renameStep, answer("Renamed.")], renamedIn(OTHER_FILE))).toMatchObject({
+      pass: false,
+      category: "wrongEdit",
+    });
+  });
+
+  test("without the tool offered, every other scenario is judged as it is", () => {
+    const others = SCENARIOS.filter((scenario) => scenario.name !== "ask");
+    expect(withoutAskUser(SCENARIOS).filter((scenario) => scenario.name !== "ask")).toEqual(others);
+  });
+});
+
+test("SCENARIOS holds read, edit, create, skill, command, slash, hidden, range, and ask, in that order", () => {
   expect(SCENARIOS.map((scenario) => scenario.name)).toEqual([
     "read",
     "edit",
@@ -804,6 +901,7 @@ test("SCENARIOS holds read, edit, create, skill, command, slash, hidden, and ran
     "slash",
     "hidden",
     "range",
+    "ask",
   ]);
 });
 
