@@ -258,8 +258,14 @@ run a command, the chat shows a failed step that says the tool is not available 
 
 broke-code keeps Plan for the workspace, also after a reload, and writes no setting for it. When you leave Plan for Ask
 or Auto-edit, broke-code writes the setting only if its value must change. If that write fails, the error shows and
-Plan stays. A message you send in Plan stays a Plan turn until it ends. So you can switch to Ask afterwards and send "do
-it", and the agent writes the plan, with your approval.
+Plan stays. A message you send in Plan stays a Plan turn until it ends.
+
+To carry a plan out, click the button under the plan's answer: **Implement in Ask mode**, or **Implement in Auto-edit
+mode** when `brokeCode.autoApproveWrites` is on. The label names the mode the setting holds. The click leaves Plan for
+that mode, writes no setting, and sends the message "Implement the plan above." The agent then makes the changes, with
+your approval of each write in Ask. The button shows while Plan is on, under the last answer of the conversation, once
+no reply is in flight and that answer ended normally. It does not show after a stop, an error, or `/compact`. It is
+disabled while **Send** would not act. You can still leave Plan with the selector and type your own message.
 
 The agent can also run a shell command with **run_command**. It always asks you first, and no setting changes that.
 The chat shows the whole command under the call, with its line breaks, and the folder it runs in when the model names
@@ -331,6 +337,24 @@ first, and the queue resumes when its turn ends with an answer.
 message box, one per paragraph, so you lose nothing you typed. broke-code never queues `/new`, `/model`, or
 `/compact`. A message you queue while `/compact` runs goes out once the summary is done. The queue survives hiding the
 panel but not a window reload.
+
+### Notifications
+
+A turn can run for minutes. When it ends, fails, or stops on a limit while the chat is not in view, VS Code shows a
+notification. It shows one too when a file change or a command waits for your decision, naming the file or the first
+line of the command. The chat is in view when the chat view is visible and the VS Code window has the focus. Working
+in an editor of the same window, with the chat still visible, shows no notification.
+
+Each notification has one button, **Show chat**, which shows the chat and nothing more. You still accept or reject in
+the chat. A turn you stop shows no notification, and neither does **Generate commit message**, which shows its own
+progress. VS Code cannot take a notification back, so one may still be there after you answered in the chat.
+
+To turn the notifications off, set `brokeCode.notifications` to `false` in your **user** settings. A workspace
+`settings.json` cannot change it.
+
+```json
+"brokeCode.notifications": false
+```
 
 ### Retry or continue a turn
 

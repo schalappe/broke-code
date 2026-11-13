@@ -220,7 +220,7 @@ user's message). Borders and rules are 1px. No colored side stripe.
   until hovered, focused, or pressed, when they take the secondary look. The two pickers follow the same rule: dim
   text on the panel, one size down, their border back on hover and focus.
 - Secondary (New chat, History, Delete, Reject, Retry, Add provider under the skipped providers, a queued message's
-  Send now, Edit, and Remove, the turn's Retry, Retry anyway, Cancel, Continue, and Undo changes, the last message's Edit and the Cancel of its mark): a hairline box on the panel (`--bc-line`), the foreground as
+  Send now, Edit, and Remove, the turn's Retry, Retry anyway, Cancel, Continue, "Implement in ... mode", and Undo changes, the last message's Edit and the Cancel of its mark): a hairline box on the panel (`--bc-line`), the foreground as
   text; `--bc-fill-strong` when hovered or pressed (`aria-expanded="true"`).
 - Link (Open provider settings, Set context size): the link color, underlined.
 - Code block action (Copy, Insert at cursor): a secondary button two pixels down (`--bc-fs-xs`), at least a row high
@@ -302,8 +302,10 @@ would not act. Above the rows, a notice line says "The queue is paused." when no
   turn before it folds by the usual rule.
 - The turn's actions (`.turn-actions`): one row of secondary buttons after how the turn ended, wrapping when narrow:
   under the last turn's reply, Retry, then Continue when the turn was stopped or halted on the step limit or on
-  malformed calls, both disabled when Send would not act; then, under the last reply of the turn whose writes are
-  held, "Undo changes", followed by the small dim hint "Commands this turn ran are not listed or undone." when the
+  malformed calls, both disabled when Send would not act; then, while Plan is on and the conversation ends on its
+  final answer, "Implement in Ask mode" or "Implement in Auto-edit mode", named after the mode the setting holds and
+  disabled like Retry (secondary too: only the decision block has a primary button); then, under the last reply of
+  the turn whose writes are held, "Undo changes", followed by the small dim hint "Commands this turn ran are not listed or undone." when the
   turn ran one.
   None shows while a reply is in flight, so nothing sits between an approval's controls and the message box. When
   Retry would leave written files or run commands behind, its first click asks: a line of its own above the buttons

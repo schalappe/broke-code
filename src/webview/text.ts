@@ -1,7 +1,7 @@
 /**
  * @module text
- * Localized panel text for provider errors (worded in the core, translated here), skipped providers and skills,
- * mentions, tool steps, folded turns, halted agent turns, the outcome of "Undo changes", context usage, and saved
+ * Localized panel text for provider errors and halted agent turns (both worded in the core, translated here), skipped
+ * providers and skills, mentions, tool steps, folded turns, the outcome of "Undo changes", context usage, and saved
  * conversations.
  */
 import * as l10n from "@vscode/l10n";
@@ -23,6 +23,10 @@ import {
 } from "../core/providerError";
 import type { SkippedProvider } from "../core/providers";
 import type { MentionKind } from "../core/reservedMentions";
+import {
+  describeEmptySummary as describeEmptySummaryWith,
+  describeHalt as describeHaltWith,
+} from "../core/turnEndText";
 import { type FoldCounts, STEP_KINDS, type StepKind } from "./turns";
 
 export type { ErrorText };
@@ -271,26 +275,14 @@ function describeKind(kind: StepKind, shown: number): string {
   }
 }
 
-/**
- * Why an agent turn halted, shown after its last step, or on the reply whose request was not sent. `summary`: the
- * reply is a summary (`/compact`), whose request only a full context halts.
- */
+/** Halt wording with the panel's translator; see `describeHalt` in the core. */
 export function describeHalt(reason: HaltReason, summary = false): string {
-  if (summary && reason === "contextFull") {
-    return l10n.t(
-      "Not summarized: the conversation does not fit the model's context, even with its tool results left out. Start a new chat with New chat.",
-    );
-  }
-  switch (reason) {
-    case "malformedCalls":
-      return l10n.t("Stopped: the model sent three malformed tool calls in a row.");
-    case "stepLimit":
-      return l10n.t("Stopped: the agent turn reached its tool step limit.");
-    case "contextFull":
-      return l10n.t(
-        "Stopped: the conversation fills the model's context. Summarize it with /compact, or start a new chat with New chat.",
-      );
-  }
+  return describeHaltWith(reason, summary, l10n);
+}
+
+/** The empty summary's wording with the panel's translator; see `describeEmptySummary` in the core. */
+export function describeEmptySummary(): string {
+  return describeEmptySummaryWith(l10n);
 }
 
 /**

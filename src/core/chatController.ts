@@ -24,10 +24,11 @@ import {
 } from "./conversation";
 import type { ConversationStore } from "./conversationStore";
 import { type HistoryBudget, historyStart, sentEntries, summaryHistory, toHistory } from "./history";
-import { CONTINUE_TEXT, type LastTurnActions, lastTurnActions } from "./lastTurn";
+import { CONTINUE_TEXT, hasFinalAnswer, IMPLEMENT_PLAN_TEXT, type LastTurnActions, lastTurnActions } from "./lastTurn";
 import { contextOf, DEFAULT_RATIO, estimateTokens, fillsContext, parseLimits, type TurnLimits } from "./limits";
 import { type LineCounts, lineDiffCount } from "./lineDiff";
 import { composeUserMessage, findMentions, type MentionReader, type MentionResult, type ReadMention } from "./mentions";
+import type { TurnEnd, TurnEvent } from "./notifications";
 import { workspacePath } from "./problems";
 import {
   type ChangedFile,
@@ -169,7 +170,10 @@ export type LimitsSource = { read(): TurnLimits };
  * logged as lost. `undo`: what "Undo changes" needs; absent (the eval), no turn is held and the button never shows.
  * `changeDiffs`: opens and closes the diffs of "Changed files"; absent, the rows still show and a click does nothing.
  * `now`: clock for record times, in milliseconds since the epoch. `providerSupport`: what is known of each model of
- * each provider, read and taught by every chat request; the host shares it with the commit message.
+ * each provider, read and taught by every chat request; the host shares it with the commit message. `turnEvents`:
+ * told each approval request that opens and each turn that ends `done`, `failed`, or `halted` (see `TurnEvent`), so
+ * the host can notify a user who looks elsewhere; one that throws is logged and changes nothing; absent (the eval),
+ * nothing is told.
  */
 export type ChatPorts = {
   apiKeys: KeyStore;
@@ -188,6 +192,7 @@ export type ChatPorts = {
   changeDiffs?: ChangeDiffHost;
   now?: () => number;
   providerSupport: ProviderSupport;
+  turnEvents?: (event: TurnEvent) => void;
 };
 
 /**
@@ -251,8 +256,8 @@ type UserEntry = ChatEntry & { role: "user" };
 
 /**
  * How an agent turn starts. `send`: a new message, its mentions read and its `/<name>` skill loaded now. `continue`: a
- * new user entry whose model text is already set. `retry`: the last user entry, already the last entry, resent with
- * the model text of its first send, so nothing it mentions or loads is read again.
+ * new user entry whose model text is already set (Continue, "Implement in ... mode"). `retry`: the last user entry,
+ * already the last entry, resent with the model text of its first send, so nothing it mentions or loads is read again.
  */
 type TurnStart =
   | { kind: "send"; content: string; picked: readonly string[] }
@@ -342,6 +347,7 @@ export class ChatController {
   private readonly changeDiffs: ChangeDiffHost | undefined;
   private readonly now: () => number;
   private readonly providerSupport: ProviderSupport;
+  private readonly turnEvents: ((event: TurnEvent) => void) | undefined;
   /**
    * What the last chat request of the conversation shown reported, kept while the next one is in flight. Replaced when
    * a request ends, cleared when the conversation shown or the model is set. Memory only, never saved.
@@ -384,6 +390,7 @@ export class ChatController {
     this.changeDiffs = ports.changeDiffs;
     this.now = ports.now ?? Date.now;
     this.providerSupport = ports.providerSupport;
+    this.turnEvents = ports.turnEvents;
     this.plan = this.workspaceState.get<unknown>(PLAN_KEY) === true;
     // [>]: Instruction files and skills are read only at a send, never just to refresh the display.
     this.systemPrompt = composeSystemPrompt(offeredTools(this.tools.tools, []), [], []);
@@ -404,6 +411,7 @@ export class ChatController {
       // [>]: The setting is read at `modeChanged`, which the host calls at activation as it applies the providers; the
       // constructor reads no setting.
       mode: "ask",
+      settingMode: "ask",
       modePending: false,
       queue: [],
       undo: { reply: undefined, ranCommand: false, running: false, outcome: undefined },
@@ -531,11 +539,13 @@ export class ChatController {
   }
 
   /**
-   * Read the mode into `ChatState.mode`: Plan while on, else the auto-approve setting. At activation, and whenever the
-   * setting changes, here or elsewhere (the settings editor, another window).
+   * Read the mode into `ChatState.mode`: Plan while on, else the auto-approve setting, which `ChatState.settingMode`
+   * names in every mode. At activation, and whenever the setting changes, here or elsewhere (the settings editor,
+   * another window).
    */
   modeChanged(): void {
-    this.state.mode = this.readMode();
+    this.state.settingMode = this.readAutoApprove() ? "autoEdit" : "ask";
+    this.state.mode = this.plan ? "plan" : this.state.settingMode;
     this.emit();
   }
 
@@ -587,11 +597,6 @@ export class ChatController {
     this.workspaceState.update(PLAN_KEY, on ? true : undefined).then(undefined, (error: unknown) => {
       console.error("broke-code: could not remember Plan mode", error);
     });
-  }
-
-  private readMode(): Mode {
-    if (this.plan) return "plan";
-    return this.readAutoApprove() ? "autoEdit" : "ask";
   }
 
   /** Key of `provider` changed -> relist its models, since listing may have failed on old key. */
@@ -691,20 +696,50 @@ export class ChatController {
    */
   continueTurn(shown: ShownEntries, label: string): Promise<void> {
     if (!this.lastTurnNow(shown)?.continues) return Promise.resolve();
+    return this.startFixedTextTurn(label, CONTINUE_TEXT);
+  }
+
+  /**
+   * "Implement in ... mode" under a plan's final answer: leave Plan for the mode the setting holds, writing no setting
+   * (only the Plan key is cleared, and a failed memento write still leaves Plan for the session), then append a user
+   * entry whose text as typed is `label` (the message in the display language) and whose model text is
+   * `IMPLEMENT_PLAN_TEXT`, and run it as a send. The plan is in the history already and is not quoted again. `shown`:
+   * as for `retry`. Does nothing at all, Plan staying on, unless the entries shown are the conversation's, Plan is on,
+   * the conversation ends on its final answer (`hasFinalAnswer`), and a turn may start. Plan stays left when the turn
+   * then fails.
+   */
+  implementPlan(shown: ShownEntries, label: string): Promise<void> {
+    const acts =
+      this.isShownNow(shown) && this.plan && this.mayStartTurn() && hasFinalAnswer(this.conversation.entries);
+    if (!acts) return Promise.resolve();
+    this.rememberPlan(false);
+    this.modeChanged();
+    return this.startFixedTextTurn(label, IMPLEMENT_PLAN_TEXT);
+  }
+
+  /**
+   * Start a turn on a user entry a button sent: the chat shows `label`, and the model reads `modelText`, a fixed
+   * English text, in its place. The caller checks first that the button may act.
+   */
+  private startFixedTextTurn(label: string, modelText: string): Promise<void> {
     const user: UserEntry = { role: "user", content: label, mentions: [] };
-    this.modelText.set(user, CONTINUE_TEXT);
+    this.modelText.set(user, modelText);
     return this.startTurn({ kind: "continue", user });
   }
 
   /**
-   * What the last turn offers now, for a request made while the panel showed `shown`. Another conversation with as many
-   * entries is refused; within the conversation shown, the count is the only check, so a request posted before a Retry
-   * that ended on as many entries acts on the turn that Retry ran.
+   * What the last turn offers now, for a request made while the panel showed `shown`. Within the conversation shown,
+   * the count is the only check, so a request posted before a Retry that ended on as many entries acts on the turn
+   * that Retry ran.
    */
-  private lastTurnNow({ conversationId, entries }: ShownEntries): LastTurnActions | undefined {
-    const current = conversationId === this.conversation.id && entries === this.conversation.entries.length;
-    if (!current || !this.mayStartTurn()) return undefined;
+  private lastTurnNow(shown: ShownEntries): LastTurnActions | undefined {
+    if (!this.isShownNow(shown) || !this.mayStartTurn()) return undefined;
     return lastTurnActions(this.conversation.entries);
+  }
+
+  /** Whether the panel showed the current conversation with its current count: another one with as many is refused. */
+  private isShownNow({ conversationId, entries }: ShownEntries): boolean {
+    return conversationId === this.conversation.id && entries === this.conversation.entries.length;
   }
 
   /**
@@ -1332,7 +1367,7 @@ export class ChatController {
    * then `body` runs with its `ReplyRun`. An unexpected throw inside `body` (a bug, never the provider's failure) ends
    * the reply `failed` with an `internal` error, logged with its stack under `what`, so the composer never stays
    * locked on a reply that will not end. Whatever ended `body`, the reply in flight is then released and navigation
-   * waiting for it goes on.
+   * waiting for it goes on, and the end is told to the events port (`reportEnd`).
    */
   private async runReply(
     provider: Provider,
@@ -1359,15 +1394,45 @@ export class ChatController {
       },
     };
     this.emit();
+    let status: ReplyStatus;
     try {
-      return { status: await body(run), reply: run.reply };
+      status = await body(run);
     } catch (error) {
       console.error(`broke-code: ${what} failed unexpectedly`, error instanceof Error ? error.stack : error);
       run.reply.error = { kind: "internal", message: error instanceof Error ? error.message : String(error) };
-      return { status: run.settle("failed"), reply: run.reply };
+      status = run.settle("failed");
     } finally {
       if (this.reply?.abort === abort) this.reply = undefined;
       markSettled();
+    }
+    this.reportEnd(run.reply);
+    return { status, reply: run.reply };
+  }
+
+  /**
+   * Tell the events port how the turn whose last reply is `reply` ended, once that reply is settled and published. A
+   * turn that ends `stopped` tells nothing, whatever stopped it.
+   */
+  private reportEnd(reply: ChatEntry & { role: "assistant" }): void {
+    const end = turnEnd(reply);
+    if (!end) return;
+    this.reportEvent({
+      kind: "turnEnded",
+      ...end,
+      summary: reply.summary === true,
+      empty: reply.content.trim() === "",
+    });
+  }
+
+  /**
+   * Hand `event` to the events port, if any. A port that throws is logged and otherwise ignored: a notification that
+   * cannot show must never end or change a turn.
+   */
+  private reportEvent(event: TurnEvent): void {
+    try {
+      this.turnEvents?.(event);
+    } catch (error) {
+      console.error("broke-code: could not report a turn event", event.kind, error);
     }
   }
 
@@ -1445,6 +1510,7 @@ export class ChatController {
       this.openApproval = { id, settle };
       this.state.approval = { id, kind: request.kind, tool: request.tool, summary: request.summary };
       this.emit();
+      this.reportEvent({ kind: "approvalRequested", request: request.kind, summary: request.summary });
     });
     const approval: StepApproval | undefined =
       decision.kind === "accept" ? "accepted" : decision.kind === "reject" ? "rejected" : undefined;
@@ -1831,6 +1897,28 @@ function closePreview(preview: Preview | undefined): void {
   Promise.resolve()
     .then(() => preview.close())
     .catch((error: unknown) => console.error("broke-code: could not close an approval preview", error));
+}
+
+/**
+ * How the turn whose last reply is `reply` ended, for the events port; `undefined` for a reply that ended `stopped`,
+ * or is still in flight.
+ */
+function turnEnd(reply: ChatEntry & { role: "assistant" }): TurnEnd | undefined {
+  switch (reply.status) {
+    case "done":
+      return { status: "done" };
+    case "failed":
+      // [>]: Every failed reply carries its error; one without it is a bug of broke-code, reported as such.
+      return {
+        status: "failed",
+        error: reply.error ?? { kind: "internal", message: "the reply failed without an error" },
+      };
+    case "halted":
+      // [>]: `settle` sets the reason with the status (see `ChatEntry.haltReason`); without one there is nothing to say.
+      return reply.haltReason === undefined ? undefined : { status: "halted", reason: reply.haltReason };
+    default:
+      return undefined;
+  }
 }
 
 function waitingReply(): ChatEntry & { role: "assistant" } {

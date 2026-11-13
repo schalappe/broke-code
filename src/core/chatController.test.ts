@@ -33,6 +33,7 @@ import { SUMMARY_REQUEST } from "./history";
 import { estimateTokens, parseLimits } from "./limits";
 import { mentionReader } from "./mentionReader";
 import type { MentionReader, ReadMention } from "./mentions";
+import type { TurnEvent } from "./notifications";
 import {
   type ChatEntry,
   type ChatState,
@@ -2439,6 +2440,18 @@ describe("ChatController agent turn", () => {
       );
     });
 
+    test("implementPlan runs its turn outside Plan, and Plan stays left when that turn fails", async () => {
+      const { controller, state, sent } = await planned([{ content: "The plan." }, "fail"]);
+      await controller.send("plan it");
+      await controller.implementPlan(shown(state), "Implement the plan above.");
+
+      expect(state().mode).toBe("ask");
+      expect(state().entries.map((entry) => entry.role)).toEqual(["user", "assistant", "user", "assistant"]);
+      expect(state().entries.at(-1)).toMatchObject({ status: "failed" });
+      expect(sent()[1]!.messages[0]!.content).toBe(composeSystemPrompt(ALL_TOOLS, [], []));
+      expect(sent()[1]!.messages.at(-1)).toEqual({ role: "user", content: "Implement the plan above." });
+    });
+
     test("a turn reads the mode once, at its start: a mode change waits for the next send", async () => {
       let release: () => void = () => {};
       const runner: ToolRunner = {
@@ -4745,6 +4758,25 @@ describe("ChatController mode", () => {
     expect(state().mode).toBe("ask");
   });
 
+  test("the state names the mode the setting holds, also while Plan is on, and follows each change of it", async () => {
+    const setting: InspectedSetting = {};
+    const { controller, state } = await withSetting(setting);
+    expect(state().settingMode).toBe("ask");
+    await controller.setMode("plan");
+    expect(state()).toMatchObject({ mode: "plan", settingMode: "ask" });
+
+    setting.globalValue = true;
+    controller.modeChanged();
+    expect(state()).toMatchObject({ mode: "plan", settingMode: "autoEdit" });
+
+    setting.globalValue = false;
+    controller.modeChanged();
+    expect(state()).toMatchObject({ mode: "plan", settingMode: "ask" });
+
+    expect(await controller.setMode("autoEdit")).toEqual({ kind: "written" });
+    expect(state()).toMatchObject({ mode: "autoEdit", settingMode: "autoEdit" });
+  });
+
   test("ignores a workspace value of the setting", async () => {
     const { state } = await withSetting({ workspaceValue: true, workspaceFolderValue: true });
     expect(state().mode).toBe("ask");
@@ -4932,6 +4964,170 @@ describe("ChatController mode", () => {
       expect(state().mode).toBe("autoEdit");
       expect(state().entries).toEqual([]);
       expect((requests.get("a") ?? []).length).toBe(requestsBefore);
+    });
+
+    describe("implementPlan", () => {
+      const IMPLEMENT = "Implement the plan above.";
+      type Request = { messages: { role: string; content: string }[] };
+      const sentRequests = () => (requests.get("a") ?? []) as Request[];
+
+      /** Send `text` and let its reply end `done` on the answer "Partial end". */
+      async function answered(controller: ChatController, state: () => ChatState, text: string) {
+        const turn = controller.send(text);
+        await until(state, (s) => contentOf(s.entries.at(-1)) === "Partial ");
+        finishReply();
+        await turn;
+      }
+
+      /** A controller in Plan whose conversation ends on the `done` answer of one Plan turn. */
+      async function planAnswered(setting: InspectedSetting, options: Parameters<typeof withSetting>[1] = {}) {
+        const made = await withSetting(setting, options);
+        await made.controller.setMode("plan");
+        await answered(made.controller, made.state, "Plan it");
+        return made;
+      }
+
+      for (const [name, setting, left] of [
+        ["Ask", {}, "ask"],
+        ["Auto-edit", { globalValue: true }, "autoEdit"],
+      ] as const) {
+        test(`leaves Plan for ${name}, writes no setting, and starts one turn asking to implement the plan`, async () => {
+          const workspaceState = memoryStore();
+          const { controller, state, written } = await planAnswered({ ...setting }, { workspaceState });
+          expect(workspaceState.get("brokeCode.plan")).toBe(true);
+          const before = sentRequests().length;
+
+          const turn = controller.implementPlan(shown(state), "Implémente le plan ci-dessus.");
+          await until(state, (s) => s.entries.length === 4 && contentOf(s.entries.at(-1)) === "Partial ");
+
+          expect(state().mode).toBe(left);
+          expect(written).toEqual([]);
+          expect(workspaceState.get("brokeCode.plan")).toBeUndefined();
+          expect(state().entries[2]).toEqual({ role: "user", content: "Implémente le plan ci-dessus.", mentions: [] });
+          const request = sentRequests().at(-1)!;
+          expect(request.messages[0]).toEqual(SYSTEM);
+          expect(request.messages.slice(1)).toEqual([
+            { role: "user", content: "Plan it" },
+            { role: "assistant", content: "Partial end" },
+            { role: "user", content: IMPLEMENT },
+          ]);
+
+          await controller.implementPlan(shown(state), "Implement the plan above.");
+          expect(state().entries).toHaveLength(4);
+          finishReply();
+          await turn;
+          await controller.implementPlan(shown(state), "Implement the plan above.");
+          expect(state().entries).toHaveLength(4);
+          expect(sentRequests()).toHaveLength(before + 1);
+          expect(written).toEqual([]);
+        });
+      }
+
+      test("with a memento whose write rejects, Plan is still left and the turn still starts", async () => {
+        const logged = spyOn(console, "error").mockImplementation(() => {});
+        try {
+          const failing: ChoiceStore = {
+            get: () => undefined,
+            update: async () => {
+              throw new Error("disk full");
+            },
+          };
+          const { controller, state } = await planAnswered({}, { workspaceState: failing });
+          expect(state().mode).toBe("plan");
+          const before = sentRequests().length;
+
+          const turn = controller.implementPlan(shown(state), IMPLEMENT);
+          await until(state, (s) => s.entries.length === 4 && contentOf(s.entries.at(-1)) === "Partial ");
+          expect(state().mode).toBe("ask");
+          expect(sentRequests()).toHaveLength(before + 1);
+          expect(sentRequests().at(-1)!.messages.at(-1)).toEqual({ role: "user", content: IMPLEMENT });
+          finishReply();
+          await turn;
+          expect(state().mode).toBe("ask");
+        } finally {
+          logged.mockRestore();
+        }
+      });
+
+      test("does nothing outside Plan", async () => {
+        const { controller, state } = await withSetting({});
+        await answered(controller, state, "Plan it");
+        const before = sentRequests().length;
+        await controller.implementPlan(shown(state), IMPLEMENT);
+        expect(state().entries).toHaveLength(2);
+        expect(state().mode).toBe("ask");
+        expect(sentRequests()).toHaveLength(before);
+      });
+
+      test("does nothing during a reply", async () => {
+        const { controller, state } = await planAnswered({});
+        const turn = controller.send("Refine it");
+        await until(state, (s) => s.entries.length === 4 && contentOf(s.entries.at(-1)) === "Partial ");
+        const before = sentRequests().length;
+        await controller.implementPlan(shown(state), IMPLEMENT);
+        expect(state().entries).toHaveLength(4);
+        expect(state().mode).toBe("plan");
+        expect(sentRequests()).toHaveLength(before);
+        finishReply();
+        await turn;
+      });
+
+      test("does nothing while a mode write is pending", async () => {
+        const workspaceState = memoryStore();
+        const { controller, state, pendingWrites, releaseWrite } = await planAnswered(
+          {},
+          { workspaceState, deferWrites: true },
+        );
+        const before = sentRequests().length;
+        const picked = controller.setMode("autoEdit");
+        await until(state, () => pendingWrites.length === 1);
+        await controller.implementPlan(shown(state), IMPLEMENT);
+        expect(state().entries).toHaveLength(2);
+        expect(state().mode).toBe("plan");
+        expect(workspaceState.get("brokeCode.plan")).toBe(true);
+        releaseWrite();
+        await picked;
+        expect(sentRequests()).toHaveLength(before);
+      });
+
+      test("does nothing with no model chosen", async () => {
+        const { controller, state } = await planAnswered({});
+        const before = sentRequests().length;
+        controller.setProviders({ providers: [], skipped: [] });
+        expect(state().model).toBeUndefined();
+        await controller.implementPlan(shown(state), IMPLEMENT);
+        expect(state().entries).toHaveLength(2);
+        expect(state().mode).toBe("plan");
+        expect(sentRequests()).toHaveLength(before);
+      });
+
+      test("does nothing when the entries shown are no longer the conversation's", async () => {
+        const { controller, state } = await planAnswered({});
+        const before = sentRequests().length;
+        await controller.implementPlan(shown(state, 1), IMPLEMENT);
+        await controller.implementPlan({ conversationId: newConversationId(), entries: 2 }, IMPLEMENT);
+        expect(state().entries).toHaveLength(2);
+        expect(state().mode).toBe("plan");
+        expect(sentRequests()).toHaveLength(before);
+      });
+
+      test("does nothing when the conversation does not end on a final answer", async () => {
+        const { controller, state } = await withSetting({});
+        await controller.setMode("plan");
+        await controller.implementPlan(shown(state), IMPLEMENT);
+        expect(state().entries).toEqual([]);
+
+        const turn = controller.send("Plan it");
+        await until(state, (s) => contentOf(s.entries.at(-1)) === "Partial ");
+        controller.stop();
+        await turn;
+        expect(state().entries.at(-1)).toMatchObject({ status: "stopped" });
+        const before = sentRequests().length;
+        await controller.implementPlan(shown(state), IMPLEMENT);
+        expect(state().entries).toHaveLength(2);
+        expect(state().mode).toBe("plan");
+        expect(sentRequests()).toHaveLength(before);
+      });
     });
 
     test("a send while a mode write is pending, then New chat: nothing lands in the new conversation", async () => {
@@ -5853,6 +6049,26 @@ describe("ChatController undo", () => {
     expect(text("a.txt")).toBe("a0\n");
   });
 
+  test("implementPlan is ignored while an undo runs", async () => {
+    writeFileSync(file("a.txt"), "a0\n");
+    let open: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const { controller, state } = await undoable([{ content: writeCall("a.txt", "a1") }, { content: "First." }], {
+      restoreGate: () => gate,
+    });
+    await controller.send("first");
+    await controller.setMode("plan");
+    const undo = controller.undoChanges();
+    expect(state().undo.running).toBe(true);
+    await controller.implementPlan(shown(state, 4), "Implement the plan above.");
+    expect(state().entries).toHaveLength(4);
+    expect(state().mode).toBe("plan");
+    open();
+    await undo;
+  });
+
   test("a file with unsaved editor changes is skipped and stays held", async () => {
     writeFileSync(file("a.txt"), "old\n");
     const { controller, state, unsaved } = await undoable([
@@ -6348,6 +6564,352 @@ describe("ChatController undo", () => {
       expect(diffs.closed).toEqual([file("a.txt")]);
       await controller.openChangeDiff("a.txt");
       expect(diffs.opened.at(-1)).toEqual({ path: "a.txt", realPath: file("a.txt"), original: "a1\n" });
+    });
+  });
+});
+
+describe("ChatController turn events", () => {
+  let scriptCount = 0;
+  const readCall = (path: string) => `<read_file>\n<path>${path}</path>\n</read_file>`;
+  const done: TurnEvent = { kind: "turnEnded", status: "done", summary: false, empty: false };
+
+  /** Runner over the read tools that answers every call "ok" with `text`. */
+  const okRunner = (text = "read"): ToolRunner => ({ tools: READ_TOOLS, run: async () => ({ status: "ok", text }) });
+
+  /** Runner whose every call asks `request`'s approval through the controller, and answers with the decision's kind. */
+  const askingRunner = (request: { kind: "write" | "command"; tool: string; summary: string }): ToolRunner => ({
+    tools: READ_TOOLS,
+    run: async (_call, context) => ({ status: "ok", text: (await context.requestApproval(request)).kind }),
+  });
+
+  /**
+   * Controller whose provider answers with `script`, one reply per request, and whose events port records into
+   * `events`; `ports` replaces any port.
+   */
+  async function observed(script: ScriptedReply[], ports: Partial<ChatPorts> = {}) {
+    const prefix = `events-${scriptCount++}`;
+    scripts.set(prefix, [...script]);
+    const events: TurnEvent[] = [];
+    const controller = new ChatController({
+      apiKeys: { get: async () => undefined },
+      workspaceState: memoryStore(),
+      publish: () => {},
+      mentions: noMentions,
+      store: new ConversationStore(memoryFiles()),
+      providerSupport: new ProviderSupport(),
+      ...noTools,
+      turnEvents: (event) => events.push(event),
+      ...ports,
+    });
+    const state = () => controller.snapshot;
+    controller.setProviders({
+      providers: [{ name: "Events", baseUrl: `http://localhost:${server.port}/${prefix}/v1` }],
+      skipped: [],
+    });
+    await until(state, (s) => s.model === "m");
+    return { controller, state, events };
+  }
+
+  /** A turn in flight, its reply streaming and never ending by itself. */
+  async function hanging() {
+    const turn = await observed(["hang"]);
+    const sent = turn.controller.send("Hi");
+    await until(turn.state, (s) => contentOf(s.entries.at(-1)) === "Partial ");
+    return { ...turn, sent };
+  }
+
+  describe("approval requests", () => {
+    test("a write that waits for the user reports one event with its kind and summary", async () => {
+      const { controller, state, events } = await observed([{ content: readCall("a.txt") }, { content: "Done." }], {
+        tools: askingRunner({ kind: "write", tool: "write_file", summary: "src/a.txt" }),
+      });
+      const sent = controller.send("write it");
+      await until(state, (s) => s.approval !== undefined);
+      expect(events).toEqual([{ kind: "approvalRequested", request: "write", summary: "src/a.txt" }]);
+      controller.approve(state().approval!.id);
+      await sent;
+      expect(events).toEqual([{ kind: "approvalRequested", request: "write", summary: "src/a.txt" }, done]);
+    });
+
+    test("a command reports one event with the whole command, also while writes are auto-approved", async () => {
+      const command = "bun test\nbun run build";
+      const { controller, state, events } = await observed([{ content: readCall("a.txt") }, { content: "Done." }], {
+        tools: askingRunner({ kind: "command", tool: "run_command", summary: command }),
+        autoApproveWrites: () => true,
+      });
+      const sent = controller.send("test it");
+      await until(state, (s) => s.approval !== undefined);
+      expect(events).toEqual([{ kind: "approvalRequested", request: "command", summary: command }]);
+      controller.reject(state().approval!.id);
+      await sent;
+    });
+
+    test("each request of a turn reports its own event", async () => {
+      const { controller, state, events } = await observed(
+        [{ content: readCall("a.txt") }, { content: readCall("b.txt") }, { content: "Done." }],
+        { tools: askingRunner({ kind: "write", tool: "write_file", summary: "a.txt" }) },
+      );
+      const sent = controller.send("write twice");
+      for (let request = 1; request <= 2; request += 1) {
+        await until(state, (s) => s.approval !== undefined);
+        expect(events).toHaveLength(request);
+        controller.approve(state().approval!.id);
+        await until(state, (s) => s.approval === undefined);
+      }
+      await sent;
+      expect(events.map((event) => event.kind)).toEqual(["approvalRequested", "approvalRequested", "turnEnded"]);
+    });
+
+    test("an auto-approved write opens no request and reports nothing", async () => {
+      const { controller, events } = await observed([{ content: readCall("a.txt") }, { content: "Done." }], {
+        tools: askingRunner({ kind: "write", tool: "write_file", summary: "a.txt" }),
+        autoApproveWrites: () => true,
+      });
+      await controller.send("write it");
+      expect(events).toEqual([done]);
+    });
+
+    test("the request is in the published state when its event is reported", async () => {
+      const approvals: unknown[] = [];
+      const { controller, state } = await observed([{ content: readCall("a.txt") }, { content: "Done." }], {
+        tools: askingRunner({ kind: "write", tool: "write_file", summary: "a.txt" }),
+        turnEvents: (event) => {
+          if (event.kind === "approvalRequested") approvals.push(controller.snapshot.approval);
+        },
+      });
+      const sent = controller.send("write it");
+      await until(state, (s) => s.approval !== undefined);
+      expect(approvals).toEqual([{ id: expect.any(Number), kind: "write", tool: "write_file", summary: "a.txt" }]);
+      controller.stop();
+      await sent;
+    });
+  });
+
+  describe("turn ends", () => {
+    test("a turn that ends done reports one event, once the state holds the final status", async () => {
+      const statuses: unknown[] = [];
+      const events: TurnEvent[] = [];
+      const { controller } = await observed([{ content: readCall("a.ts") }, { content: "Done." }], {
+        tools: okRunner(),
+        turnEvents: (event) => {
+          events.push(event);
+          statuses.push(controller.snapshot.entries.at(-1));
+        },
+      });
+      await controller.send("go");
+      expect(events).toEqual([done]);
+      expect(statuses).toMatchObject([{ role: "assistant", content: "Done.", status: "done" }]);
+    });
+
+    test("an implementPlan turn that ends done reports one event, as any turn does", async () => {
+      const { controller, state, events } = await observed([{ content: "The plan." }, { content: "Implemented." }]);
+      await controller.setMode("plan");
+      await controller.send("Plan it");
+      expect(state().mode).toBe("plan");
+      events.length = 0;
+
+      const { conversationId, entries } = state();
+      await controller.implementPlan({ conversationId, entries: entries.length }, "Implement the plan above.");
+
+      expect(state().mode).not.toBe("plan");
+      expect(state().entries.at(-1)).toMatchObject({ role: "assistant", content: "Implemented.", status: "done" });
+      expect(events).toEqual([done]);
+    });
+
+    test("a turn that fails reports one event with its failure", async () => {
+      const { controller, events } = await observed(["fail"]);
+      await controller.send("go");
+      expect(events).toEqual([
+        {
+          kind: "turnEnded",
+          status: "failed",
+          error: { kind: "rejected", provider: "Events", status: 500, detail: "model crashed" },
+          summary: false,
+          empty: true,
+        },
+      ]);
+    });
+
+    test("a turn halted on the step limit reports one event with that reason", async () => {
+      const { controller, events } = await observed([{ content: readCall("a.ts") }], {
+        tools: okRunner(),
+        limits: fixedLimits({ steps: 1 }),
+      });
+      await controller.send("go");
+      expect(events).toEqual([
+        { kind: "turnEnded", status: "halted", reason: "stepLimit", summary: false, empty: false },
+      ]);
+    });
+
+    test("a turn halted on three malformed calls reports one event with that reason", async () => {
+      const malformed = { content: "<read_file>\n<path>a.ts</path>" };
+      const { controller, events } = await observed([malformed, malformed, malformed]);
+      await controller.send("go");
+      expect(events).toEqual([
+        { kind: "turnEnded", status: "halted", reason: "malformedCalls", summary: false, empty: false },
+      ]);
+    });
+
+    test("a turn halted on a full context reports one event with that reason", async () => {
+      const { controller, events } = await observed([], { limits: fixedLimits({ sizes: { m: 1000 } }) });
+      await controller.send("x".repeat(4000));
+      expect(events).toEqual([
+        { kind: "turnEnded", status: "halted", reason: "contextFull", summary: false, empty: true },
+      ]);
+    });
+
+    test("a port that throws is logged and leaves the turn to end as it would", async () => {
+      const logged = spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const { controller, state } = await observed([{ content: "A." }, { content: "B." }], {
+          turnEvents: () => {
+            throw new Error("no notification");
+          },
+        });
+        await controller.send("first");
+        await controller.send("second");
+        expect(state().entries.map((entry) => contentOf(entry))).toEqual(["first", "A.", "second", "B."]);
+        expect(isReplying(state())).toBe(false);
+        expect(logged).toHaveBeenCalledTimes(2);
+      } finally {
+        logged.mockRestore();
+      }
+    });
+  });
+
+  describe("stopped turns report nothing", () => {
+    test("Stop", async () => {
+      const { controller, state, events, sent } = await hanging();
+      controller.stop();
+      await sent;
+      expect(state().entries.at(-1)).toMatchObject({ status: "stopped" });
+      expect(events).toEqual([]);
+    });
+
+    test("New chat", async () => {
+      const { controller, events, sent } = await hanging();
+      await controller.newChat();
+      await sent;
+      expect(events).toEqual([]);
+    });
+
+    test("opening another conversation", async () => {
+      const { controller, state, events } = await observed([{ content: "A." }, "hang"]);
+      await controller.send("first");
+      const first = state().conversationId;
+      await controller.newChat();
+      events.length = 0;
+      const sent = controller.send("Hi");
+      await until(state, (s) => contentOf(s.entries.at(-1)) === "Partial ");
+      await controller.openConversation(first);
+      await sent;
+      expect(state().conversationId).toBe(first);
+      expect(events).toEqual([]);
+    });
+
+    test("deleting the conversation shown", async () => {
+      const { controller, state, events, sent } = await hanging();
+      await controller.deleteConversation(state().conversationId);
+      await sent;
+      expect(events).toEqual([]);
+    });
+
+    test("the provider removed from the settings", async () => {
+      const { controller, state, events, sent } = await hanging();
+      controller.setProviders({ providers: [], skipped: [] });
+      await sent;
+      expect(state().entries.at(-1)).toMatchObject({ status: "stopped" });
+      expect(events).toEqual([]);
+    });
+
+    test("deactivation", async () => {
+      const { controller, state, events, sent } = await hanging();
+      controller.dispose();
+      await sent;
+      expect(state().entries.at(-1)).toMatchObject({ status: "stopped" });
+      expect(events).toEqual([]);
+    });
+
+    test("an approval request cancelled by Stop reported its opening only", async () => {
+      const { controller, state, events } = await observed([{ content: readCall("a.txt") }], {
+        tools: askingRunner({ kind: "write", tool: "write_file", summary: "a.txt" }),
+      });
+      const sent = controller.send("write it");
+      await until(state, (s) => s.approval !== undefined);
+      controller.stop();
+      await sent;
+      expect(events).toEqual([{ kind: "approvalRequested", request: "write", summary: "a.txt" }]);
+    });
+  });
+
+  describe("summaries and queued turns", () => {
+    // [>]: Threshold 875 tokens (3,500 characters), as in "automatic compaction": the 2,000-character result does not
+    // fit with the system prompt, and the summary request, every result left out, fits.
+    const compacting: Partial<ChatPorts> = {
+      tools: okRunner("y".repeat(2000)),
+      limits: fixedLimits({ sizes: { m: 1000 }, autoCompact: true }),
+    };
+
+    test("a turn with an automatic summary reports one event, when the turn ends", async () => {
+      const { controller, state, events } = await observed(
+        [{ content: readCall("big.ts") }, { content: "The goal is x." }, { content: "Done." }],
+        compacting,
+      );
+      await controller.send("go");
+      expect(state().entries.at(-2)).toMatchObject({ summary: true, status: "done" });
+      expect(events).toEqual([done]);
+    });
+
+    test("an automatic summary that fails ends its turn with one event flagged as a summary", async () => {
+      const { controller, events } = await observed([{ content: readCall("big.ts") }, "fail"], compacting);
+      await controller.send("go");
+      expect(events).toMatchObject([{ kind: "turnEnded", status: "failed", summary: true, empty: true }]);
+      expect(events).toHaveLength(1);
+    });
+
+    test("/compact reports one event flagged as a summary", async () => {
+      const { controller, events } = await observed([{ content: "A." }, { content: "The goal is x." }]);
+      await controller.send("first");
+      expect(await controller.compact()).toBe("ran");
+      expect(events).toEqual([done, { kind: "turnEnded", status: "done", summary: true, empty: false }]);
+    });
+
+    test("/compact whose reply holds no text reports its end as empty", async () => {
+      const { controller, events } = await observed([{ content: "A." }, { content: "  \n" }]);
+      await controller.send("first");
+      await controller.compact();
+      expect(events.at(-1)).toEqual({ kind: "turnEnded", status: "done", summary: true, empty: true });
+    });
+
+    test("/compact halted on a full context reports one event flagged as a summary", async () => {
+      const { controller, events } = await observed([{ content: "a".repeat(4000) }], {
+        limits: fixedLimits({ sizes: { m: 1000 } }),
+      });
+      await controller.send("go");
+      events.length = 0;
+      await controller.compact();
+      expect(events).toMatchObject([{ kind: "turnEnded", status: "halted", reason: "contextFull", summary: true }]);
+      expect(events).toHaveLength(1);
+    });
+
+    test("two queued turns report two events, and a queued message starting reports nothing", async () => {
+      let release: () => void = () => {};
+      const held: ToolRunner = {
+        tools: READ_TOOLS,
+        run: () => new Promise((resolve) => (release = () => resolve({ status: "ok", text: "read" }))),
+      };
+      const { controller, state, events } = await observed(
+        [{ content: readCall("a.ts") }, { content: "First." }, { content: "Second." }],
+        { tools: held },
+      );
+      const sent = controller.send("first");
+      await until(state, (s) => s.entries.some((entry) => entry.role === "assistant" && entry.call !== undefined));
+      await controller.queueMessage("second", []);
+      expect(events).toEqual([]);
+      release();
+      await sent;
+      expect(state().entries.at(-1)).toMatchObject({ content: "Second.", status: "done" });
+      expect(events).toEqual([done, done]);
     });
   });
 });
