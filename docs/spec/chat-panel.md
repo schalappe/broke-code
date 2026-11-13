@@ -1,6 +1,6 @@
 # Chat panel behavior
 
-This file specifies what the chat panel does around a turn: folding, code block actions, Quote, queued messages, Retry, Continue, "Implement in ... mode", Edit, and the recall of earlier messages. `DESIGN.md` holds the look; `docs/spec/harness.md` holds the turn itself.
+This file specifies what the chat panel does around a turn: folding, code block actions, Quote, the question block, queued messages, Retry, Continue, "Implement in ... mode", Edit, and the recall of earlier messages. `DESIGN.md` holds the look; `docs/spec/harness.md` holds the turn itself.
 
 ## Turn folding
 
@@ -94,6 +94,30 @@ This file specifies what the chat panel does around a turn: folding, code block 
   host trims the trailing blank line at send. Mentions in it are read at send like any typed text (`@path` attaches,
   a quoted `@dataclass` shows a failed chip). With Edit's replacing mark on, the quote is appended and Send still
   replaces the last turn.
+
+## The question block
+
+- The question block (#143): while `ChatState.question` is set, the reply in flight whose `ask_user` call has no step
+  yet shows the call's row and the question's controls in one block, where an approval's decision block renders
+  (`DESIGN.md`, "The decision block"). The state, the `answer` message, and the cancellation are specified in
+  `docs/spec/harness.md` ("Approvals, modes, ...").
+- The row shows the tool name, the first line of the question (`mainArgument`: the `question` argument trimmed, whatever
+  order the model wrote the arguments in, and nothing when it has none), and "waiting for your answer". The block then
+  shows the question in full with its line breaks, one button per option in the order given, then a free-text field
+  ("Your answer") with an Answer button. A question without options shows the field and Answer only.
+- An option click posts `answer { id, text }` with that option's text. Answer, and Enter in the field (not while an
+  IME composes), post it with the field's text, trimmed; neither posts while the field is empty after trimming, and
+  Answer is then disabled. The field takes at most 4,000 UTF-16 units (`maxLength`, `MAX_ANSWER_LENGTH`).
+- The DOM order is the visual order: the options, the field, Answer. Nothing focusable sits between the block and the
+  message box: from the message box, Shift+Tab reaches Answer (when enabled), then the field, then the options from
+  last to first. The focus does not move when the block opens.
+- The text typed is the block's own state, keyed by the question's id: it survives opening and closing History, a new
+  question starts with an empty field, and when the view is hidden and shown again the question is still open but the
+  text typed and not yet sent is lost, like an unsent approval reason.
+- Once answered, the step is an ordinary row: the first line of the question, then `ok` and the result's size; the
+  expanded row shows the result, `The user answered: <text>`. A folded turn counts an `ask_user` step among the "other
+  steps", and History's content search does not search tool results, so an answer is not found by it (both accepted,
+  #143).
 
 ## Queued messages
 

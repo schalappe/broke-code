@@ -289,8 +289,8 @@ setting, so a change you make in the settings editor shows in the selector too. 
 Auto-edit in one window applies to every window and project. A workspace `settings.json` cannot turn it on. The
 selector is disabled while the agent works. Commands always ask, in both modes.
 
-The third mode, **Plan**, asks the agent for a plan instead of changes. The agent gets only the tools that read
-(**read_file**, **list_files**, **search**, and **load_skill** when a skill is listed). It answers with a plan of the
+The third mode, **Plan**, asks the agent for a plan instead of changes. The agent gets only the tools that change
+nothing (**read_file**, **list_files**, **search**, **ask_user**, and **load_skill** when a skill is listed). It answers with a plan of the
 changes, file by file, in order. broke-code writes nothing and runs no command. If the model still tries to write or
 run a command, the chat shows a failed step that says the tool is not available in Plan mode, and the model goes on.
 
@@ -334,9 +334,23 @@ Unlike the file tools, a command can go outside the workspace. It runs with your
 delete anything you can. broke-code checks only the folder it starts in. Your approval is the guard, so read the whole
 command before you click **Run**.
 
+The agent can ask you a question with **ask_user**, in every mode. It is told to ask when your request names one
+thing and several match, such as a function that two files define under the same name, instead of changing them all
+or picking one. The chat shows the question where an approval shows, with a button for each answer the model proposes
+(six at most), then a field and **Answer** for an answer of your own, up to 4,000 characters. Enter in the field
+answers too.
+
+- Your answer goes back to the model as the result of its call, and the turn goes on. Click the step's row to read it
+  again.
+- A message you send from the message box meanwhile is queued, as during an approval. It does not answer the
+  question.
+- **Stop**, **New chat**, and opening or deleting a conversation cancel the question, and the turn ends stopped. A
+  question is never saved: after a reload, the conversation shows that turn as stopped.
+- No notification tells you about a question while the chat is out of view.
+
 Each tool call shows as a compact row under the model's text. The row shows the tool, its main argument (a path, a
-search pattern, or the whole command), and whether it worked with the size of its result, or the exit code for a
-command. Click the row to see the result the model received.
+search pattern, the whole command, or the first line of a question), and whether it worked with the size of its
+result, or the exit code for a command. Click the row to see the result the model received.
 
 Once an agent turn ends, its steps fold under one row above the final answer that says what they did, such as "Read 3
 files, edited 1 file, ran 1 command, 1 failed". Files count once however the model spelled their path (`a.ts`,
@@ -747,7 +761,7 @@ The eval bench measures broke-code's tool calls on two local models with Ollama,
   skill the model may load.
 - **Range** gives the code on the last line of a 2,400-line file, by reading on past its first 2,000 lines.
 - **Ask** renames a function that two files define under the same name, by asking which one first. The bench
-  answers the question; the extension does not offer this question tool yet.
+  answers the question, as you do in the chat.
 
 In the latest full run, both models passed all 10 runs of every task. When a model thinks, then stops without a word,
 broke-code tells it so and asks again. Contributors run the bench with `bun run eval`.

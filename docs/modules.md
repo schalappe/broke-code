@@ -120,12 +120,12 @@ This file says which file holds which responsibility. Update it when a module ga
   makes, the decision it gets, the rejection text, and the decisions of the editor side: which change diffs to close,
   the unsaved-editor check over the open documents, the auto-approve setting from its user value), the question tool
   (`askUser.ts`: `ASK_USER_TOOL`, `askUser` checks the question and the options and asks the run context's
-  `requestAnswer`, the request beside the approval request; the answer, `unanswerable`, or a cancellation on Stop), the
+  `requestAnswer`, the request beside the approval request; the answer, or a cancellation on Stop), the
   tool runner (`toolRunner.ts`: the read and write tools over the
   workspace folders, the read tools also over the run's `skillRoots`, each write handed to the applier the host builds
   for the run, `run_command` with the command environment the host passes, read at each call, `load_skill` over
-  the run's `skills`, and `ask_user` only when its caller turns it on, which the eval bench does and the extension does
-  not), the instruction files
+  the run's `skills`, and `ask_user` only when its caller turns it on, which the extension does, and the eval bench but
+  for its baseline run), the instruction files
   (`instructions.ts`: `~/.agents/AGENTS.md`, then each workspace folder's `AGENTS.md`, under the mention caps), and the
   skills (`skills.ts`: discovery in `~/.agents/skills/` and each workspace folder's `.agents/skills/`, the frontmatter
   subset, validation, precedence, warnings, the line the extension logs at each send; `LOAD_SKILL_TOOL`, `loadSkill`
@@ -170,7 +170,7 @@ This file says which file holds which responsibility. Update it when a module ga
   `tabGroups.onDidChangeTabs` for a tab the user closed, the change watch over `workspace.onDidChangeTextDocument`, and the edit as one `WorkspaceEdit` on the document's URI).
 - `src/webview/`: the React chat panel and its CSS (`styles.css`: a token layer, then rules that consume it, every color
   from a `--vscode-*` variable; see `DESIGN.md`), the thread that carries a turn's tool steps as nodes, the latest
-  user message in the theme's button colors and the earlier ones outlined (`Entry`'s `earlier`), tool step rows, the approval controls, the mode selector after the message box (`ModeSelect`), the turn's actions row (`TurnActions`: Retry, its
+  user message in the theme's button colors and the earlier ones outlined (`Entry`'s `earlier`), tool step rows, the approval controls, the question block (`QuestionControls`: the open `ask_user` question, its options, the answer field, and Answer, posting `answer`), the mode selector after the message box (`ModeSelect`), the turn's actions row (`TurnActions`: Retry, its
   confirmation and Cancel, Continue, and "Implement in ... mode" under the last turn's reply, then "Undo changes" under the reply
   `ChatState.undo` names), Edit under the last turn's user message and the replacing state's mark with Cancel (held by
   `App`, the composer's Send carrying it), "Changed files" under the reply `ChatState.undo` names (`ChangedFiles`, a

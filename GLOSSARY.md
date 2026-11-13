@@ -63,6 +63,13 @@ the chat while the agent turn waits; a rejection, with its optional reason, goes
 result. A setting can approve writes without asking, never commands.
 _Avoid_: confirmation, permission, consent
 
+**Question**:
+One question the model asks the user inside an agent turn with the `ask_user` tool, when only the user can settle a
+choice. The chat shows it where an **approval** shows, with the options the model proposes and a field for another
+answer, and the turn waits; the answer goes back to the model as the call's result. Stop and leaving the conversation
+cancel it. Not a **queued message**: a message sent from the message box meanwhile waits for the turn to end.
+_Avoid_: prompt, clarification, the user's question (that is a message)
+
 **Undo changes**:
 The chat's way back from the writes of an agent turn: under the last reply of the latest turn of the conversation
 shown that wrote a file, it puts each file that turn wrote back to its text from before the turn, or deletes a file the
@@ -81,8 +88,8 @@ _Avoid_: modified files, diff list, file changes
 
 **Mode**:
 What an agent turn may do, shown and picked in the message box: **Ask** waits for the user's approval of each write;
-**Auto-edit** approves writes without asking; **Plan** offers the read tools only, so the model answers with a plan and
-nothing is written or run. Ask and Auto-edit are the user setting `brokeCode.autoApproveWrites`, so they apply to every
+**Auto-edit** approves writes without asking; **Plan** offers the tools that change nothing (the read tools and `ask_user`, the **question**), so the model answers
+with a plan and nothing is written or run. Ask and Auto-edit are the user setting `brokeCode.autoApproveWrites`, so they apply to every
 window; Plan is kept per workspace and wins over the setting while on. A turn reads Plan when it starts. Commands wait
 for Run in every mode that offers them. Under a plan's **final answer**, "Implement in Ask mode" or "Implement in
 Auto-edit mode" leaves Plan for the mode the setting holds, without writing the setting, and sends "Implement the plan

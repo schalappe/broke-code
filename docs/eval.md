@@ -111,8 +111,8 @@ This file describes `bun run eval`: what it runs, its sandbox, its scenarios, it
       functions, not one), call ask_user to ask which before any write"; 10/10 on both models. That text is the one in
       `src/core/askUser.ts` and `src/core/systemPrompt.ts`.
     - Decision: bar met (the issue's bar: `ask` 9/10 on both models, and every other scenario kept at 9/10 in the full
-      run of the nine, recorded below). The tool, the scenario, and the flag are kept; the extension's tool list is
-      unchanged until the panel can answer a question (#143).
+      run of the nine, recorded below). The tool, the scenario, and the flag are kept. The extension offers the tool
+      since #143, with the description and the rule measured here unchanged, so that change needed no eval run.
 
   A failed run shows one category and a one-line detail: `malformed`, `wrongTool`, `wrongAnswer`, `stepLimit`,
   `contextFull`, `providerError`, `wrongEdit` (a file the scenario writes is missing or holds other text, with the
