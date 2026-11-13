@@ -506,6 +506,14 @@ describe("ChatController mentions", () => {
     expect(JSON.stringify(controller.snapshot)).not.toContain("export const a");
   });
 
+  test("sends a quoted answer as typed: a line starting with `> ` is ordinary text", async () => {
+    const { reader } = fakeReader();
+    const { controller } = await ready(mentionsProvider, reader);
+    await controller.send("> a\n> b\n\nwhy?");
+
+    expect(lastRequest().messages.at(-1)).toEqual({ role: "user", content: "> a\n> b\n\nwhy?" });
+  });
+
   test("keeps a @selection's path and line range in the state, which the record saves", async () => {
     const range = { path: "src/app.ts", start: 10, end: 12 };
     const reader: MentionReader = {

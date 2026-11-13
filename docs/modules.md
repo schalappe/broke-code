@@ -141,12 +141,13 @@ This file says which file holds which responsibility. Update it when a module ga
   `ChatState.undo` names), Edit under the last turn's user message and the replacing state's mark with Cancel (held by
   `App`, the composer's Send carrying it), "Changed files" under the reply `ChatState.undo` names (`ChangedFiles`, a
   button per row posting `openChangeDiff`), and the last undo's outcome (`UndoOutcome`), and the answer's code blocks with Copy and Insert at cursor (`CodeBlock`,
-  the `pre` override of the answer's renderer) included. `SuggestionMenu.tsx` is the autocomplete list the `@` and
+  the `pre` override of the answer's renderer) included, and Quote under an answer whose text is selected (`Answer`,
+  `holdsSelection`; the quoted text reaches the composer as `App` state beside Edit's draft). `SuggestionMenu.tsx` is the autocomplete list the `@` and
   `/` menus share, a row with an optional description; `composer.ts` holds the message box's decisions without React
   (the token at the caret, each menu's rows, what a key does, the recall of earlier messages with ArrowUp and
   ArrowDown (`RecallPlace`, `recallHolds`), what picking a `/` row does (`slashPick`), `applyDraft`,
   how a host draft (an editor entry point's, or queued texts returned as a `paragraph`) edits the message box's text,
-  caret, and picked paths; `editDraft`, the draft Edit puts there; `Replacing` and `stillReplacing`, the replacing
+  caret, and picked paths; `editDraft`, the draft Edit puts there; `quoteDraft`, what Quote puts there; `Replacing` and `stillReplacing`, the replacing
   state and when it ends). The queued messages render under the message box (`QueuedMessages`).
   `Root.tsx` is the panel's root: it posts `ready`, renders each state, and queues the `insertDraft` drafts for the
   message box; `main.tsx` mounts it. `turns.ts` groups the entries for rendering without React (`foldTurns`: each entry once,

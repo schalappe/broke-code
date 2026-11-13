@@ -189,6 +189,7 @@
   "Copied": "Copié",
   "Copy failed": "Échec de la copie",
   "Insert at cursor": "Insérer au curseur",
+  "Quote": "Citer",
   "No text editor is active: open a file to insert the code.": "Aucun éditeur de texte n'est actif : ouvrez un fichier pour insérer le code.",
   "The editor refused the edit; its document may be read-only.": "L'éditeur a refusé la modification ; son document est peut-être en lecture seule.",
   "Could not insert the code: {0}": "Impossible d'insérer le code : {0}",

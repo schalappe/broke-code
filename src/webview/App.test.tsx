@@ -3407,3 +3407,178 @@ describe("recall earlier messages", () => {
     });
   });
 });
+
+describe("quote a selection of an answer", () => {
+  const reply = (content: string, overrides: Partial<Reply> = {}): ChatEntry => ({
+    role: "assistant",
+    reasoning: "",
+    content,
+    status: "done",
+    ...overrides,
+  });
+  const ask = (content: string): ChatEntry => ({ role: "user", content, mentions: [] });
+
+  /** The first text node under `root` whose text contains `text`. */
+  function textNode(root: Element, text: string): Text {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (node.textContent?.includes(text)) return node as Text;
+    }
+    throw new Error(`no text node holding ${text}`);
+  }
+
+  /** Select from `start` to `end`, each a node and an offset, as the user's pointer does. */
+  const select = (start: [Node, number], end: [Node, number] = start) =>
+    act(async () => {
+      const range = document.createRange();
+      range.setStart(...start);
+      range.setEnd(...end);
+      const selection = document.getSelection()!;
+      selection.removeAllRanges();
+      selection.addRange(range);
+    });
+  /** Select the whole text of the first text node holding `text`. */
+  const selectText = (host: Element, text: string) => {
+    const node = textNode(host, text);
+    return select([node, 0], [node, node.length]);
+  };
+  const quoteButtons = (host: HTMLElement) =>
+    [...host.querySelectorAll("button")].filter((button) => button.textContent === "Quote");
+
+  test("a selection inside one answer shows Quote in a row under that answer's Markdown", async () => {
+    await withPanel(stateWith(true, { entries: [ask("Hi"), reply("Hello there")] }), async ({ host }) => {
+      expect(quoteButtons(host)).toEqual([]);
+      await selectText(host, "Hello there");
+      const [quote] = quoteButtons(host);
+      expect(quote).toBeDefined();
+      expect(quote?.parentElement?.previousElementSibling?.className).toBe("answer");
+    });
+  });
+
+  test("whitespace only, two replies, a tool step, reasoning, or a user message shows no Quote", async () => {
+    const answer = "Reading.\n<read_file>\n<path>a.ts</path>\n</read_file>";
+    const reading = reply(answer, {
+      reasoning: "Thinking hard",
+      call: { name: "read_file", args: { path: "a.ts" }, start: 9, end: answer.length },
+    });
+    const result: ChatEntry = {
+      role: "tool",
+      name: "read_file",
+      args: { path: "a.ts" },
+      status: "ok",
+      text: "file body",
+    };
+    const entries = [ask("Ask me"), reading, result, reply("First   answer"), ask("Next"), reply("Second")];
+    await withPanel(stateWith(true, { entries }), async ({ host }) => {
+      const spaced = textNode(host, "First   answer");
+      await select([spaced, 5], [spaced, 8]);
+      expect(quoteButtons(host)).toEqual([]);
+      await select([spaced, 0], [textNode(host, "Second"), 3]);
+      expect(quoteButtons(host)).toEqual([]);
+      const step = host.querySelector(".step");
+      expect(step).not.toBeNull();
+      await selectText(step!, (step!.textContent ?? "").trim().slice(0, 4));
+      expect(quoteButtons(host)).toEqual([]);
+      await selectText(host, "Thinking hard");
+      expect(quoteButtons(host)).toEqual([]);
+      await selectText(host, "Ask me");
+      expect(quoteButtons(host)).toEqual([]);
+      // [>]: The same answers do show it for a selection of their own text, so each case above is a real refusal.
+      await select([spaced, 0], [spaced, 5]);
+      expect(quoteButtons(host)).toHaveLength(1);
+    });
+  });
+
+  test("a selection ending at the start of the next block, as a triple click does, shows Quote and keeps it", async () => {
+    const state = stateWith(true, { entries: [ask("Hi"), reply("Last paragraph"), ask("Next")] });
+    await withPanel(state, async ({ host, show }) => {
+      const next = [...host.querySelectorAll(".message.user")].at(-1)!;
+      await select([textNode(host, "Last paragraph"), 0], [next, 0]);
+      expect(quoteButtons(host)).toHaveLength(1);
+      // [>]: The row now lies inside the range; another render checks again and keeps it.
+      await show(stateWith(true, { entries: [ask("Hi"), reply("Last paragraph"), ask("Next")] }));
+      expect(quoteButtons(host)).toHaveLength(1);
+    });
+  });
+
+  test("clearing the selection hides Quote", async () => {
+    await withPanel(stateWith(true, { entries: hi }), async ({ host }) => {
+      await selectText(host, "Hello");
+      expect(quoteButtons(host)).toHaveLength(1);
+      await act(async () => document.getSelection()?.removeAllRanges());
+      expect(quoteButtons(host)).toEqual([]);
+    });
+  });
+
+  test("without a message box no Quote shows", async () => {
+    await withPanel(stateWith(true, { entries: hi }), async ({ host, show }) => {
+      await show(stateWith(false, { entries: hi }));
+      expect(host.querySelector("textarea")).toBeNull();
+      await selectText(host, "Hello");
+      expect(quoteButtons(host)).toEqual([]);
+    });
+  });
+
+  test("Quote fills an empty box, focuses it with the caret at the end, opens no menu, and posts nothing", async () => {
+    await withPanel(
+      stateWith(true, { entries: [ask("Hi"), reply("Look at @src")] }),
+      async ({ host, textarea, click }) => {
+        await selectText(host, "Look at @src");
+        posted.length = 0;
+        await click("Quote");
+        expect(textarea.value).toBe("> Look at @src\n\n");
+        expect(document.activeElement).toBe(textarea);
+        expect(textarea.selectionStart).toBe(textarea.value.length);
+        expect(textarea.selectionEnd).toBe(textarea.value.length);
+        expect(host.querySelector('[role="listbox"]')).toBeNull();
+        expect(posted).toEqual([]);
+      },
+    );
+  });
+
+  test("Quote appends to a box holding text, each line of a code block quoted", async () => {
+    const entries = [ask("Hi"), reply("```\nlet a = 1;\nlet b = 2;\n```")];
+    await withPanel(stateWith(true, { entries }), async ({ host, textarea, type, click }) => {
+      await type("hello\n");
+      const code = host.querySelector(".answer pre code");
+      expect(code).not.toBeNull();
+      await selectText(code!, "let a");
+      await click("Quote");
+      expect(textarea.value).toBe("hello\n\n> let a = 1;\n> let b = 2;\n\n");
+      expect(textarea.selectionStart).toBe(textarea.value.length);
+    });
+  });
+
+  test("during a reply, a quote of an older answer then Enter queues the quote as typed", async () => {
+    const entries = [ask("Hi"), reply("a"), ask("More"), reply("", { status: "waiting" })];
+    await withPanel(stateWith(true, { entries }), async ({ host, click, press }) => {
+      await selectText(host.querySelector(".answer")!, "a");
+      await click("Quote");
+      posted.length = 0;
+      await press("Enter");
+      expect(posted).toEqual([{ type: "queueMessage", text: "> a\n\n", mentions: [] }]);
+    });
+  });
+
+  test("with an approval open, Quote leaves Reject right before the message box in the tab order", async () => {
+    const answer = "Renaming.\n<write_file>\n<path>a.ts</path>\n<content>\nx\n</content>\n</write_file>";
+    const writing = reply(answer, {
+      status: "streaming",
+      call: { name: "write_file", args: { path: "a.ts", content: "x" }, start: 10, end: answer.length },
+    });
+    const state = stateWith(true, {
+      entries: [hi[0]!, writing],
+      approval: { id: 1, kind: "write", tool: "write_file", summary: "a.ts" },
+    });
+    await withPanel(state, async ({ host, textarea }) => {
+      await selectText(host, "Renaming.");
+      const [quote] = quoteButtons(host);
+      expect(quote).toBeDefined();
+      const focusable = [...host.querySelectorAll<HTMLElement>("button, select, textarea, input, a[href], summary")];
+      const box = focusable.indexOf(textarea);
+      expect(focusable[box - 1]?.textContent).toBe("Reject");
+      expect(focusable.indexOf(quote!)).toBeLessThan(box - 1);
+    });
+  });
+
+});

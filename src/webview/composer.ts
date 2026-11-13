@@ -2,7 +2,7 @@
  * @module composer
  * Decisions of the message box, kept out of React so tests need no DOM: which token opens a menu (`@` mentions, `/`
  * commands), which menu rows to show, what a key does, which picked paths to send, and how a draft (an editor entry
- * point, queued texts returned, or the last message put back by Edit) edits the message box.
+ * point, queued texts returned, or the last message put back by Edit) edits the message box, and what Quote puts in it.
  */
 import { lastTurnActions } from "../core/lastTurn";
 import {
@@ -322,4 +322,17 @@ export function applyDraft(draft: Draft, insert: DraftInsert): Draft {
   const lead = before === "" || /\s$/.test(before) ? "" : " ";
   const head = `${before}${lead}${insert.text}${/^\s/.test(after) ? after[0] : " "}`;
   return { text: head + (/^\s/.test(after) ? after.slice(1) : after), caret: head.length, picked: unique };
+}
+
+/**
+ * `draft` with the text selected in an answer quoted after it, for Quote. The selected text is trimmed, each line gets
+ * `> `, a blank inner line becomes `>` alone, and a blank line follows the quote. A blank box is filled; otherwise its
+ * trailing whitespace goes and a blank line separates it from the quote, so quotes in a row stay one blank line apart.
+ * The caret goes to the end and the picked paths stay.
+ */
+export function quoteDraft(draft: Draft, selected: string): Draft {
+  const lines = selected.trim().split("\n");
+  const quote = `${lines.map((line) => (line.trim() === "" ? ">" : `> ${line}`)).join("\n")}\n\n`;
+  const text = draft.text.trim() === "" ? quote : `${draft.text.trimEnd()}\n\n${quote}`;
+  return { text, caret: text.length, picked: draft.picked };
 }

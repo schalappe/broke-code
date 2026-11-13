@@ -1,6 +1,6 @@
 # Chat panel behavior
 
-This file specifies what the chat panel does around a turn: folding, code block actions, queued messages, Retry, Continue, Edit, and the recall of earlier messages. `DESIGN.md` holds the look; `docs/spec/harness.md` holds the turn itself.
+This file specifies what the chat panel does around a turn: folding, code block actions, Quote, queued messages, Retry, Continue, Edit, and the recall of earlier messages. `DESIGN.md` holds the look; `docs/spec/harness.md` holds the turn itself.
 
 ## Turn folding
 
@@ -59,7 +59,41 @@ This file specifies what the chat panel does around a turn: folding, code block 
   throws each show a native error notification and change nothing. VS Code's `edit` settles `true` on a read-only
   document although nothing applied, so an edit counts as refused when it settles `false`, or when the document's
   version did not change and some selection does not already hold the text (then nothing needed changing: `done`). A
-  success shows nothing, and neither button moves the focus.
+  success shows nothing, and neither button moves the focus. The header holding Copy and Insert at cursor is not
+  selectable (`user-select: none`), so their labels are never part of selected text, in a quote or in a plain copy.
+
+## Quote
+
+- A "Quote" button (French "Citer", its accessible name) shows under an answer while the page's selected text lies in
+  that answer's rendered Markdown, code blocks included (`Answer`, `holdsSelection`). All of this must hold: the
+  selection is not collapsed and holds more than whitespace (a selection in the message box or another text field
+  reports collapsed); it starts inside one answer's `.answer` block; whatever it covers outside that block is whitespace
+  only, so a triple click on an answer's last paragraph, which ends at the start of the next block, counts; and the
+  panel has a message box (a provider is configured or a reply is in flight). The Quote row is skipped by that check
+  and is not selectable, so its label never joins the selected text and its showing cannot hide it again. Every
+  rendered answer counts: a final reply, the text before a tool call, a reply inside an opened fold, a summary. A
+  selection in a user message, a tool step, reasoning, or one that covers text of two entries shows nothing.
+- The check runs on every `selectionchange` and after every render, since removing the selected node changes the
+  selection without an event. The button goes when the selected text collapses, leaves the answer, or loses its text
+  because the answer's content was replaced; an unrelated render that leaves the selected text in place keeps it. So
+  Quote works for an older answer, or a finished paragraph, while a reply is in flight.
+- The button is a secondary `<button>` in a row of its own directly under the answer's Markdown, before that reply's
+  tool step and approval controls, so nothing focusable comes between the approval controls and the message box. No
+  room is kept for it: when it shows, what is under the answer moves down by one row, and the conversation's rule for
+  following its bottom applies unchanged. Tab from the selection reaches it; Enter or Space activates it, and the
+  selection survives until the quote is read. Escape does nothing new. When the button goes while it holds the focus,
+  no focus is moved.
+- A click reads the selected text as rendered (`Selection.toString`: no list markers, backticks, or emphasis marks)
+  and does nothing when no text of the answer is selected any more. `quoteDraft` trims it, prefixes each line with
+  `> `, writes a line that is empty or whitespace only as `>` alone, and ends the quote with a blank line. A blank
+  message box is filled with it; otherwise the box's text loses its trailing whitespace, then a blank line and the
+  quote follow. The message box takes the focus with the caret at the end, no menu opens, the picked paths stay, and
+  nothing is posted to the host: the text travels as webview state beside Edit's draft (`App`'s `quoting`), not as a
+  `DraftInsert`.
+- A quote is ordinary text of the draft: sent or queued as typed, a line starting with `> ` is no command, and the
+  host trims the trailing blank line at send. Mentions in it are read at send like any typed text (`@path` attaches,
+  a quoted `@dataclass` shows a failed chip). With Edit's replacing mark on, the quote is appended and Send still
+  replaces the last turn.
 
 ## Queued messages
 

@@ -53,6 +53,7 @@ import {
   menuView,
   openMenuToken,
   pickedInText,
+  quoteDraft,
   type RecallPlace,
   recallHolds,
   replaceToken,
@@ -91,7 +92,8 @@ import { post } from "./vscodeApi";
  * unapplied, never held for a box that may never come. Queued texts the host returns (`paragraph` drafts) close
  * nothing, and wait for the message box when it is absent, since the user typed them: they are never dropped.
  * Edit on the last user message starts the replacing state (what the panel showed then), held here because the conversation shows
- * its mark and the composer's Send carries it; it ends on Cancel and once `stillReplacing` fails.
+ * its mark and the composer's Send carries it; it ends on Cancel and once `stillReplacing` fails. Quote's text travels
+ * from an answer to the message box the same way as Edit's draft, and only while the panel has a message box.
  */
 export function App({
   state,
@@ -111,6 +113,8 @@ export function App({
   const [replacing, setReplacing] = useState<ShownEntries>();
   /** Edit's draft until the message box has applied it, once: a composer mounted later never applies it again. */
   const [editing, setEditing] = useState<DraftInsert>();
+  /** Text Quote read from an answer until the message box has applied it, once. */
+  const [quoting, setQuoting] = useState<string>();
   const replacingNow = replacing && stillReplacing(replacing, state) ? replacing : undefined;
 
   // [>]: Once it fails, the state ends for good: a later snapshot that matches again (a Retry ending on as many
@@ -167,19 +171,21 @@ export function App({
       {(configured || state.entries.length > 0) && (
         // [>]: Keyed by conversation: another one starts with fresh scroll and collapsed reasoning blocks. Hidden, not
         // unmounted, while History shows, so the reason typed for an open approval survives.
-        <Conversation
-          key={state.conversationId}
-          conversationId={state.conversationId}
-          entries={state.entries}
-          approval={state.approval}
-          undo={state.undo}
-          changedFiles={state.changedFiles}
-          canAct={sendWouldAct(state)}
-          hidden={historyOpen}
-          replacing={replacingNow !== undefined}
-          edit={edit}
-          cancelEdit={() => setReplacing(undefined)}
-        />
+        <QuoteTarget.Provider value={composerShown ? setQuoting : undefined}>
+          <Conversation
+            key={state.conversationId}
+            conversationId={state.conversationId}
+            entries={state.entries}
+            approval={state.approval}
+            undo={state.undo}
+            changedFiles={state.changedFiles}
+            canAct={sendWouldAct(state)}
+            hidden={historyOpen}
+            replacing={replacingNow !== undefined}
+            edit={edit}
+            cancelEdit={() => setReplacing(undefined)}
+          />
+        </QuoteTarget.Provider>
       )}
       {composerShown && (
         <Composer
@@ -189,6 +195,8 @@ export function App({
           takeDrafts={takeDrafts}
           editing={editing}
           takeEditing={() => setEditing(undefined)}
+          quoting={quoting}
+          takeQuoting={() => setQuoting(undefined)}
           replaces={replacingNow}
           startNewChat={() => {
             setHistoryOpen(false);
@@ -805,16 +813,7 @@ function Reply({
   return (
     <div className="message assistant">
       {entry.reasoning !== "" && <Reasoning key="reasoning" entry={entry} />}
-      {answer !== "" && (
-        // [>]: The Markdown rules of the stylesheet apply inside this block only, never to the rows and blocks beside it.
-        <div className="answer">
-          <AnswerSource.Provider value={{ source: answer, ended: !inFlight }}>
-            <Markdown components={ANSWER_COMPONENTS} remarkPlugins={ANSWER_PLUGINS}>
-              {answer}
-            </Markdown>
-          </AnswerSource.Provider>
-        </div>
-      )}
+      {answer !== "" && <Answer answer={answer} ended={!inFlight} />}
       {step ? (
         <ToolStep result={step} />
       ) : deciding && call ? (
@@ -998,6 +997,83 @@ function UndoOutcome({ outcome: { files, error } }: { outcome: UndoOutcomeState 
       )}
     </div>
   );
+}
+
+/**
+ * Puts the text selected in an answer into the message box, for Quote; absent while the panel has no message box, so
+ * no Quote shows then.
+ */
+const QuoteTarget = createContext<((selected: string) => void) | undefined>(undefined);
+
+/**
+ * An answer's rendered Markdown, then Quote in a row of its own while the page's selected text lies in it
+ * (`holdsSelection`). The check runs on every selection change and after every render, since a removed node changes
+ * the selection without an event. Quote reads the selected text at the click, as rendered, and hands it to the message
+ * box; it moves no focus when it goes.
+ */
+function Answer({ answer, ended }: { answer: string; ended: boolean }) {
+  const quote = useContext(QuoteTarget);
+  const block = useRef<HTMLDivElement>(null);
+  const row = useRef<HTMLDivElement>(null);
+  const [selected, setSelected] = useState(false);
+
+  useEffect(() => {
+    const check = () =>
+      setSelected(
+        quote !== undefined &&
+          block.current !== null &&
+          holdsSelection(block.current, row.current, document.getSelection()),
+      );
+    check();
+    document.addEventListener("selectionchange", check);
+    return () => document.removeEventListener("selectionchange", check);
+  });
+
+  const onQuote = () => {
+    const selection = document.getSelection();
+    // [>]: The selection can have gone without an event since the last check: a click with nothing left does nothing.
+    if (!quote || !block.current || !selection || !holdsSelection(block.current, row.current, selection)) return;
+    quote(selection.toString());
+  };
+
+  return (
+    <>
+      {/* [>]: The Markdown rules of the stylesheet apply inside this block only, never to the rows and blocks beside it. */}
+      <div className="answer" ref={block}>
+        <AnswerSource.Provider value={{ source: answer, ended }}>
+          <Markdown components={ANSWER_COMPONENTS} remarkPlugins={ANSWER_PLUGINS}>
+            {answer}
+          </Markdown>
+        </AnswerSource.Provider>
+      </div>
+      {/* [!]: Before the reply's tool step and approval, so nothing focusable comes between those and the message box. */}
+      {selected && (
+        <div className="quote-row" ref={row}>
+          <button type="button" className="secondary" onClick={onQuote}>
+            {l10n.t("Quote")}
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
+/**
+ * Whether `selection` is text of the answer `block`: not collapsed, more than whitespace, starting inside `block`, and
+ * covering only whitespace outside it, as a triple click on its last paragraph does by ending in the next block.
+ * Quote's own `row` is skipped, so its showing cannot hide it again. A selection in a text field reports collapsed.
+ */
+function holdsSelection(block: Element, row: Element | null, selection: Selection | null): boolean {
+  if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return false;
+  if (selection.toString().trim() === "") return false;
+  const range = selection.getRangeAt(0);
+  if (!block.contains(range.startContainer)) return false;
+  const end = range.endContainer;
+  if (block.contains(end) || row?.contains(end)) return true;
+  const outside = document.createRange();
+  outside.setStartAfter(row ?? block);
+  outside.setEnd(end, range.endOffset);
+  return outside.toString().trim() === "";
 }
 
 /**
@@ -1410,6 +1486,8 @@ function Composer({
   takeDrafts,
   editing,
   takeEditing = () => {},
+  quoting,
+  takeQuoting = () => {},
   replaces,
 }: {
   state: ChatState;
@@ -1419,6 +1497,8 @@ function Composer({
   takeDrafts: (taken: readonly DraftInsert[]) => void;
   editing?: DraftInsert;
   takeEditing?: () => void;
+  quoting?: string;
+  takeQuoting?: () => void;
   replaces?: ShownEntries;
 }) {
   const [text, setText] = useState("");
@@ -1548,6 +1628,16 @@ function Composer({
     setDismissed(menuToken(next.text, next.caret, next.picked));
     input.current?.focus();
   }, [editing]);
+
+  // [>]: Quote puts the selected text in the box on Edit's path and focuses it, since the user asked to quote there.
+  // The quote ends with a blank line, so the caret follows whitespace and no menu opens.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a quote applies once, to the box as it stands.
+  useEffect(() => {
+    if (quoting === undefined) return;
+    takeQuoting();
+    setDraft(quoteDraft({ text, caret, picked }, quoting));
+    input.current?.focus();
+  }, [quoting]);
 
   // [!]: The view's focus command settles before the workbench has focused the webview, so a draft can land first:
   // the workbench's focus then blurs the box and gives the panel back its focus with nothing focused inside (#68,

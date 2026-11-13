@@ -14,6 +14,7 @@ import {
   menuView,
   openMenuToken,
   pickedInText,
+  quoteDraft,
   recallHolds,
   replaceToken,
   slashMenuView,
@@ -565,5 +566,29 @@ describe("stillReplacing", () => {
     expect(stillReplacing(replacing, state([question, reply("waiting")]))).toBe(false);
     const summary: ChatEntry = { role: "assistant", reasoning: "", content: "S.", status: "done", summary: true };
     expect(stillReplacing({ ...replacing, entries: 3 }, state([question, reply("done"), summary]))).toBe(false);
+  });
+});
+
+describe("quoteDraft", () => {
+  const quoted = (box: string, selected: string) => quoteDraft({ text: box, caret: 0, picked: [] }, selected);
+
+  test.each([
+    ["an empty box", "", "a\nb", "> a\n> b\n\n"],
+    ["a box holding text", "hello", "a", "hello\n\n> a\n\n"],
+    ["a box ending with a line break", "hello\n", "a", "hello\n\n> a\n\n"],
+    ["a box holding only whitespace", " \n\t", "a", "> a\n\n"],
+    ["a box holding a first quote", "> a\n\n", "b", "> a\n\n> b\n\n"],
+    ["an empty box, a blank line inside the selection", "", "a\n\nb", "> a\n>\n> b\n\n"],
+    ["an empty box, a triple click's trailing blank lines", "", "a\n\n", "> a\n\n"],
+  ])("%s", (_case, box, selected, expected) => {
+    expect(quoted(box, selected)).toEqual({ text: expected, caret: expected.length, picked: [] });
+  });
+
+  test("a whitespace-only inner line becomes `>` alone", () => {
+    expect(quoted("", "a\n  \nb").text).toBe("> a\n>\n> b\n\n");
+  });
+
+  test("keeps the picked paths", () => {
+    expect(quoteDraft({ text: "see @a b.ts", caret: 3, picked: ["a b.ts"] }, "x").picked).toEqual(["a b.ts"]);
   });
 });

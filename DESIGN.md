@@ -225,7 +225,11 @@ user's message). Borders and rules are 1px. No colored side stripe.
 - Link (Open provider settings, Set context size): the link color, underlined.
 - Code block action (Copy, Insert at cursor): a secondary button two pixels down (`--bc-fs-xs`), at least a row high
   (`--bc-row`). Never primary, so the decision block keeps the conversation's one primary button. Copy shows its
-  outcome, "Copied" or "Copy failed", in place of its label for about two seconds.
+  outcome, "Copied" or "Copy failed", in place of its label for about two seconds. Their header is not selectable.
+- Quote: a secondary button in a row of its own (`.quote-row`) directly under an answer's Markdown, 4px under it (2px
+  under the narration before a call), shown while text of that answer is selected. The row is not selectable. No room
+  is kept for it, a written exception to the rule that a revealed control keeps its room, which covers controls
+  revealed on hover: a row kept under every answer would cost more than the one-row move.
 - Disabled: half opacity. Header and History buttons are one size down.
 
 ### Fields
@@ -268,6 +272,8 @@ would not act. Above the rows, a notice line says "The queue is paused." when no
 - Code block of a reply: once its text is final, its frame (`.code-block`: `--bc-fill`, `--bc-edge`, radius 6px)
   holds a header (`.code-actions`) with Copy and Insert at cursor at the right, then the code, which scrolls inside
   itself under the header. A block still growing renders as a bare code block, without the header.
+- Quote under a reply: its row sits between the answer's Markdown and the reply's tool step or decision block, so the
+  tool step moves down by one row while it shows.
 - The thread: a reply that holds a tool step, and a folded turn, sit 20px in, beside one drawn 1px line
   (`--bc-line`) that runs from one to the next. Each row that opens is a node on it, a 7px ring filled with the
   panel's color: plain for a tool step, dotted for reasoning, a double ring for a folded turn, in the error color for
@@ -400,7 +406,9 @@ opacity over `--bc-fast`. Under `prefers-reduced-motion: reduce`, and when VS Co
   Edit on the last message moves the focus into the message box, where its text lands, since the user asked to edit
   there; the mention menu stays closed when the caret lands on a mention. Cancel on Retry's confirmation gives the
   focus back to Retry, since the button it was on goes; the confirmation itself renames the button the focus is on and
-  moves nothing. Last, Cancel on Edit's mark gives the focus back to Edit, for the same reason.
+  moves nothing. Last, Cancel on Edit's mark gives the focus back to Edit, for the same reason. Quote moves the focus
+  into the message box, caret at the end, since the user asked for it and the message box sends nothing on its own;
+  when the Quote button goes while it holds the focus, no focus is moved.
   Queuing a message moves no focus, and neither do the queued texts that come back to the box after New chat, an
   open, or a delete, or that the queue could not take: the request came from the panel, which already has the focus
   where the user put it, and History stays open. Such a text that arrives while the panel has no message box (no
