@@ -5,7 +5,7 @@
  * passes writes it. `fileApplier` writes straight to disk, for the tests and the eval; the extension wraps it in
  * `approvalApplier`, which asks the user first. Model-facing text is English and never localized.
  */
-import { type ApprovalRequest, type Decision, type Preview, rejectionText } from "./approval";
+import { type ApprovalRequest, type Decision, denialText, type Preview, rejectionText } from "./approval";
 import { lineDiffCount } from "./lineDiff";
 import { accessFailureReason } from "./mentions";
 import type { ToolSpec } from "./toolCalls";
@@ -202,6 +202,9 @@ export function approvalApplier(
         return stopped(change.tool);
       case "reject":
         return { status: "error", text: rejectionText(decision.reason) };
+      // [>]: Only a command is ever denied; a write is refused all the same should one be.
+      case "deny":
+        return { status: "error", text: `${change.tool}: ${denialText(decision.entry)}` };
       case "accept":
         if (await host.hasUnsavedChanges(change.target)) return unsavedResult(change);
         return apply(change);

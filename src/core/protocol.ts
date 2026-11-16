@@ -184,11 +184,12 @@ export type ContextUsage = {
 export type ReportedUsage = { prompt: number; completion: number };
 
 /**
- * What an agent turn may do: `ask` waits for Accept or Reject on each write, `autoEdit` accepts writes at once, both
- * derived from the user value of `brokeCode.autoApproveWrites`; `plan` offers the read tools and `ask_user` only, kept per workspace
- * and winning over the setting while on. Commands wait for Run in every mode that offers them.
+ * What an agent turn may do: `ask` waits for Accept or Reject on each write and for Run on each command, `autoEdit`
+ * accepts writes at once, `fullAccess` also runs commands at once in the sandbox unless denied, all three the user
+ * value of `brokeCode.mode`; `plan` offers the read tools and `ask_user` only, kept per workspace and winning
+ * over the setting while on.
  */
-export const MODES = ["ask", "autoEdit", "plan"] as const;
+export const MODES = ["ask", "autoEdit", "fullAccess", "plan"] as const;
 export type Mode = (typeof MODES)[number];
 
 export function isMode(value: unknown): value is Mode {
@@ -423,8 +424,8 @@ export type WebviewMessage =
   /** Insert at cursor: replace every selection of the active text editor with a code block's `text`. */
   | { type: "insertCode"; text: string }
   /**
-   * Pick a mode in the message box: Plan is kept in the workspace memento; Ask and Auto-edit write the user setting
-   * `brokeCode.autoApproveWrites` when its value must change.
+   * Pick a mode in the message box: Plan is kept in the workspace memento; Ask, Auto-edit, and Full access write the
+   * user setting `brokeCode.mode` when its value must change.
    */
   | { type: "setMode"; mode: Mode }
   /** "Undo changes": restore the files of the turn `ChatState.undo.reply` names. */

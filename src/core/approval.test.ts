@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { autoApproveWrites, CHANGE_SCHEME, closeChangeDiffs, hasUnsavedChanges, type OpenDocument } from "./approval";
+import { CHANGE_SCHEME, closeChangeDiffs, hasUnsavedChanges, type OpenDocument, settingMode } from "./approval";
 
 /** A URI as the editor gives it: a scheme and its string form. */
 const uri = (scheme: string, path: string) => ({ scheme, toString: () => `${scheme}:${path}` });
@@ -80,17 +80,19 @@ describe("hasUnsavedChanges", () => {
   });
 });
 
-describe("autoApproveWrites", () => {
-  test("is on only for a user setting of true", () => {
-    expect(autoApproveWrites({ globalValue: true })).toBe(true);
+describe("mode", () => {
+  test("is the mode a user setting names", () => {
+    expect(settingMode({ globalValue: "autoEdit" })).toBe("autoEdit");
+    expect(settingMode({ globalValue: "fullAccess" })).toBe("fullAccess");
+    expect(settingMode({ globalValue: "ask" })).toBe("ask");
   });
 
-  test("stays off for a workspace value of true, no value, false, or a value that is not a boolean", () => {
-    expect(autoApproveWrites({ workspaceValue: true })).toBe(false);
-    expect(autoApproveWrites({ workspaceFolderValue: true })).toBe(false);
-    expect(autoApproveWrites(undefined)).toBe(false);
-    expect(autoApproveWrites({})).toBe(false);
-    expect(autoApproveWrites({ globalValue: false })).toBe(false);
-    expect(autoApproveWrites({ globalValue: "true" })).toBe(false);
+  test("stays Ask for a workspace value, no value, or a value that is not a mode", () => {
+    expect(settingMode({ workspaceValue: "fullAccess" })).toBe("ask");
+    expect(settingMode({ workspaceFolderValue: "fullAccess" })).toBe("ask");
+    expect(settingMode(undefined)).toBe("ask");
+    expect(settingMode({})).toBe("ask");
+    expect(settingMode({ globalValue: true })).toBe("ask");
+    expect(settingMode({ globalValue: "plan" })).toBe("ask");
   });
 });

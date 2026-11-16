@@ -118,8 +118,8 @@ actionlint                                    # run after editing a file in .git
 - Never commit an API key or a private key. `src/core/tlsFixture.ts` generates the test certificates at test time.
 - Out of scope for v1, by maintainer decision: Windows and Linux, inline completion, multi-agent modes, MCP, code
   indexing and embeddings, a browser tool, git checkpoints, native or hybrid tool calling, skill directories other
-  than `.agents`, `/clear`, `/help`, and publishing from `develop`. Ask, Auto-edit, and Plan are settings of one
-  agent, not multi-agent modes.
+  than `.agents`, `/clear`, `/help`, and publishing from `develop`. Ask, Auto-edit, Full access, and Plan are settings
+  of one agent, not multi-agent modes.
 
 ## Failure log
 
@@ -131,8 +131,8 @@ actionlint                                    # run after editing a file in .git
   heading (`biome.jsonc`).
 - Write conversation files with `node:fs` and `rename(2)`, never `workspace.fs`. Its rename with overwrite deletes
   the destination first, so a crash between the two steps loses the conversation (`src/core/conversationFiles.ts`).
-- Run the `eval/` tests outside a sandboxed shell. They need `/usr/bin/sandbox-exec` to apply a profile, which fails
-  with exit code 71 inside another sandbox (a3cb2c3).
+- Run the `eval/` tests and `src/core/commands.test.ts` outside a sandboxed shell. They need `/usr/bin/sandbox-exec`
+  to apply a profile, which fails with exit code 71 inside another sandbox (a3cb2c3).
 
 ## Agent skills
 

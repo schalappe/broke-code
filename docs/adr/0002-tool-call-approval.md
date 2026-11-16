@@ -39,7 +39,7 @@ One user setting, `brokeCode.autoApproveWrites` (default off), accepts writes at
 `application` scope and is read from the user value only, like the providers, so a workspace `settings.json` cannot
 weaken approval. The controller reads it at each write's request, so turning it off reaches the next write of a turn
 in flight. The controller is the one place it applies, and only to requests of kind `write`: nothing auto-approves a
-command, which always waits for a click.
+command, which always waits for a click (until Full access, addendum of 2026-11-16).
 
 2026-11-11 (#79): the panel writes the setting too. The mode selector of the message box shows **Ask** (off) or
 **Auto-edit** (on), writes the user value on a pick, and follows the setting, not the click; the reading rules above
@@ -161,3 +161,47 @@ The panel's rules (#143) mirror the approval's, so the two requests cannot diver
   at that moment must not pick an answer.
 - No notification is raised for a question (#101 covers approval requests and turn ends), and the tool's description
   and rule are the ones #142 measured, so no eval run was needed.
+
+## Addendum (2026-11-16): Full access runs commands without a click, in a sandbox
+
+The maintainer asked for a mode where the agent runs the commands it needs without a click, with a list of commands
+it must never run. This reverses "nothing auto-approves a command" for that mode only.
+
+A list of denied commands alone guards nothing. `run_command` runs `<shell> -c <command>`, so the model, or text it
+read in a file, can spell a denied command past any word match: `find ~ -delete`, `python3 -c "..."`, `sh -c "r""m"`,
+a decoded string. The guard is the kernel instead: a command Full access runs without a click runs under macOS
+`sandbox-exec`, with a profile that allows everything but a write outside the real path of each workspace folder,
+`/private/tmp`, `/private/var/folders` (the per-user temporary and cache folders), `/dev`, `~/Library/Caches`, `~/.cache`, and the package caches `~/.bun/install/cache`, `~/.npm`, `~/.cargo/registry`, `~/.cargo/git`, `~/go/pkg/mod`, `~/.gradle/caches`, and `~/.m2/repository`
+(caches only: a folder of installed programs such as `~/.cargo/bin` would let a command plant a program that later
+runs outside the sandbox). The folders are `-D` parameters, never spliced into the profile's text. Reads and the network stay open, so
+git, package managers, and builds work. v1 is macOS only, and the eval bench already runs commands this way.
+
+The denied commands stay, for what they do well: refuse a known risky command early, with a clear result, before it
+runs. Built in: `sudo`, `su`, `doas`, `shutdown`, `reboot`, `halt`, `diskutil`, `crontab`, `security` (the keychain),
+`git push --force`, `git push -f`, `git reset --hard`, `git clean`, and the commands that start a process outside the
+sandbox: `open`, `osascript`, `launchctl`, `defaults`. The user setting `brokeCode.deniedCommands` adds entries and
+never removes a built-in one. A command that matches gets the decision `deny`: no request opens, nothing runs, and the
+model reads which entry matched.
+
+`brokeCode.autoApproveWrites` (boolean) becomes `brokeCode.mode` (`ask`, `autoEdit`, `fullAccess`), one setting for
+one choice, with the same reading rules: `application` scope, user value only, read at each request, and applied in the
+controller only. A user value of the old setting is not carried over: Auto-edit users pick it again once. Both new
+settings are user settings, so a repository can neither turn Full access on nor shorten the list.
+
+### Considered options
+
+- **Denied commands alone, the commands run with the user's rights.** Rejected (maintainer decision, 2026-11-16): a
+  word match is bypassed by any rewording, so it would read as a guard it is not.
+- **A denied command falls back to Run and Reject instead of being refused.** Rejected with the option above: the
+  request would still hinge on the same bypassable match.
+- **Deny reads of secret folders (`~/.ssh`, `~/.aws`) and the network.** Not taken: git over SSH, package installs,
+  and fetches would fail, and the agent needs them. A command can therefore read the user's files and send them out.
+
+### Consequences
+
+- Known gaps, accepted: a process the command asks another one to start (Apple Events, LaunchServices, `cfprefsd`)
+  runs outside the sandbox; the built-in entries catch the direct commands only. Writes inside the workspace, `.git`
+  and its hooks included, are not confined, and "Undo changes" never covers a command's effect.
+- A command that itself needs `sandbox-exec` (nested sandboxes) fails in Full access with exit code 71; Run it in Ask.
+- The system prompt and the `run_command` description are unchanged: the model learns of the sandbox from a failed
+  command's result, which ends with a line saying where writes are refused.

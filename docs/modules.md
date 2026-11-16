@@ -120,7 +120,9 @@ This file says which file holds which responsibility. Update it when a module ga
   the state, and `runChatCommand`, which acts on the request open as its button does), the approval seam (`approval.ts`:
   the request a tool makes, with a write's line counts, the preview it opens and shows again, the decision it gets, the
   rejection text, and the decisions of the editor side: which change diffs to close,
-  the unsaved-editor check over the open documents, the auto-approve setting from its user value), the question tool
+  the unsaved-editor check over the open documents, the mode setting from its user value), Full access
+  (`fullAccess.ts`: the denied commands and their match, the sandbox profile and the launcher a sandboxed command runs
+  with), the question tool
   (`askUser.ts`: `ASK_USER_TOOL`, `askUser` checks the question and the options and asks the run context's
   `requestAnswer`, the request beside the approval request; the answer, or a cancellation on Stop), the
   tool runner (`toolRunner.ts`: the read and write tools over the
@@ -153,8 +155,8 @@ This file says which file holds which responsibility. Update it when a module ga
   and `hasUnsavedChanges`, the command shell from
   `vscode.env.shell`, `$SHELL`, or `/bin/sh`), the write approval's editor side in
   `approval.ts` (the diff preview over `vscode.diff` and a content provider, the tabs, documents, and
-  `brokeCode.autoApproveWrites` values it feeds the core decisions, and `writeAutoApproveWrites`, the user value the
-  mode selector writes), the "Changed files" diffs in `turnDiffs.ts` (`registerTurnDiffs`: the core `TurnDiffs` over
+  `brokeCode.mode` and `brokeCode.deniedCommands` values it feeds the core decisions, and `writeSettingMode`, the user
+  value the mode selector writes), the "Changed files" diffs in `turnDiffs.ts` (`registerTurnDiffs`: the core `TurnDiffs` over
   `vscode.diff`, `stat`, the tabs, and the error notifications, and the content provider of its left sides), the turn
   notifications in `notifications.ts` (`turnNotifier`: the core `notifyTurnEvent` over the chat view's visibility,
   `window.state.focused`, the `brokeCode.notifications` values, VS Code's messages, and the view's focus command), the instruction reader and the skill reader from the home folder and the workspace folders, the latter logging the

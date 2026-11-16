@@ -10,7 +10,7 @@
  * roots and unsaved check, the changed files' diff editor, and the provider support memory through ports. The usage
  * display carries the counts the last chat request of the conversation shown reported.
  */
-import type { ApprovalRequest, Decision, Preview } from "./approval";
+import type { ApprovalRequest, Decision, Preview, SettingMode } from "./approval";
 import type { AnswerRequest, QuestionAnswer } from "./askUser";
 import { type ChatMessage, lateReasoning, listModels, type ProviderAccess, streamChat } from "./client";
 import {
@@ -24,6 +24,7 @@ import {
   summarize,
 } from "./conversation";
 import type { ConversationStore } from "./conversationStore";
+import { DEFAULT_DENIED_COMMANDS, deniedEntry } from "./fullAccess";
 import { type HistoryBudget, historyStart, sentEntries, summaryHistory, toHistory } from "./history";
 import { CONTINUE_TEXT, hasFinalAnswer, IMPLEMENT_PLAN_TEXT, type LastTurnActions, lastTurnActions } from "./lastTurn";
 import { contextOf, DEFAULT_RATIO, estimateTokens, fillsContext, parseLimits, type TurnLimits } from "./limits";
@@ -167,11 +168,11 @@ export type LimitsSource = { read(): TurnLimits };
 
 /**
  * What the controller needs from the host. `limits`: absent gives the defaults (50 steps, 32,768 tokens for every
- * model). `autoApproveWrites`: the auto-approve setting, read at each write's approval request, so turning it off
- * reaches the next write of a turn in flight; absent or throwing means off. It also gives `ChatState.mode`, read at
- * `modeChanged` and after each `setMode`.
- * `writeAutoApproveWrites`: writes the user value of that setting; rejects when the write fails; absent, every write
- * fails. `returnDraft`: puts a `paragraph` draft in the message box, delivered when the panel can take it: the queued
+ * model). `settingMode`: the mode setting, read at each approval request, so a change reaches the next write
+ * or command of a turn in flight; absent or throwing means Ask. It also gives `ChatState.mode`, read at `modeChanged`
+ * and after each `setMode`. `writeSettingMode`: writes the user value of that setting; rejects when the write fails;
+ * absent, every write fails. `deniedCommands`: the commands Full access refuses, read at each command it would accept;
+ * absent or throwing gives the defaults. `returnDraft`: puts a `paragraph` draft in the message box, delivered when the panel can take it: the queued
  * texts the controller takes out without sending them, or refuses to queue, so nothing typed is lost; absent, each is
  * logged as lost. `undo`: what "Undo changes" needs; absent (the eval), no turn is held and the button never shows.
  * `changeDiffs`: opens and closes the diffs of "Changed files"; absent, the rows still show and a click does nothing.
@@ -191,8 +192,9 @@ export type ChatPorts = {
   instructions: InstructionReader;
   skills: SkillReader;
   limits?: LimitsSource;
-  autoApproveWrites?: () => boolean;
-  writeAutoApproveWrites?: (on: boolean) => Promise<void>;
+  settingMode?: () => SettingMode;
+  writeSettingMode?: (mode: SettingMode) => Promise<void>;
+  deniedCommands?: () => readonly string[];
   returnDraft?: (draft: DraftInsert) => void;
   undo?: UndoHost;
   changeDiffs?: ChangeDiffHost;
@@ -361,8 +363,9 @@ export class ChatController {
   private readonly instructions: InstructionReader;
   private readonly skills: SkillReader;
   private readonly limitsSource: LimitsSource;
-  private readonly autoApproveWrites: () => boolean;
-  private readonly writeAutoApproveWrites: (on: boolean) => Promise<void>;
+  private readonly settingMode: () => SettingMode;
+  private readonly writeSettingMode: (mode: SettingMode) => Promise<void>;
+  private readonly deniedCommands: () => readonly string[];
   private readonly returnDraft: (draft: DraftInsert) => void;
   private readonly undoHost: UndoHost | undefined;
   private readonly changeDiffs: ChangeDiffHost | undefined;
@@ -399,12 +402,13 @@ export class ChatController {
       read: () => parseLimits({ maxToolSteps: undefined, contextSizes: undefined }),
     };
     this.limits = this.limitsSource.read();
-    this.autoApproveWrites = ports.autoApproveWrites ?? (() => false);
-    this.writeAutoApproveWrites =
-      ports.writeAutoApproveWrites ??
+    this.settingMode = ports.settingMode ?? (() => "ask");
+    this.writeSettingMode =
+      ports.writeSettingMode ??
       (async () => {
         throw new Error("no settings writer");
       });
+    this.deniedCommands = ports.deniedCommands ?? (() => DEFAULT_DENIED_COMMANDS);
     // [>]: The extension always wires the port; only a controller built without it (tests, the eval) logs the loss.
     this.returnDraft =
       ports.returnDraft ??
@@ -594,12 +598,12 @@ export class ChatController {
   }
 
   /**
-   * Read the mode into `ChatState.mode`: Plan while on, else the auto-approve setting, which `ChatState.settingMode`
+   * Read the mode into `ChatState.mode`: Plan while on, else the mode setting, which `ChatState.settingMode`
    * names in every mode. At activation, and whenever the setting changes, here or elsewhere (the settings editor,
    * another window).
    */
   modeChanged(): void {
-    this.state.settingMode = this.readAutoApprove() ? "autoEdit" : "ask";
+    this.state.settingMode = this.readSettingMode();
     this.state.mode = this.plan ? "plan" : this.state.settingMode;
     this.emit();
   }
@@ -608,7 +612,7 @@ export class ChatController {
    * The user picks `mode` in the message box. One pick at a time: ignored while a reply is in flight or an earlier
    * pick's settings write is pending (`ChatState.modePending`, which also locks the composer, so `send` is ignored
    * meanwhile and no turn starts on a mode about to change). Plan writes no setting, so it never pends: it turns
-   * Plan on in the workspace memento. Ask or Auto-edit writes the setting's user value first, only when it must
+   * Plan on in the workspace memento. Ask, Auto-edit, or Full access writes the setting's user value first, only when it must
    * change, then turns Plan off, only once that write succeeded: a failed write keeps the mode as it was. The mode
    * shown is read back from the setting after the write, whether it succeeded or not, since the settings change event
    * may come before the write settles. Never rejects.
@@ -621,15 +625,14 @@ export class ChatController {
       this.modeChanged();
       return change;
     }
-    const on = mode === "autoEdit";
-    const writes = this.readAutoApprove() !== on;
+    const writes = this.readSettingMode() !== mode;
     if (writes) {
       this.state.modePending = true;
       this.emit();
       try {
-        await this.writeAutoApproveWrites(on);
+        await this.writeSettingMode(mode);
       } catch (error) {
-        console.error("broke-code: could not write the auto-approve setting", error);
+        console.error("broke-code: could not write the mode setting", error);
         this.state.modePending = false;
         this.modeChanged();
         return { kind: "failed", cause: String(error) };
@@ -1545,8 +1548,9 @@ export class ChatController {
 
   /**
    * Answer `request` for the call running under `signal`, with what the step records of it. A write is accepted at
-   * once while auto-approve is on; otherwise the preview opens and the request shows until the user decides or
-   * `signal` aborts, which cancels it. The preview closes as the request ends, whatever ended it; one that finishes
+   * once in Auto-edit and Full access; a command, in Full access, is denied when it matches a denied command and
+   * otherwise accepted at once to run in the sandbox. Otherwise the preview opens and the request shows until the user
+   * decides or `signal` aborts, which cancels it. The preview closes as the request ends, whatever ended it; one that finishes
    * opening after Stop is closed at once.
    */
   private async askApproval(
@@ -1554,8 +1558,16 @@ export class ChatController {
     signal: AbortSignal,
   ): Promise<{ decision: Decision; approval?: StepApproval }> {
     if (signal.aborted) return { decision: { kind: "cancel" } };
-    // [!]: The one place the setting applies, so it can never accept a command.
-    if (request.kind === "write" && this.readAutoApprove()) {
+    // [!]: The one place the setting applies. A command accepted without a click runs only in the sandbox.
+    const mode = this.readSettingMode();
+    if (request.kind === "command" && mode === "fullAccess") {
+      const entry = deniedEntry(request.summary, this.readDeniedCommands());
+      if (entry !== undefined) return { decision: { kind: "deny", entry } };
+      this.state.callRunning = true;
+      this.emit();
+      return { decision: { kind: "accept", sandbox: true }, approval: "auto" };
+    }
+    if (request.kind === "write" && mode !== "ask") {
       this.state.callRunning = true;
       this.emit();
       return { decision: { kind: "accept" }, approval: "auto" };
@@ -1632,13 +1644,23 @@ export class ChatController {
     if (this.openQuestion) throw new Error("a question is still open");
   }
 
-  /** The auto-approve setting; a reader that throws despite its contract means off, logged. */
-  private readAutoApprove(): boolean {
+  /** The mode setting; a reader that throws despite its contract means Ask, logged. */
+  private readSettingMode(): SettingMode {
     try {
-      return this.autoApproveWrites();
+      return this.settingMode();
     } catch (error) {
-      console.error("broke-code: could not read the auto-approve setting", error);
-      return false;
+      console.error("broke-code: could not read the mode setting", error);
+      return "ask";
+    }
+  }
+
+  /** The denied commands; a reader that throws despite its contract gives the defaults, logged. */
+  private readDeniedCommands(): readonly string[] {
+    try {
+      return this.deniedCommands();
+    } catch (error) {
+      console.error("broke-code: could not read the denied commands", error);
+      return DEFAULT_DENIED_COMMANDS;
     }
   }
 

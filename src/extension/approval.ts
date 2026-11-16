@@ -1,19 +1,21 @@
 /**
  * @module approval
  * The editor side of a write's approval: the diff preview of a planned change, the unsaved-changes check before a
- * write, and the auto-approve setting. The decisions live in `core/approval.ts`; this module feeds them VS Code's tabs,
+ * write, and the mode and denied commands settings. The decisions live in `core/approval.ts`; this module feeds them VS Code's tabs,
  * documents, and settings.
  */
 import { realpath } from "node:fs/promises";
 import { basename } from "node:path";
 import * as vscode from "vscode";
 import {
-  autoApproveWrites,
   CHANGE_SCHEME,
   closeChangeDiffs,
   hasUnsavedChanges as documentsHaveUnsavedChanges,
   type Preview,
+  type SettingMode,
+  settingMode,
 } from "../core/approval";
+import { deniedCommands } from "../core/fullAccess";
 import { displayPath } from "../core/tools";
 import type { PlannedChange } from "../core/writeTools";
 
@@ -101,17 +103,20 @@ export function hasUnsavedChanges(target: string): Promise<boolean> {
   return documentsHaveUnsavedChanges(vscode.workspace.textDocuments, target, resolve);
 }
 
-/** `brokeCode.autoApproveWrites` from the user settings only (see `autoApproveWrites`). */
-export function readAutoApproveWrites(): boolean {
-  return autoApproveWrites(vscode.workspace.getConfiguration("brokeCode").inspect<unknown>("autoApproveWrites"));
+/** `brokeCode.mode` from the user settings only (see `settingMode`). */
+export function readSettingMode(): SettingMode {
+  return settingMode(vscode.workspace.getConfiguration("brokeCode").inspect<unknown>("mode"));
 }
 
 /**
- * Write `on` to the user value of `brokeCode.autoApproveWrites`, the mode selector's pick: a user setting, so it applies
+ * Write `mode` to the user value of `brokeCode.mode`, the mode selector's pick: a user setting, so it applies
  * to every window. Rejects when the write fails.
  */
-export async function writeAutoApproveWrites(on: boolean): Promise<void> {
-  await vscode.workspace
-    .getConfiguration("brokeCode")
-    .update("autoApproveWrites", on, vscode.ConfigurationTarget.Global);
+export async function writeSettingMode(mode: SettingMode): Promise<void> {
+  await vscode.workspace.getConfiguration("brokeCode").update("mode", mode, vscode.ConfigurationTarget.Global);
+}
+
+/** The denied commands of Full access: the defaults and the user's `brokeCode.deniedCommands` (see `deniedCommands`). */
+export function readDeniedCommands(): string[] {
+  return deniedCommands(vscode.workspace.getConfiguration("brokeCode").inspect<unknown>("deniedCommands"));
 }

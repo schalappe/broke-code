@@ -139,7 +139,8 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
 - The file tools (`read_file`, `list_files`, `search`, `write_file`, `edit_file`, and `load_skill`) act inside the open
   workspace only. `run_command` is not confined: its `cwd` must be a workspace folder, but an approved command runs
   with the user's rights and can read, change, or delete anything the user can, outside the workspace too; the
-  approval is the only guard. The one exception to the file tools' boundary is read-only access to the directories of
+  approval is the only guard. In Full access, a command runs without a click inside the sandbox, which refuses its
+  writes outside the workspace (see "Full access" below). The one exception to the file tools' boundary is read-only access to the directories of
   skills loaded in the current conversation that lie outside the workspace (ADR 0003):
   - A skill is loaded when the conversation holds an `ok` `load_skill` step for its name, or a user entry whose
     `skill` is `loaded` (a `/<name>` message); an `error` step, a step dropped by Stop, a malformed call, and a
@@ -231,7 +232,7 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
   - `ChatState.callRunning` says when the call of the reply in flight actually runs. A tool that may ask declares it
     (`ToolSpec.asks`: `run_command`, `write_file`, `edit_file`, `ask_user`). Its call shows with `callRunning` false,
     since the request opens after it; `callRunning` turns true only in the update that closes an approval accepted, or
-    when auto-approve accepts a write, and stays false while a request is open and after Reject, Cancel (Stop), or an
+    when the mode accepts a write or a command at once, and stays false while a request is open and after Reject, Cancel (Stop), or an
     answer. A tool that never asks runs as its call shows: `callRunning` is true in that same update. It is false
     again from the update in which the call ends: its step lands, or the reply settles.
   - A write opens the native VS Code diff editor beside the chat, titled with the path: the planned `before` text on
@@ -253,20 +254,45 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
   - Stop, New chat, opening another conversation, deleting the one shown, and deactivation cancel the open request:
     the diff tab closes, nothing is written, the reply ends `stopped`. An open request is never saved; a record saved
     while one waits reloads `stopped` by the in-flight rule of `docs/spec/conversations.md`.
-  - `run_command` always waits for a click: it asks with a request of kind `command`, its summary the whole command,
+  - `run_command` waits for a click outside Full access: it asks with a request of kind `command`, its summary the whole command,
     which the step row shows whole, line breaks kept, with the `cwd` when given ("in <cwd>"), Run, and Reject. Nothing runs before Run, and one Run runs
     the command once.
-  - `brokeCode.autoApproveWrites` (boolean, default false, `application` scope, read from `globalValue` like the
-    providers) accepts writes at once, without a diff, and is read at each write's request. The controller applies it
-    to requests of kind `write` only: nothing auto-approves commands.
-  - The mode selector shows and writes that setting (#79), and offers Plan (#80, ADR 0005, below). `ChatState.mode` is `ask` (user value false or absent) or
-    `autoEdit` (true), read from the user value by `ChatController.modeChanged`, which the host calls at activation
+  - `brokeCode.mode` (string, `ask`, `autoEdit`, or `fullAccess`, default `ask`, `application` scope, read from
+    `globalValue` like the providers; any other value is `ask`) is read at each approval request, in the controller
+    only (`askApproval`): Auto-edit and Full access accept writes at once, without a diff; Full access also answers
+    commands without a click (below). A tool never reads it.
+  - Full access (ADR 0002, addendum of 2026-11-16). A command request is first matched against the denied commands
+    (`deniedEntry`, `src/core/fullAccess.ts`): the built-in `DEFAULT_DENIED_COMMANDS` (`sudo`, `su`, `doas`, `open`,
+    `osascript`, `launchctl`, `defaults`, `security`, `crontab`, `diskutil`, `shutdown`, `reboot`, `halt`,
+    `git push --force`, `git push -f`, `git reset --hard`, `git clean`), then each string of the user value of
+    `brokeCode.deniedCommands` (array, `application` scope, `globalValue` only; it adds entries and never removes a
+    built-in one), read at each command. The command is split into simple commands at `;`, `&`, `|`, newlines,
+    parentheses, braces, backticks, and `$(`; in each, quotes are dropped, leading `NAME=value` words, the wrappers
+    `env`, `command`, `exec`, `nohup`, `time`, `nice`, `xargs`, and `builtin`, and a wrapper's flags are skipped, and
+    the program is compared by its file name. An entry is a program, the words after it up to the first one starting
+    with `-`, then flags. It matches a simple command with that program whose later words hold the entry's words in
+    order, other words between them allowed (`git -C app reset --hard` matches `git reset --hard`), and each of its
+    flags anywhere after the program. A false match only refuses the command. A match is the decision `deny` with the
+    entry: no request opens, nothing runs, the step records no approval, and the model gets `run_command: This command
+    matches "<entry>", which the user's denied commands forbid in Full access mode. Nothing ran. Do it another way, or
+    ask the user to run it themselves.` Any other command is accepted at once with `sandbox` (step approval `auto`),
+    and `runCommandTool` runs it under `/usr/bin/sandbox-exec` (`sandboxedEnv`): everything allowed but a write
+    outside the real path of each workspace folder, `/private/tmp`, `/private/var/folders`, `/dev`,
+    `~/Library/Caches`, `~/.cache`, and the package caches `~/.bun/install/cache`, `~/.npm`, `~/.cargo/registry`, `~/.cargo/git`, `~/go/pkg/mod`, `~/.gradle/caches`, and `~/.m2/repository` (`HOME_WRITABLE`, caches only, never a folder of installed programs), the folders passed as `-D` parameters, never spliced into the profile. Reads
+    and the network stay open. An `error` result of a sandboxed command ends with a line saying it ran in the sandbox
+    and that a write elsewhere fails with "Operation not permitted". A command accepted by a click never runs in the
+    sandbox. The denied commands only catch a known command early: a command can be spelled to slip past a word
+    match, so the sandbox is the guard. Known gaps, accepted: a process the command asks another one to start (Apple
+    Events, LaunchServices, `cfprefsd`) runs outside the sandbox, which is why `open`, `osascript`, `launchctl`, and
+    `defaults` are denied, and writes inside the workspace, `.git` included, are not confined.
+  - The mode selector shows and writes that setting (#79), and offers Plan (#80, ADR 0005, below). `ChatState.mode` is
+    the mode the setting holds, read from the user value by `ChatController.modeChanged`, which the host calls at activation
     (the state says `ask` before) and on each change of the setting (the configuration listener), and after each pick. A pick posts `setMode
     { mode }`, validated like the other messages (an unknown mode is dropped); `ChatController.setMode` ignores it while
     a reply is in flight or an earlier pick's settings write is pending, writes nothing when the setting already holds that mode, and otherwise writes the user value
-    (`ConfigurationTarget.Global`) through the `writeAutoApproveWrites` port. The selector is controlled by the state,
+    (`ConfigurationTarget.Global`) through the `writeSettingMode` port. The selector is controlled by the state,
     so it follows the setting, not the click: a failed write is logged and shown as an error notification, and the
-    mode stays the one the setting holds. A user setting: Auto-edit in one window applies to every window. One pick
+    mode stays the one the setting holds. A user setting: Auto-edit or Full access in one window applies to every window. One pick
     at a time: while its settings write is pending, `ChatState.modePending` is true, and the selector and Send are
     disabled (Enter and the built-in `/new`, `/model`, and `/compact` too, through the composer's one "Send would act" check), as
     while a reply is in flight; the controller ignores `setMode` meanwhile and returns a `send`'s text to the box (see
@@ -278,15 +304,15 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
     of its own, since `brokeCode.lastChoice` is rewritten whole and cleared without a provider. The controller reads it
     at construction (restored at each window load, kept across provider changes) and Plan wins over the setting while
     on: a change of the setting elsewhere leaves the selector on Plan. `setMode { mode: "plan" }` writes no setting;
-    it sets the key. Leaving Plan for Ask or Auto-edit writes the setting first, only when its value must change, and
+    it sets the key. Leaving Plan for another mode writes the setting first, only when its value must change, and
     clears the key only once that write succeeded: a failed write keeps Plan and is shown as for the other modes
     (`failed`). A failed memento write is logged only, as for `brokeCode.lastChoice`: Plan applies for the session
     and is lost at the next load. Plan is not part of a conversation: reopening one changes no mode. While leaving Plan
     writes the setting, the mode change is pending as above, and no send or other pick is taken.
   - Leaving Plan from a plan's answer (#102, ADR 0005, addendum of 2026-11-13): `ChatState.settingMode` is always
-    present and names the mode the setting holds, `ask` or `autoEdit`, whatever `mode` says; `modeChanged` reads both,
+    present and names the mode the setting holds, `ask`, `autoEdit`, or `fullAccess`, whatever `mode` says; `modeChanged` reads both,
     so it follows each change of the setting while Plan is on. `ChatController.implementPlan(shown, label)` is the
-    second way out of Plan: it clears the Plan key without writing `brokeCode.autoApproveWrites`, so nothing pends
+    second way out of Plan: it clears the Plan key without writing `brokeCode.mode`, so nothing pends
     and the mode becomes the one the setting holds, then starts an ordinary turn (`TurnStart` `continue`) whose user
     entry shows `label` and whose model text is `IMPLEMENT_PLAN_TEXT` (`Implement the plan above.`), with no mention
     and the provider, model, and limits of that moment. Writes of that turn follow the setting as it stands when each
@@ -481,8 +507,8 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
   (`notifyTurnEvent`, over the view's visibility, the window's focus, and the setting). A port that throws is logged
   and changes nothing in the turn.
   - `approvalRequested`: one per approval request that opens, a write in Ask or a command, with the request's kind and
-    summary, reported once `ChatState.approval` holds it. A write accepted at once (Auto-edit) opens no request and
-    reports nothing.
+    summary, reported once `ChatState.approval` holds it. A write accepted at once (Auto-edit, Full access), and a
+    command Full access runs or denies, open no request and report nothing.
   - `turnEnded`: one per turn that ends `done`, `failed`, or `halted`, reported once the published state holds the
     final status, with the status, the halt reason or the failure, whether the reply that ended it is a summary entry
     (a `/compact`, or an automatic summary that failed and so ended its turn), and whether that reply's text is empty
@@ -678,7 +704,7 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
   agent reads files, followed by a "Plan mode" paragraph: read what it needs, answer with a plan of the changes, file
   by file, in order, change no file and run no command. `ask_user` and its rule stay, since a question changes
   nothing (ADR 0005, addendum of 2026-11-13); the Plan role sentence is left as it is, although it speaks of reading
-  only, since no eval measures a Plan prompt. Without a mode, or in Ask or Auto-edit, the prompt is
+  only, since no eval measures a Plan prompt. Without a mode, or in Ask, Auto-edit, or Full access, the prompt is
   byte-identical to the one before Plan; the eval bench passes no mode. A `/<name>` message loads its skill in Plan
   as in any mode; a skill that asks to write meets the refused-call step.
 - The system prompt includes `~/.agents/AGENTS.md`, then each workspace folder's `AGENTS.md` (labelled with its

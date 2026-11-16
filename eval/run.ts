@@ -20,6 +20,7 @@ import type { QuestionAnswer } from "../src/core/askUser";
 import { ChatController, type ChoiceStore, type ToolRunner } from "../src/core/chatController";
 import type { CommandEnv } from "../src/core/commands";
 import { ConversationStore } from "../src/core/conversationStore";
+import { SANDBOX_EXEC } from "../src/core/fullAccess";
 import { DEFAULT_CONTEXT_SIZE, parseLimits } from "../src/core/limits";
 import type { ChatEntry } from "../src/core/protocol";
 import { ProviderSupport } from "../src/core/providerSupport";
@@ -46,8 +47,6 @@ export const BENCH_SANDBOX_PROFILE = [
   '(allow file-read* file-write* (subpath (param "RUN_DIR")))',
   '(allow file-write* (literal "/dev/null"))',
 ].join("\n");
-
-export const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
 
 /**
  * The real paths a bench command's sandbox and environment name: `runFolder`, the run's throwaway folder; `home`, the
