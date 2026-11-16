@@ -1,14 +1,16 @@
 /**
  * @module commands
- * The `run_command` tool: one shell command, run hidden in a workspace folder once the user clicks Run, its output and
- * exit code returned to the model. `runCommandTool` checks the call and asks the approval; `runCommand` runs an
+ * The `run_command` tool: one shell command, run hidden in a workspace folder once the user clicks Run, or at once in
+ * Full access mode's sandbox, its output and exit code returned to the model. `runCommandTool` checks the call and asks the approval; `runCommand` runs an
  * approved command. No `vscode` import: the host passes the shell and the timeout. Model-facing text is English and
  * never localized.
  */
 import { spawn } from "node:child_process";
 import { stat } from "node:fs/promises";
-import { type Decision, rejectionText } from "./approval";
+import { homedir } from "node:os";
+import { type Decision, denialText, rejectionText } from "./approval";
 import type { ToolContext } from "./chatController";
+import { SANDBOX_NOTE, sandboxedEnv } from "./fullAccess";
 import { accessFailureReason, MAX_MENTION_LINES, truncationNotice } from "./mentions";
 import type { ToolSpec } from "./toolCalls";
 import { excerpt, stopped, type ToolCall, type ToolResult } from "./tools";
@@ -43,8 +45,9 @@ export const RUN_COMMAND_TOOL: ToolSpec = {
  * command may run before its process group is stopped. `environment`: the child's whole environment, nothing else
  * inherited; absent, the host's. `launcher`: a program and its arguments placed before `<shell> -c <command>`, which
  * must replace itself with the shell (`exec`), so the spawned pid stays the shell's and leads the process group;
- * absent, the shell is spawned itself. The extension passes neither; the eval bench passes both to run a command in a
- * sandbox with a minimal environment. The rest is for tests: `killGraceMs`, how long the group has
+ * absent, the shell is spawned itself. The extension passes neither, and `runCommandTool` sets the Full access
+ * sandbox's launcher on a command accepted with `sandbox`; the eval bench passes both to run a command in a sandbox
+ * with a minimal environment. The rest is for tests: `killGraceMs`, how long the group has
  * between SIGTERM and SIGKILL (two seconds); `drainMs`, how long the output may keep coming once the shell exited
  * (200 ms); `kill`, what sends the signals (`process.kill`).
  */
@@ -89,9 +92,11 @@ const CLOSE_AFTER_KILL_MS = 500;
 const GROUP_POLL_MS = 20;
 
 /**
- * Run `call` in `roots`: check `command` and `cwd`, ask the user through `context.requestApproval`, then run it with
- * `env`. Never rejects. Nothing runs unless the user clicked Run; a rejection gives its `rejectionText`, a cancelled
- * request the stopped error. Each approval runs the command once.
+ * Run `call` in `roots`: check `command` and `cwd`, ask through `context.requestApproval`, then run it with `env`.
+ * Never rejects. Nothing runs unless the user clicked Run or Full access accepted it, which runs it in the sandbox
+ * over every workspace folder (`sandboxedEnv`), its `error` result ending with `SANDBOX_NOTE`. A rejection gives its
+ * `rejectionText`, a denial its `denialText`, a cancelled request the stopped error. Each approval runs the command
+ * once.
  */
 export async function runCommandTool(
   call: ToolCall,
@@ -122,8 +127,18 @@ export async function runCommandTool(
       return stopped(TOOL);
     case "reject":
       return { status: "error", text: rejectionText(decision.reason, "command") };
-    case "accept":
-      return runCommand({ command, cwd }, context, env);
+    case "deny":
+      return { status: "error", text: `${TOOL}: ${denialText(decision.entry)}` };
+    case "accept": {
+      if (!decision.sandbox) return runCommand({ command, cwd }, context, env);
+      const sandboxed = await sandboxedEnv(
+        env,
+        roots.map((root) => root.path),
+        homedir(),
+      );
+      const result = await runCommand({ command, cwd }, context, sandboxed);
+      return result.status === "error" ? { ...result, text: `${result.text}\n${SANDBOX_NOTE}` } : result;
+    }
   }
 }
 

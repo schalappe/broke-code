@@ -231,7 +231,7 @@ This file specifies what the chat panel does around a turn: folding, code block 
   the last entry), or on an empty conversation; an automatic summary earlier in the turn changes nothing. The
   conversation does not record the mode of its turns, so the button shows under any such answer while Plan is on,
   also in a conversation opened from History (accepted). Its label names the mode Plan leaves for,
-  `ChatState.settingMode`: "Implement in Ask mode" or "Implement in Auto-edit mode", following a change of the
+  `ChatState.settingMode`: "Implement in Ask mode", "Implement in Auto-edit mode", or "Implement in Full access mode", following a change of the
   setting at once. It is disabled when Send would not act (`sendWouldAct`), and absent, not disabled, during a
   reply; while Edit's replacing state holds it acts as usual, as Retry does. A click posts `implementPlan { shown }`,
   validated like `retry`, and carries no mode. `ChatController.implementPlan(shown, label)` (see

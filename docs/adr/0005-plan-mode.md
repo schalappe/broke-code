@@ -44,7 +44,7 @@ last send, so it follows a mode change at the next send.
 
 Plan is kept per workspace, in the workspace memento under its own key `brokeCode.plan`, read when the controller is
 built, so it is restored at each window load. `brokeCode.lastChoice` is not used: it is rewritten whole and cleared
-without a provider, and Plan must survive both. While on, Plan wins over `brokeCode.autoApproveWrites`, which keeps
+without a provider, and Plan must survive both. While on, Plan wins over `brokeCode.mode` (`brokeCode.autoApproveWrites` until 2026-11-16), which keeps
 its scope and its read from `globalValue`. Picking Plan writes no setting. Leaving Plan for Ask or Auto-edit writes the
 setting first, only when its value must change, and clears Plan only once that write succeeded: a failed write keeps
 Plan and is shown. A failed memento write is logged only, as for the provider and model choice: Plan applies for the
@@ -78,7 +78,7 @@ conversation changes no mode.
 
 After a Plan turn, carrying the plan out took two steps that nothing tied to the plan shown: leave Plan with the
 selector, then type a message asking to implement it. A button under the plan's answer now does both (#102):
-"Implement in Ask mode" or "Implement in Auto-edit mode", named after the mode `brokeCode.autoApproveWrites` holds.
+"Implement in Ask mode" or "Implement in Auto-edit mode", named after the mode the setting holds ("Implement in Full access mode" since 2026-11-16).
 
 A click leaves Plan without writing the setting. `ChatController.implementPlan` clears the Plan key only, then starts
 an ordinary turn whose user message is shown as "Implement the plan above." in the display language and sent to the

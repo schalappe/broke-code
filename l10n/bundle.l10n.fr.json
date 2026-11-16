@@ -327,5 +327,8 @@
   "The context is nearly full: /compact summarizes the conversation to free it.": "Le contexte est presque plein : /compact résume la discussion pour le libérer.",
   "⌘Enter runs, ⌘Backspace rejects": "⌘Entrée exécute, ⌘Retour arrière refuse",
   "⌘Enter accepts, ⌘Backspace rejects": "⌘Entrée accepte, ⌘Retour arrière refuse",
-  "A provider is an OpenAI-compatible service: its base URL, and an API key if it asks for one.": "Un fournisseur est un service compatible OpenAI : son URL de base, et une clé d'API s'il en demande une."
+  "A provider is an OpenAI-compatible service: its base URL, and an API key if it asks for one.": "Un fournisseur est un service compatible OpenAI : son URL de base, et une clé d'API s'il en demande une.",
+  "Full access": "Accès complet",
+  "Changes are written and commands run without asking. Commands run in a sandbox that keeps their writes inside the workspace, and denied commands are refused.": "Les modifications sont écrites et les commandes exécutées sans demander. Les commandes tournent dans un bac à sable qui limite leurs écritures à l'espace de travail, et les commandes interdites sont refusées.",
+  "Implement in Full access mode": "Implémenter en mode Accès complet"
 }

@@ -18,8 +18,9 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { listModels, type ModelListing } from "../src/core/client";
 import { runCommand } from "../src/core/commands";
+import { SANDBOX_EXEC } from "../src/core/fullAccess";
 import { formatDuration, formatReport, type RunResult } from "./report";
-import { benchCommandEnv, playScenario, type RunOutcome, type RunTarget, SANDBOX_EXEC } from "./run";
+import { benchCommandEnv, playScenario, type RunOutcome, type RunTarget } from "./run";
 import {
   describeError,
   judge,

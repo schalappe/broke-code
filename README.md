@@ -296,23 +296,39 @@ The mode selector under the message box sets how you approve changes.
 
 - **Ask**, the default, waits for **Accept** or **Reject** on each change.
 - **Auto-edit** applies changes without asking. No diff opens, and the chat marks each such step auto-approved.
+  Commands still wait for **Run**.
+- **Full access** applies changes and runs commands without asking. Each command runs in a macOS sandbox that refuses
+  any write outside the workspace folders, the temporary folders, `~/Library/Caches`, `~/.cache`, and the package caches `~/.bun/install/cache`, `~/.npm`, `~/.cargo/registry`, `~/.cargo/git`, `~/go/pkg/mod`, `~/.gradle/caches`, and `~/.m2/repository`, however the command is written. Folders of
+  installed programs, such as `~/.cargo/bin`, stay closed. Reads and the network stay open, so git, package managers, and builds work as usual. A command
+  that writes elsewhere fails with "Operation not permitted", and the model is told why.
 
-The selector writes the user setting `brokeCode.autoApproveWrites`, where Auto-edit is `true`. It also follows that
+In Full access, broke-code refuses a denied command without running it, and the model is told which entry matched.
+The built-in list holds `sudo`, `su`, `doas`, `open`, `osascript`, `launchctl`, `defaults`, `security`, `crontab`,
+`diskutil`, `shutdown`, `reboot`, `halt`, `git push --force`, `git push -f`, `git reset --hard`, and `git clean`. Add
+your own in the user setting `brokeCode.deniedCommands`, for example `["docker rm", "kubectl delete"]`. An entry
+matches a command run by its program with its words in order, and its flags anywhere: `git push --force` also matches
+`git push origin main --force`.
+This list only catches a known risky command early. A command can be written to slip past it, so the sandbox is what
+protects your files. Two gaps remain: a program the command asks another process to start runs outside the sandbox
+(hence `open` and `osascript` on the list), and files inside the workspace, `.git` included, are not protected. Use Full
+access on a workspace you can restore, such as a clean git checkout.
+
+The selector writes the user setting `brokeCode.mode` (`ask`, `autoEdit`, or `fullAccess`). It also follows that
 setting, so a change you make in the settings editor shows in the selector too. Since it is a **user** setting, picking
-Auto-edit in one window applies to every window and project. A workspace `settings.json` cannot turn it on. The
-selector is disabled while the agent works. Commands always ask, in both modes.
+Auto-edit or Full access in one window applies to every window and project. A workspace `settings.json` cannot change
+it. The selector is disabled while the agent works.
 
-The third mode, **Plan**, asks the agent for a plan instead of changes. The agent gets only the tools that change
+The fourth mode, **Plan**, asks the agent for a plan instead of changes. The agent gets only the tools that change
 nothing (**read_file**, **list_files**, **search**, **ask_user**, and **load_skill** when a skill is listed). It answers with a plan of the
 changes, file by file, in order. broke-code writes nothing and runs no command. If the model still tries to write or
 run a command, the chat shows a failed step that says the tool is not available in Plan mode, and the model goes on.
 
-broke-code keeps Plan for the workspace, also after a reload, and writes no setting for it. When you leave Plan for Ask
-or Auto-edit, broke-code writes the setting only if its value must change. If that write fails, the error shows and
+broke-code keeps Plan for the workspace, also after a reload, and writes no setting for it. When you leave Plan for
+another mode, broke-code writes the setting only if its value must change. If that write fails, the error shows and
 Plan stays. A message you send in Plan stays a Plan turn until it ends.
 
-To carry a plan out, click the button under the plan's answer: **Implement in Ask mode**, or **Implement in Auto-edit
-mode** when `brokeCode.autoApproveWrites` is on. The label names the mode the setting holds. The click leaves Plan for
+To carry a plan out, click the button under the plan's answer: **Implement in Ask mode**, **Implement in Auto-edit
+mode**, or **Implement in Full access mode**. The label names the mode `brokeCode.mode` holds. The click leaves Plan for
 that mode, writes no setting, and sends the message "Implement the plan above." The agent then makes the changes, with
 your approval of each write in Ask. The button shows while Plan is on, under the last answer of the conversation, once
 no reply is in flight and that answer ended normally. It does not show after a stop, an error, or `/compact`. It is

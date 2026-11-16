@@ -247,9 +247,13 @@ describe("parseWebviewMessage", () => {
     expect(parseWebviewMessage({ type: "insertCode", text: ["a"] })).toBeUndefined();
     expect(parseWebviewMessage({ type: "insertCode", text: "a".repeat(REPLY_MAX_LENGTH + 1) })).toBeUndefined();
   });
-  test("accepts a mode pick of Ask, Auto-edit, or Plan", () => {
+  test("accepts a mode pick of Ask, Auto-edit, Full access, or Plan", () => {
     expect(parseWebviewMessage({ type: "setMode", mode: "ask" })).toEqual({ type: "setMode", mode: "ask" });
     expect(parseWebviewMessage({ type: "setMode", mode: "autoEdit" })).toEqual({ type: "setMode", mode: "autoEdit" });
+    expect(parseWebviewMessage({ type: "setMode", mode: "fullAccess" })).toEqual({
+      type: "setMode",
+      mode: "fullAccess",
+    });
     expect(parseWebviewMessage({ type: "setMode", mode: "plan" })).toEqual({ type: "setMode", mode: "plan" });
   });
 

@@ -294,11 +294,30 @@
           "default": false,
           "markdownDescription": "%config.autoCompact.description%"
         },
-        "brokeCode.autoApproveWrites": {
-          "type": "boolean",
+        "brokeCode.mode": {
+          "type": "string",
           "scope": "application",
-          "default": false,
-          "markdownDescription": "%config.autoApproveWrites.description%"
+          "enum": [
+            "ask",
+            "autoEdit",
+            "fullAccess"
+          ],
+          "markdownEnumDescriptions": [
+            "%config.mode.ask%",
+            "%config.mode.autoEdit%",
+            "%config.mode.fullAccess%"
+          ],
+          "default": "ask",
+          "markdownDescription": "%config.mode.description%"
+        },
+        "brokeCode.deniedCommands": {
+          "type": "array",
+          "scope": "application",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "%config.deniedCommands.description%"
         },
         "brokeCode.commandTimeoutSeconds": {
           "type": "integer",
