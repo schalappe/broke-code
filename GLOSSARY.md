@@ -61,7 +61,7 @@ _Avoid_: tool use, action, iteration
 The user's Accept (Run, for a command) or Reject of a tool call that changes the workspace or runs a command, given in
 the chat while the agent turn waits; a rejection, with its optional reason, goes back to the model as the call's
 result. A write shows its line counts and Show change, which brings its diff back. The Command Palette offers the same
-decisions; in the panel, ⌘Enter accepts or runs and ⌘Backspace rejects. A setting can approve writes without asking, never commands.
+decisions; in the panel, ⌘Enter accepts or runs and ⌘Backspace rejects. The mode can approve writes without asking, and, in Full access, commands too, run in the sandbox.
 _Avoid_: confirmation, permission, consent
 
 **Question**:
@@ -89,13 +89,25 @@ _Avoid_: modified files, diff list, file changes
 
 **Mode**:
 What an agent turn may do, shown and picked in the message box: **Ask** waits for the user's approval of each write;
-**Auto-edit** approves writes without asking; **Plan** offers the tools that change nothing (the read tools and `ask_user`, the **question**), so the model answers
-with a plan and nothing is written or run. Ask and Auto-edit are the user setting `brokeCode.autoApproveWrites`, so they apply to every
+**Auto-edit** approves writes without asking; **Full access** also runs commands without asking, in the **sandbox**,
+and refuses a **denied command**; **Plan** offers the tools that change nothing (the read tools and `ask_user`, the **question**), so the model answers
+with a plan and nothing is written or run. Ask, Auto-edit, and Full access are the user setting `brokeCode.mode`, so they apply to every
 window; Plan is kept per workspace and wins over the setting while on. A turn reads Plan when it starts. Commands wait
-for Run in every mode that offers them. Under a plan's **final answer**, "Implement in Ask mode" or "Implement in
-Auto-edit mode" leaves Plan for the mode the setting holds, without writing the setting, and sends "Implement the plan
+for Run in Ask and Auto-edit. Under a plan's **final answer**, "Implement in <mode> mode" leaves Plan for the mode the setting holds, without writing the setting, and sends "Implement the plan
 above."
 _Avoid_: agent mode, approval mode, permission mode
+
+**Sandbox**:
+The macOS `sandbox-exec` profile a command runs in when Full access runs it without a click: every write outside the
+workspace folders, the temporary folders, and the cache folders fails with "Operation not permitted"; reads and the
+network stay open. A command the user clicked Run on never runs in it.
+_Avoid_: jail, container
+
+**Denied command**:
+An entry Full access refuses a command for, without running it: a built-in one (`sudo`, `git push --force`, ...) or one
+of the user setting `brokeCode.deniedCommands`. It catches a known risky command early and is never the guard, since a
+command can be spelled to slip past it; the sandbox is.
+_Avoid_: blocklist, blacklist, forbidden command
 
 **Queued message**:
 A message the user sends while a reply is in flight (an agent turn or a summary). It waits, under the message box,

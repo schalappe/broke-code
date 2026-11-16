@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ApprovalRequest, Decision } from "./approval";
 import {
@@ -12,6 +12,7 @@ import {
   runCommand,
   runCommandTool,
 } from "./commands";
+import { SANDBOX_NOTE } from "./fullAccess";
 import type { ToolCall } from "./tools";
 import type { WorkspaceRoot } from "./workspaceFiles";
 
@@ -644,6 +645,46 @@ describe("runCommandTool", () => {
       text: "run_command: the command could not be shown for approval (Error: another approval request is still open). Nothing ran.",
     });
     expect(await exists(join(base, "app", "failed.txt"))).toBe(false);
+  });
+
+  test("a denial runs nothing and names the entry it matched", async () => {
+    const { context } = deciding({ kind: "deny", entry: "git push --force" });
+    const result = await runCommandTool(call("echo no > denied.txt"), roots(), context, env);
+    expect(result).toEqual({
+      status: "error",
+      text: 'run_command: This command matches "git push --force", which the user\'s denied commands forbid in Full access mode. Nothing ran. Do it another way, or ask the user to run it themselves.',
+    });
+    expect(await exists(join(base, "app", "denied.txt"))).toBe(false);
+  });
+
+  describe("accepted with the sandbox", () => {
+    const outside = join(homedir(), `.broke-code-sandbox-probe-${process.pid}`);
+    afterAll(() => rm(outside, { force: true }));
+
+    test("writes in every workspace folder", async () => {
+      const { context } = deciding({ kind: "accept", sandbox: true });
+      const command = `echo app > sandboxed.txt && echo lib > ${join(base, "lib", "sandboxed.txt")}`;
+      const result = await runCommandTool(call(command), roots(), context, env);
+      expect(result).toEqual({ status: "ok", text: "exit code 0\nstdout: (empty)\nstderr: (empty)" });
+      expect(await readFile(join(base, "app", "sandboxed.txt"), "utf8")).toBe("app\n");
+      expect(await readFile(join(base, "lib", "sandboxed.txt"), "utf8")).toBe("lib\n");
+    });
+
+    test("cannot write outside the workspace, and the result says why", async () => {
+      const { context } = deciding({ kind: "accept", sandbox: true });
+      const result = await runCommandTool(call(`echo no > '${outside}'`), roots(), context, env);
+      expect(result.status).toBe("error");
+      expect(result.text).toContain("Operation not permitted");
+      expect(result.text.endsWith(SANDBOX_NOTE)).toBe(true);
+      expect(await exists(outside)).toBe(false);
+    });
+
+    test("a command accepted by a click runs outside the sandbox", async () => {
+      const { context } = deciding({ kind: "accept" });
+      const result = await runCommandTool(call(`echo yes > '${outside}'`), roots(), context, env);
+      expect(result.status).toBe("ok");
+      expect(await readFile(outside, "utf8")).toBe("yes\n");
+    });
   });
 
   test.each([

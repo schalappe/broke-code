@@ -1741,17 +1741,23 @@ describe("mode selector", () => {
     return select;
   };
 
-  test("shows the mode the state holds, Ask, Auto-edit, or Plan", async () => {
+  test("shows the mode the state holds, Ask, Auto-edit, Full access, or Plan", async () => {
     for (const [mode, label] of [
       ["ask", "Ask"],
       ["autoEdit", "Auto-edit"],
+      ["fullAccess", "Full access"],
       ["plan", "Plan"],
     ] as const) {
       await withPanel(stateWith(true, { mode }), async ({ host }) => {
         const select = modeSelect(host);
         expect(select.value).toBe(mode);
         expect(select.selectedOptions[0]?.textContent).toBe(label);
-        expect([...select.options].map((option) => option.textContent)).toEqual(["Ask", "Auto-edit", "Plan"]);
+        expect([...select.options].map((option) => option.textContent)).toEqual([
+          "Ask",
+          "Auto-edit",
+          "Full access",
+          "Plan",
+        ]);
       });
     }
   });
@@ -1792,6 +1798,9 @@ describe("mode selector", () => {
       const hint = host.querySelector(".mode-hint");
       expect(hint?.textContent).toBe(AUTO_EDIT);
       expect(modeSelect(host).getAttribute("aria-describedby")).toBe(hint?.id ?? "");
+
+      await show(stateWith(true, { mode: "fullAccess" }));
+      expect(host.querySelector(".mode-hint")?.textContent).toContain("commands run without asking");
 
       await show(stateWith(true, { mode: "plan" }));
       expect(host.querySelector(".mode-hint")?.textContent).toContain("It changes no file and runs no command.");
@@ -3941,6 +3950,8 @@ describe("retry and continue", () => {
       const autoEdit = html(answered, { mode: "plan", settingMode: "autoEdit" });
       expect(count(autoEdit, ">Implement in Auto-edit mode</button>")).toBe(1);
       expect(autoEdit).not.toContain("Implement in Ask mode");
+      const fullAccess = html(answered, { mode: "plan", settingMode: "fullAccess" });
+      expect(count(fullAccess, ">Implement in Full access mode</button>")).toBe(1);
     });
 
     test("is absent outside Plan, during a reply, and when the conversation does not end on a final answer", () => {

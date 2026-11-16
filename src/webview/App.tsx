@@ -1240,8 +1240,19 @@ function MalformedAnswer({ content, block }: { content: string; block: TextRange
   );
 }
 
-/** Ask or Auto-edit: the mode the setting holds, which "Implement in ... mode" names. */
+/** Ask, Auto-edit, or Full access: the mode the setting holds, which "Implement in ... mode" names. */
 type SettingMode = ChatState["settingMode"];
+
+function implementLabel(mode: SettingMode): string {
+  switch (mode) {
+    case "ask":
+      return l10n.t("Implement in Ask mode");
+    case "autoEdit":
+      return l10n.t("Implement in Auto-edit mode");
+    case "fullAccess":
+      return l10n.t("Implement in Full access mode");
+  }
+}
 
 /**
  * Retry and Continue of the last turn. `actions`: where they apply and whether Continue is offered. `shown`: the
@@ -1311,9 +1322,7 @@ function TurnActions({ turnActions, undo }: { turnActions?: TurnActionsProps; un
               disabled={!turnActions.canAct}
               onClick={() => post({ type: "implementPlan", shown: turnActions.shown })}
             >
-              {turnActions.implementIn === "autoEdit"
-                ? l10n.t("Implement in Auto-edit mode")
-                : l10n.t("Implement in Ask mode")}
+              {implementLabel(turnActions.implementIn)}
             </button>
           )}
           <button ref={retryButton} type="button" className="secondary" disabled={!turnActions.canAct} onClick={retry}>
@@ -2528,6 +2537,10 @@ function describeMode(mode: Mode): string {
       return l10n.t("Each change waits for Accept or Reject.");
     case "autoEdit":
       return l10n.t("Changes are written without asking. Commands still wait for Run.");
+    case "fullAccess":
+      return l10n.t(
+        "Changes are written and commands run without asking. Commands run in a sandbox that keeps their writes inside the workspace, and denied commands are refused.",
+      );
     case "plan":
       return l10n.t("The agent reads files and answers with a plan. It changes no file and runs no command.");
   }
@@ -2536,7 +2549,7 @@ function describeMode(mode: Mode): string {
 const MODE_HINT_ID = "mode-hint";
 
 /**
- * The line under the composer that says what Auto-edit or Plan does, so a mode that writes without asking, or never
+ * The line under the composer that says what Auto-edit, Full access, or Plan does, so a mode that acts without asking, or never
  * writes, is never only a word in a selector. Nothing in Ask, the default, where each change asks anyway.
  */
 function ModeHint({ mode, id }: { mode: Mode; id: string }) {
@@ -2549,11 +2562,16 @@ function ModeHint({ mode, id }: { mode: Mode; id: string }) {
 }
 
 /**
- * Ask, Auto-edit, or Plan, as the host reads them: Plan from the workspace, the others from the setting. Controlled by
+ * Ask, Auto-edit, Full access, or Plan, as the host reads them: Plan from the workspace, the others from the setting. Controlled by
  * the state, so a pick shows only once the host has applied it; a failed write leaves the mode as it was.
  */
 function ModeSelect({ mode, disabled, hintId }: { mode: Mode; disabled: boolean; hintId: string }) {
-  const labels: Record<Mode, string> = { ask: l10n.t("Ask"), autoEdit: l10n.t("Auto-edit"), plan: l10n.t("Plan") };
+  const labels: Record<Mode, string> = {
+    ask: l10n.t("Ask"),
+    autoEdit: l10n.t("Auto-edit"),
+    fullAccess: l10n.t("Full access"),
+    plan: l10n.t("Plan"),
+  };
   return (
     <select
       className="mode"

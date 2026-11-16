@@ -14,7 +14,7 @@ import {
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { autoApproveWrites, type Decision, type InspectedSetting, type Preview } from "./approval";
+import { type Decision, type InspectedSetting, type Preview, type SettingMode, settingMode } from "./approval";
 import { ASK_USER_TOOL } from "./askUser";
 import {
   ChatController,
@@ -1902,7 +1902,7 @@ describe("ChatController agent turn", () => {
     instructions: InstructionReader = { read: async () => [] },
     limits?: LimitsSource,
     skills: SkillReader = noSkills,
-    autoApproveWrites?: () => boolean,
+    settingMode?: () => SettingMode,
     mentions: MentionReader = noMentions,
   ) {
     const prefix = `script-${scriptCount++}`;
@@ -1919,7 +1919,7 @@ describe("ChatController agent turn", () => {
       instructions,
       skills,
       limits,
-      autoApproveWrites,
+      settingMode,
     });
     const state = () => controller.snapshot;
     controller.setProviders({
@@ -2486,7 +2486,7 @@ describe("ChatController agent turn", () => {
         undefined,
         undefined,
         undefined,
-        () => autoApprove,
+        () => (autoApprove ? "autoEdit" : "ask"),
       );
       await controller.setMode("plan");
       const turn = controller.send("plan it");
@@ -3380,7 +3380,7 @@ describe("ChatController agent turn", () => {
     }
 
     /** A turn whose first reply writes `a.txt`, then answers "Done.", stopped at the open request. */
-    async function waiting(options: { steps?: number; auto?: () => boolean } = {}) {
+    async function waiting(options: { steps?: number; auto?: () => SettingMode } = {}) {
       const { runner, previews } = askingRunner();
       const limits = options.steps === undefined ? undefined : fixedLimits({ steps: options.steps });
       const turn = await scripted(
@@ -3563,7 +3563,7 @@ describe("ChatController agent turn", () => {
         undefined,
         undefined,
         undefined,
-        () => true,
+        () => "autoEdit",
       );
       const subscription = setInterval(() => {
         if (state().approval) published = true;
@@ -3589,7 +3589,7 @@ describe("ChatController agent turn", () => {
         () => {
           const value = auto;
           auto = false;
-          return value;
+          return value ? "autoEdit" : "ask";
         },
       );
       const done = controller.send("write twice");
@@ -3621,7 +3621,7 @@ describe("ChatController agent turn", () => {
         undefined,
         undefined,
         undefined,
-        () => true,
+        () => "autoEdit",
       );
       const done = controller.send("go");
       await until(state, (s) => s.approval !== undefined);
@@ -3629,6 +3629,46 @@ describe("ChatController agent turn", () => {
       controller.reject(state().approval!.id);
       await done;
       expect(decisions).toEqual([{ kind: "reject" }]);
+    });
+
+    describe("Full access", () => {
+      /** A turn whose one call asks to run each of `commands` in turn, in Full access, recording each decision. */
+      async function fullAccess(commands: string[]) {
+        const decisions: Decision[] = [];
+        const runner: ToolRunner = {
+          tools: READ_TOOLS,
+          run: async (call, context) => {
+            for (const summary of commands) {
+              decisions.push(await context.requestApproval({ kind: "command", tool: call.name, summary }));
+            }
+            return { status: "ok", text: "ran" };
+          },
+        };
+        const turn = await scripted(
+          [{ content: readCall("a.ts") }, { content: "Done." }],
+          runner,
+          undefined,
+          undefined,
+          undefined,
+          () => "fullAccess",
+        );
+        await turn.controller.send("go");
+        const steps = turn.state().entries.filter((entry) => entry.role === "tool");
+        return { ...turn, decisions, steps };
+      }
+
+      test("runs a command at once, in the sandbox, and records it auto-approved", async () => {
+        // [>]: The send settles with no click: an open request would keep it waiting.
+        const { decisions, steps } = await fullAccess(["bun test"]);
+        expect(decisions).toEqual([{ kind: "accept", sandbox: true }]);
+        expect(steps.map((step) => step.approval)).toEqual(["auto"]);
+      });
+
+      test("denies a command matching a denied command without asking, and records no approval", async () => {
+        const { decisions, steps } = await fullAccess(["make && sudo make install"]);
+        expect(decisions).toEqual([{ kind: "deny", entry: "sudo" }]);
+        expect(steps.map((step) => step.approval)).toEqual([undefined]);
+      });
     });
 
     describe("question", () => {
@@ -5078,8 +5118,8 @@ function groupAlive(pgid: number): boolean {
 
 describe("ChatController mode", () => {
   /**
-   * Controller over a user setting `brokeCode.autoApproveWrites` held in `setting` (its scopes as `inspect` gives them),
-   * read through `autoApproveWrites` as the host does. `write` records each user value written; `failWrite` makes it
+   * Controller over a user setting `brokeCode.mode` held in `setting` (its scopes as `inspect` gives them),
+   * read through `settingMode` as the host does. `write` records each user value written; `failWrite` makes it
    * reject. Its provider streams "Partial " and waits for `finishReply`.
    */
   async function withSetting(
@@ -5091,7 +5131,7 @@ describe("ChatController mode", () => {
     }: { failWrite?: boolean; workspaceState?: ChoiceStore; deferWrites?: boolean } = {},
   ) {
     // [>]: Read at `modeChanged`, as the host does at activation.
-    const written: boolean[] = [];
+    const written: SettingMode[] = [];
     /** With `deferWrites`, each write waits until the test releases it, oldest first. */
     const pendingWrites: (() => void)[] = [];
     const releaseWrite = () => pendingWrites.shift()?.();
@@ -5106,12 +5146,12 @@ describe("ChatController mode", () => {
       store: new ConversationStore(undefined),
       providerSupport: new ProviderSupport(),
       ...noTools,
-      autoApproveWrites: () => autoApproveWrites(setting),
-      writeAutoApproveWrites: async (on) => {
+      settingMode: () => settingMode(setting),
+      writeSettingMode: async (mode) => {
         if (deferWrites) await new Promise<void>((resolve) => pendingWrites.push(resolve));
         if (failWrite) throw new Error("EACCES: settings.json");
-        written.push(on);
-        setting.globalValue = on;
+        written.push(mode);
+        setting.globalValue = mode;
       },
     });
     const state = () => controller.snapshot;
@@ -5121,16 +5161,16 @@ describe("ChatController mode", () => {
     return { controller, state, written, states, pendingWrites, releaseWrite, returned };
   }
 
-  test("follows the user value of the setting: absent or false is Ask, true is Auto-edit", async () => {
+  test("follows the user value of the setting: absent or unknown is Ask, else the mode it names", async () => {
     const setting: InspectedSetting = {};
     const { controller, state } = await withSetting(setting);
     expect(state().mode).toBe("ask");
 
-    setting.globalValue = true;
+    setting.globalValue = "autoEdit";
     controller.modeChanged();
     expect(state().mode).toBe("autoEdit");
 
-    setting.globalValue = false;
+    setting.globalValue = "ask";
     controller.modeChanged();
     expect(state().mode).toBe("ask");
   });
@@ -5142,11 +5182,11 @@ describe("ChatController mode", () => {
     await controller.setMode("plan");
     expect(state()).toMatchObject({ mode: "plan", settingMode: "ask" });
 
-    setting.globalValue = true;
+    setting.globalValue = "autoEdit";
     controller.modeChanged();
     expect(state()).toMatchObject({ mode: "plan", settingMode: "autoEdit" });
 
-    setting.globalValue = false;
+    setting.globalValue = "ask";
     controller.modeChanged();
     expect(state()).toMatchObject({ mode: "plan", settingMode: "ask" });
 
@@ -5157,23 +5197,30 @@ describe("ChatController mode", () => {
   test("ignores a workspace value of the setting", async () => {
     const { state } = await withSetting({ workspaceValue: true, workspaceFolderValue: true });
     expect(state().mode).toBe("ask");
-    const user = await withSetting({ globalValue: true, workspaceValue: false, workspaceFolderValue: false });
+    const user = await withSetting({ globalValue: "autoEdit", workspaceValue: false, workspaceFolderValue: false });
     expect(user.state().mode).toBe("autoEdit");
   });
 
   test("setMode writes the user value of the setting and shows the new mode", async () => {
     const { controller, state, written } = await withSetting({});
     expect(await controller.setMode("autoEdit")).toEqual({ kind: "written" });
-    expect(written).toEqual([true]);
+    expect(written).toEqual(["autoEdit"]);
     expect(state().mode).toBe("autoEdit");
 
     expect(await controller.setMode("ask")).toEqual({ kind: "written" });
-    expect(written).toEqual([true, false]);
+    expect(written).toEqual(["autoEdit", "ask"]);
     expect(state().mode).toBe("ask");
   });
 
+  test("setMode writes Full access to the setting like the other modes", async () => {
+    const { controller, state, written } = await withSetting({});
+    expect(await controller.setMode("fullAccess")).toEqual({ kind: "written" });
+    expect(written).toEqual(["fullAccess"]);
+    expect(state()).toMatchObject({ mode: "fullAccess", settingMode: "fullAccess" });
+  });
+
   test("setMode writes nothing when the setting already holds that mode", async () => {
-    const { controller, written } = await withSetting({ globalValue: true });
+    const { controller, written } = await withSetting({ globalValue: "autoEdit" });
     expect(await controller.setMode("autoEdit")).toEqual({ kind: "unchanged" });
     const absent = await withSetting({});
     expect(await absent.controller.setMode("ask")).toEqual({ kind: "unchanged" });
@@ -5208,7 +5255,7 @@ describe("ChatController mode", () => {
   describe("Plan", () => {
     test("setMode plan writes no setting, wins over the setting, and is kept in the workspace memento", async () => {
       const workspaceState = memoryStore();
-      const { controller, state, written } = await withSetting({ globalValue: true }, { workspaceState });
+      const { controller, state, written } = await withSetting({ globalValue: "autoEdit" }, { workspaceState });
       expect(await controller.setMode("plan")).toEqual({ kind: "written" });
       expect(written).toEqual([]);
       expect(state().mode).toBe("plan");
@@ -5216,7 +5263,7 @@ describe("ChatController mode", () => {
       expect(state().mode).toBe("plan");
       expect(await controller.setMode("plan")).toEqual({ kind: "unchanged" });
 
-      const reloaded = await withSetting({ globalValue: true }, { workspaceState });
+      const reloaded = await withSetting({ globalValue: "autoEdit" }, { workspaceState });
       expect(reloaded.state().mode).toBe("plan");
     });
 
@@ -5235,19 +5282,19 @@ describe("ChatController mode", () => {
 
     test("leaving Plan for the mode the setting already holds writes no setting and turns Plan off", async () => {
       const workspaceState = memoryStore();
-      const { controller, state, written } = await withSetting({ globalValue: true }, { workspaceState });
+      const { controller, state, written } = await withSetting({ globalValue: "autoEdit" }, { workspaceState });
       await controller.setMode("plan");
       expect(await controller.setMode("autoEdit")).toEqual({ kind: "written" });
       expect(written).toEqual([]);
       expect(state().mode).toBe("autoEdit");
-      expect((await withSetting({ globalValue: true }, { workspaceState })).state().mode).toBe("autoEdit");
+      expect((await withSetting({ globalValue: "autoEdit" }, { workspaceState })).state().mode).toBe("autoEdit");
     });
 
     test("leaving Plan for another mode writes the setting, then turns Plan off", async () => {
       const { controller, state, written } = await withSetting({});
       await controller.setMode("plan");
       expect(await controller.setMode("autoEdit")).toEqual({ kind: "written" });
-      expect(written).toEqual([true]);
+      expect(written).toEqual(["autoEdit"]);
       expect(state().mode).toBe("autoEdit");
     });
 
@@ -5366,7 +5413,7 @@ describe("ChatController mode", () => {
 
       for (const [name, setting, left] of [
         ["Ask", {}, "ask"],
-        ["Auto-edit", { globalValue: true }, "autoEdit"],
+        ["Auto-edit", { globalValue: "autoEdit" }, "autoEdit"],
       ] as const) {
         test(`leaves Plan for ${name}, writes no setting, and starts one turn asking to implement the plan`, async () => {
           const workspaceState = memoryStore();
@@ -6185,7 +6232,7 @@ describe("ChatController undo", () => {
       tools: runner,
       instructions: { read: async () => [] },
       skills: noSkills,
-      autoApproveWrites: () => options.auto ?? true,
+      settingMode: () => (options.auto === false ? "ask" : "autoEdit"),
       returnDraft: (draft) => returned.push(draft),
       undo: { roots: () => roots, hasUnsavedChanges },
       changeDiffs: {
@@ -7012,7 +7059,7 @@ describe("ChatController turn events", () => {
       const command = "bun test\nbun run build";
       const { controller, state, events } = await observed([{ content: readCall("a.txt") }, { content: "Done." }], {
         tools: askingRunner({ kind: "command", tool: "run_command", summary: command }),
-        autoApproveWrites: () => true,
+        settingMode: () => "autoEdit",
       });
       const sent = controller.send("test it");
       await until(state, (s) => s.approval !== undefined);
@@ -7040,7 +7087,7 @@ describe("ChatController turn events", () => {
     test("an auto-approved write opens no request and reports nothing", async () => {
       const { controller, events } = await observed([{ content: readCall("a.txt") }, { content: "Done." }], {
         tools: askingRunner({ kind: "write", tool: "write_file", summary: "a.txt" }),
-        autoApproveWrites: () => true,
+        settingMode: () => "autoEdit",
       });
       await controller.send("write it");
       expect(events).toEqual([done]);
@@ -7347,7 +7394,7 @@ describe("ChatController running call", () => {
   async function phases(
     content: string,
     settle?: (controller: ChatController, state: ChatState) => void,
-    autoApproveWrites?: () => boolean,
+    settingMode?: () => SettingMode,
   ): Promise<string[]> {
     const prefix = `running-${scriptCount++}`;
     scripts.set(prefix, [{ content }, { content: "Done." }]);
@@ -7364,7 +7411,7 @@ describe("ChatController running call", () => {
       providerSupport: new ProviderSupport(),
       ...noTools,
       tools: runner,
-      autoApproveWrites,
+      settingMode,
     });
     const state = () => controller.snapshot;
     controller.setProviders({
@@ -7410,6 +7457,6 @@ describe("ChatController running call", () => {
   });
 
   test("an auto-approved write runs without a request", async () => {
-    expect(await phases(writeCall, undefined, () => true)).toEqual(["shown", "running", "done"]);
+    expect(await phases(writeCall, undefined, () => "autoEdit")).toEqual(["shown", "running", "done"]);
   });
 });

@@ -32,7 +32,7 @@ import type { WorkspaceRoot } from "../core/workspaceFiles";
 import { approvalApplier, fileApplier, type WriteApprovalHost } from "../core/writeTools";
 import { runAddProvider } from "./addProvider";
 import { ApiKeys } from "./apiKeys";
-import { DiffPreviews, hasUnsavedChanges, readAutoApproveWrites, writeAutoApproveWrites } from "./approval";
+import { DiffPreviews, hasUnsavedChanges, readDeniedCommands, readSettingMode, writeSettingMode } from "./approval";
 import { CHAT_VIEW_ID, ChatContextKeys, ChatView } from "./chatView";
 import { registerCommitMessageCommand } from "./commitMessage";
 import { askContextSize, LIMIT_SETTINGS, readCommandTimeoutSeconds, readLimits } from "./contextSizes";
@@ -67,7 +67,7 @@ export function activate(context: vscode.ExtensionContext): void {
     timeoutMs: readCommandTimeoutSeconds() * 1000,
   });
   // [!]: Every write goes through `approvalApplier`: no build writes without a click unless the user setting says so.
-  // Every command waits for Run: the runner asks before it spawns, and no setting accepts a command. Each write that
+  // Every command asks before it spawns: it waits for Run, except in Full access, which runs it in the sandbox. Each write that
   // reaches the disk is recorded into its turn's changes, for "Undo changes". `ask_user` is offered: the chat shows
   // its question and the controller sends the user's answer back.
   const tools = workspaceToolRunner(
@@ -103,8 +103,9 @@ export function activate(context: vscode.ExtensionContext): void {
     instructions,
     skills,
     limits: { read: readLimits },
-    autoApproveWrites: readAutoApproveWrites,
-    writeAutoApproveWrites,
+    settingMode: readSettingMode,
+    writeSettingMode,
+    deniedCommands: readDeniedCommands,
     // [>]: The view exists before any request can reach the controller: requests come from its webview.
     returnDraft: (draft) => view?.returnDraft(draft),
     // [>]: The write approval's unsaved check: a restore must not replace a file under an editor's unsaved text.
@@ -184,7 +185,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration("brokeCode.providers")) applySettings();
       if (LIMIT_SETTINGS.some((setting) => event.affectsConfiguration(setting))) controller.limitsChanged();
-      if (event.affectsConfiguration("brokeCode.autoApproveWrites")) controller.modeChanged();
+      if (event.affectsConfiguration("brokeCode.mode")) controller.modeChanged();
     }),
     apiKeys.onDidChange((provider) => controller.keyChanged(provider)),
     fileIndex,
