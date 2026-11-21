@@ -38,11 +38,26 @@ script makes are execution detail (ADR 0001's "one body call per reply" stands).
 - **Every inner call goes through the usual approvals** (maintainer decision 1). The turn runs each call a script
   makes exactly as a direct call (`runCall`): Ask's diff and Accept, Run for a command, Auto-edit, Full access with its
   denied commands and command sandbox, the step's `approval`, its line counts, and its tie to the file for "Undo
-  changes". A rejection throws in the script. The turn bounds what a script makes it hold: one script's calls hold at
-  most 8 MiB of arguments and result text, plus one call's result, each call's arguments counted as the host admits
-  it, before it queues; a call whose arguments would pass it throws and never runs. Each step is shown, saved, and kept, so this is the bound, not the child's own limits.
+  changes". A rejection throws in the script. The host holds at most 8 MiB of arguments for the calls admitted and
+  not yet answered, counted as each arrives, before it queues, and freed once it is answered; a call that would pass
+  it throws and never runs. That bounds transient memory only: calls may queue behind one waiting for an approval.
 - **Inner calls are recorded as steps and never sent.** Each call's step is an ordinary tool step marked `fromScript:
-  true`, an optional field, so the record stays at version 2 (ADR 0003). While the script runs, the completed steps
+  true`, an optional field, so the record stays at version 2 (ADR 0003). The step is a short trace, not the whole
+  call (maintainer decision of 2026-11-21): the context budget bounds what a direct step stores, but never sees an
+  inner step, so Code Mode stops storing what the model never reads. The trace keeps the tool, the status, and the
+  other fields of the step, keeps whole, up to 4,096 characters each (`NAME_ARGUMENT_CHARS`, four times the
+  macOS path limit, so a path a tool can open is never cut), the arguments that name what the call acted on (`path`,
+  `pattern`, `start_line`, `end_line`, `command`, `cwd`), which the undo lines, the stopped-script line, the folded
+  turn's counts, and the step row read, and shares 2,000 characters (`INNER_STEP_CHARS`) among the other values, the file text and
+  the result text: a short one keeps whole, a long one keeps its start and ends with `[cut to save memory: N lines, C
+  characters in all]`. A name past its cap is cut the same way. A trace thus holds at most 6 × 4,096 + 2,000 =
+  26,576 characters of values: uncapped names would let 100 calls of a script each store a command of megabytes that
+  no context budget sees, and a valid path cut at a share would reach the model shortened in an undo line, with the
+  cut line after it. The tool runs with the whole arguments and the script gets the whole result, so a
+  script still processes far more than fits the model's context. Rejected: a size limit on the whole conversation in
+  the store, which would refuse saves the user cannot act on, and capping a script at the context size, which would
+  remove the point of a script. Two earlier bounds, on the arguments and then on the result text a script's steps
+  hold in all (8 MiB), are gone: the trace makes them redundant, and they left a turn of 50 scripts holding 400 MiB. While the script runs, the completed steps
   are staged by the turn: shown live (`ChatState.scriptSteps`) and saved after the reply in flight, so a crash keeps
   the record of a write that reached the disk, with at most one save of them in flight, since calls can complete
   faster than the disk takes a copy of the whole record. When the script ends they join the entries before the `run_script`
@@ -98,7 +113,9 @@ On local Ollama, 10 runs per cell (`docs/eval.md`, "Code Mode"):
 ## Consequences
 
 - broke-code starts a child process of the editor's own executable per script, only with the setting on.
-- An inner step's result is never sent: the model reads only what the script printed. An older build that opens a
+- An inner step's result is never sent: the model reads only what the script printed. Its row opens to the trace:
+  the user sees the start of a long result or write, not all of it; the file itself and "Changed files" show a
+  write whole. An older build that opens a
   record with inner steps drops the `fromScript` field (ADR 0003) and reads them as ordinary steps: it shows them as
   rows of their own and sends their results, file text included. Accepted for an experimental setting.
 - Undo stays memory-only, as for direct calls; a reload restores the rows and their saved `undone` marks.

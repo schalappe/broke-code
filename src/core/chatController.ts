@@ -26,7 +26,7 @@ import {
 } from "./conversation";
 import type { ConversationStore } from "./conversationStore";
 import { DEFAULT_DENIED_COMMANDS, deniedEntry } from "./fullAccess";
-import { type HistoryBudget, historyStart, sentEntries, summaryHistory, toHistory } from "./history";
+import { type HistoryBudget, historyStart, innerStepTrace, sentEntries, summaryHistory, toHistory } from "./history";
 import { CONTINUE_TEXT, hasFinalAnswer, IMPLEMENT_PLAN_TEXT, type LastTurnActions, lastTurnActions } from "./lastTurn";
 import { contextOf, DEFAULT_RATIO, estimateTokens, fillsContext, parseLimits, type TurnLimits } from "./limits";
 import { type LineCounts, lineDiffCount } from "./lineDiff";
@@ -57,14 +57,7 @@ import type { ProviderSupport } from "./providerSupport";
 import type { ParsedProviders, Provider } from "./providers";
 import { RecordedChanges, type RecordedFile, type RestoreOutcome } from "./recordedChanges";
 import { reservedMention } from "./reservedMentions";
-import {
-  argumentChars,
-  type InnerCalls,
-  MAX_SCRIPT_STEP_CHARS,
-  RUN_SCRIPT_TOOL,
-  type ScriptEnv,
-  STEP_BUDGET_REFUSAL,
-} from "./script";
+import { type InnerCalls, RUN_SCRIPT_TOOL, type ScriptEnv } from "./script";
 import { SerialQueue } from "./serialQueue";
 import { findSlashSkill, loadSkillText, type SkillDiscovery } from "./skills";
 import { builtInCommand } from "./suggestions";
@@ -312,11 +305,11 @@ type CallSetup = {
  * in call order (the staged steps). The one source of truth for them while the script runs: projected into
  * `ChatState.scriptSteps` while its conversation is shown, and into each save of that conversation after the reply in
  * flight, then appended to the entries, and cleared, in the one update that ends the script (its step, or Stop).
- * `held`: the characters the script makes the turn hold, the arguments of each call admitted, queued or not, and the
- * result text of each step, which `MAX_SCRIPT_STEP_CHARS` bounds (`admitScriptCall`, `runInnerCall`).
+ * Each staged step is the trace `innerStepTrace` keeps, at most 26,576 characters of values per call: the names its
+ * call acted on (its path, its command) up to `NAME_ARGUMENT_CHARS` each, plus `INNER_STEP_CHARS`.
  * `save`: the save of those steps in flight (`saveScriptSteps`), `again` once a step was staged after it started.
  */
-type ScriptRun = { conversation: Conversation; steps: ToolStep[]; held: number; save?: { again: boolean } };
+type ScriptRun = { conversation: Conversation; steps: ToolStep[]; save?: { again: boolean } };
 
 type UserEntry = ChatEntry & { role: "user" };
 
@@ -1126,7 +1119,7 @@ export class ChatController {
           // script runs at once; each call it makes that asks waits on its own approval.
           this.state.callRunning = !tools.find((tool) => tool.name === name)?.asks;
           const script: ScriptRun | undefined =
-            name === RUN_SCRIPT_TOOL.name && scriptEnv ? { conversation, steps: [], held: 0 } : undefined;
+            name === RUN_SCRIPT_TOOL.name && scriptEnv ? { conversation, steps: [] } : undefined;
           this.script = script;
           this.emit();
           void this.save(conversation);
@@ -1565,7 +1558,8 @@ export class ChatController {
    * a call in flight. A script's call (`inner`) returns only once its tool has settled, and keeps its step when its
    * write landed meanwhile, so "Undo changes" marks it and the history tells the model of the undo. `script`: the
    * reply's `run_script` call, whose script's calls run through `runInnerCall` and land in `script.steps`. `inner`: a
-   * call a script made, its step marked `fromScript`; it never runs a script.
+   * call a script made, its step marked `fromScript` and bounded to its trace (`innerStepTrace`) as it is built, so
+   * the step "Undo changes" marks is the one staged; the result returned stays whole, for the script.
    */
   private async runCall(
     call: ToolCall,
@@ -1584,7 +1578,6 @@ export class ChatController {
             innerCalls: {
               tools: setup.tools,
               blocked: setup.blocked,
-              admit: (innerCall: ToolCall) => admitScriptCall(innerCall, script),
               run: (innerCall: ToolCall, innerSignal: AbortSignal) =>
                 this.runInnerCall(innerCall, setup, innerSignal, script),
             },
@@ -1620,7 +1613,7 @@ export class ChatController {
     const written = turn.written;
     turn.written = undefined;
     if (!result || (inner && signal.aborted && written === undefined)) return undefined;
-    const step: ToolStep = {
+    const built: ToolStep = {
       role: "tool",
       name: call.name,
       args: call.args,
@@ -1631,6 +1624,8 @@ export class ChatController {
       ...(lines && result.status === "ok" ? { lines: { ...lines } } : {}),
       ...(inner ? { fromScript: true as const } : {}),
     };
+    // [!]: The model never reads an inner step, so the context budget never bounds it: the trace does.
+    const step = inner ? innerStepTrace(built) : built;
     if (written !== undefined) turn.steps.set(written, [...(turn.steps.get(written) ?? []), step]);
     return { step, result };
   }
@@ -1642,10 +1637,9 @@ export class ChatController {
    * that reached the disk. While the call waits on an approval the call reads as not running; once it ends, the script
    * runs again. A call aborted by the script's own end is staged only when its write landed (see `runCall`). A call
    * that settles after Stop or a navigation changes nothing: its step is dropped, as Stop drops a direct call's, and a
-   * write it made is still recorded for undo by the applier, tied to no step. A call that would start once the steps'
-   * result text has taken the script past `MAX_SCRIPT_STEP_CHARS` is refused without running and leaves no step; its
-   * arguments were counted as it was admitted (`admitScriptCall`). Settles with the call's result for the script, the
-   * tool's `forScript` value when it gave one; never rejects.
+   * write it made is still recorded for undo by the applier, tied to no step. The step staged is the call's trace
+   * (`innerStepTrace`); the script settles with the whole result, the tool's `forScript` value when it gave one; never
+   * rejects.
    */
   private async runInnerCall(
     call: ToolCall,
@@ -1654,18 +1648,15 @@ export class ChatController {
     script: ScriptRun,
   ): Promise<ToolResult> {
     if (signal.aborted || this.script !== script) return stopped(call.name);
-    // [!]: The arguments were counted as the call was admitted; a result recorded since may have passed the budget.
-    if (script.held > MAX_SCRIPT_STEP_CHARS) return { status: "error", text: STEP_BUDGET_REFUSAL };
     this.state.callRunning = !setup.tools.find((tool) => tool.name === call.name)?.asks;
     this.emit();
     const ran = await this.runCall(call, setup, signal, { inner: true });
     if (!ran || this.script !== script) return stopped(call.name);
     script.steps.push(ran.step);
-    script.held += ran.step.text.length;
     this.state.callRunning = true;
     this.emit();
     this.saveScriptSteps(script);
-    // [>]: The step records what the model would read; the script gets the tool's own value for it, when it has one.
+    // [>]: The step keeps a trace; the script gets the whole result, or the tool's own value for it when it has one.
     return ran.result.forScript ?? { status: ran.result.status, text: ran.result.text };
   }
 
@@ -2244,18 +2235,6 @@ export class ChatController {
     this.closeGoneDiffs();
     this.publish(this.state);
   }
-}
-
-/**
- * Admit `call`, which `script` makes, as the host receives it (`InnerCalls.admit`): count its arguments toward what the
- * script makes the turn hold, or refuse it when they would pass `MAX_SCRIPT_STEP_CHARS`. Counted before the call
- * queues, since a queued call holds its arguments until it runs, and kept when it never runs.
- */
-function admitScriptCall(call: ToolCall, script: ScriptRun): string | undefined {
-  const args = argumentChars(call);
-  if (script.held + args > MAX_SCRIPT_STEP_CHARS) return STEP_BUDGET_REFUSAL;
-  script.held += args;
-  return undefined;
 }
 
 /** `work`'s result, or `undefined` as soon as `signal` aborts (already aborted included). */

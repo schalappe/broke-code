@@ -11,6 +11,7 @@ import {
   ancestorFolders,
   MAX_SCRIPT_CALLS,
   MAX_SCRIPT_OUTPUT,
+  QUEUE_REFUSAL,
   RUN_SCRIPT_TOOL,
   runScript,
   type ScriptEnv,
@@ -248,37 +249,38 @@ describe("runScript", () => {
 });
 
 describe("runScript limits", () => {
-  test("asks the turn to admit each call as it arrives, before it queues, and throws its refusal without running it", async () => {
-    const admitted: string[] = [];
-    const ran: string[] = [];
+  test("counts the arguments of the calls waiting as they arrive: one past the limit throws, and an answer frees its share", async () => {
+    const ran: number[] = [];
     let release: () => void = () => {};
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
     const inner = {
       tools: TOOLS,
-      admit: (call: ToolCall) => {
-        admitted.push(call.args.path ?? "");
-        return call.args.path === "c" ? "refused c" : undefined;
-      },
       run: async (call: ToolCall) => {
-        ran.push(call.args.path ?? "");
+        ran.push(call.args.path?.length ?? 0);
         if (ran.length === 1) await gate;
-        return { status: "ok" as const, text: call.args.path ?? "" };
+        return { status: "ok" as const, text: "done" };
       },
     };
+    // [>]: The first call waits; three of 3 MiB queue behind it, so the third passes the 8 MiB limit.
     const code = [
-      "const all = ['a', 'b', 'c'].map((path) => read_file({ path }).catch((error) => 'caught ' + error.message));",
-      "return (await Promise.all(all)).join(',');",
+      'const big = "x".repeat(3 * 1024 * 1024);',
+      'const first = read_file({ path: "a" });',
+      "const queued = [0, 1, 2].map(() => read_file({ path: big }).catch((error) => error.message));",
+      "const refusal = await queued[2];",
+      "await Promise.all([first, ...queued]);",
+      "await read_file({ path: big });",
+      "return refusal;",
     ].join("\n");
     const result = runScript(code, inner, new AbortController().signal, ENV);
-    // [>]: All three arrive while the first call waits: each is admitted then, not when it would start.
-    for (let tries = 0; admitted.length < 3 && tries < 200; tries++) await Bun.sleep(10);
-    expect(admitted).toEqual(["a", "b", "c"]);
-    expect(ran).toEqual(["a"]);
+    for (let tries = 0; ran.length < 1 && tries < 200; tries++) await Bun.sleep(10);
+    await Bun.sleep(200);
+    expect(ran).toEqual([1]);
     release();
-    expect(await result).toEqual({ status: "ok", text: "a,b,caught refused c" });
-    expect(ran).toEqual(["a", "b"]);
+    expect(await result).toEqual({ status: "ok", text: QUEUE_REFUSAL });
+    const big = 3 * 1024 * 1024;
+    expect(ran).toEqual([1, big, big, big]);
   });
 
   test(`call ${MAX_SCRIPT_CALLS + 1} throws inside the script and is never run`, async () => {

@@ -476,7 +476,10 @@ A workspace `settings.json` cannot turn it on.
   without a tool call, after 100 tool calls, or after 60 seconds of processor time.
 - The chat shows a script as one row, `run_script` with its number of lines, which opens to the code. The rows of the
   calls it made follow, one level in, then its result. They show as each call finishes, and are saved at once, so a
-  reload keeps what a script already wrote. **Stop** stops the script; the calls it finished stay, and **Undo
+  reload keeps what a script already wrote. To keep conversations small, each of those rows keeps only the start of
+  a long result or file content (about 2,000 characters), ending with a line that gives its full size, and keeps
+  the whole path or command up to 4,096 characters; the script
+  itself gets everything, and **Changed files** shows each change whole. **Stop** stops the script; the calls it finished stay, and **Undo
   changes** puts back the files they wrote.
 - The first message after you turn it on tests that a script can run in this window. If it cannot, a notification
   says why, and the agent works without **run_script** until you turn the setting off and on again.

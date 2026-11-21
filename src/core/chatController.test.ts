@@ -32,7 +32,7 @@ import { RUN_COMMAND_TOOL } from "./commands";
 import { type ConversationRecord, newConversationId, serializeSummary } from "./conversation";
 import { type MemoryFiles, memoryFiles } from "./conversationFixture";
 import { ConversationStore } from "./conversationStore";
-import { SUMMARY_REQUEST } from "./history";
+import { INNER_STEP_CHARS, SUMMARY_REQUEST } from "./history";
 import { estimateTokens, parseLimits } from "./limits";
 import { mentionReader } from "./mentionReader";
 import type { MentionReader, ReadMention } from "./mentions";
@@ -49,7 +49,6 @@ import {
 import { ProviderSupport } from "./providerSupport";
 import type { Provider } from "./providers";
 import { recordingApplier } from "./recordedChanges";
-import { MAX_SCRIPT_STEP_CHARS, STEP_BUDGET_REFUSAL } from "./script";
 import { LOAD_SKILL_TOOL, readSkills, type SkillDiscovery } from "./skills";
 import { composeSummaryPrompt, composeSystemPrompt, type InstructionFile, type Skill } from "./systemPrompt";
 import { createTlsFixture, removeTlsFixture } from "./tlsFixture";
@@ -7979,51 +7978,105 @@ describe("ChatController run_script", () => {
     });
   });
 
-  test("a script's queued calls count their arguments as they arrive: one past the budget throws before the first runs", async () => {
-    writeFileSync(join(dir, "a.txt"), "old_name()\n");
-    // [>]: The first call waits on its approval in Ask; the others queue behind it, three of 3 MiB each.
-    const code = [
-      'const big = "x".repeat(3 * 1024 * 1024);',
-      'const first = edit_file({ path: "a.txt", old: "old_name", new: "new_name" });',
-      'const queued = [0, 1, 2].map(() => edit_file({ path: "a.txt", old: big, new: "y" }).catch((error) => error.message));',
-      "return await queued[2];",
-    ].join("\n");
-    const { controller, state } = await scriptTurn([{ content: scriptCall(code) }, { content: "Done." }], {
-      ask: true,
-    });
-    await controller.send("rename");
+  /** Characters an inner step stores beside its path, which its trace keeps whole: its other values and result. */
+  const storedChars = (step: ChatEntry) =>
+    step.role === "tool"
+      ? Object.entries(step.args).reduce(
+          (sum, [name, value]) => sum + (name === "path" ? 0 : value.length),
+          step.text.length,
+        )
+      : 0;
 
-    expect(text("a.txt")).toBe("old_name()\n");
-    const tools = state().entries.filter((entry) => entry.role === "tool");
-    expect(tools).toEqual([expect.objectContaining({ name: "run_script", status: "ok", text: STEP_BUDGET_REFUSAL })]);
+  test("a large read and a large write leave bounded steps live, saved, and in the entries; the script gets it all", async () => {
+    const whole = `${"x".repeat(99)}\n`.repeat(1500);
+    writeFileSync(join(dir, "big.txt"), whole);
+    // [>]: The write asks in Ask, so the read's step is seen live and saved while the script waits.
+    const code = [
+      'const read = await read_file({ path: "big.txt" });',
+      'await write_file({ path: "out.txt", content: "y".repeat(100000) });',
+      "return read.length;",
+    ].join("\n");
+    const files = memoryFiles();
+    const { controller, state, sent } = await scriptTurn(
+      [{ content: scriptCall(code) }, { content: "Done." }, { content: "Noted." }],
+      { ask: true, files },
+    );
+    const turn = controller.send("copy");
+    await until(state, (s) => s.approval !== undefined);
+    const live = state().scriptSteps![0]!;
+    expect(live).toMatchObject({ name: "read_file", args: { path: "big.txt" }, status: "ok" });
+    // [>]: The result the model would read: the file's header and fence around its 1500 lines.
+    const cut = /\n\[cut to save memory: (\d+) lines, (\d+) characters in all\]$/.exec(live.text);
+    expect(Number(cut?.[1])).toBeGreaterThan(1500);
+    expect(Number(cut?.[2])).toBeGreaterThan(whole.length);
+    expect(storedChars(live)).toBeLessThanOrEqual(INNER_STEP_CHARS);
+    await Bun.sleep(20);
+    expect((await reloaded(files, state().conversationId))[2]).toEqual(live);
+    // [>]: The approval shows the whole write; only its recorded step is bounded.
+    controller.approve(state().approval!.id);
+    await turn;
+
+    expect(text("out.txt")).toBe(`${"y".repeat(100000)}\n`);
+    const inner = state().entries.filter((entry) => entry.role === "tool" && entry.fromScript);
+    expect(inner[0]).toEqual(live);
+    expect(inner[1]).toMatchObject({ name: "write_file", args: { path: "out.txt" }, status: "ok" });
+    const content = inner[1]?.role === "tool" ? inner[1].args.content! : "";
+    expect(content.endsWith("\n[cut to save memory: 1 line, 100000 characters in all]")).toBe(true);
+    for (const step of inner) expect(storedChars(step)).toBeLessThanOrEqual(INNER_STEP_CHARS);
+    await Bun.sleep(20);
+    expect(
+      (await reloaded(files, state().conversationId)).filter((entry) => entry.role === "tool" && entry.fromScript),
+    ).toEqual(inner);
+    // [>]: The script read the whole file, not the excerpt its step keeps.
+    expect(sent()[1]!.messages.at(-1)!.content).toContain(`\n${whole.length}\n`);
+
+    await controller.undoChanges();
+    expect(existsSync(join(dir, "out.txt"))).toBe(false);
+    expect(state().entries[3]).toMatchObject({ name: "write_file", fromScript: true, undone: true });
+    await controller.send("next");
+    expect(sent()[2]!.messages[3]!.content).toContain("The user undid this change afterwards: write_file out.txt");
   });
 
-  test("a script's steps hold a bounded amount of text: the call past the budget throws and never runs", async () => {
-    // [>]: Under the read limit of 1 MiB, so about eight reads fit in the budget.
+  test("a large inner edit keeps its deep path whole in its step, the undo line, and the changed files", async () => {
+    // [>]: Four folders of 199 characters: about 800, within the system's path limit once under the workspace.
+    const folder = Array.from({ length: 4 }, (_, index) => `${index}`.repeat(199)).join("/");
+    const path = `${folder}/a.txt`;
+    mkdirSync(join(dir, folder), { recursive: true });
+    writeFileSync(join(dir, path), `${"a".repeat(5000)}\n`);
+    const code = `await edit_file({ path: "${path}", old: "a".repeat(5000), new: "b".repeat(5000) });\nreturn "edited";`;
+    const replies = [{ content: scriptCall(code) }, { content: "Done." }, { content: "Noted." }];
+    const { controller, state, sent } = await scriptTurn(replies);
+    await controller.send("edit");
+
+    expect(text(path)).toBe(`${"b".repeat(5000)}\n`);
+    const edit = state().entries[2]!;
+    expect(edit).toMatchObject({ name: "edit_file", fromScript: true, status: "ok", args: { path } });
+    const old = edit.role === "tool" ? edit.args.old! : "";
+    expect(old.endsWith("\n[cut to save memory: 1 line, 5000 characters in all]")).toBe(true);
+    expect(storedChars(edit)).toBeLessThanOrEqual(INNER_STEP_CHARS);
+    expect(state().changedFiles.map((file) => file.path)).toEqual([path]);
+    await controller.undoChanges();
+    expect(text(path)).toBe(`${"a".repeat(5000)}\n`);
+    await controller.send("next");
+    expect(sent()[2]!.messages[3]).toEqual({
+      role: "user",
+      content: `<tool_result tool="run_script" status="ok">\nedited\nThe user undid this change afterwards: edit_file ${path}\n</tool_result>`,
+    });
+  });
+
+  test("many large inner calls keep the script's group under one bound per call", async () => {
     writeFileSync(join(dir, "big.txt"), `${"x".repeat(999)}\n`.repeat(1000));
-    const code = [
-      "let reads = 0;",
-      "for (let i = 0; i < 40; i++) {",
-      '  try { await read_file({ path: "big.txt" }); reads++; } catch (error) { console.log(reads, error.message); break; }',
-      "}",
-    ].join("\n");
+    const code = 'for (let i = 0; i < 40; i++) await read_file({ path: "big.txt" });\nreturn "read 40";';
     const { controller, state } = await scriptTurn([{ content: scriptCall(code) }, { content: "Done." }]);
     await controller.send("read");
 
-    const tools = state().entries.filter((entry) => entry.role === "tool");
-    const inner = tools.filter((step) => step.fromScript === true);
-    const held = (step: (typeof tools)[number]) =>
-      Object.entries(step.args).reduce((sum, [name, value]) => sum + name.length + value.length, 0) + step.text.length;
-    const total = inner.reduce((sum, step) => sum + held(step), 0);
-    const nextArgs = "path".length + "big.txt".length;
-    expect(inner.length).toBeGreaterThan(1);
-    expect(inner.length).toBeLessThan(40);
-    expect(total - held(inner.at(-1)!) + nextArgs).toBeLessThanOrEqual(MAX_SCRIPT_STEP_CHARS);
-    expect(total + nextArgs).toBeGreaterThan(MAX_SCRIPT_STEP_CHARS);
-    expect(tools.at(-1)).toMatchObject({
+    const inner = state().entries.filter((entry) => entry.role === "tool" && entry.fromScript);
+    expect(inner).toHaveLength(40);
+    expect(inner.reduce((sum, step) => sum + storedChars(step), 0)).toBeLessThanOrEqual(40 * INNER_STEP_CHARS);
+    expect(state().entries.find((entry) => entry.role === "tool" && !entry.fromScript)).toMatchObject({
       name: "run_script",
       status: "ok",
-      text: `${inner.length} ${STEP_BUDGET_REFUSAL}`,
+      text: "read 40",
     });
   });
 

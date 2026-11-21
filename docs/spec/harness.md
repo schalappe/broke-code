@@ -537,12 +537,13 @@ what the script prints or returns goes back to the model. It is an experimental 
   at 2,000 lines with the usual notice. Nothing printed or returned gives an `ok` text telling the model to print what
   it needs. An uncaught error makes the step `error`, ending `run_script: the script stopped on an error: <message>`.
 - Limits, each with its own message: 100 calls (`MAX_SCRIPT_CALLS`; call 101 throws and never runs); 8 MiB of
-  arguments and result text in one script's calls (`MAX_SCRIPT_STEP_CHARS`, counted by the turn, which shows, saves,
-  and keeps each step: the arguments of each call as the host admits it, before it queues, and kept when it never
-  runs, then each step's result text as it is recorded; a call whose arguments would pass it, or that would start once
-  a result has passed it, throws `run_script: the tool calls of a script may pass and return at most 8388608
-  characters in all; this call was not made.`, never runs, and leaves no step, so the calls queued hold at most that
-  and the steps at most that plus one call's result). Each of the others ends the script: 10 seconds of the script's own running time between calls
+  arguments in the calls admitted and not yet answered, the one running and those queued behind it
+  (`MAX_QUEUED_ARGUMENT_CHARS`, counted by the host as each call arrives, before it queues, and freed once the call is
+  answered; a call whose arguments would pass it throws `run_script: the tool calls a script has waiting may hold at
+  most 8388608 characters of arguments in all; this call was not made. Wait for a call before you make the next.`,
+  never runs, and leaves no step). It bounds transient memory only, since the calls queued behind one waiting for an
+  approval may wait as long as the user takes; what the record keeps is bounded by the trace (below). Each of the
+  others ends the script: 10 seconds of the script's own running time between calls
   (`SCRIPT_RUN_MS`; the time a call takes, a wait for an approval included, never counts); 1 MiB of printed output,
   counted in the child; one protocol line over 8 MiB; 32 MiB of answers the child left unread; 512 MiB of resident
   memory (`SCRIPT_MEMORY_BYTES`), read with `/bin/ps` every 250 ms, since macOS applies no memory limit to a process,
@@ -568,8 +569,22 @@ what the script prints or returns goes back to the model. It is an experimental 
 - Plan. A Plan turn offers `run_script` with the read tools; in its script, `write_file`, `edit_file`, and
   `run_command` exist as functions that throw `<tool> is not available in Plan mode.`, with no approval and no step
   (ADR 0005, addendum of 2026-11-21). The Plan paragraph of the prompt is unchanged.
+- The trace. The model never reads an inner step, so the context budget never bounds it; the step keeps a trace
+  instead (`innerStepTrace`, applied once, as the turn builds the step, so the live rows, every save, the entries, and
+  the step "Undo changes" marks hold the same one). The arguments that name what the call acted on, `path`, `pattern`,
+  `start_line`, `end_line`, `command`, and `cwd`, which the undo lines, the stopped-script line, the folded turn's file
+  counts, and the step row read, are each kept whole up to 4,096 characters (`NAME_ARGUMENT_CHARS`, four times the
+  macOS path limit of 1,024 bytes, so a path a tool can open is never cut); past it one keeps its start, then the cut
+  line below, within the 4,096. A step whose names fit that cap and whose other argument values (`content`, `old`,
+  `new`) and result text fit 2,000 characters together (`INNER_STEP_CHARS`) is kept as it is.
+  Otherwise the 2,000 characters are shared evenly among those values: a value shorter than its share keeps whole and
+  leaves the rest to the others; a longer value keeps its start, then, on a line of its own, `[cut to save memory: <N> lines, <C> characters
+  in all]`, the size it had whole, within its share. The tool, the status, `approval`, `lines`, `undone`, and
+  `fromScript` are kept. Only the record is cut: the tool ran with the whole arguments and the script got the whole
+  result, so a script still processes far more than the model's context holds. A trace thus holds at most 6 × 4,096 + 2,000 = 26,576 characters of values and fits the
+  bound, so it loads back and bounds again unchanged; the record stays at version 2 with no new field (ADR 0003).
 - Live state and the record. While a script runs, its reply stays the last entry, `streaming`, so `isReplying` and
-  every guard hold. The steps of the calls it completed, marked `fromScript: true`, are staged by the turn, in call
+  every guard hold. The steps of the calls it completed, marked `fromScript: true`, as traces, are staged by the turn, in call
   order: shown live in `ChatState.scriptSteps` (absent otherwise), and saved after the reply in flight, at each step,
   through the store's queue without waiting, as a direct call's step is saved, with at most one save of a script in
   flight: a step staged while one is in flight is saved by the next, which starts as that one lands. When the script ends, its
@@ -586,7 +601,7 @@ what the script prints or returns goes back to the model. It is an experimental 
   wrapper, one line per inner write since undone, in order: `The user undid this change afterwards: <tool> <path>`,
   the path as the script gave it. A script with no step of its own (Stop, a reload) sends one result the history
   writes: `<tool_result tool="run_script" status="error">`, `run_script: the script was stopped before it finished,
-  after these tool calls:`, one line per completed call (`<tool> <path or the command's first line>: ok` or
+  after these tool calls:`, one line per completed call (`<tool> <first line of its path or command>: ok` or
   `error`, never its result text), then the same undo lines; a script stopped before any call completed sends
   `run_script: the script was stopped before it finished, before any of its tool calls completed.` Inner steps are never sent otherwise. The context budget,
   the kept recent steps, the summary request, and the size estimate see a group as one step; a group with an undone

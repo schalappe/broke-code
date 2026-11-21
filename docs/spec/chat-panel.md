@@ -60,7 +60,9 @@ live, the steps staged in `ChatState.scriptSteps`. Each entry renders once, insi
   own row;
 - the rows of the calls the script made, in call order, one level in (`.script-steps`, their nodes still on the
   thread), each exactly the row of a direct step: tool, path or command, status, `+N −M`, "auto-approved", "rejected
-  by you" and its reason line, "undone";
+  by you" and its reason line, "undone"; it opens to the step's trace (`docs/spec/harness.md`), its path or command whole up to 4,096 characters and a long
+  result's start ending in its `[cut to save memory: N lines, C characters in all]` line, and its size counts the lines the result
+  had whole, read from that line;
 - while a call the script made waits on its approval, the decision block, exactly as for a direct call, its row
   labelled from that call's request (its tool, with the path or the command it asks about), never the script; one
   decision block at a time, with the keyboard path and the Command Palette commands unchanged;

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import * as l10n from "@vscode/l10n";
 import french from "../../l10n/bundle.l10n.fr.json";
+import { innerStepTrace } from "../core/history";
 import type { ChatEntry, ChatState, SkillProblem } from "../core/protocol";
 import {
   describeAnnouncement,
@@ -392,6 +393,19 @@ describe("describeToolStep", () => {
     text: "done\n",
     lines: { added: 4, removed: 1 },
   } as const;
+
+  test("an inner step whose result its trace cut counts the lines the result had whole", () => {
+    const result = `exit code 0\n${"line\n".repeat(4999)}`;
+    const trace = innerStepTrace({
+      role: "tool",
+      name: "run_command",
+      args: { command: "seq" },
+      status: "ok",
+      text: result,
+      fromScript: true,
+    });
+    expect(describeToolStep(trace)).toBe("exit code 0, 5000 lines");
+  });
 
   test("an undone step says so first, its approval and line counts unchanged", () => {
     expect(describeToolStep({ ...step, undone: true })).toBe("undone, ok, +4 \u22121");

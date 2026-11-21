@@ -72,6 +72,8 @@ _Avoid_: code block, snippet, program
 **Inner call**:
 A tool call a **script** makes. It is approved, run, and recorded as a direct call is: its own tool step, marked
 `fromScript`, shown one level in under the script's row and never sent to the model, which reads the script's output.
+Its step keeps a trace: the path, pattern, or command it acted on whole up to 4,096 characters, and long file text
+and result text cut to a bounded start, ending with their whole size.
 _Avoid_: sub-call, nested call, child call
 
 **Approval**:

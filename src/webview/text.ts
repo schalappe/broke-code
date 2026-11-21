@@ -6,7 +6,7 @@
  */
 import * as l10n from "@vscode/l10n";
 import type { ConversationSummary } from "../core/conversation";
-import { resultLineCount } from "../core/history";
+import { resultLineCount, stepResultLines } from "../core/history";
 import type { MentionResult } from "../core/mentions";
 import type {
   ChatEntry,
@@ -211,7 +211,8 @@ export function describeScript(code: string): string {
  * Short status of a finished tool step: `ok` or `error` and its size, or the first line of a malformed call's message,
  * which says what is wrong. The size is the one the user knows the step by: a write's added and removed lines, as its
  * approval showed them (none for a record saved before they were kept); the lines of the file `read_file` returned,
- * from its result's header; the result's lines for the other tools. A call the user rejected says so, its reason in
+ * from its result's header; the result's lines for the other tools, the lines it had whole when an inner step's trace
+ * cut it (`stepResultLines`). A call the user rejected says so, its reason in
  * the expanded result; one auto-approved says so before its status; a write "Undo changes" undid says so first.
  * Model-facing messages are English, never localized.
  */
@@ -220,10 +221,10 @@ export function describeToolStep(step: ChatEntry & { role: "tool" }): string {
   if (step.approval === "rejected") return l10n.t("rejected by you");
   if (stepNote(step) !== undefined) return l10n.t("you answered");
   const ending = step.name === "run_command" ? describeCommandEnding(step.text) : undefined;
-  if (ending !== undefined) return l10n.t("{0}, {1}", ending, describeLines(resultLineCount(step.text)));
+  if (ending !== undefined) return l10n.t("{0}, {1}", ending, describeLines(stepResultLines(step)));
   const size = stepSize(step);
   const ok = size === undefined ? l10n.t("ok") : l10n.t("ok, {0}", size);
-  const status = step.status === "ok" ? ok : l10n.t("error, {0}", describeLines(resultLineCount(step.text)));
+  const status = step.status === "ok" ? ok : l10n.t("error, {0}", describeLines(stepResultLines(step)));
   const approved = step.approval === "auto" ? l10n.t("auto-approved, {0}", status) : status;
   return step.undone ? l10n.t("undone, {0}", approved) : approved;
 }
@@ -246,7 +247,7 @@ const WRITE_TOOLS: ReadonlySet<string> = new Set(["write_file", "edit_file"]);
 function stepSize(step: ChatEntry & { role: "tool" }): string | undefined {
   if (WRITE_TOOLS.has(step.name)) return step.lines && `+${step.lines.added} \u2212${step.lines.removed}`;
   const read = step.name === "read_file" ? readLineCount(step.text) : undefined;
-  return describeLines(read ?? resultLineCount(step.text));
+  return describeLines(read ?? stepResultLines(step));
 }
 
 function describeLines(count: number): string {

@@ -204,7 +204,10 @@ request are the ones before it, byte for byte.
   (`runCall` of the chat controller): the bench answers its approvals as for a direct call. Each call's step lands
   before the script's own step, marked `fromScript: true`, staged while the script runs (shown live and saved in the
   extension, `docs/spec/harness.md`); the history never sends such a step, so the model reads the script's output
-  only. A script is one step toward the step limit.
+  only. A script is one step toward the step limit. Such a step keeps a trace: its path, pattern, and command
+  whole up to 4,096 characters each, and at most 2,000 characters of its file text and result (`innerStepTrace`), so a scenario check that looks for a value in a read result finds it in an
+  inner step only when that value sits in the kept start: a script that reads more than that in one call, with the
+  value past the cut, is judged `wrongTool`. Every fixture file but `dispatch.log` fits whole.
 - Limits, each ending the script with its own message: at most 100 calls (call 101 throws and never runs); 10 seconds
   of the script's own running time between calls (the time a call takes, such as a wait for approval, never counts);
   1 MiB of printed output, counted in the child; one protocol line over 8 MiB; and a kernel limit of 60 seconds of

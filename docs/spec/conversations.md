@@ -55,7 +55,7 @@ This file specifies how conversations are saved, listed, pruned, and reopened, a
   line per inner write since undone. A record saved while a script ran holds the reply in flight, then the inner steps
   its calls completed, in call order, and no `run_script` step: it reloads as a stopped script, the reply `stopped`
   followed by those steps, which the history replays as one `run_script` error result saying the script was stopped,
-  with one line per completed call (`<tool> <path or the command's first line>: ok` or `error`). A script stopped in
+  with one line per completed call (`<tool> <first line of its path or command>: ok` or `error`). A script stopped in
   the session leaves the same entries. A record with inner steps is replayed this way whatever the setting. An older
   build that opens it drops `fromScript` (ADR 0003): it shows the inner steps as rows of their own, the first under
   the reply and the next ones apart, and sends their results to the model as ordinary tool results, file text

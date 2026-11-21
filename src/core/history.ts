@@ -1,7 +1,8 @@
 /**
  * @module history
  * The history a request of an agent turn sends, and the results it leaves out when the request would not fit the
- * model's context. No `node:` or `vscode` import: the webview loads `resultLineCount`.
+ * model's context, and the trace the conversation keeps of an inner call's step, which the model never reads. No
+ * `node:` or `vscode` import: the webview loads `resultLineCount` and `stepResultLines`.
  */
 
 import type { ChatMessage } from "./client";
@@ -295,12 +296,13 @@ function scriptUndoneLines(inner: readonly ToolStep[]): string {
 
 /**
  * The `run_script` result the history writes for a script that has no step of its own (Stop, or a reload while it
- * ran): an error saying so, then one line per call it completed (`<tool> <path or the command's first line>: ok` or
+ * ran): an error saying so, then one line per call it completed (`<tool> <first line of its path or command>: ok` or
  * `error`), never their result text; with no call completed, a line saying so.
  */
 function stoppedScript(inner: readonly ToolStep[]): ToolStep {
   const calls = inner.map((step) => {
-    const target = step.name === "run_command" ? step.args.command?.split("\n")[0] : step.args.path;
+    // [>]: The first line only: a trace's cut line follows its value on a line of its own.
+    const target = (step.name === "run_command" ? step.args.command : step.args.path)?.split("\n")[0];
     return `${step.name}${target === undefined ? "" : ` ${target}`}: ${step.status === "ok" ? "ok" : "error"}`;
   });
   const text =
@@ -333,7 +335,99 @@ export function resultLineCount(text: string): number {
 }
 
 function leftOutLine(lines: number): string {
-  return `[result left out to save context: ${lines === 1 ? "1 line" : `${lines} lines`}]`;
+  return `[result left out to save context: ${describeLineCount(lines)}]`;
+}
+
+function describeLineCount(lines: number): string {
+  return lines === 1 ? "1 line" : `${lines} lines`;
+}
+
+/**
+ * Characters the step of an inner call keeps across its cut values, its result text and the arguments that are not a
+ * name (`innerStepTrace`): about thirty lines of the panel's expanded result, enough to see what the call did and how
+ * it began, and a bound of a few kilobytes per call however much the script read or wrote.
+ */
+export const INNER_STEP_CHARS = 2000;
+
+/**
+ * The arguments that name what a call acted on, which an inner step's trace keeps whole up to `NAME_ARGUMENT_CHARS`
+ * each: the undo lines and the stopped-script line name a step by its `path` (a command by its first line), the folded
+ * turn counts the files by `path`, and the step row shows the `pattern`, the `path` with its `start_line` and
+ * `end_line`, and the `command` with its `cwd`, the text the user approved. The file text (`content`, `old`, `new`)
+ * and the result share `INNER_STEP_CHARS`.
+ */
+const NAME_ARGUMENTS: readonly string[] = ["path", "pattern", "start_line", "end_line", "command", "cwd"];
+
+/**
+ * Characters each name argument keeps whole in a trace, past which it is cut as the other values are. Four times the
+ * macOS path limit: the tools set no length of their own, and the system refuses a resolved path over `PATH_MAX`, 1,024
+ * bytes (never fewer characters), so a path a tool can open is never cut unless it is padded with redundant `./`
+ * segments. A command or a pattern that long is a payload, not a name; past the cap the trace keeps its start.
+ */
+export const NAME_ARGUMENT_CHARS = 4096;
+
+/**
+ * The step the conversation keeps of an inner call (`fromScript`): `step` itself when each of its `NAME_ARGUMENTS` fits
+ * `NAME_ARGUMENT_CHARS` and its other argument values and result text fit `INNER_STEP_CHARS` together, else its trace.
+ * The model never reads an inner step, so the context budget never bounds it; the tool ran with the whole arguments
+ * and the script got the whole result, so only the panel and the saved record hold the trace. A trace keeps each name
+ * argument whole up to `NAME_ARGUMENT_CHARS` and shares `INNER_STEP_CHARS` evenly among the other values: one shorter
+ * than its share keeps whole and leaves the rest to the others. A longer value keeps its start, then its `cutLine` on
+ * a line of its own, within its cap or its share. Everything else of the step is kept, so a trace holds at most
+ * 6 × 4,096 + 2,000 = 26,576 characters of values. A trace fits the bound (a tool takes at most a few arguments, each
+ * share far above a cut line), so it comes back unchanged: bounding twice is bounding once.
+ */
+export function innerStepTrace(step: ToolStep): ToolStep {
+  const names = Object.keys(step.args).filter((name) => NAME_ARGUMENTS.includes(name));
+  const shared = Object.keys(step.args).filter((name) => !NAME_ARGUMENTS.includes(name));
+  const lengths = [...shared.map((name) => step.args[name]!.length), step.text.length];
+  const namesFit = names.every((name) => step.args[name]!.length <= NAME_ARGUMENT_CHARS);
+  if (namesFit && lengths.reduce((total, length) => total + length, 0) <= INNER_STEP_CHARS) return step;
+  const shares = evenShares(lengths, INNER_STEP_CHARS);
+  const args = { ...step.args };
+  for (const name of names) args[name] = cutTo(step.args[name]!, NAME_ARGUMENT_CHARS);
+  shared.forEach((name, index) => {
+    args[name] = cutTo(step.args[name]!, shares[index]!);
+  });
+  return { ...step, args, text: cutTo(step.text, shares.at(-1)!) };
+}
+
+/** `total` shared among `lengths`, shortest first: each gets its length, or an even part of what is left if less. */
+function evenShares(lengths: readonly number[], total: number): number[] {
+  const shares = lengths.map(() => 0);
+  const order = lengths.map((_, index) => index).sort((a, b) => lengths[a]! - lengths[b]!);
+  let left = total;
+  order.forEach((index, rank) => {
+    shares[index] = Math.min(lengths[index]!, Math.floor(left / (order.length - rank)));
+    left -= shares[index]!;
+  });
+  return shares;
+}
+
+/** `value` within `share` characters: whole when it fits, else its start, then its `cutLine` on a line of its own. */
+function cutTo(value: string, share: number): string {
+  if (value.length <= share) return value;
+  const marker = `\n${cutLine(value)}`;
+  let keep = Math.max(0, share - marker.length);
+  // [>]: Never half a surrogate pair at the cut.
+  if (keep > 0 && /[\uD800-\uDBFF]/.test(value[keep - 1]!)) keep--;
+  return `${value.slice(0, keep)}${marker}`;
+}
+
+/** The line that ends a value `innerStepTrace` cut: the lines and characters the value had whole. */
+function cutLine(value: string): string {
+  return `[cut to save memory: ${describeLineCount(resultLineCount(value))}, ${value.length} characters in all]`;
+}
+
+const CUT_LINE = /\n\[cut to save memory: (\d+) lines?, \d+ characters in all\]$/;
+
+/**
+ * Lines of `step`'s result as its row counts them (`resultLineCount`); for an inner step whose result its trace cut,
+ * the lines the result had whole, read from its `cutLine`.
+ */
+export function stepResultLines(step: ToolStep): number {
+  const cut = step.fromScript ? CUT_LINE.exec(step.text) : null;
+  return cut ? Number(cut[1]) : resultLineCount(step.text);
 }
 
 /** The last line of an undone step's result: the file no longer holds what the step wrote. */
