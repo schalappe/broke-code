@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -33,6 +34,7 @@ import { type ConversationRecord, newConversationId, serializeSummary } from "./
 import { type MemoryFiles, memoryFiles } from "./conversationFixture";
 import { ConversationStore } from "./conversationStore";
 import { INNER_STEP_CHARS, SUMMARY_REQUEST } from "./history";
+import { unrevertedEffects } from "./lastTurn";
 import { estimateTokens, parseLimits } from "./limits";
 import { mentionReader } from "./mentionReader";
 import type { MentionReader, ReadMention } from "./mentions";
@@ -49,6 +51,7 @@ import {
 import { ProviderSupport } from "./providerSupport";
 import type { Provider } from "./providers";
 import { recordingApplier } from "./recordedChanges";
+import { stepLimitRefusal } from "./script";
 import { LOAD_SKILL_TOOL, readSkills, type SkillDiscovery } from "./skills";
 import { composeSummaryPrompt, composeSystemPrompt, type InstructionFile, type Skill } from "./systemPrompt";
 import { createTlsFixture, removeTlsFixture } from "./tlsFixture";
@@ -7556,10 +7559,7 @@ describe("ChatController run_script", () => {
     writeFileSync(join(dir, "a.txt"), "old_name()\n");
     writeFileSync(join(dir, "b.txt"), "x = old_name\n");
     const reply = scriptCall(renameScript);
-    // [>]: A limit of 2 steps: the script is one step whatever the four calls it made, so the turn ends done.
-    const { controller, state, states, sent } = await scriptTurn([{ content: reply }, { content: "Done." }], {
-      steps: 2,
-    });
+    const { controller, state, states, sent } = await scriptTurn([{ content: reply }, { content: "Done." }]);
     await controller.send("rename old_name");
 
     expect(text("a.txt")).toBe("new_name()\n");
@@ -7592,6 +7592,112 @@ describe("ChatController run_script", () => {
       if (scripted === -1) continue;
       expect(published.entries.some((entry) => entry.role === "tool" && entry.name === "run_script")).toBe(true);
     }
+  });
+
+  /** The kind of each entry, a script's call marked `*`, as in the test above. */
+  const kinds = (entries: readonly ChatEntry[]) =>
+    entries.map((entry) => (entry.role === "tool" ? `${entry.name}${entry.fromScript ? "*" : ""}` : entry.role));
+  const lastReply = (entries: readonly ChatEntry[]) => entries.findLast((entry) => entry.role === "assistant");
+
+  test("a script's calls take the turn's last steps: the next call throws in the script, never runs, leaves no step, and the turn halts", async () => {
+    const code = [
+      "for (let i = 0; i < 5; i++) {",
+      '  try { await write_file({ path: "w" + i + ".txt", content: "x" }); } catch (error) { console.log(error.message); }',
+      "}",
+      'console.log("finished");',
+    ].join("\n");
+    // [>]: A limit of 3: the run_script call's own step, then two of its calls.
+    const { controller, state, sent } = await scriptTurn([{ content: scriptCall(code) }, { content: "never sent" }], {
+      steps: 3,
+    });
+    await controller.send("write five files");
+
+    expect(existsSync(join(dir, "w1.txt"))).toBe(true);
+    expect(existsSync(join(dir, "w2.txt"))).toBe(false);
+    const entries = state().entries;
+    expect(kinds(entries)).toEqual(["user", "assistant", "write_file*", "write_file*", "run_script"]);
+    const refusal = stepLimitRefusal(3);
+    expect(entries.at(-1)).toMatchObject({
+      role: "tool",
+      name: "run_script",
+      status: "ok",
+      text: [refusal, refusal, refusal, "finished"].join("\n"),
+    });
+    expect(lastReply(entries)).toMatchObject({ status: "halted", haltReason: "stepLimit" });
+    expect(sent()).toHaveLength(1);
+  });
+
+  test("direct calls and a script's calls share one count across the turn", async () => {
+    writeFileSync(join(dir, "a.txt"), "a\n");
+    const read = "<read_file>\n<path>a.txt</path>\n</read_file>";
+    const code = [
+      "for (let i = 0; i < 4; i++) {",
+      "  try { await read_file({ path: 'a.txt' }); } catch (error) { console.log(error.message); }",
+      "}",
+    ].join("\n");
+    // [>]: 2 direct calls, then the script's own step, leave room for exactly 2 of its calls under a limit of 5.
+    const { controller, state, sent } = await scriptTurn(
+      [{ content: read }, { content: read }, { content: scriptCall(code) }, { content: "never sent" }],
+      { steps: 5 },
+    );
+    await controller.send("read a.txt");
+
+    const entries = state().entries;
+    expect(kinds(entries)).toEqual([
+      "user",
+      "assistant",
+      "read_file",
+      "assistant",
+      "read_file",
+      "assistant",
+      "read_file*",
+      "read_file*",
+      "run_script",
+    ]);
+    expect(entries.at(-1)).toMatchObject({ text: [stepLimitRefusal(5), stepLimitRefusal(5)].join("\n") });
+    expect(lastReply(entries)).toMatchObject({ status: "halted", haltReason: "stepLimit" });
+    expect(sent()).toHaveLength(3);
+  });
+
+  test("a script whose calls end below the limit leaves the turn going, and the next direct call counts after them", async () => {
+    writeFileSync(join(dir, "a.txt"), "a\n");
+    const read = "<read_file>\n<path>a.txt</path>\n</read_file>";
+    const code = "await read_file({ path: 'a.txt' }); console.log('one');";
+    // [>]: The script's step and its one call leave one step under a limit of 3: the direct call after it takes it.
+    const { controller, state, sent } = await scriptTurn(
+      [{ content: scriptCall(code) }, { content: read }, { content: "never sent" }],
+      { steps: 3 },
+    );
+    await controller.send("read a.txt");
+
+    expect(kinds(state().entries)).toEqual(["user", "assistant", "read_file*", "run_script", "assistant", "read_file"]);
+    expect(lastReply(state().entries)).toMatchObject({ status: "halted", haltReason: "stepLimit" });
+    expect(sent()).toHaveLength(2);
+  });
+
+  test("writes queued at once through scripts never pass the limit: the turn records fewer writes than its limit", async () => {
+    /** A script that asks for `count` writes at once, none awaited before the next, and prints how many ran. */
+    const queued = (prefix: string, count: number) =>
+      [
+        `const writes = Array.from({ length: ${count} }, (_, i) => write_file({ path: \`${prefix}\${i}.txt\`, content: "x" }));`,
+        "const settled = await Promise.allSettled(writes);",
+        'console.log(settled.filter((each) => each.status === "fulfilled").length);',
+      ].join("\n");
+    // [>]: A limit of 6: the first script's step and its 2 writes, then the second script's step and 2 of its 10.
+    const { controller, state, sent } = await scriptTurn(
+      [{ content: scriptCall(queued("p", 2)) }, { content: scriptCall(queued("q", 10)) }, { content: "never sent" }],
+      { steps: 6 },
+    );
+    await controller.send("write files");
+
+    const entries = state().entries;
+    const scripts = entries.filter((entry) => entry.role === "tool" && entry.name === "run_script");
+    expect(scripts.map((entry) => (entry.role === "tool" ? entry.text : ""))).toEqual(["2", "2"]);
+    expect(entries.filter((entry) => entry.role === "tool" && entry.fromScript)).toHaveLength(4);
+    expect(state().changedFiles.map((file) => file.path)).toEqual(["p0.txt", "p1.txt", "q0.txt", "q1.txt"]);
+    expect(readdirSync(dir).sort()).toEqual(["p0.txt", "p1.txt", "q0.txt", "q1.txt"]);
+    expect(lastReply(entries)).toMatchObject({ status: "halted", haltReason: "stepLimit" });
+    expect(sent()).toHaveLength(2);
   });
 
   /** A script that reads `path`, replaces the old name, and writes the text back with `tool`. */
@@ -8140,25 +8246,30 @@ describe("ChatController run_script", () => {
   });
 
   test("Full access refuses a script's denied command and runs the others in the command sandbox", async () => {
-    // [>]: The home folder, outside every folder the command sandbox lets a command write (the temporary ones are).
-    const outside = join(realpathSync(homedir()), `.broke-code-outside-${process.pid}-${scriptTurnCount}.txt`);
+    // [>]: A folder of the test's own in the home folder, outside every folder the command sandbox lets a command write
+    // (the temporary ones are). Only this folder is removed afterwards.
+    const outsideDir = mkdtempSync(join(realpathSync(homedir()), ".broke-code-outside-"));
+    const outside = join(outsideDir, "out.txt");
+    const outsideCommand = `echo out > '${outside.replaceAll("'", "'\\''")}'`;
     const code = [
       'try { await run_command({ command: "sudo ls" }); } catch (error) { console.log("denied:", error.message.split("\\n")[0]); }',
       'await run_command({ command: "echo inside > in.txt" });',
-      `try { await run_command({ command: "echo out > ${outside}" }); } catch (error) { console.log("outside failed"); }`,
+      `try { await run_command({ command: ${JSON.stringify(outsideCommand)} }); } catch (error) { console.log("outside failed"); }`,
     ].join("\n");
-    const { controller, state, states } = await scriptTurn([{ content: scriptCall(code) }, { content: "Done." }], {
-      mode: "fullAccess",
-      commands: true,
-    });
     let leaked = false;
+    let ran: Awaited<ReturnType<typeof scriptTurn>>;
     try {
-      await controller.send("run them");
+      ran = await scriptTurn([{ content: scriptCall(code) }, { content: "Done." }], {
+        mode: "fullAccess",
+        commands: true,
+      });
+      await ran.controller.send("run them");
     } finally {
-      // [>]: Only a broken sandbox leaves it; the assertion below then fails.
+      // [>]: Only a broken sandbox writes into it; the assertion below then fails.
       leaked = existsSync(outside);
-      rmSync(outside, { force: true });
+      rmSync(outsideDir, { recursive: true, force: true });
     }
+    const { state, states } = ran;
     expect(states.every((s) => s.approval === undefined)).toBe(true);
     expect(text("in.txt")).toBe("inside\n");
     expect(leaked).toBe(false);
@@ -8170,6 +8281,37 @@ describe("ChatController run_script", () => {
     ]);
     const own = state().entries.find((entry) => entry.role === "tool" && entry.name === "run_script");
     expect(own?.role === "tool" ? own.text : "").toContain("outside failed");
+  });
+
+  test("a command the script did not wait for keeps its step once the script's end stops it, so Retry warns", async () => {
+    // [>]: The script runs on for half a second after its call, so the command has started when the script ends.
+    const code = [
+      'run_command({ command: "echo started > ran.txt; sleep 5" });',
+      "const start = Date.now();",
+      "while (Date.now() - start < 500) {}",
+      'return "returned";',
+    ].join("\n");
+    const { controller, state } = await scriptTurn([{ content: scriptCall(code) }, { content: "Done." }], {
+      mode: "fullAccess",
+      commands: true,
+    });
+    await controller.send("start it");
+    expect(text("ran.txt")).toBe("started\n");
+    expect(outline(state().entries)).toEqual([
+      "user",
+      "assistant:done",
+      "run_command*",
+      "run_script",
+      "assistant:done",
+    ]);
+    expect(state().entries[2]).toMatchObject({
+      name: "run_command",
+      approval: "auto",
+      status: "error",
+      text: expect.stringMatching(/^run_command: stopped before it finished\./),
+      fromScript: true,
+    });
+    expect(unrevertedEffects(state().entries, 1)).toEqual({ writes: 0, commands: 1 });
   });
 });
 

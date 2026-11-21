@@ -28,7 +28,15 @@ import type { ConversationStore } from "./conversationStore";
 import { DEFAULT_DENIED_COMMANDS, deniedEntry } from "./fullAccess";
 import { type HistoryBudget, historyStart, innerStepTrace, sentEntries, summaryHistory, toHistory } from "./history";
 import { CONTINUE_TEXT, hasFinalAnswer, IMPLEMENT_PLAN_TEXT, type LastTurnActions, lastTurnActions } from "./lastTurn";
-import { contextOf, DEFAULT_RATIO, estimateTokens, fillsContext, parseLimits, type TurnLimits } from "./limits";
+import {
+  contextOf,
+  DEFAULT_RATIO,
+  estimateTokens,
+  fillsContext,
+  parseLimits,
+  StepCount,
+  type TurnLimits,
+} from "./limits";
 import { type LineCounts, lineDiffCount } from "./lineDiff";
 import { composeUserMessage, findMentions, type MentionReader, type MentionResult, type ReadMention } from "./mentions";
 import type { TurnEnd, TurnEvent } from "./notifications";
@@ -288,28 +296,30 @@ type ChangedRow = ChangedFile & { realPath: string };
 type ToolStep = ChatEntry & { role: "tool" };
 
 /**
- * What each call of an agent turn runs with (`runCall`): its turn, the skills of its send, and the tools offered; for
- * a send that offered `run_script`, the runtime its scripts run with (`scriptEnv`) and the tools that exist in a script
- * only to refuse, with their refusal (`blocked`: Plan's write tools and `run_command`).
+ * What each call of an agent turn runs with (`runCall`): its turn, the skills of its send, the tools offered, and the
+ * turn's step count (`steps`), which a script's calls join; for a send that offered `run_script`, the runtime its
+ * scripts run with (`scriptEnv`) and the tools that exist in a script only to refuse, with their refusal (`blocked`:
+ * Plan's write tools and `run_command`).
  */
 type CallSetup = {
   turn: Turn;
   skills: readonly Skill[];
   tools: readonly ToolSpec[];
+  steps: StepCount;
   scriptEnv: ScriptEnv | undefined;
   blocked: Readonly<Record<string, string>>;
 };
 
 /**
- * The `run_script` call in flight, owned by its turn: its conversation, and the steps of the calls its script completed,
- * in call order (the staged steps). The one source of truth for them while the script runs: projected into
+ * The `run_script` call in flight, owned by its turn: its conversation, `stop`, the signal Stop aborts for the reply
+ * that made the call, and the steps of the calls its script completed, in call order (the staged steps). The one source of truth for them while the script runs: projected into
  * `ChatState.scriptSteps` while its conversation is shown, and into each save of that conversation after the reply in
  * flight, then appended to the entries, and cleared, in the one update that ends the script (its step, or Stop).
  * Each staged step is the trace `innerStepTrace` keeps, at most 26,576 characters of values per call: the names its
  * call acted on (its path, its command) up to `NAME_ARGUMENT_CHARS` each, plus `INNER_STEP_CHARS`.
  * `save`: the save of those steps in flight (`saveScriptSteps`), `again` once a step was staged after it started.
  */
-type ScriptRun = { conversation: Conversation; steps: ToolStep[]; save?: { again: boolean } };
+type ScriptRun = { conversation: Conversation; stop: AbortSignal; steps: ToolStep[]; save?: { again: boolean } };
 
 type UserEntry = ChatEntry & { role: "user" };
 
@@ -1056,13 +1066,20 @@ export class ChatController {
         discovery.skills,
         mode,
       );
-      const setup: CallSetup = { turn, skills: discovery.skills, tools, scriptEnv, blocked: this.scriptBlocked(mode) };
+      const steps = new StepCount(maxToolSteps);
+      const setup: CallSetup = {
+        turn,
+        skills: discovery.skills,
+        tools,
+        steps,
+        scriptEnv,
+        blocked: this.scriptBlocked(mode),
+      };
       const system = composeSystemPrompt(tools, instructions, discovery.skills, mode);
       this.systemPrompt = system;
       this.instructionFiles = instructions;
       // [>]: The display counts the instruction files and skills now, not at the first reply delta.
       this.emit();
-      let steps = 0;
       let malformedInARow = 0;
       /** This request was already compacted: at most one automatic summary per request. */
       let compacted = false;
@@ -1106,6 +1123,9 @@ export class ChatController {
         // [!]: The parser reads the answer only, never the reasoning.
         const parsed = parseToolCall(run.reply.content, tools);
         if (parsed.kind === "none") return settle("done");
+        // [!]: Taken before the call runs, so a script's calls count after the script's own step, against what is
+        // left. Never refused here: the turn halts below as soon as the count reaches its limit.
+        steps.take();
         let step: ChatEntry & { role: "tool" };
         if (parsed.kind === "call") {
           const { name, args, start, end } = parsed;
@@ -1119,7 +1139,7 @@ export class ChatController {
           // script runs at once; each call it makes that asks waits on its own approval.
           this.state.callRunning = !tools.find((tool) => tool.name === name)?.asks;
           const script: ScriptRun | undefined =
-            name === RUN_SCRIPT_TOOL.name && scriptEnv ? { conversation, steps: [] } : undefined;
+            name === RUN_SCRIPT_TOOL.name && scriptEnv ? { conversation, stop: signal, steps: [] } : undefined;
           this.script = script;
           this.emit();
           void this.save(conversation);
@@ -1157,11 +1177,10 @@ export class ChatController {
           };
           malformedInARow += 1;
         }
-        // [>]: A script is one step toward the limit, whatever the calls it made; those have their own limit.
-        steps += 1;
         conversation.entries.push(step);
         if (malformedInARow >= MAX_MALFORMED_IN_A_ROW) return settle("halted", "malformedCalls");
-        if (steps >= maxToolSteps) return settle("halted", "stepLimit");
+        // [>]: A script whose calls took the last steps halts here, after its own step, as a direct call would.
+        if (steps.reached) return settle("halted", "stepLimit");
         // [>]: The step and the next reply land in one update, so the turn never reads as ended between them.
         run.reply.status = "done";
         run.reply = waitingReply();
@@ -1555,8 +1574,8 @@ export class ChatController {
    * reply's call and for each call a script makes alike: a fresh approval and line count, the run, then the step, tied
    * to the file its write recorded so "Undo changes" marks it (`Turn.steps`). Returns the step and the tool's result,
    * whose `forScript` a script's call reads. `undefined` when `signal` aborted first: the step is dropped, as Stop drops
-   * a call in flight. A script's call (`inner`) returns only once its tool has settled, and keeps its step when its
-   * write landed meanwhile, so "Undo changes" marks it and the history tells the model of the undo. `script`: the
+   * a call in flight. A script's call (`inner`) returns only once its tool has settled, with its step whatever aborted
+   * it, and `runInnerCall` decides whether it is kept. `script`: the
    * reply's `run_script` call, whose script's calls run through `runInnerCall` and land in `script.steps`. `inner`: a
    * call a script made, its step marked `fromScript` and bounded to its trace (`innerStepTrace`) as it is built, so
    * the step "Undo changes" marks is the one staged; the result returned stays whole, for the script.
@@ -1578,6 +1597,7 @@ export class ChatController {
             innerCalls: {
               tools: setup.tools,
               blocked: setup.blocked,
+              steps: setup.steps,
               run: (innerCall: ToolCall, innerSignal: AbortSignal) =>
                 this.runInnerCall(innerCall, setup, innerSignal, script),
             },
@@ -1612,7 +1632,7 @@ export class ChatController {
     // never be tied to the file of the last write it made.
     const written = turn.written;
     turn.written = undefined;
-    if (!result || (inner && signal.aborted && written === undefined)) return undefined;
+    if (!result) return undefined;
     const built: ToolStep = {
       role: "tool",
       name: call.name,
@@ -1635,9 +1655,10 @@ export class ChatController {
    * rather than the entries: the reply stays the last entry while the script runs. Each completed step shows at once
    * (`ChatState.scriptSteps`) and is saved at once, after the reply in flight, so a crash keeps the record of a write
    * that reached the disk. While the call waits on an approval the call reads as not running; once it ends, the script
-   * runs again. A call aborted by the script's own end is staged only when its write landed (see `runCall`). A call
-   * that settles after Stop or a navigation changes nothing: its step is dropped, as Stop drops a direct call's, and a
-   * write it made is still recorded for undo by the applier, tied to no step. The step staged is the call's trace
+   * runs again. A call aborted by the script's own end is staged as any call that settled: the user did not stop it,
+   * and its command may have run or its write landed, which Retry's and Edit's warning count. A call that settles after
+   * Stop or a navigation changes nothing: its step is dropped, as Stop drops a direct call's, and a write it made is
+   * still recorded for undo by the applier. The step staged is the call's trace
    * (`innerStepTrace`); the script settles with the whole result, the tool's `forScript` value when it gave one; never
    * rejects.
    */
@@ -1647,11 +1668,12 @@ export class ChatController {
     signal: AbortSignal,
     script: ScriptRun,
   ): Promise<ToolResult> {
-    if (signal.aborted || this.script !== script) return stopped(call.name);
+    if (signal.aborted || script.stop.aborted) return stopped(call.name);
     this.state.callRunning = !setup.tools.find((tool) => tool.name === call.name)?.asks;
     this.emit();
     const ran = await this.runCall(call, setup, signal, { inner: true });
-    if (!ran || this.script !== script) return stopped(call.name);
+    // [!]: Stop's own signal, aborted at once, never `this.script`, cleared only once the reply's call gave up on it.
+    if (!ran || script.stop.aborted) return stopped(call.name);
     script.steps.push(ran.step);
     this.state.callRunning = true;
     this.emit();

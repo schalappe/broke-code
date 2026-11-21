@@ -487,7 +487,10 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
   tool not offered outside Plan (`load_skill` without a listed skill). The reply stays `streaming` while its
   call runs, and the step and the next reply are appended together, so `isReplying` holds across the whole turn.
 - An agent turn has a Stop button and stops after `brokeCode.maxToolSteps` tool steps (a user setting, `application`
-  scope, default 50, at least 1; calls, Plan's refused calls, and malformed calls alike) as `halted` with reason `stepLimit`; three malformed calls in a row (`MAX_MALFORMED_IN_A_ROW`) halt it with reason
+  scope, default 50, at least 1; calls, Plan's refused calls, and malformed calls alike, and each call a `run_script`
+  script makes, see Code Mode) as `halted` with reason `stepLimit`. The turn keeps one count (`StepCount`), read once
+  when it starts: a reply's call takes its step before it runs, and the turn halts after the step that reaches the
+  limit; three malformed calls in a row (`MAX_MALFORMED_IN_A_ROW`) halt it with reason
   `malformedCalls`, and a call that parses, or a call Plan refuses, resets that count. Known cost, accepted: a model
   that insists on writing in Plan uses requests up to the step limit. Stop ends the turn at once, during a reply or a tool
   run: the step in flight is dropped, nothing later runs, and the record is saved as it stands. A failed reply ends
@@ -527,16 +530,30 @@ what the script prints or returns goes back to the model. It is an experimental 
   with the lines asked for exactly as stored (no header, no fence, no notice) and throws when the 2,000-line cap would
   cut them, naming the range to read in parts; its step keeps the mention block. Calls run one at a time, in arrival
   order, so `Promise.all` works but runs them in turn. The script ends when it returns or throws, or when its output
-  passes the limit: then the call it did not wait for that is running is aborted, as on Stop (its step dropped), the
-  calls queued behind it never run, a call it makes afterwards throws `run_script: the script has ended; this call was
-  not made.`, and the step waits for the call in flight to settle: its approval and its command are cancelled, and a
-  write already handed to the applier lands before the turn's next call runs, recorded for undo with its step, which
-  joins the inner steps, so "Undo changes" marks it and the history names it; the step of a call that changed no
-  file is dropped.
+  passes the limit: then the call it did not wait for that is running is aborted, the calls queued behind it never
+  run, a call it makes afterwards throws `run_script: the script has ended; this call was not made.`, and the step
+  waits for the call in flight to settle: its approval and its command are cancelled, and a write already handed to
+  the applier lands before the turn's next call runs, recorded for undo. The user did not stop that call, so its step
+  is kept as any settled call's and joins the inner steps, with what it returned (`stopped before it finished.` for a
+  cancelled approval or a stopped command): "Undo changes" marks a write that landed, the history names it, and
+  Retry's and Edit's warning counts a command that started (`docs/spec/chat-panel.md`). Only Stop drops a step.
 - The step's text: each printed line in order, then the returned value (a string as is, anything else as JSON), cut
   at 2,000 lines with the usual notice. Nothing printed or returned gives an `ok` text telling the model to print what
   it needs. An uncaught error makes the step `error`, ending `run_script: the script stopped on an error: <message>`.
-- Limits, each with its own message: 100 calls (`MAX_SCRIPT_CALLS`; call 101 throws and never runs); 8 MiB of
+- The step limit. Every tool call of a turn is one step toward `brokeCode.maxToolSteps`, whoever makes it: the
+  `run_script` call is one, taken before the script starts, and each call the script makes is one more, taken when
+  the host admits the call (the checks above passed, and the arguments limit below), before it queues, so calls queued
+  at once never pass the limit. A call when the turn's count has reached the limit throws `run_script: the agent turn
+  has reached its limit of <limit> tool steps, where each call a script makes is one step; this call was not made.
+  End the script with what it has so far.`, never runs, takes no step and leaves none, and asks nothing of the user;
+  a call refused by another check takes no step either. A call admitted, then never run because the script ended
+  without waiting for it, keeps its step in the count. The script may catch it and end; its step is recorded as usual,
+  and the turn then halts `stepLimit` after that step, as after a direct call that reaches the limit. A script whose
+  calls leave steps over lets the turn go on, the next reply's call counting after them. The count is the turn's
+  (`InnerCalls.steps`, given by the controller): the script host never reads a setting. Every per-turn bound of a
+  script's calls rests on it, as for direct calls: the steps the record keeps, and the files the undo record holds
+  (each changed file's text before and after, up to 1 MiB each), at most one write per step.
+- Limits, each with its own message: 8 MiB of
   arguments in the calls admitted and not yet answered, the one running and those queued behind it
   (`MAX_QUEUED_ARGUMENT_CHARS`, counted by the host as each call arrives, before it queues, and freed once the call is
   answered; a call whose arguments would pass it throws `run_script: the tool calls a script has waiting may hold at
@@ -548,8 +565,7 @@ what the script prints or returns goes back to the model. It is an experimental 
   counted in the child; one protocol line over 8 MiB; 32 MiB of answers the child left unread; 512 MiB of resident
   memory (`SCRIPT_MEMORY_BYTES`), read with `/bin/ps` every 250 ms, since macOS applies no memory limit to a process,
   and failing closed when it cannot be read; 10 seconds for the child to exit once the host has ended its input after
-  the script's end (a script that left the vm could keep it alive); and 60 seconds of processor time (`SCRIPT_CPU_SECONDS`), a kernel limit that holds even when the host died. A script
-  is one step toward `brokeCode.maxToolSteps`, whatever the calls it made.
+  the script's end (a script that left the vm could keep it alive); and 60 seconds of processor time (`SCRIPT_CPU_SECONDS`), a kernel limit that holds even when the host died.
 - The sandbox. The child is `/bin/sh -c 'ulimit -t 60 || exit 125; exec "$@"'`, then `/usr/bin/sandbox-exec -p
   <profile>`, then the runtime with `-e <bootstrap>`, in `/`, with an environment built from nothing. The runtime is
   the extension host's own executable (`process.execPath`, by its real path) run as Node, `ELECTRON_RUN_AS_NODE=1` its

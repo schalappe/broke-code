@@ -66,12 +66,14 @@ _Avoid_: script mode, programmatic tool calling
 **Script**:
 The JavaScript a `run_script` call holds: the body of an async function whose globals are the harness's tools, as
 async functions, and `console.log`. It runs in a separate process under a default-deny macOS sandbox, so it acts only
-through its **inner calls**; only what it prints or returns goes back to the model. A script is one tool step.
+through its **inner calls**; only what it prints or returns goes back to the model. The `run_script` call is one tool
+step, and each of its inner calls one more, toward the turn's step limit.
 _Avoid_: code block, snippet, program
 
 **Inner call**:
 A tool call a **script** makes. It is approved, run, and recorded as a direct call is: its own tool step, marked
-`fromScript`, shown one level in under the script's row and never sent to the model, which reads the script's output.
+`fromScript`, counted toward the turn's step limit, shown one level in under the script's row, and never sent to the
+model, which reads the script's output. A call past the step limit is refused inside the script and never runs.
 Its step keeps a trace: the path, pattern, or command it acted on whole up to 4,096 characters, and long file text
 and result text cut to a bounded start, ending with their whole size.
 _Avoid_: sub-call, nested call, child call

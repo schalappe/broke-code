@@ -486,7 +486,9 @@ export const ASK_SCENARIO: Scenario = {
 
 /**
  * The step limit of the scenarios that compare direct calls with one script (`rename`, `gather`): room for a call per
- * file and a few reads more, so a model calling the tools one by one can finish; a script is one step.
+ * file and a few reads more, so a model calling the tools one by one can finish. A script counts its own step and one
+ * per call it makes, so one script doing the same calls takes one step more than they do: `rename`'s (a search, six
+ * reads, seven edits) takes 15, `gather`'s (a listing, nine reads) 11, each with the direct path's room to spare.
  */
 const CHAIN_STEPS = 30;
 
@@ -564,7 +566,7 @@ function weightFiles(name: string): WorkspaceFiles {
  * The same change in several files: rename a function defined in one file and called in five others, seven
  * occurrences in all, while `parcel_weight_limit`, whose name holds the old one, stays. Passes when exactly those six
  * files hold the new name at each occurrence, byte for byte, and nothing else changed. Every command is rejected, so
- * the comparison is between direct calls and one script; the step limit is `CHAIN_STEPS`, so direct calls can finish.
+ * the comparison is between direct calls and one script; the step limit is `CHAIN_STEPS`, so either can finish.
  */
 export const RENAME_SCENARIO: Scenario = {
   name: "rename",
@@ -588,6 +590,11 @@ const STOCK: Record<string, number> = {
   toulouse: 129,
 };
 const STOCK_TOTAL = Object.values(STOCK).reduce((total, quantity) => total + quantity, 0);
+/**
+ * The number tokens a gather answer may hold beside the total: the depots' quantities and how many depots there are,
+ * so a reply that shows its sum passes, and one that also gives another total does not.
+ */
+const STOCK_INPUTS = new Set([...Object.values(STOCK), Object.keys(STOCK).length].map(String));
 
 /** One `stock/<depot>.txt` per depot: its `quantity: N` line among others, `reserved: N` a number not to add. */
 function stockFiles(): WorkspaceFiles {
@@ -606,11 +613,12 @@ function stockFiles(): WorkspaceFiles {
 }
 
 /**
- * Gather one value from many files: the total of the `quantity` lines of nine depot files. Passes when the answer holds
- * the total as a number token of its own (the `command` scenario's check), the `ok` `read_file` and `search` steps (a
- * direct call's or a script's call's) held every `quantity` line between them, and no file changed; otherwise it is
- * `wrongTool`. A script's own output never counts: it can print the total without reading a file. Every command is
- * rejected and the step limit is `CHAIN_STEPS`, as in `rename`.
+ * Gather one value from many files: the total of the `quantity` lines of nine depot files. Passes when the `ok`
+ * `read_file` and `search` steps (a direct call's or a script's call's) held every `quantity` line between them, else
+ * `wrongTool`, and the answer holds the total as a number token of its own (the `command` scenario's split) and no other
+ * number token but `STOCK_INPUTS`, else `wrongAnswer`, so "766 is wrong, the total is 765." fails; no file changes.
+ * A script's own output never counts: it can print the total without reading a file. Every command is rejected and
+ * the step limit is `CHAIN_STEPS`, as in `rename`.
  */
 export const GATHER_SCENARIO: Scenario = {
   name: "gather",
@@ -629,7 +637,11 @@ export const GATHER_SCENARIO: Scenario = {
     const sawEach = quantities.every((line) => read.some((text) => line.test(text)));
     if (!sawEach) return { pass: false, category: "wrongTool", detail: `steps: ${describeSteps(steps)}` };
     const answer = lastReply(entries).content;
-    if (numberTokens(answer).includes(String(STOCK_TOTAL))) return { pass: true };
+    const tokens = numberTokens(answer);
+    const total = String(STOCK_TOTAL);
+    if (tokens.includes(total) && tokens.every((token) => token === total || STOCK_INPUTS.has(token))) {
+      return { pass: true };
+    }
     return { pass: false, category: "wrongAnswer", detail: `answer: ${excerpt(answer)}` };
   },
 };

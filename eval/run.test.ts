@@ -47,6 +47,8 @@ const server = Bun.serve({
 });
 const baseUrl = `http://localhost:${server.port}/v1`;
 const parent = mkdtempSync(join(tmpdir(), "broke-code-eval-test-"));
+/** `path` as one shell word, whatever characters it holds. */
+const shellQuote = (path: string) => `'${path.replaceAll("'", "'\\''")}'`;
 
 /**
  * Runs `command` as the first call of a `command` scenario run, its answer "61", and returns the step's text; `inspect`
@@ -304,7 +306,7 @@ describe("playScenario", () => {
   test("refuses a command reading the user's home folder or the per-user temporary folders", async () => {
     const userHome = realpathSync(homedir());
     const text = await commandStep(
-      `ls "${userHome}" 2>&1; echo "home $?"; ls /private/var/folders 2>&1; echo "folders $?"`,
+      `ls ${shellQuote(userHome)} 2>&1; echo "home $?"; ls /private/var/folders 2>&1; echo "folders $?"`,
     );
     const lines = stdoutLines(text);
     expect(lines.filter((line) => line.includes("Operation not permitted"))).toHaveLength(2);
@@ -313,7 +315,7 @@ describe("playScenario", () => {
 
   test("refuses a command writing outside the run's folder, and still lets it add any entry to the workspace", async () => {
     const outside = join(realpathSync(parent), "outside.txt");
-    const command = `echo x > "${outside}"; echo "outside $?"; echo made > made.txt; ln -s made.txt alias; mkfifo pipe; mkdir folder`;
+    const command = `echo x > ${shellQuote(outside)}; echo "outside $?"; echo made > made.txt; ln -s made.txt alias; mkfifo pipe; mkdir folder`;
     const text = await commandStep(command, (after) => {
       expect(after["made.txt"]).toBe("made\n");
       expect(after.alias).toEqual({ symlink: "made.txt" });

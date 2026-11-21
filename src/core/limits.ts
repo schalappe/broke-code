@@ -15,8 +15,36 @@ export type TurnLimits = { maxToolSteps: number; contextSizes: ReadonlyMap<strin
 /** A model's context size in tokens; `known` is false when the model is absent from the table and 32,768 is used. */
 export type ContextSize = { size: number; known: boolean };
 
-/** Tool steps per agent turn, calls and malformed calls alike, while `brokeCode.maxToolSteps` is unset or invalid. */
+/**
+ * Tool steps per agent turn while `brokeCode.maxToolSteps` is unset or invalid: calls, each call a script makes
+ * included, and malformed calls alike (`StepCount`).
+ */
 export const DEFAULT_MAX_TOOL_STEPS = 50;
+
+/**
+ * The tool steps of one agent turn against the limit it started with, the one count of the turn: every tool call is
+ * one step, whoever makes it (a reply's call, Plan's refused call, or malformed call; a `run_script` call; each call
+ * its script makes). `take` counts one step and returns true, or, once the count has reached `limit`, counts nothing
+ * and returns false. A reply's call takes its step before it runs, so a script's calls count after the script's own,
+ * against what is left; the script host takes a step for each call it admits, before the call queues, and refuses the
+ * call when none is left. The turn halts on `stepLimit` once the count is `reached`, after the step that reached it.
+ * Every per-turn bound of a script's calls (their steps, the files the undo record keeps) is this limit.
+ */
+export class StepCount {
+  private used = 0;
+
+  constructor(readonly limit: number) {}
+
+  take(): boolean {
+    if (this.reached) return false;
+    this.used += 1;
+    return true;
+  }
+
+  get reached(): boolean {
+    return this.used >= this.limit;
+  }
+}
 /** Context size of a model absent from `brokeCode.contextSizes`. */
 export const DEFAULT_CONTEXT_SIZE = 32_768;
 

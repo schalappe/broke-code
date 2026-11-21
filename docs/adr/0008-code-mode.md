@@ -26,13 +26,14 @@ script makes are execution detail (ADR 0001's "one body call per reply" stands).
   listing, `/dev/null`, the kernel's settings, and each extra readable path; nothing else: no file of the user's, no
   write, no network, no process. The child talks JSON Lines with the host over its stdin and stdout and evaluates the
   script in a `node:vm` context, a second layer only. The host owns the policy: it admits each call (a tool the script
-  may call, known arguments, at most 100 calls), runs the calls one at a time through
+  may call, known arguments, a step of the turn's count), runs the calls one at a time through
   the turn, and enforces the limits (10 s of the script's own running time between calls, 1 MiB of output, the
   kernel's 60 s of processor time, 512 MiB of resident memory, 32 MiB of answers left unread, 10 s to exit once its
   input has ended). The child is untrusted once the script runs: a script can leave the vm, so the host never takes
   its done frame as proof that it will exit. When the script ends, the call it did not wait for is aborted and the
   queued ones never run; the script's step waits for the aborted call to settle, so a write already handed to the
-  applier lands before the turn's next call runs, and keeps its step so its undo reaches the history. macOS applies no memory limit to a process (`ulimit -v`, `-d`, and `-m` fail), so the host
+  applier lands before the turn's next call runs. The aborted call keeps its step, as any call the user did not stop:
+  a write's undo reaches the history, and a command that started counts for Retry's and Edit's warning. macOS applies no memory limit to a process (`ulimit -v`, `-d`, and `-m` fail), so the host
   reads the child's resident memory with `ps` every 250 ms, a bound with that lag rather than a hard one. Fail closed:
   when the sandbox or a limit cannot apply, the script does not run, or stops, and the step says why.
 - **Every inner call goes through the usual approvals** (maintainer decision 1). The turn runs each call a script
@@ -41,6 +42,25 @@ script makes are execution detail (ADR 0001's "one body call per reply" stands).
   changes". A rejection throws in the script. The host holds at most 8 MiB of arguments for the calls admitted and
   not yet answered, counted as each arrives, before it queues, and freed once it is answered; a call that would pass
   it throws and never runs. That bounds transient memory only: calls may queue behind one waiting for an approval.
+- **Every tool call of a turn is one step toward its step limit, whoever makes it** (maintainer decision of
+  2026-11-21). A direct call, the `run_script` call itself, and each call its script makes count one step each on one
+  count per turn (`StepCount`), read once when the turn starts, the same bound as direct calls. The reply's call takes
+  its step before it runs; the host takes one for each call it admits, before the call queues, and refuses a call
+  when none is left: it throws inside the script with a message naming the limit and its value, never runs, takes no
+  step, and asks nothing of the user. The script may catch it and end; the turn then halts on `stepLimit` after the
+  script's step, as after a direct call at the limit. Why: every per-turn bound assumes the step limit. When a script
+  counted as one step whatever its calls, a turn of 50 scripts of 100 calls each could make 5,000 calls where a turn
+  of direct calls makes 50, and each resource a turn holds escaped its bound with them; the undo record keeps the
+  text before and after (up to 1 MiB each) of every distinct file the turn changed, so 5,000 writes could hold several
+  GiB in the extension host. Counting each call restores the bound for all of them at once. The per-script cap of 100
+  calls (`MAX_SCRIPT_CALLS`) is removed as redundant: the step limit bounds a script's calls, steps, and queued calls
+  (at most the steps left), and the host keeps no per-call state beyond the queue, so the cap protected nothing the
+  step limit does not. A script may therefore make more than 100 calls when the setting allows it. The setting has no
+  maximum, and raising it is the user's choice: a user who sets `brokeCode.maxToolSteps` to N accepts N calls per turn,
+  direct or scripted, a queued call holding only its call and a closure, far less than what a step's write may hold. Rejected: a per-turn cap on a script's writes, and a size
+  cap on the undo record, which would each bound one resource and leave the others, and a second rule for scripts;
+  keeping one step per script, which leaves every per-turn bound open. Consequence: a script costs as many steps as
+  the calls it makes, plus one, so it saves requests, not steps.
 - **Inner calls are recorded as steps and never sent.** Each call's step is an ordinary tool step marked `fromScript:
   true`, an optional field, so the record stays at version 2 (ADR 0003). The step is a short trace, not the whole
   call (maintainer decision of 2026-11-21): the context budget bounds what a direct step stores, but never sees an
@@ -51,7 +71,7 @@ script makes are execution detail (ADR 0001's "one body call per reply" stands).
   turn's counts, and the step row read, and shares 2,000 characters (`INNER_STEP_CHARS`) among the other values, the file text and
   the result text: a short one keeps whole, a long one keeps its start and ends with `[cut to save memory: N lines, C
   characters in all]`. A name past its cap is cut the same way. A trace thus holds at most 6 × 4,096 + 2,000 =
-  26,576 characters of values: uncapped names would let 100 calls of a script each store a command of megabytes that
+  26,576 characters of values: uncapped names would let every call of a script store a command of megabytes that
   no context budget sees, and a valid path cut at a share would reach the model shortened in an undo line, with the
   cut line after it. The tool runs with the whole arguments and the script gets the whole result, so a
   script still processes far more than fits the model's context. Rejected: a size limit on the whole conversation in

@@ -5,13 +5,14 @@
  * `sandbox-exec` with a default-deny profile (`SCRIPT_SANDBOX_PROFILE`): it can read nothing of the user's, write
  * nothing, reach no network, and start no process, so it acts only through the tools. The host owns the execution
  * policy: it checks each call the script asks for against the tools offered, runs the calls one at a time through the
- * caller's `InnerCalls`, which records and approves each one as a direct call, and enforces the limits. No `vscode`
- * import. Model-facing text is English and never localized.
+ * caller's `InnerCalls`, which records and approves each one as a direct call, counts each one as a step of the
+ * turn, and enforces the limits. No `vscode` import. Model-facing text is English and never localized.
  */
 import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { access } from "node:fs/promises";
 import { SANDBOX_EXEC } from "./fullAccess";
+import { StepCount } from "./limits";
 import { MAX_MENTION_LINES, truncationNotice } from "./mentions";
 import type { ToolSpec } from "./toolCalls";
 import { excerpt, stopped, type ToolCall, type ToolResult } from "./tools";
@@ -23,7 +24,7 @@ const TOOL = "run_script";
 export const RUN_SCRIPT_TOOL: ToolSpec = {
   name: TOOL,
   description:
-    "Run a JavaScript script that calls the other tools, and get back what it prints. It is useful when a task takes several related tool calls: one script makes them in one reply. In the script, each tool listed here except run_script, load_skill, and ask_user is an async function of the same name that takes one object of its arguments, such as await read_file({ path: \"src/a.ts\" }). read_file returns the file's exact text, with no header and no fence. Every other tool returns its result text. A call throws an Error holding the result text when the tool fails or the user rejects it. Every call asks for approval as a direct call does. To change a passage, use edit_file; use write_file only to replace a whole file. A script cannot ask the user: when you need the user's choice, call ask_user directly, not in a script. The code is the body of an async function, so await and return work at the top level. Only the lines the script prints with console.log, then the value it returns, come back to you. The script has no require, no file system, no process, no fetch, and no timers: only the tool functions. It is stopped after 10 seconds without a tool call, and a script may make at most 100 tool calls.",
+    "Run a JavaScript script that calls the other tools, and get back what it prints. It is useful when a task takes several related tool calls: one script makes them in one reply. In the script, each tool listed here except run_script, load_skill, and ask_user is an async function of the same name that takes one object of its arguments, such as await read_file({ path: \"src/a.ts\" }). read_file returns the file's exact text, with no header and no fence. Every other tool returns its result text. A call throws an Error holding the result text when the tool fails or the user rejects it. Every call asks for approval as a direct call does. To change a passage, use edit_file; use write_file only to replace a whole file. A script cannot ask the user: when you need the user's choice, call ask_user directly, not in a script. The code is the body of an async function, so await and return work at the top level. Only the lines the script prints with console.log, then the value it returns, come back to you. The script has no require, no file system, no process, no fetch, and no timers: only the tool functions. It is stopped after 10 seconds without a tool call. Each call a script makes counts toward the turn's limit on tool calls, as a direct call does.",
   args: [
     {
       name: "code",
@@ -58,20 +59,24 @@ export type ScriptEnv = {
  * How the script's calls run, from the turn that runs the script. `tools`: the tools offered in this send; a script may
  * call each of them but `NOT_CALLABLE`. `blocked`: tools the send leaves out that still exist in the script, each a
  * function that throws its text without running anything (Plan's write tools and `run_command`, so ordinary code
- * gets the Plan message rather than a `ReferenceError`). `run`: runs one call as the turn runs a direct one (its approval, its record), under
- * `signal`, which aborts when the turn stops or the script ends. Must not reject.
+ * gets the Plan message rather than a `ReferenceError`). `steps`: the turn's step count, the `run_script` call's own
+ * step already taken; each call the host admits takes one before it queues, and a call when none is left throws
+ * `stepLimitRefusal` inside the script and is never run, so a script's calls never pass the turn's limit. `run`: runs
+ * one call as the turn runs a direct one (its approval, its record), under `signal`, which aborts when the turn stops
+ * or the script ends. Must not reject.
  */
 export type InnerCalls = {
   tools: readonly ToolSpec[];
   blocked?: Readonly<Record<string, string>>;
+  steps: StepCount;
   run(call: ToolCall, signal: AbortSignal): Promise<ToolResult>;
 };
 
-/**
- * Calls one script may make. A script that loops over tool calls ends in a bounded number of steps; call 101 throws
- * inside the script and is never run.
- */
-export const MAX_SCRIPT_CALLS = 100;
+/** What a call past the turn's step limit (`InnerCalls.steps`, of `limit` steps) throws inside the script. */
+export function stepLimitRefusal(limit: number): string {
+  return `${TOOL}: the agent turn has reached its limit of ${limit} tool steps, where each call a script makes is one step; this call was not made. End the script with what it has so far.`;
+}
+
 /**
  * How long the script may run between calls, in milliseconds: its own running time, never the time a call takes, so a
  * wait for the user's approval never counts. A script that loops without calling a tool is stopped.
@@ -95,7 +100,7 @@ const MAX_FRAME_CHARS = 8 * 1024 * 1024;
 /**
  * Characters of arguments the host may hold for one script's calls admitted and not yet answered: the one running and
  * those queued behind it, which may wait on an approval for as long as the user takes. Without it a script that sends
- * `MAX_SCRIPT_CALLS` calls of one frame each at once makes the host hold that many frames. An answered call's
+ * many calls of one frame each at once makes the host hold that many frames. An answered call's
  * arguments are freed (its step keeps only a trace, `innerStepTrace`), so this bounds transient memory only. A call
  * whose arguments would pass it throws inside the script (`QUEUE_REFUSAL`) and is never run.
  */
@@ -327,15 +332,15 @@ export function scriptLaunch(
 /**
  * Run `code` as a script that may call `inner.tools` (less `NOT_CALLABLE`) through `inner.run`, under `env`'s sandbox.
  * Never rejects. Each call the script asks for is checked here before anything runs (a tool it may call, one object of
- * known arguments, every required one given, at most `MAX_SCRIPT_CALLS`, within `MAX_QUEUED_ARGUMENT_CHARS`); a refused call throws
+ * known arguments, every required one given, within `MAX_QUEUED_ARGUMENT_CHARS`, then a step of the turn's count); a refused call throws
  * inside the script. Admitted calls run one at a time, in arrival order, so `Promise.all` works but runs them in
  * turn, under a signal that aborts with `signal` or when the script ends: a call the script did not wait for is
  * aborted, or never run, once it ends. The result is final once the child has exited and no admitted call is
  * outstanding; a child that does not exit within `runMs` of its input ending is killed. `ok`: what the script printed,
  * then its returned value; `error`: that output, then why the script stopped. Fail closed: when `sandbox-exec` is
  * missing or cannot apply the profile, the result is an `error` naming the cause, and the script never runs outside
- * the sandbox. An abort of `signal` kills the child and gives the stopped error; so do the limits (`MAX_SCRIPT_CALLS`
- * and `MAX_QUEUED_ARGUMENT_CHARS` refuse the call instead) and a protocol error, each with its own message.
+ * the sandbox. An abort of `signal` kills the child and gives the stopped error; so do the limits (the step limit and
+ * `MAX_QUEUED_ARGUMENT_CHARS` refuse the call instead) and a protocol error, each with its own message.
  */
 export async function runScript(
   code: string,
@@ -386,7 +391,7 @@ export async function scriptProblem(
   const answer = async () => ({ status: "ok" as const, text: PROBE_ANSWER });
   const result = await runScript(
     `return await ${PROBE_TOOL.name}();`,
-    { tools: [PROBE_TOOL], run: answer },
+    { tools: [PROBE_TOOL], steps: new StepCount(1), run: answer },
     AbortSignal.any([signal, timeout]),
     env,
   );
@@ -425,9 +430,9 @@ function runChild(
     let startFailure: string | undefined;
     let outstanding = 0;
     let queuedChars = 0;
-    let made = 0;
     let unread = 0;
     let queue: Promise<void> = Promise.resolve();
+    // [>]: The start of a line still waiting for its newline. Only each new chunk is scanned for one, never this.
     let pendingLine = "";
     let stderr = "";
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -522,6 +527,20 @@ function runChild(
       });
     };
 
+    /** The call `frame` asks for, admitted with its step taken, or why it is refused, with no step taken. */
+    const checkCall = (frame: Record<string, unknown>): ToolCall | string => {
+      const refusal =
+        typeof frame.name === "string" && Object.hasOwn(blocked, frame.name) ? blocked[frame.name] : undefined;
+      if (refusal !== undefined) return refusal;
+      const call = admit(frame, callable);
+      if (typeof call === "string") return call;
+      // [!]: Counted before the call queues: a queued call holds its arguments until it is answered.
+      if (queuedChars + argumentChars(call) > MAX_QUEUED_ARGUMENT_CHARS) return QUEUE_REFUSAL;
+      // [!]: Taken last, once nothing else refuses the call, and before it queues, so the calls queued at once never
+      // pass the turn's limit.
+      if (!inner.steps.take()) return stepLimitRefusal(inner.steps.limit);
+      return call;
+    };
     const onCall = (frame: Record<string, unknown>) => {
       const id = frame.id;
       if (done !== undefined) return end({ kind: "killed", detail: "a tool call came after the script ended" });
@@ -529,15 +548,10 @@ function runChild(
         return end({ kind: "killed", detail: "a tool call came without a new id" });
       }
       lastId = id;
-      made += 1;
-      const refusal =
-        typeof frame.name === "string" && Object.hasOwn(blocked, frame.name) ? blocked[frame.name] : undefined;
-      const checked = made > MAX_SCRIPT_CALLS ? callLimitText() : (refusal ?? admit(frame, callable));
-      // [!]: Counted before the call queues: a queued call holds its arguments until it is answered.
-      const chars = typeof checked === "string" ? 0 : argumentChars(checked);
-      const admitted = queuedChars + chars > MAX_QUEUED_ARGUMENT_CHARS ? QUEUE_REFUSAL : checked;
+      const admitted = checkCall(frame);
       // [>]: A refusal is answered at once and the running time keeps counting, so a loop of refused calls ends.
       if (typeof admitted === "string") return send({ id, status: "error", text: admitted });
+      const chars = argumentChars(admitted);
       outstanding += 1;
       queuedChars += chars;
       stopTimer();
@@ -583,17 +597,20 @@ function runChild(
     child.stdout?.setEncoding("utf8");
     child.stdout?.on("data", (chunk: string) => {
       if (ending !== undefined) return;
-      const parts = (pendingLine + chunk).split("\n");
-      pendingLine = parts.pop() ?? "";
-      if (pendingLine.length > MAX_FRAME_CHARS) {
-        return end({ kind: "killed", detail: `it sent a line over ${MAX_FRAME_CHARS} characters` });
-      }
-      for (const line of parts) {
-        if (ending !== undefined) return;
+      let start = 0;
+      for (let newline = chunk.indexOf("\n"); newline !== -1; newline = chunk.indexOf("\n", start)) {
+        const line = pendingLine + chunk.slice(start, newline);
+        pendingLine = "";
+        start = newline + 1;
         if (line.length > MAX_FRAME_CHARS) {
           return end({ kind: "killed", detail: `it sent a line over ${MAX_FRAME_CHARS} characters` });
         }
         onLine(line);
+        if (ending !== undefined) return;
+      }
+      pendingLine += chunk.slice(start);
+      if (pendingLine.length > MAX_FRAME_CHARS) {
+        return end({ kind: "killed", detail: `it sent a line over ${MAX_FRAME_CHARS} characters` });
       }
     });
     child.stderr?.setEncoding("utf8");
@@ -630,10 +647,6 @@ async function callSafely(callTool: InnerCalls["run"], call: ToolCall, signal: A
     console.error("broke-code: a script's tool call failed", call.name, error);
     return { status: "error", text: `${call.name}: the tool failed (${describeError(error)}).` };
   }
-}
-
-function callLimitText(): string {
-  return `${TOOL}: a script may make at most ${MAX_SCRIPT_CALLS} tool calls; this call was not made.`;
 }
 
 /**

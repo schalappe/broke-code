@@ -1093,6 +1093,19 @@ describe("judge on the gather scenario", () => {
     });
   });
 
+  test("passes an answer that shows its sum: the quantities and the count of depots beside the total", () => {
+    const sum = "Across the 9 depots: 37 + 142 + 8 + 95 + 61 + 203 + 14 + 77 + 129 = 766.";
+    expect(judge(GATHER_SCENARIO, [gatherUser, ...readAll, answer(sum)], untouchedStock)).toEqual({ pass: true });
+  });
+
+  test("wrongAnswer: an answer that names the total but gives another one", () => {
+    const wrong = answer("766 is incorrect. The total is 765.");
+    expect(judge(GATHER_SCENARIO, [gatherUser, ...readAll, wrong], untouchedStock)).toMatchObject({
+      pass: false,
+      category: "wrongAnswer",
+    });
+  });
+
   test("wrongAnswer: the total is not a number token of its own", () => {
     expect(judge(GATHER_SCENARIO, [gatherUser, ...readAll, answer("About 7660.")], untouchedStock)).toMatchObject({
       pass: false,

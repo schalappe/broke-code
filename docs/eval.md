@@ -122,15 +122,19 @@ This file describes `bun run eval`: what it runs, its sandbox, its scenarios, it
   - `gather`: nine files `stock/<depot>.txt`, each with a `quantity: N` line among a `depot`, an `updated`, a `shelf`,
     and a `reserved: N` line; the message asks for the total quantity across all depots (766). Passes when the `ok`
     `read_file` and `search` steps (a direct call's or a script's call's) held every `quantity: N` line between them
-    (a whole line, or a search line's end), the answer holds 766 as a number token of its own (the `command` scenario's
-    check), and no file changed; otherwise it is `wrongTool`. A script's own output never counts, since a script can
-    print 766 without reading a file. Until 2026-11-21 a step holding 766, the script's output included, also counted;
-    the measured results below were judged that way and were not judged again.
+    (a whole line, or a search line's end), else `wrongTool`; the answer holds 766 as a number token of its own (the
+    `command` scenario's split) and no other number token but a depot's quantity or the count of depots (9), else
+    `wrongAnswer`, so a reply that shows its sum passes and "766 is incorrect. The total is 765." fails; and no file
+    changed. A script's own output never counts, since a script can print 766 without reading a file. Until 2026-11-21
+    a step holding 766, the script's output included, also counted, and any other number beside 766 in the answer was
+    accepted; the measured results below were judged that way and were not judged again.
 
   `rename` and `gather` measure Code Mode (below): each takes several related calls, one per file. Both
   reject every command, so a shell command cannot stand in and a run compares direct calls with one script, and both
-  have a step limit of 30 (`Scenario.maxToolSteps`), so a model calling the tools one by one can finish. Their
-  verdicts are task verdicts, the same with and without `--code-mode`.
+  have a step limit of 30 (`Scenario.maxToolSteps`), so a model calling the tools one by one can finish, and so can
+  one script making the same calls: it counts its own step and one per call, 15 steps for `rename` (a search, six
+  reads, seven edits) and 11 for `gather` (a listing, nine reads). Their verdicts are task verdicts, the same with and
+  without `--code-mode`.
 
   A failed run shows one category and a one-line detail: `malformed`, `wrongTool`, `wrongAnswer`, `stepLimit`,
   `contextFull`, `providerError`, `wrongEdit` (a file the scenario writes is missing or holds other text, with the
@@ -204,11 +208,14 @@ request are the ones before it, byte for byte.
   (`runCall` of the chat controller): the bench answers its approvals as for a direct call. Each call's step lands
   before the script's own step, marked `fromScript: true`, staged while the script runs (shown live and saved in the
   extension, `docs/spec/harness.md`); the history never sends such a step, so the model reads the script's output
-  only. A script is one step toward the step limit. Such a step keeps a trace: its path, pattern, and command
+  only. Each call a script makes is one step toward the step limit, and so is the `run_script` call: a call when the
+  turn has reached its limit throws inside the script, never runs, and leaves no step, and the turn halts on
+  `stepLimit` after the script's step (`docs/spec/harness.md`). Until 2026-11-21 a script was one step whatever the
+  calls it made: every measurement below was taken under that rule and was not replayed. Such a step keeps a trace: its path, pattern, and command
   whole up to 4,096 characters each, and at most 2,000 characters of its file text and result (`innerStepTrace`), so a scenario check that looks for a value in a read result finds it in an
   inner step only when that value sits in the kept start: a script that reads more than that in one call, with the
   value past the cut, is judged `wrongTool`. Every fixture file but `dispatch.log` fits whole.
-- Limits, each ending the script with its own message: at most 100 calls (call 101 throws and never runs); 10 seconds
+- Limits, each ending the script with its own message: 10 seconds
   of the script's own running time between calls (the time a call takes, such as a wait for approval, never counts);
   1 MiB of printed output, counted in the child; one protocol line over 8 MiB; and a kernel limit of 60 seconds of
   processor time (`ulimit -t`, set by `/bin/sh` before `sandbox-exec` applies the profile), which holds even if the

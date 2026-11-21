@@ -6,10 +6,10 @@ import { createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { ASK_USER_TOOL } from "./askUser";
+import { StepCount } from "./limits";
 import {
   admit,
   ancestorFolders,
-  MAX_SCRIPT_CALLS,
   MAX_SCRIPT_OUTPUT,
   QUEUE_REFUSAL,
   RUN_SCRIPT_TOOL,
@@ -17,6 +17,7 @@ import {
   type ScriptEnv,
   scriptLaunch,
   scriptProblem,
+  stepLimitRefusal,
 } from "./script";
 import { LOAD_SKILL_TOOL } from "./skills";
 import { parseToolCall } from "./toolCalls";
@@ -28,6 +29,8 @@ import { WRITE_TOOLS } from "./writeTools";
 const RUNTIME = realpathSync(process.execPath);
 const ENV: ScriptEnv = { runtime: [RUNTIME], environment: {}, readable: [] };
 const TOOLS = [...READ_TOOLS, ...WRITE_TOOLS];
+/** A turn's step count with room for every call of a test that is not about the step limit. */
+const ROOM = 1000;
 
 /** A `callTool` that answers each call with `answer`, recording the calls in order. */
 function recorder(answer: (call: ToolCall) => ToolResult | Promise<ToolResult> = okEcho) {
@@ -43,8 +46,14 @@ function okEcho(call: ToolCall): ToolResult {
   return { status: "ok", text: `${call.name} ${JSON.stringify(call.args)}` };
 }
 
-function script(code: string, run = recorder().run, env: ScriptEnv = ENV, signal = new AbortController().signal) {
-  return runScript(code, { tools: TOOLS, run }, signal, env);
+function script(
+  code: string,
+  run = recorder().run,
+  env: ScriptEnv = ENV,
+  signal = new AbortController().signal,
+  steps = new StepCount(ROOM),
+) {
+  return runScript(code, { tools: TOOLS, steps, run }, signal, env);
 }
 
 describe("runScript", () => {
@@ -210,7 +219,7 @@ describe("runScript", () => {
     const tools = [...READ_TOOLS, RUN_SCRIPT_TOOL, LOAD_SKILL_TOOL, ASK_USER_TOOL];
     const result = await runScript(
       "console.log([typeof run_script, typeof load_skill, typeof ask_user, typeof read_file].join(','));",
-      { tools, run: recorder().run },
+      { tools, steps: new StepCount(ROOM), run: recorder().run },
       new AbortController().signal,
       ENV,
     );
@@ -257,6 +266,7 @@ describe("runScript limits", () => {
     });
     const inner = {
       tools: TOOLS,
+      steps: new StepCount(ROOM),
       run: async (call: ToolCall) => {
         ran.push(call.args.path?.length ?? 0);
         if (ran.length === 1) await gate;
@@ -283,20 +293,63 @@ describe("runScript limits", () => {
     expect(ran).toEqual([1, big, big, big]);
   });
 
-  test(`call ${MAX_SCRIPT_CALLS + 1} throws inside the script and is never run`, async () => {
+  test("each admitted call takes a step of the turn: the call past the limit throws inside the script, is never run, and takes none", async () => {
     const tools = recorder();
+    // [>]: A limit of 4 with the run_script call's own step taken leaves room for exactly 3 calls.
+    const steps = new StepCount(4);
+    steps.take();
     const result = await script(
       [
-        `for (let i = 0; i < ${MAX_SCRIPT_CALLS}; i++) await read_file({ path: String(i) });`,
+        "for (let i = 0; i < 3; i++) await read_file({ path: String(i) });",
         "try { await read_file({ path: 'one more' }); } catch (error) { console.log(error.message); }",
+        "return 'finished';",
       ].join("\n"),
       tools.run,
+      ENV,
+      undefined,
+      steps,
     );
-    expect(tools.calls).toHaveLength(MAX_SCRIPT_CALLS);
-    expect(result).toEqual({
-      status: "ok",
-      text: "run_script: a script may make at most 100 tool calls; this call was not made.",
-    });
+    expect(tools.calls.map((call) => call.args.path)).toEqual(["0", "1", "2"]);
+    expect(result).toEqual({ status: "ok", text: `${stepLimitRefusal(4)}\nfinished` });
+    expect(stepLimitRefusal(4)).toBe(
+      "run_script: the agent turn has reached its limit of 4 tool steps, where each call a script makes is one step; this call was not made. End the script with what it has so far.",
+    );
+    expect(steps.reached).toBe(true);
+  });
+
+  test("calls queued at once are admitted only while steps are left", async () => {
+    const tools = recorder();
+    const steps = new StepCount(2);
+    const result = await script(
+      [
+        "const settled = await Promise.allSettled([0, 1, 2, 3].map((i) => read_file({ path: String(i) })));",
+        "return settled.map((each) => each.status).join(',');",
+      ].join("\n"),
+      tools.run,
+      ENV,
+      undefined,
+      steps,
+    );
+    expect(tools.calls.map((call) => call.args.path)).toEqual(["0", "1"]);
+    expect(result).toEqual({ status: "ok", text: "fulfilled,fulfilled,rejected,rejected" });
+  });
+
+  test("a call refused for another reason takes no step", async () => {
+    const tools = recorder();
+    const steps = new StepCount(1);
+    const result = await script(
+      [
+        "try { await read_file('a'); } catch {}",
+        "try { await edit_file({ path: 'a' }); } catch {}",
+        "return await read_file({ path: 'b' });",
+      ].join("\n"),
+      tools.run,
+      ENV,
+      undefined,
+      steps,
+    );
+    expect(tools.calls).toEqual([{ name: "read_file", args: { path: "b" } }]);
+    expect(result).toEqual({ status: "ok", text: 'read_file {"path":"b"}' });
   });
 
   test("a script that runs past its time without a tool call is killed", async () => {
@@ -422,6 +475,45 @@ describe("runScript limits", () => {
     expect(tools.calls).toEqual([]);
   });
 
+  test("a call frame that arrives in pieces runs once its newline arrives", async () => {
+    const tools = recorder();
+    const result = await script(
+      [
+        "const outer = console.log.constructor('return globalThis')();",
+        "const pause = (ms) => new Promise((resolve) => outer.setTimeout(resolve, ms));",
+        `for (const piece of ['{"call":{"id":1,', '"name":"read_file","args":', '{"path":"a"}}}', '\\n']) {`,
+        "  outer.process.stdout.write(piece);",
+        "  await pause(20);",
+        "}",
+        "await pause(200);",
+        "console.log('sent');",
+      ].join("\n"),
+      tools.run,
+    );
+    expect(tools.calls).toEqual([{ name: "read_file", args: { path: "a" } }]);
+    expect(result).toEqual({ status: "ok", text: "sent" });
+  });
+
+  test("a line sent in many small pieces is stopped once it passes the frame bound", async () => {
+    const result = await script(
+      [
+        "const outer = console.log.constructor('return globalThis')();",
+        "const out = outer.process.stdout;",
+        "const piece = 'x'.repeat(1024);",
+        "for (;;) {",
+        "  if (!out.write(piece)) await new Promise((resolve) => out.once('drain', resolve));",
+        "  await new Promise((resolve) => outer.setImmediate(resolve));",
+        "}",
+      ].join("\n"),
+      recorder().run,
+      { ...ENV, runMs: 60_000 },
+    );
+    expect(result).toEqual({
+      status: "error",
+      text: "run_script: the script was stopped, since it sent a line over 8388608 characters.",
+    });
+  });
+
   test("the kernel limit on processor time kills a looping child even without the host's timer", async () => {
     const result = await script("for (;;) {}", recorder().run, { ...ENV, runMs: 60_000, cpuSeconds: 1 });
     expect(result).toEqual({
@@ -443,7 +535,7 @@ describe("runScript cancellation", () => {
       });
     const result = await runScript(
       "await write_file({ path: 'a', content: 'x' });",
-      { tools: TOOLS, run },
+      { tools: TOOLS, steps: new StepCount(ROOM), run },
       abort.signal,
       ENV,
     );
@@ -693,12 +785,9 @@ describe("scriptProblem, the runtime probe", () => {
   test("fails within its time bound on a runtime that never answers, and stops on its signal", async () => {
     const folder = await mkdtemp(join(tmpdir(), "broke-code-probe-"));
     try {
-      // [>]: A runtime that reads nothing and never exits, as a stuck start would.
-      const stuck = join(realpathSync(folder), "stuck");
-      await writeFile(stuck, "#!/bin/sh\nexec /bin/sleep 60\n");
-      await chmod(stuck, 0o755);
+      // [>]: A sandbox whose runtime reads nothing and never exits, as a stuck start would.
       const fake = join(realpathSync(folder), "sandbox-exec");
-      await writeFile(fake, `#!/bin/sh\nexec ${stuck}\n`);
+      await writeFile(fake, "#!/bin/sh\nexec /bin/sleep 60\n");
       await chmod(fake, 0o755);
       const env = { ...ENV, sandboxExec: fake };
       const started = performance.now();

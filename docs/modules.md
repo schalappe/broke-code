@@ -106,7 +106,8 @@ This file says which file holds which responsibility. Update it when a module ga
   result before the call, `replyCut`, the stream's cut, malformed-call messages), the system prompt composer (`systemPrompt.ts`: role, the Plan paragraph, call format, rules, tools,
   skills, instruction files; `composeSummaryPrompt`, the summary request's own prompt; `offeredTools`, the tools a send
   offers, and `PLAN_BLOCKED_TOOLS`), the turn limits (`limits.ts`: `brokeCode.maxToolSteps`, `brokeCode.contextSizes`, and `brokeCode.autoCompact` parsing,
-  `userLimits`, their user values only,
+  `userLimits`, their user values only, `StepCount`, the one step count of a turn, which direct calls and a script's
+  calls share,
   the token estimate at a model's characters per token and the most characters that fit, exact in tenths, the
   context-full threshold, the typed size check, and `brokeCode.commandTimeoutSeconds` parsing),
   the command tool (`commands.ts`: `RUN_COMMAND_TOOL`, `runCommandTool` checks the call and the folder and asks the
@@ -143,10 +144,11 @@ This file says which file holds which responsibility. Update it when a module ga
   default-deny `scriptSandboxProfile`, behind `/bin/sh`'s `ulimit -t`, which fails closed, talking JSON Lines with
   `SCRIPT_BOOTSTRAP`, which runs the script in a `node:vm` context; the host checks each call the script asks for
   (`admit`, the `blocked` tools that only refuse, Plan's, then `MAX_QUEUED_ARGUMENT_CHARS`, the arguments of the
-  calls waiting, before the call queues), runs the calls one at a time through the run context's
+  calls waiting, then a step of the turn's count, `InnerCalls.steps`, refused with `stepLimitRefusal` when none is
+  left, all before the call queues), runs the calls one at a time through the run context's
   `innerCalls`, which the controller's `runCall` approves and records as steps marked `fromScript`, a `read_file`
   among them handing the script the file's raw text (`ToolResult.forScript`), and enforces
-  `MAX_SCRIPT_CALLS`, `SCRIPT_RUN_MS`, `MAX_SCRIPT_OUTPUT`, `SCRIPT_MEMORY_BYTES` (read with
+  `SCRIPT_RUN_MS`, `MAX_SCRIPT_OUTPUT`, `SCRIPT_MEMORY_BYTES` (read with
   `ps`), and `SCRIPT_CPU_SECONDS`, aborting the calls a script left once it ends and killing a child that does not
   exit then; `scriptProblem`, the runtime
   probe, a round trip through a stub tool within `SCRIPT_PROBE_MS`; the measured profile is in `docs/eval.md`; and

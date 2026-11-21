@@ -473,7 +473,10 @@ A workspace `settings.json` cannot turn it on.
   reject a call, the script gets an error and decides what to do. A script cannot ask you a question or load a skill.
 - A script runs in a separate process of your editor, in a macOS sandbox that reads none of your files, writes
   nothing, starts no program, and reaches no network: it can act only through the tools. It stops after 10 seconds
-  without a tool call, after 100 tool calls, or after 60 seconds of processor time.
+  without a tool call or after 60 seconds of processor time.
+- Each tool call a script makes counts as one step toward the agent turn's step limit (`brokeCode.maxToolSteps`), and
+  so does the script itself: a script saves replies, not steps. Once the turn reaches its limit, the script's next
+  call is refused without running, the script ends, and the turn stops as it does after a direct call.
 - The chat shows a script as one row, `run_script` with its number of lines, which opens to the code. The rows of the
   calls it made follow, one level in, then its result. They show as each call finishes, and are saved at once, so a
   reload keeps what a script already wrote. To keep conversations small, each of those rows keeps only the start of
@@ -629,7 +632,8 @@ LLM services do not report a model's context size. broke-code reads it from the 
 your **user** settings, by model name as the provider lists it. A model absent from the table uses 32,768 tokens, and
 the chat shows a **Set context size** link after the token count. Enter the size there, and broke-code saves it to the table.
 
-To set the tool step limit of an agent turn, use `brokeCode.maxToolSteps` (default 50, at least 1).
+To set the tool step limit of an agent turn, use `brokeCode.maxToolSteps` (default 50, at least 1). Every tool call
+counts as one step, each call a Code Mode script makes included.
 
 ```json
 "brokeCode.contextSizes": { "gemma-4": 262144, "qwen3:8b": 40960 },

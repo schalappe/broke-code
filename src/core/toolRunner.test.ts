@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { ASK_USER_TOOL } from "./askUser";
 import type { ToolContext } from "./chatController";
 import { type CommandEnv, RUN_COMMAND_TOOL } from "./commands";
+import { StepCount } from "./limits";
 import { RecordedChanges } from "./recordedChanges";
 import { LOAD_SKILL_TOOL } from "./skills";
 import { composeSystemPrompt, offeredTools, type Skill } from "./systemPrompt";
@@ -71,7 +72,11 @@ describe("workspaceToolRunner", () => {
     const refused: ToolResult = { status: "error", text: "run_script: scripts cannot run in this call." };
     expect(await runner.run(call, context)).toEqual(refused);
     expect(await runner.run(call, { ...context, scriptEnv: env })).toEqual(refused);
-    const innerCalls = { tools: READ_TOOLS, run: async () => ({ status: "ok" as const, text: "alpha" }) };
+    const innerCalls = {
+      tools: READ_TOOLS,
+      steps: new StepCount(1),
+      run: async () => ({ status: "ok" as const, text: "alpha" }),
+    };
     expect(await runner.run(call, { ...context, scriptEnv: env, innerCalls })).toEqual({ status: "ok", text: "alpha" });
   });
 
