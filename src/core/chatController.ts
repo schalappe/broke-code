@@ -57,7 +57,14 @@ import type { ProviderSupport } from "./providerSupport";
 import type { ParsedProviders, Provider } from "./providers";
 import { RecordedChanges, type RecordedFile, type RestoreOutcome } from "./recordedChanges";
 import { reservedMention } from "./reservedMentions";
-import { type InnerCalls, RUN_SCRIPT_TOOL, type ScriptEnv } from "./script";
+import {
+  argumentChars,
+  type InnerCalls,
+  MAX_SCRIPT_STEP_CHARS,
+  RUN_SCRIPT_TOOL,
+  type ScriptEnv,
+  STEP_BUDGET_REFUSAL,
+} from "./script";
 import { SerialQueue } from "./serialQueue";
 import { findSlashSkill, loadSkillText, type SkillDiscovery } from "./skills";
 import { builtInCommand } from "./suggestions";
@@ -305,9 +312,10 @@ type CallSetup = {
  * in call order (the staged steps). The one source of truth for them while the script runs: projected into
  * `ChatState.scriptSteps` while its conversation is shown, and into each save of that conversation after the reply in
  * flight, then appended to the entries, and cleared, in the one update that ends the script (its step, or Stop).
+ * `held`: the characters those steps hold, their arguments and result text, which `MAX_SCRIPT_STEP_CHARS` bounds.
  * `save`: the save of those steps in flight (`saveScriptSteps`), `again` once a step was staged after it started.
  */
-type ScriptRun = { conversation: Conversation; steps: ToolStep[]; save?: { again: boolean } };
+type ScriptRun = { conversation: Conversation; steps: ToolStep[]; held: number; save?: { again: boolean } };
 
 type UserEntry = ChatEntry & { role: "user" };
 
@@ -1117,7 +1125,7 @@ export class ChatController {
           // script runs at once; each call it makes that asks waits on its own approval.
           this.state.callRunning = !tools.find((tool) => tool.name === name)?.asks;
           const script: ScriptRun | undefined =
-            name === RUN_SCRIPT_TOOL.name && scriptEnv ? { conversation, steps: [] } : undefined;
+            name === RUN_SCRIPT_TOOL.name && scriptEnv ? { conversation, steps: [], held: 0 } : undefined;
           this.script = script;
           this.emit();
           void this.save(conversation);
@@ -1553,7 +1561,8 @@ export class ChatController {
    * reply's call and for each call a script makes alike: a fresh approval and line count, the run, then the step, tied
    * to the file its write recorded so "Undo changes" marks it (`Turn.steps`). Returns the step and the tool's result,
    * whose `forScript` a script's call reads. `undefined` when `signal` aborted first: the step is dropped, as Stop drops
-   * a call in flight. `script`: the reply's `run_script` call, whose script's calls run through `runInnerCall` and
+   * a call in flight; a script's call (`inner`) returns only once its tool has settled, a write it made recorded for
+   * undo, tied to no step. `script`: the reply's `run_script` call, whose script's calls run through `runInnerCall` and
    * land in `script.steps`. `inner`: a call a script made, its step marked `fromScript`; it never runs a script.
    */
   private async runCall(
@@ -1597,12 +1606,17 @@ export class ChatController {
       ...(inner ? { fromScript: true as const } : {}),
     };
     turn.written = undefined;
-    const result = await unlessAborted(this.runTool(call, context), signal);
+    const running = this.runTool(call, context);
+    // [!]: A script's call is awaited to its end even once `signal` aborts (the script ended, or Stop): the abort
+    // cancels its approval or its command, and a write already handed to the applier lands before the script's step
+    // settles, so the turn's next call never runs beside it nor reads the file before it. Stop stays immediate: the
+    // reply's own call, the script's included, is never awaited past it.
+    const result = inner ? await running : await unlessAborted(running, signal);
     // [!]: Read and cleared at once: a script's calls run while its own call is in flight, and the script's step must
     // never be tied to the file of the last write it made.
     const written = turn.written;
     turn.written = undefined;
-    if (!result) return undefined;
+    if (!result || (inner && signal.aborted)) return undefined;
     const step: ToolStep = {
       role: "tool",
       name: call.name,
@@ -1625,8 +1639,9 @@ export class ChatController {
    * that reached the disk. While the call waits on an approval the call reads as not running; once it ends, the script
    * runs again. A call that settles after its script ended (Stop, navigation, or the script's own end) changes
    * nothing: its step is dropped, as Stop drops a direct call's, and a write it made is still recorded for undo by the
-   * applier, tied to no step. Settles with the call's result for the script, the tool's `forScript` value when it gave
-   * one; never rejects.
+   * applier, tied to no step. A call whose arguments would take the script's steps past `MAX_SCRIPT_STEP_CHARS` is
+   * refused without running and leaves no step. Settles with the call's result for the script, the tool's `forScript`
+   * value when it gave one; never rejects.
    */
   private async runInnerCall(
     call: ToolCall,
@@ -1635,11 +1650,15 @@ export class ChatController {
     script: ScriptRun,
   ): Promise<ToolResult> {
     if (signal.aborted || this.script !== script) return stopped(call.name);
+    // [!]: The one bound on what a script makes the turn hold: each step is shown, saved, and kept with the record.
+    const args = argumentChars(call);
+    if (script.held + args > MAX_SCRIPT_STEP_CHARS) return { status: "error", text: STEP_BUDGET_REFUSAL };
     this.state.callRunning = !setup.tools.find((tool) => tool.name === call.name)?.asks;
     this.emit();
     const ran = await this.runCall(call, setup, signal, { inner: true });
     if (!ran || signal.aborted || this.script !== script) return stopped(call.name);
     script.steps.push(ran.step);
+    script.held += args + ran.step.text.length;
     this.state.callRunning = true;
     this.emit();
     this.saveScriptSteps(script);

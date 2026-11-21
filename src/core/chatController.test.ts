@@ -49,6 +49,7 @@ import {
 import { ProviderSupport } from "./providerSupport";
 import type { Provider } from "./providers";
 import { recordingApplier } from "./recordedChanges";
+import { MAX_SCRIPT_STEP_CHARS, STEP_BUDGET_REFUSAL } from "./script";
 import { LOAD_SKILL_TOOL, readSkills, type SkillDiscovery } from "./skills";
 import { composeSummaryPrompt, composeSystemPrompt, type InstructionFile, type Skill } from "./systemPrompt";
 import { createTlsFixture, removeTlsFixture } from "./tlsFixture";
@@ -7929,6 +7930,72 @@ describe("ChatController run_script", () => {
     controller.stop();
     await sent;
     expect(outline(state().entries)).toEqual(["user", "assistant:stopped", "read_file*"]);
+  });
+
+  test("a write the script did not wait for lands before the script's step settles and the next request is sent", async () => {
+    let reach: () => void = () => {};
+    const reached = new Promise<void>((resolve) => {
+      reach = resolve;
+    });
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    // [>]: The script runs on for half a second after its call, so the write reaches the applier before the script ends.
+    const code = [
+      'write_file({ path: "late.txt", content: "late" });',
+      "const start = Date.now();",
+      "while (Date.now() - start < 500) {}",
+      'return "returned";',
+    ].join("\n");
+    const { controller, state, sent } = await scriptTurn([{ content: scriptCall(code) }, { content: "Done." }], {
+      beforeWrite: () => {
+        reach();
+        return gate;
+      },
+    });
+    const turn = controller.send("write");
+    await reached;
+    // [>]: Well past the script's end: its step must still wait for the write in the applier.
+    await Bun.sleep(1000);
+    expect(sent()).toHaveLength(1);
+    expect(outline(state().entries)).toEqual(["user", "assistant:streaming"]);
+    release();
+    await turn;
+
+    expect(text("late.txt")).toBe("late\n");
+    // [>]: The write's step is dropped, as on Stop; the write is still recorded for undo, tied to no step.
+    expect(outline(state().entries)).toEqual(["user", "assistant:done", "run_script", "assistant:done"]);
+    expect(state().changedFiles.map((file) => file.path)).toEqual(["late.txt"]);
+  });
+
+  test("a script's steps hold a bounded amount of text: the call past the budget throws and never runs", async () => {
+    // [>]: Under the read limit of 1 MiB, so about eight reads fit in the budget.
+    writeFileSync(join(dir, "big.txt"), `${"x".repeat(999)}\n`.repeat(1000));
+    const code = [
+      "let reads = 0;",
+      "for (let i = 0; i < 40; i++) {",
+      '  try { await read_file({ path: "big.txt" }); reads++; } catch (error) { console.log(reads, error.message); break; }',
+      "}",
+    ].join("\n");
+    const { controller, state } = await scriptTurn([{ content: scriptCall(code) }, { content: "Done." }]);
+    await controller.send("read");
+
+    const tools = state().entries.filter((entry) => entry.role === "tool");
+    const inner = tools.filter((step) => step.fromScript === true);
+    const held = (step: (typeof tools)[number]) =>
+      Object.entries(step.args).reduce((sum, [name, value]) => sum + name.length + value.length, 0) + step.text.length;
+    const total = inner.reduce((sum, step) => sum + held(step), 0);
+    const nextArgs = "path".length + "big.txt".length;
+    expect(inner.length).toBeGreaterThan(1);
+    expect(inner.length).toBeLessThan(40);
+    expect(total - held(inner.at(-1)!) + nextArgs).toBeLessThanOrEqual(MAX_SCRIPT_STEP_CHARS);
+    expect(total + nextArgs).toBeGreaterThan(MAX_SCRIPT_STEP_CHARS);
+    expect(tools.at(-1)).toMatchObject({
+      name: "run_script",
+      status: "ok",
+      text: `${inner.length} ${STEP_BUDGET_REFUSAL}`,
+    });
   });
 
   test("Plan offers run_script; a script's write or command throws the Plan message, with no approval and no step", async () => {

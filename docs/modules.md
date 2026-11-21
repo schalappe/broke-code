@@ -48,7 +48,8 @@ This file says which file holds which responsibility. Update it when a module ga
   `openChangeDiff` and the closing of the diffs of files no longer held over the `ChangeDiffHost` port; and Code Mode:
   the send's one decision over the `CodeModePort` (`ChatPorts.codeMode`), the script in flight (`ScriptRun`), whose
   completed inner steps it projects into `ChatState.scriptSteps` and each save, and `runInnerCall`, an inner call run
-  and recorded as a direct one, which changes nothing once its script ended), the line
+  and recorded as a direct one, awaited to its end even once aborted, which changes nothing once its script ended,
+  and which refuses a call past `MAX_SCRIPT_STEP_CHARS`, the bound on what the script's steps hold), the line
   counts of a change (`lineDiff.ts`: `lineDiffCount`, a minimal line diff within `LINE_DIFF_WORK_LIMIT`), the
   "Changed files" diffs (`turnDiffs.ts`: `TurnDiffs`, the `ChangeDiffHost` over a `TurnDiffEditor` port, with the
   left sides' text, the existence check, the error wording, an open cancelled when its file is closed meanwhile;
@@ -142,7 +143,7 @@ This file says which file holds which responsibility. Update it when a module ga
   (`admit`, and the `blocked` tools that only refuse, Plan's), runs the calls one at a time through the run context's
   `innerCalls`, which the controller's `runCall` approves and records as steps marked `fromScript`, a `read_file`
   among them handing the script the file's raw text (`ToolResult.forScript`), and enforces
-  `MAX_SCRIPT_CALLS`, `MAX_SCRIPT_ARGUMENTS`, `SCRIPT_RUN_MS`, `MAX_SCRIPT_OUTPUT`, `SCRIPT_MEMORY_BYTES` (read with
+  `MAX_SCRIPT_CALLS`, `SCRIPT_RUN_MS`, `MAX_SCRIPT_OUTPUT`, `SCRIPT_MEMORY_BYTES` (read with
   `ps`), and `SCRIPT_CPU_SECONDS`, aborting the calls a script left once it ends and killing a child that does not
   exit then; `scriptProblem`, the runtime
   probe, a round trip through a stub tool within `SCRIPT_PROBE_MS`; the measured profile is in `docs/eval.md`; and

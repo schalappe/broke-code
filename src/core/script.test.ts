@@ -9,7 +9,6 @@ import { ASK_USER_TOOL } from "./askUser";
 import {
   admit,
   ancestorFolders,
-  MAX_SCRIPT_ARGUMENTS,
   MAX_SCRIPT_CALLS,
   MAX_SCRIPT_OUTPUT,
   RUN_SCRIPT_TOOL,
@@ -323,23 +322,6 @@ describe("runScript limits", () => {
     expect(result.text).toEndWith(
       `run_script: the script stopped on an error: the script printed more than ${MAX_SCRIPT_OUTPUT} characters`,
     );
-  });
-
-  test("a call past the arguments budget throws inside the script and is never run", async () => {
-    const tools = recorder(() => ({ status: "ok", text: "written" }));
-    const half = Math.ceil(MAX_SCRIPT_ARGUMENTS / 2) + 1;
-    const result = await script(
-      [
-        `await write_file({ path: 'a', content: 'x'.repeat(${half}) });`,
-        `try { await write_file({ path: 'b', content: 'y'.repeat(${half}) }); } catch (error) { console.log(error.message); }`,
-      ].join("\n"),
-      tools.run,
-    );
-    expect(tools.calls.map((call) => call.args.path)).toEqual(["a"]);
-    expect(result).toEqual({
-      status: "ok",
-      text: `run_script: the tool calls of a script may pass at most ${MAX_SCRIPT_ARGUMENTS} characters of arguments in all; this call was not made.`,
-    });
   });
 
   test("a child that ends and then stays alive is killed once its time to exit is up", async () => {

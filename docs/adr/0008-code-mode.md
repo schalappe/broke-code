@@ -26,18 +26,21 @@ script makes are execution detail (ADR 0001's "one body call per reply" stands).
   listing, `/dev/null`, the kernel's settings, and each extra readable path; nothing else: no file of the user's, no
   write, no network, no process. The child talks JSON Lines with the host over its stdin and stdout and evaluates the
   script in a `node:vm` context, a second layer only. The host owns the policy: it admits each call (a tool the script
-  may call, known arguments, at most 100 calls and 8 MiB of arguments in all), runs the calls one at a time through
+  may call, known arguments, at most 100 calls), runs the calls one at a time through
   the turn, and enforces the limits (10 s of the script's own running time between calls, 1 MiB of output, the
   kernel's 60 s of processor time, 512 MiB of resident memory, 32 MiB of answers left unread, 10 s to exit once its
   input has ended). The child is untrusted once the script runs: a script can leave the vm, so the host never takes
   its done frame as proof that it will exit. When the script ends, the call it did not wait for is aborted and the
-  queued ones never run. macOS applies no memory limit to a process (`ulimit -v`, `-d`, and `-m` fail), so the host
+  queued ones never run; the script's step waits for the aborted call to settle, so a write already handed to the
+  applier lands before the turn's next call runs. macOS applies no memory limit to a process (`ulimit -v`, `-d`, and `-m` fail), so the host
   reads the child's resident memory with `ps` every 250 ms, a bound with that lag rather than a hard one. Fail closed:
   when the sandbox or a limit cannot apply, the script does not run, or stops, and the step says why.
 - **Every inner call goes through the usual approvals** (maintainer decision 1). The turn runs each call a script
   makes exactly as a direct call (`runCall`): Ask's diff and Accept, Run for a command, Auto-edit, Full access with its
   denied commands and command sandbox, the step's `approval`, its line counts, and its tie to the file for "Undo
-  changes". A rejection throws in the script.
+  changes". A rejection throws in the script. The turn bounds what a script makes it hold: the steps of one script's
+  calls hold at most 8 MiB of arguments and result text, plus one call's result; a call whose arguments would pass it
+  throws and never runs. Each step is shown, saved, and kept, so this is the bound, not the child's own limits.
 - **Inner calls are recorded as steps and never sent.** Each call's step is an ordinary tool step marked `fromScript:
   true`, an optional field, so the record stays at version 2 (ADR 0003). While the script runs, the completed steps
   are staged by the turn: shown live (`ChatState.scriptSteps`) and saved after the reply in flight, so a crash keeps

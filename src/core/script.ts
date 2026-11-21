@@ -93,11 +93,20 @@ export const SCRIPT_CPU_SECONDS = 60;
  */
 const MAX_FRAME_CHARS = 8 * 1024 * 1024;
 /**
- * Characters of arguments all the calls of one script may pass, admitted calls only: the turn keeps each call's
- * arguments in its step and saves them, so a script never makes it hold more than this. A call past it throws inside the
- * script and is never run.
+ * Characters the steps of one script's calls may hold, their arguments and their result text, counted by the turn
+ * that records them (`runInnerCall`): the turn shows each step and saves it with the record, so a script never makes it
+ * hold more than this plus one call's result. A call whose arguments would pass it throws inside the script
+ * (`STEP_BUDGET_REFUSAL`) and is never run.
  */
-export const MAX_SCRIPT_ARGUMENTS = 8 * 1024 * 1024;
+export const MAX_SCRIPT_STEP_CHARS = 8 * 1024 * 1024;
+
+/** What a call past `MAX_SCRIPT_STEP_CHARS` throws inside the script. */
+export const STEP_BUDGET_REFUSAL = `${TOOL}: the tool calls of a script may pass and return at most ${MAX_SCRIPT_STEP_CHARS} characters in all; this call was not made.`;
+
+/** Characters of `call`'s argument names and values. */
+export function argumentChars(call: ToolCall): number {
+  return Object.entries(call.args).reduce((total, [name, value]) => total + name.length + value.length, 0);
+}
 /**
  * Characters of answers the host sent that have not reached the child's pipe: a child that stops reading its input
  * while it asks for calls would otherwise grow the host's buffer without bound. Past it the script is stopped.
@@ -324,7 +333,7 @@ export function scriptLaunch(
  * `runMs` of its input ending is killed. `ok`: what the script printed, then its returned value; `error`: that output,
  * then why the script stopped. Fail closed: when `sandbox-exec` is missing or cannot apply the profile, the result is
  * an `error` naming the cause, and the script never runs outside the sandbox. An abort of `signal` kills the child and
- * gives the stopped error; so do the limits (`MAX_SCRIPT_CALLS` and `MAX_SCRIPT_ARGUMENTS` refuse the call instead) and
+ * gives the stopped error; so do the limits (`MAX_SCRIPT_CALLS` refuses the call instead) and
  * a protocol error, each with its own message.
  */
 export async function runScript(
@@ -418,7 +427,6 @@ function runChild(
     let startFailure: string | undefined;
     let outstanding = 0;
     let calls = 0;
-    let argumentChars = 0;
     let unread = 0;
     let queue: Promise<void> = Promise.resolve();
     let pendingLine = "";
@@ -528,9 +536,6 @@ function runChild(
       const admitted = calls > MAX_SCRIPT_CALLS ? callLimitText() : (refusal ?? admit(frame, callable));
       // [>]: A refusal is answered at once and the running time keeps counting, so a loop of refused calls ends.
       if (typeof admitted === "string") return send({ id, status: "error", text: admitted });
-      const size = argumentSize(admitted);
-      if (argumentChars + size > MAX_SCRIPT_ARGUMENTS) return send({ id, status: "error", text: argumentLimitText() });
-      argumentChars += size;
       outstanding += 1;
       stopTimer();
       queue = queue.then(async () => {
@@ -625,15 +630,6 @@ async function callSafely(callTool: InnerCalls["run"], call: ToolCall, signal: A
 
 function callLimitText(): string {
   return `${TOOL}: a script may make at most ${MAX_SCRIPT_CALLS} tool calls; this call was not made.`;
-}
-
-function argumentLimitText(): string {
-  return `${TOOL}: the tool calls of a script may pass at most ${MAX_SCRIPT_ARGUMENTS} characters of arguments in all; this call was not made.`;
-}
-
-/** Characters of `call`'s argument names and values. */
-function argumentSize(call: ToolCall): number {
-  return Object.entries(call.args).reduce((total, [name, value]) => total + name.length + value.length, 0);
 }
 
 /**
