@@ -84,8 +84,8 @@ export function offeredTools(tools: readonly ToolSpec[], skills: readonly Skill[
 /**
  * The system prompt for `tools`, the `skills` listed to the model, and the `instructions` files, in order. The rules of
  * `write_file`, `edit_file`, `run_command`, `ask_user`, and `load_skill` follow the general rules when those tools are
- * listed. Without a listed skill or a file, it ends after the tools. In Plan mode (`mode` `plan`) the role says the
- * agent reads files, and the Plan paragraph follows it; without a mode, or in Ask or Auto-edit, the prompt is the same,
+ * listed; `run_script` has none, its description carries its guidance alone. Without a listed skill or a file, it ends
+ * after the tools. In Plan mode (`mode` `plan`) the role says the agent reads files, and the Plan paragraph follows it; without a mode, or in Ask or Auto-edit, the prompt is the same,
  * byte for byte. `tools` are listed as given: `offeredTools` leaves out those of the mode.
  */
 export function composeSystemPrompt(

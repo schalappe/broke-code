@@ -280,6 +280,7 @@ function parseEntry(raw: unknown): StoredEntry | undefined {
     if (!TOOL_STEP_STATUSES.includes(raw.status as ToolStepStatus)) return undefined;
     if (raw.approval !== undefined && !STEP_APPROVALS.includes(raw.approval as StepApproval)) return undefined;
     if (raw.undone !== undefined && raw.undone !== true) return undefined;
+    if (raw.fromScript !== undefined && raw.fromScript !== true) return undefined;
     if (!isOptional(raw.lines, isLineCounts)) return undefined;
     const status = raw.status as ToolStepStatus;
     const approval = raw.approval as StepApproval | undefined;
@@ -293,6 +294,7 @@ function parseEntry(raw: unknown): StoredEntry | undefined {
       ...(approval !== undefined ? { approval } : {}),
       ...(lines !== undefined ? { lines: { added: lines.added, removed: lines.removed } } : {}),
       ...(raw.undone === true ? { undone: true } : {}),
+      ...(raw.fromScript === true ? { fromScript: true } : {}),
     };
   }
   return undefined;

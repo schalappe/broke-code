@@ -121,3 +121,13 @@ which of two things the user meant is better asked than guessed.
 
 Considered and rejected: leaving `ask_user` out of Plan (a second tool list to keep in step, and Plan is where an
 ambiguous request costs the least to settle before any change).
+
+## Addendum (2026-11-21): Plan also offers `run_script` when Code Mode is on
+
+With the experimental setting `brokeCode.codeMode` on (ADR 0008), a Plan turn offers `run_script` too, after the
+other tools, and a script may call only the tools Plan offers: the read tools (`ask_user` and `load_skill` are never
+callable from a script). `write_file`, `edit_file`, and `run_command` still exist inside the script, as functions that
+throw `<tool> is not available in Plan mode.`, the refused-call step's text, with no approval and no step, so a
+script that tries a write gets the Plan message, not a `ReferenceError`. The Plan role sentence and paragraph are
+unchanged. Plan's promise holds: a script changes nothing, since every effect it has goes through a tool, and the
+sandbox lets it write nothing itself. Without the setting, a Plan turn's tools and prompt are those above.

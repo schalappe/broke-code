@@ -107,6 +107,20 @@ describe("playScenario", () => {
     expect(readdirSync(parent)).toEqual([]);
   });
 
+  test("a scenario's own step limit wins over the bench's", async () => {
+    const looping = { ...READ_SCENARIO, maxToolSteps: 2 };
+    replies = [READ_CALL, READ_CALL, READ_CALL, "The value is kestrel-4471-vanta."];
+    const { entries } = await playScenario(
+      looping,
+      { baseUrl, apiKey: undefined, model: "m", maxToolSteps: 10 },
+      parent,
+    );
+    expect(entries.filter((entry) => entry.role === "tool")).toHaveLength(2);
+    const last = entries.findLast((entry) => entry.role === "assistant");
+    expect(last).toMatchObject({ status: "halted", haltReason: "stepLimit" });
+    replies = [];
+  });
+
   test("sends the target's key to the server on every request, and none without one", async () => {
     authorizations.length = 0;
     replies = ["No idea."];

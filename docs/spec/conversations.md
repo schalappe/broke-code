@@ -36,7 +36,8 @@ This file specifies how conversations are saved, listed, pruned, and reopened, a
 - The record is versioned (`version: 2`) and holds the displayed entries: user entries, each with the text the model
   received (`modelText`) and an optional `skill` (`{ name, status }`, any other shape making the record invalid),
   assistant entries, with an optional `call` locating the call block in the answer and, when
-  `halted`, its `haltReason`, and tool steps, with an optional `approval` and an optional `undone` (`true` only). A reopened conversation therefore resends exactly what was sent and
+  `halted`, its `haltReason`, and tool steps, with an optional `approval`, an optional `undone` (`true` only), and an optional `fromScript` (`true`
+  only, below). A reopened conversation therefore resends exactly what was sent and
   never reads its mentions again. Version 1 files are skipped like any unknown version: no release wrote them, so
   none is migrated. An optional field added to an entry keeps the version: an older build drops the unknown key and
   reads the rest (ADR 0003), such as a mention's `range` (`@selection`), `failedFolders` (a partial `@diff`, a
@@ -46,10 +47,22 @@ This file specifies how conversations are saved, listed, pruned, and reopened, a
   ADR 0003, 2026-11-11). An unknown kind or status makes the record invalid. It holds no API key and nothing else of `ProviderAccess`; a failed reply's error keeps the provider's base
   URL for display, since it is user settings, not a secret. Times are whole milliseconds within the `Date` range. A
   file that fails validation or has an unknown version is logged and skipped; a file that cannot be read is shown as
-  a listing failure. On load, a reply still `waiting` or `streaming` becomes `stopped`.
+  a listing failure. On load, a reply still `waiting` or `streaming` becomes `stopped`, wherever it stands.
+- The record holds the displayed entries; what the model is sent is derived from them at each request (`toHistory`,
+  `docs/spec/harness.md`), never stored. They differ for Code Mode (ADR 0008): a tool step's optional `fromScript`
+  (`true` only, validated when present) marks a call a `run_script` script made. Such steps are displayed, as rows
+  of their reply's script, and never replayed themselves: the model is sent the script's `run_script` result, with a
+  line per inner write since undone. A record saved while a script ran holds the reply in flight, then the inner steps
+  its calls completed, in call order, and no `run_script` step: it reloads as a stopped script, the reply `stopped`
+  followed by those steps, which the history replays as one `run_script` error result saying the script was stopped,
+  with one line per completed call (`<tool> <path or the command's first line>: ok` or `error`). A script stopped in
+  the session leaves the same entries. A record with inner steps is replayed this way whatever the setting. An older
+  build that opens it drops `fromScript` (ADR 0003): it shows the inner steps as rows of their own, the first under
+  the reply and the next ones apart, and sends their results to the model as ordinary tool results, file text
+  included, before the `run_script` result. Accepted for an experimental setting.
 - A conversation is saved when a message is sent, and the request waits for that save (a failed save is shown and the
-  request still goes), then at most every 500 ms while a reply streams, when a call starts, after each tool step, and
-  when the turn ends (done, stopped, failed, halted, or cut off). A reply's saves go to the record it was sent
+  request still goes), then at most every 500 ms while a reply streams, when a call starts, after each tool step and
+  each call a script completes, and when the turn ends (done, stopped, failed, halted, or cut off). A reply's saves go to the record it was sent
   in, also after New chat or opening another one, and a deleted conversation is never written again. A conversation
   without entries is never written.
 - Navigation runs one operation at a time, in request order: restore, New chat (and `/new`, through the same

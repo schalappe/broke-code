@@ -9,7 +9,7 @@ This file describes `bun run eval`: what it runs, its sandbox, its scenarios, it
   each `ask_user` question answered at once through the run context with the scenario's answer (`Decide yourself.` in
   a scenario that defines none, so it keeps measuring what it measured), each command approved at once through the
   run context (the bench plays the model, not the user; nothing in the product auto-approves a command; `range` and
-  `ask` reject each instead) and run with `/bin/sh` in the copy with a 10-second timeout, no instruction file, and a step limit of 10. Since `--base-url` lets replies come from a remote
+  `ask` reject each instead) and run with `/bin/sh` in the copy with a 10-second timeout, no instruction file, and a step limit of 10 (30 in `rename` and `gather`). Since `--base-url` lets replies come from a remote
   server, a command runs with a minimal environment inside a macOS sandbox (`benchCommandEnv`): its environment holds
   only `PATH`, `LANG`, and each `LC_*` of the bench's when set there, `HOME`, the run's home copy, and `TMPDIR`, a
   folder of the run's throwaway folder beside the workspace copy, removed with it (`BENCH_API_KEY` and everything else
@@ -32,7 +32,7 @@ This file describes `bun run eval`: what it runs, its sandbox, its scenarios, it
   Within a run the bench learns each model's characters per token from the replies' reported usage as the extension
   does (`docs/spec/harness.md`), starting at 4 in every run. Results measured before 2026-11-13 were taken without the
   field, and every recorded result was measured at a fixed ratio of 4.
-  Nine scenarios, each judged on the turn ending `done` and on the workspace after it: every file the scenario writes
+  Eleven scenarios, each judged on the turn ending `done` and on the workspace after it: every file the scenario writes
   holds its exact expected text, byte for byte, and every other entry is unchanged. The workspace is read back without
   following symlinks: every entry but a folder counts, a file by its text, a symlink by its target (`{ symlink }`), any
   other kind, such as a FIFO, by its kind (`{ special }`), so a command that adds a symlink fails `workspaceChanged`.
@@ -113,17 +113,36 @@ This file describes `bun run eval`: what it runs, its sandbox, its scenarios, it
     - Decision: bar met (the issue's bar: `ask` 9/10 on both models, and every other scenario kept at 9/10 in the full
       run of the nine, recorded below). The tool, the scenario, and the flag are kept. The extension offers the tool
       since #143, with the description and the rule measured here unchanged, so that change needed no eval run.
+  - `rename`: `src/weights.py` defines `parcel_weight` beside `parcel_weight_limit`, a decoy whose name holds the old
+    one, and five other files call it, `src/routing.py` twice: seven occurrences in six files. The message asks to
+    rename it to `shipment_weight` everywhere it is defined or called and to change nothing else. Passes when exactly
+    those six files hold the new name at each occurrence, byte for byte, the decoy kept, and nothing else changed. A
+    replace-all of the old name also renames the decoy and fails `wrongEdit`; an `edit_file` of `parcel_weight` alone
+    in `src/weights.py` matches twice and is refused.
+  - `gather`: nine files `stock/<depot>.txt`, each with a `quantity: N` line among a `depot`, an `updated`, a `shelf`,
+    and a `reserved: N` line; the message asks for the total quantity across all depots (766). Passes when an `ok` tool
+    step's text (a direct call's, a script's call's, or the script's output) held the total as a number token or every
+    `quantity: N` line (a whole line, or a search line's end), the answer holds 766 as a number token of its own (the
+    `command` scenario's check), and no file changed; without such a step it is `wrongTool`.
+
+  `rename` and `gather` measure Code Mode (below): each takes several related calls, one per file. Both
+  reject every command, so a shell command cannot stand in and a run compares direct calls with one script, and both
+  have a step limit of 30 (`Scenario.maxToolSteps`), so a model calling the tools one by one can finish. Their
+  verdicts are task verdicts, the same with and without `--code-mode`.
 
   A failed run shows one category and a one-line detail: `malformed`, `wrongTool`, `wrongAnswer`, `stepLimit`,
   `contextFull`, `providerError`, `wrongEdit` (a file the scenario writes is missing or holds other text, with the
   first differing line), or `workspaceChanged` (the written files are right, or none was asked for, but another file
-  changed). The bar is 9 runs of 10 per model and scenario; the bench exits 1 when a model is under it, and before
+  changed). Each scenario's line of the report also gives the mean number of replies per run that ended `done`
+  (summaries aside), how many requests the model needed, and how many passing runs `chained`: one `ok` `run_script`
+  step ran at least two `ok` calls of its own. The bar is 9 runs of 10 per model and scenario; the bench exits 1 when a model is under it, and before
   any run when the sandbox cannot be applied, or Ollama is unreachable or does not list a model. `--model <name>`, `--scenario <name>` (both
   repeatable; an unknown scenario exits 1 naming the others), and `--runs <n>` shorten a local iteration;
   `--base-url <url>` plays against another OpenAI-compatible server instead of the local Ollama, such as a rented vLLM
   started with `--max-model-len 32768` (#58), its key read from `BENCH_API_KEY`, never a flag; `--no-ask-user` leaves
   `ask_user` out of every run's tools and system prompt and judges `ask` on the workspace alone, the baseline that
-  shows what the tool changes (its start line then says `ask_user not offered`); `--dump <file>` appends each run's entries (tool steps with their call's arguments), verdict,
+  shows what the tool changes (its start line then says `ask_user not offered`); `--code-mode` offers `run_script` in
+  every run (below; its start line then says `code mode (run_script offered)`); `--dump <file>` appends each run's entries (tool steps with their call's arguments), verdict,
   `planned` (each change handed to the applier, in call order: tool, path, `before` (`null` for a new file), `after`,
   and the applier's status), and `changes` (each entry that differs from the fixture after the run, with its text,
   `{ symlink }`, or `{ special }`, `null` when removed) as JSON Lines, to read the
@@ -154,3 +173,177 @@ This file describes `bun run eval`: what it runs, its sandbox, its scenarios, it
   8 min 52 s on `qwen3.8:27b` and 12 min 32 s on `gemma4`, and no run of the eight other scenarios called `ask_user`,
   so none needed a second run. `glm-latest` is not measured: renting a GPU for GLM is out of budget
   (maintainer decision, 2026-11-12), so no parser rule exists for its replies ending mid-call.
+
+## Code Mode (`--code-mode`)
+
+Code Mode lets the model write one JavaScript script that chains several tools; the harness runs it, and only what the
+script prints or returns goes back to the model (ADR 0008, `docs/spec/harness.md`). `bun run eval --code-mode` offers
+the `run_script` tool in every run (`src/core/script.ts`), through the same per-send decision the extension takes
+behind its experimental setting `brokeCode.codeMode`. Without the flag, the system prompt, the tool list, and every
+request are the ones before it, byte for byte.
+
+- The tool. `run_script(code)`, with no rule in the system prompt's Rules list (fourth iteration, below): its
+  description carries its guidance. `code` is a multi-line argument; a call may also hold the code bare, with no `<code>`
+  tag (ADR 0001, 2026-11-21): it then ends at the first `</run_script>`. The code is the body of an async function.
+  Each tool offered in the send but `run_script`, `load_skill`, and `ask_user` is an async function of the same name
+  taking one object of its arguments (each value converted with `String()`, an `undefined` one dropped); a call
+  resolves with the result text when the result is `ok` and throws an `Error` holding it otherwise, a rejection by the
+  user included. `read_file` is the exception: it resolves with the lines asked for exactly as stored (no header, no
+  fence, no notice), so a script can change the text and write it back, and it throws when the 2,000-line cap would
+  cut them, naming the `start_line` and `end_line` to read in parts; the recorded step keeps the mention block, so the
+  chat and the dump are unchanged (`ToolResult.forScript`, set only for a call a script made). `write_file` still ends
+  a file with exactly one line break; `edit_file` keeps a file without one as it is. The step's text is each `console.log` (or `console.error`) line in
+  order, then the returned value (a string as is, anything else as JSON), cut at 2,000 lines with the usual notice;
+  an uncaught error makes the step `error`, ending with `run_script: the script stopped on an error: <message>`.
+- The host owns the policy. Each call the script asks for is checked before anything runs: a tool the script may call,
+  one object of text values, no unknown argument, every required one given; a refused call throws inside the script.
+  Calls run one at a time, in arrival order, through the turn, which approves and records each one as a direct call
+  (`runCall` of the chat controller): the bench answers its approvals as for a direct call. Each call's step lands
+  before the script's own step, marked `fromScript: true`, staged while the script runs (shown live and saved in the
+  extension, `docs/spec/harness.md`); the history never sends such a step, so the model reads the script's output
+  only. A script is one step toward the step limit.
+- Limits, each ending the script with its own message: at most 100 calls (call 101 throws and never runs); 10 seconds
+  of the script's own running time between calls (the time a call takes, such as a wait for approval, never counts);
+  1 MiB of printed output, counted in the child; one protocol line over 8 MiB; and a kernel limit of 60 seconds of
+  processor time (`ulimit -t`, set by `/bin/sh` before `sandbox-exec` applies the profile), which holds even if the
+  host dies. Stop kills the child and aborts the call running.
+- The child. `/bin/sh -c 'ulimit -t 60 || exit 125; exec "$@"'` runs `/usr/bin/sandbox-exec -p <profile> -D RUNTIME=<bun>`, which
+  runs bun (`process.execPath`, its real path) with `-e <bootstrap>`, in `/`, with an empty environment: bun needs no
+  variable to run the bootstrap (measured). Host and child talk JSON Lines over the child's stdin and stdout. The
+  script runs in a `node:vm` context whose globals are the tool functions and `console`; the vm is a second layer
+  only, since a function passed into it leads back to the child's `process`. Fail closed: without `sandbox-exec`, or
+  when it cannot apply the profile, the step is an `error` naming the cause and nothing runs; before any run,
+  `--code-mode` runs the runtime probe that way, a script that calls a stub tool and returns its answer, and exits 1
+  when it fails (`benchScriptProblem` over `scriptProblem`).
+- The profile, default deny, every allowance measured on 2026-11-20 with bun 1.4.4 and node 23.11 on macOS (Darwin
+  27.2), by reading the kernel's sandbox denials (`log show --predicate 'sender == "Sandbox"'`):
+
+      (version 1)
+      (deny default)
+      (allow process-exec (literal (param "RUNTIME")))
+      (allow file-read* (literal (param "RUNTIME")))
+      (allow file-read* (subpath "/usr/lib") (subpath "/usr/share/icu") (subpath "/System/Library") (subpath "/System/Volumes/Preboot/Cryptexes/OS"))
+      (allow file-read-data (literal "/"))
+      (allow file-read* file-write-data (literal "/dev/null"))
+      (allow sysctl-read)
+      (allow file-read-metadata (literal (param "A0")) ...)
+
+  plus `(allow file-read* (subpath (param "R0")) ...)` for each extra readable path, none for the bench. The
+  metadata line, added for Electron (below), names each folder above the runtime, those folders alone. Without
+  `file-read-data` on `/`, the child's working folder, bun aborts at start (SIGABRT, exit 134); without
+  `sysctl-read` it crashes; without `/usr/share/icu`, `Intl.NumberFormat` throws in bun; without `/System/Library`,
+  node cannot read its OpenSSL configuration and exits; without `/dev/null`, node aborts. Bun alone starts without the
+  system library paths (the dyld cache maps without a read check), but they hold no user data and node needs them.
+  The script tests (`src/core/script.test.ts`) run a trusted probe under this exact launch and profile: a file write, a
+  read under the home folder, a read of a workspace file, and a process spawn each get `EPERM`, and a socket to a
+  server listening on 127.0.0.1 is refused (bun reports `ECONNREFUSED`; the kernel logs `deny network-outbound`, and
+  the server sees no connection). A script that reaches the child's `process` from inside the vm still gets `EPERM`
+  for a write. `ulimit -t 1` kills a looping child with SIGXCPU.
+- First measurement, on uncommitted work over 9c625ef (the first iteration: no raw read, no bare call), local
+  Ollama, 2026-11-20 and 2026-11-21, 10 runs per cell, "off" without `--code-mode`, "on" with it:
+  - `qwen3.8:27b`: the nine scenarios before Code Mode 10/10 in both arms. `rename` 9/10 off (13.0 replies per run, 21 min 18 s)
+    and 9/10 on (11.8 replies, 25 min 26 s, 3 chained); `gather` 10/10 off (10.1 replies, 10 min 09 s) and 10/10 on
+    (5.2 replies, 8 min 40 s, 10 chained). The full bench took 67 min 09 s off and 69 min 31 s on.
+  - `gemma4:26b-a4b-it-qat`: `read`, `edit`, `create`, `skill`, `command`, `slash`, and `hidden` 10/10 in both arms;
+    `range` 9/10 off and 10/10 on; `ask` 9/10 off and 7/10 on; `rename` 9/10 off (13.5 replies, 66 min) and 5/10 on
+    (10.1 replies, 62 min 26 s, 3 chained); `gather` 9/10 off (13.7 replies, 30 min 58 s, run on its own, since the
+    full off batch was cut at the 2-hour limit of its background task during `gather`) and 10/10 on (9.0 replies,
+    12 min 28 s, 9 chained). The full bench on took 117 min 20 s.
+  - Causes, read from the dumps. (a) A script read a file with `read_file`, replaced the name in the text it got, and
+    wrote it back with `write_file`; that text was the mention block (the `@src/labels.py (file, 5 lines)` header and
+    a code fence), so the dressing landed in the files: 4 of `gemma4`'s 5 `rename` failures and `qwen3.8`'s one. (b)
+    `gemma4` wrote the JavaScript straight inside `<run_script>`, with no `<code>` tag, as its first `run_script` call
+    in 8 of 10 `rename` runs, got "Unexpected text inside <run_script>", and recovered after the malformed-call
+    message; it also tried `require('fs')`. (c) In 2 of `gemma4`'s 3 `ask` failures it renamed both same-named
+    functions through a script instead of calling `ask_user`.
+  - What followed, in the second iteration: the raw `read_file` value in a script (from (a)); the bare call (from
+    (b), ADR 0001, 2026-11-21); and the prompt: the description and the rule now say that `read_file` returns the
+    file's exact text, that `edit_file` changes a passage and `write_file` only replaces a whole file, that a script
+    has no `require` and no file system access, only the tool functions, and that a script cannot ask the user, so
+    `ask_user` comes first when its rule applies (from (a), (b), and (c)).
+- Second measurement, with those three changes, on uncommitted work over 9c625ef, local Ollama, 2026-11-21,
+  `--code-mode`, `ask`, `rename`, and `gather` only, 10 runs per cell:
+  - `qwen3.8:27b`, 42 min 09 s: `ask` 10/10 (5.6 replies per run); `rename` 9/10 (8.1 replies, 4 chained, 23 min
+    08 s; its failure wrote the placeholder `<tool_name>` as a call three times in a row, unrelated to scripts);
+    `gather` 10/10 (7.3 replies, 7 chained, 10 min 31 s).
+  - `gemma4:26b-a4b-it-qat`, 75 min 38 s: `ask` 7/10 (6.9 replies, 1 chained; its 3 failures renamed both same-named
+    functions and never called `ask_user`: two first read both files in a script, one edited both in a script);
+    `rename` 9/10 (10.6 replies, 6 chained, 38 min 23 s; its failure: a script stopped on an error after the
+    definition's edit, and the model then edited only 3 of the remaining files); `gather` 9/10 (9.0 replies, 6
+    chained, 29 min 15 s; its failure, `wrongTool`, answered after reading one file).
+  - No run of either model wrote the dressed text into a file, and of the 52 `run_script` calls `gemma4` wrote, 13
+    were bare (no `<code>` tag) and were read as calls: causes (a) and (b) are fixed as measured. `gemma4` `ask` stays
+    under the bar at 7/10, as in the first measurement (9/10 without `--code-mode`).
+  - Third iteration, a hypothesis to test, not a finding: the `run_script` rule's example, "the same change in several
+    files", competes with the `ask_user` rule ("instead of changing them all"), which came before it. The rule now
+    opens "When a task takes several related tool calls, such as reading several files or making an edit at several
+    places you already know, write one run_script call instead of one call per reply.", and the `ask_user` rule
+    follows the `run_script` rule when both are listed; without `run_script`, the prompt is unchanged. Measured on
+    2026-11-21, `gemma4` `--code-mode` `ask` only, 10 runs, 7 min 17 s: 0/10, so the hypothesis is refuted. 9 runs
+    renamed both functions without ever calling `ask_user`, 8 of them opening with a script that read both files; 1
+    run hit the step limit, after writing `<code...>` as the opening tag three times (`SyntaxError: Unexpected token
+    '<'`), a shape not seen before. The change was reverted to the second iteration's prompt. It changed two things at
+    once, the rule's wording and the rules' order, so which one hurt is not known.
+  - Fourth iteration, a diagnostic: `run_script` offered with its description but without its rule in the Rules
+    list. `gemma4` `--code-mode` `ask`, 10 runs, 2026-11-21: 7/10, `ask_user` called in 9 of 10 runs, and no
+    `run_script` call in any run. Its 3 failures: one edited both files without asking; one asked, edited the right
+    file, then searched until the step limit of 10; one changed the other file too after a malformed `edit_file` and
+    an `ask_user`. Without the rule the model asks as often as without `--code-mode` (9 of 10 runs there); with it,
+    it skipped `ask_user` in 3 runs of 10 in both earlier measurements, and in 9 of 10 with the third iteration's
+    wording. The rule was therefore removed: the tool's description carries its guidance alone, now also saying that
+    the tool is useful for several related calls in one reply, that `edit_file` changes a passage and `write_file`
+    only replaces a whole file, and that a script cannot ask the user, so `ask_user` is called directly.
+  - Measured with that change, `--code-mode`, `ask`, `rename`, and `gather`, 10 runs per cell, local Ollama,
+    2026-11-21, uncommitted work over 9c625ef:
+    - `gemma4:26b-a4b-it-qat`, 47 min 34 s: `ask` 7/10 (6.7 replies per run, 0 chained; its 3 failures edited both
+      files without calling `ask_user` and wrote no script; without `--code-mode` it called `ask_user` in 10 of 10
+      runs); `rename` 10/10 (14.1 replies, 0 chained, 28 min 38 s); `gather` 10/10 (8.2 replies, 9 chained, 11 min
+      20 s).
+    - `qwen3.8:27b`, 44 min 08 s: `ask` 10/10 (5.9 replies); `rename` 10/10 (13.8 replies, 0 chained, 24 min 17 s);
+      `gather` 10/10 (7.8 replies, 7 chained, 10 min 25 s).
+    - Reading. Without the rule neither model writes a script for the rename (0 of 20 runs, against 4 and 6 of 10
+      with it), and both still do for the gather (16 of 20), so the measured gain of Code Mode is on grouped reads:
+      `gather` replies per run, 10.1 without `--code-mode` and 7.8 with it on `qwen3.8`, 13.7 and 8.2 on `gemma4`.
+      `gemma4` `ask` is under the bar in every `--code-mode` configuration measured (7/10, 7/10, 0/10, 7/10 in the
+      diagnostic, 7/10), against 9/10 without; with 10 runs per cell this is a consistent tendency, not a proof, and
+      its cause is open: the rule made it worse, but removing it did not restore it. The other eight scenarios were
+      not replayed after the first iteration.
+  - Fifth measurement, after phase 2 (the extension's Code Mode port and turn loop, the final `run_script`
+    description, no rule), on uncommitted work over 9c625ef, local Ollama, 2026-11-21, `--code-mode`, `ask`,
+    `rename`, and `gather`, 10 runs per cell:
+    - `qwen3.8:27b`, 48 min 00 s: `ask` 10/10 (5.7 replies per run); `rename` 9/10 (11.9 replies, 1 chained, 23 min
+      10 s; its failure wrote the placeholder `<tool_name>` as a call three times in a row); `gather` 10/10 (10.3
+      replies, 3 chained, 14 min 10 s).
+    - `gemma4:26b-a4b-it-qat`, 71 min 59 s: `ask` 9/10 (6.9 replies; its failure asked, then hit the step limit of
+      10); `rename` 10/10 (13.6 replies, 0 chained, 47 min 43 s); `gather` 9/10 (8.1 replies, 6 chained, 14 min 07 s;
+      its failure wrote three unreadable calls in a row).
+    - Reading. Every cell met the bar. `gemma4` `ask` is 9/10 here, against 7/10 in the four earlier `--code-mode`
+      measurements with a rule or without (0/10 with the third iteration's wording): across the description-only
+      runs it is 7/10, 7/10 (the diagnostic), and 9/10, so it is measured between 7/10 and 9/10 with Code Mode,
+      against 9/10 without, and whether Code Mode lowers it is not settled by 10 runs per cell. How often a script is
+      written for the gather varies between runs of one configuration (`qwen3.8` 7 of 10, then 3 of 10; `gemma4` 9,
+      then 6), and so do its replies per run (`qwen3.8` 7.8, then 10.3, against 10.1 without `--code-mode`; `gemma4`
+      8.2, then 8.1, against 13.7): the gain on grouped reads is clear on `gemma4`, not on `qwen3.8`. Without the
+      rule, no script was written for the rename in 39 of 40 runs. The other eight scenarios were last measured with
+      `--code-mode` in the first iteration.
+- The extension's runtime, measured on 2026-11-21 on VSCodium 1.143.17232 (Electron's Node 24.21.0), macOS Darwin
+  27.2, from an unsandboxed shell, through the exact launch (`scriptLaunch`: the profile, `ulimit -t`, the empty
+  environment but `ELECTRON_RUN_AS_NODE=1`), with `hostScriptEnv`. VS Code is not installed on the measuring machine,
+  so it is not measured. The extension host runs as `VSCodium Helper` (a `node.mojom.NodeService` utility process);
+  `VSCodium Helper (Plugin)` and the main executable were measured too, with the same results.
+  - Readable paths it needed, found by reading the kernel's sandbox denials (`/usr/bin/log show`): the four
+    frameworks of `VSCodium.app/Contents/Frameworks`, `Electron Framework.framework`, `Squirrel.framework`,
+    `Mantle.framework`, and `ReactiveObjC.framework` (without each, dyld aborts at start, SIGABRT, naming the
+    missing one), and the metadata of every folder above the helper (`/`, `/Applications`, … `Contents/MacOS`;
+    without any one of them the helper dies with SIGTRAP). It needs nothing else of the bundle: not its own `.app`
+    folder, which it lists at start and is refused, harmlessly. Denials it survives: `mach-lookup` of
+    `opendirectoryd`, `logd`, and `notification_center`, `system-info`, `/dev/dtracehelper`, the metadata of `/etc`,
+    `/var`, and the cryptexes, and `.GlobalPreferences.plist`; it prints one `codesign_util` error line to stderr.
+  - Start: a script printing one line ran in 78 to 200 ms. Round trip (`scriptProblem`: a call to a stub tool, its
+    answer returned): passed in 184 ms (Helper), 114 ms (Plugin), 86 ms (main executable).
+  - Refused, by a trusted probe under the same launch: a write to `/private/tmp` and under the home folder (`EPERM`,
+    no file left), a listing of the home folder and a read of a file in it (`EPERM`), a process spawn (`EPERM`), and a
+    socket to a server on 127.0.0.1 (`EPERM`; the server saw no connection). A script that reaches the child's
+    `process` from inside the vm gets `EPERM` for a write.
+  - Limits: `ulimit -t 1` killed a looping script after 1,034 ms with the processor time message; the host's 1-second
+    running-time timer stopped another after 1,007 ms.

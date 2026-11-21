@@ -90,8 +90,12 @@ function isSentSummary(entry: ChatEntry): boolean {
  * `entries` as sent to the model, from `historyStart`: user messages as `userText` gives them (the text composed at
  * send time), assistant answers verbatim, their call blocks included (stopped and cut-off partials too), and each tool
  * step as a `user` message holding a `<tool_result>` tag, never the `tool` role, which needs native tool calling (ADR
- * 0001); an undone step's result ends with `UNDONE_LINE`. Reasoning is never sent. A reply without text is left out,
- * unless a tool step follows it: an empty answer goes back with its malformed step. The summary the history starts at
+ * 0001); an undone step's result ends with `UNDONE_LINE`. A script's group (`toolGroup`) goes as one step: the steps
+ * its calls made (`fromScript`) are never sent themselves; its `run_script` result goes with one `SCRIPT_UNDONE_LEAD`
+ * line per inner write since undone, in order, inside its wrapper; a script with no step of its own (stopped, or cut
+ * by a reload) goes as one `run_script` error result the history writes (`stoppedScriptText`): it was stopped, then
+ * one line per call it completed, never their result text, then the same undo lines. Reasoning is never sent. A reply
+ * without text is left out, unless a tool step follows it: an empty answer goes back with its malformed step. The summary the history starts at
  * goes as a user message, `Summary of the conversation so far:` then its text; an automatic one (`isAutomaticSummary`)
  * is followed by its turn's user message, then by the turn's next reply. Undone steps before the summary, no longer
  * sent, each get a line after the summary's text (see `replacedUndoneLines`), before that user message. Every other
@@ -105,9 +109,10 @@ function isSentSummary(entry: ChatEntry): boolean {
  * replaced by `[result left out to save context: N lines]`, inside the step's `<tool_result>` wrapper only, so a user
  * message joined to it stays whole: the fewest steps that make the request fit, rounded up to a multiple of
  * `LEFT_OUT_BLOCK` and capped at the steps that may be replaced. The estimate counts the request as sent, joins
- * included. Never replaced: the last `KEPT_RECENT_STEPS` steps sent, every `load_skill` step (a second
+ * included. A script's group counts as one step there, in the kept recent steps and the summary request alike. Never
+ * replaced: the last `KEPT_RECENT_STEPS` steps sent, every `load_skill` step (a second
  * load answers "already loaded" without the body, so the model could not get it back), every `ask_user` step (the
- * user's decision must stay in front of the model), every undone step, and a result
+ * user's decision must stay in front of the model), every undone step, a script's group with an undone write, and a result
  * no longer than its replacement line. When the request cannot fit even then, the history goes whole and `leftOut` is
  * 0: nothing is sent, so nothing is left out. Pure and linear in the entries, since the usage display runs it at each
  * streamed delta: the same entries, system prompt, context size, and ratio always leave the same results out. A lower
@@ -125,8 +130,8 @@ export function toHistory(
   if (fits()) return { messages: whole, leftOut: 0 };
 
   let leftOut = 0;
-  for (const { at, part, step } of steps.slice(0, Math.max(0, steps.length - KEPT_RECENT_STEPS))) {
-    const content = leftOutResult(step);
+  for (const { at, part, step, whole: keep } of steps.slice(0, Math.max(0, steps.length - KEPT_RECENT_STEPS))) {
+    const content = keep ? undefined : leftOutResult(step);
     if (content === undefined) continue;
     const parts = messages[at]!.parts;
     characters -= parts[part]!.length - content.length;
@@ -149,8 +154,8 @@ export function summaryHistory(
 ): History {
   const { messages, steps } = sentMessages(entries, userText);
   let leftOut = 0;
-  for (const { at, part, step } of steps) {
-    const content = leftOutResult(step);
+  for (const { at, part, step, whole: keep } of steps) {
+    const content = keep ? undefined : leftOutResult(step);
     if (content === undefined) continue;
     messages[at]!.parts[part] = content;
     leftOut++;
@@ -162,8 +167,12 @@ export function summaryHistory(
 /** A message being built: the texts it joins, so a tool result can be left out without touching the text joined to it. */
 type SentMessage = { role: ChatMessage["role"]; parts: string[] };
 
-/** Where a tool step's text sits among the messages being built. */
-type SentStep = { at: number; part: number; step: ToolStep };
+/**
+ * Where a tool step's text sits among the messages being built: `step`, the step as sent (a script's group as its
+ * `run_script` step, or the one the history writes for it); `whole`: it must never be left out (a group with an undone
+ * write, which a left-out line would hide).
+ */
+type SentStep = { at: number; part: number; step: ToolStep; whole: boolean };
 
 /** The messages sent for `entries` from `historyStart`, not yet joined, and where each tool step sits among them. */
 function sentMessages(
@@ -178,7 +187,17 @@ function sentMessages(
     if (entry.role === "user") {
       push(messages, "user", userText(entry));
     } else if (entry.role === "tool") {
-      steps.push({ ...push(messages, "user", toolResultMessage(entry, entry.text)), step: entry });
+      if (!entry.fromScript) {
+        steps.push({ ...push(messages, "user", toolResultMessage(entry, entry.text)), step: entry, whole: false });
+        continue;
+      }
+      // [>]: The calls a script made are never sent: the model reads the script's own step, its output, only.
+      const group = toolGroup(entries, index - 1);
+      const undone = scriptUndoneLines(group.inner);
+      const own = group.result ?? stoppedScript(group.inner);
+      const text = undone === "" ? own.text : `${own.text}\n${undone}`;
+      steps.push({ ...push(messages, "user", toolResultMessage(own, text)), step: own, whole: undone !== "" });
+      index = group.end - 1;
     } else if (entry.summary) {
       // [>]: Only the starting summary is sent; any other one (failed, stopped, halted, empty) changes nothing.
       if (index !== start || !isSentSummary(entry)) continue;
@@ -217,10 +236,69 @@ function replacedUndoneLines(entries: readonly ChatEntry[], start: number): stri
   const lines: string[] = [];
   for (const entry of entries.slice(0, start)) {
     if (entry.role !== "tool" || !entry.undone) continue;
-    const path = entry.args.path;
-    lines.push(`${SUMMARY_UNDONE_LEAD} ${entry.name}${path === undefined ? "" : ` ${path}`}`);
+    lines.push(`${SUMMARY_UNDONE_LEAD} ${changeName(entry)}`);
   }
   return lines.join("\n");
+}
+
+/** A write step as an undo line names it: its tool, then its `path` argument as the model or the script gave it. */
+function changeName(step: ToolStep): string {
+  const path = step.args.path;
+  return `${step.name}${path === undefined ? "" : ` ${path}`}`;
+}
+
+/**
+ * A reply's tool group, the entries its call left: the steps of the calls its script made (`fromScript`), in order,
+ * then `result`, the first tool step after them that a script did not make, its own step (absent when the script
+ * stopped before it, or the call was not a script's and no step came); `end`: the index after the group. A direct
+ * call's group is its one step. The history sends a group as one step, and the panel renders it under its reply.
+ */
+export function toolGroup(
+  entries: readonly ChatEntry[],
+  reply: number,
+): { inner: ToolStep[]; result: ToolStep | undefined; end: number } {
+  const inner: ToolStep[] = [];
+  let index = reply + 1;
+  for (let entry = entries[index]; entry?.role === "tool" && entry.fromScript; entry = entries[++index])
+    inner.push(entry);
+  const after = entries[index];
+  const result = after?.role === "tool" ? after : undefined;
+  return { inner, result, end: result ? index + 1 : index };
+}
+
+/**
+ * The reply whose tool group (`toolGroup`) holds the tool step at `index`, or `undefined` for a step no reply owns (an
+ * older record's, or a second step after one): the entry before the steps a script made just before it.
+ */
+export function groupOwner(entries: readonly ChatEntry[], index: number): number | undefined {
+  let at = index - 1;
+  while (at >= 0 && entries[at]!.role === "tool" && (entries[at] as ToolStep).fromScript) at--;
+  return at >= 0 && entries[at]!.role === "assistant" ? at : undefined;
+}
+
+/** Leads each undo line of a script's group: an inner write the user undid after the script ran. */
+const SCRIPT_UNDONE_LEAD = "The user undid this change afterwards:";
+
+/** One `SCRIPT_UNDONE_LEAD` line per undone step of `inner`, in order, joined by line breaks; `""` when none. */
+function scriptUndoneLines(inner: readonly ToolStep[]): string {
+  return inner
+    .filter((step) => step.undone)
+    .map((step) => `${SCRIPT_UNDONE_LEAD} ${changeName(step)}`)
+    .join("\n");
+}
+
+/**
+ * The `run_script` result the history writes for a script that has no step of its own (Stop, or a reload while it
+ * ran): an error saying so, then one line per call it completed (`<tool> <path or the command's first line>: ok` or
+ * `error`), never their result text.
+ */
+function stoppedScript(inner: readonly ToolStep[]): ToolStep {
+  const calls = inner.map((step) => {
+    const target = step.name === "run_command" ? step.args.command?.split("\n")[0] : step.args.path;
+    return `${step.name}${target === undefined ? "" : ` ${target}`}: ${step.status === "ok" ? "ok" : "error"}`;
+  });
+  const text = ["run_script: the script was stopped before it finished, after these tool calls:", ...calls].join("\n");
+  return { role: "tool", name: "run_script", args: {}, status: "error", text };
 }
 
 /** Leads each undone step a summary replaces, after the summary's text. */

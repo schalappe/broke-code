@@ -8,13 +8,17 @@ import {
   ASK_SCENARIO,
   COMMAND_SCENARIO,
   CREATE_SCENARIO,
+  chainedScript,
   DEFAULT_ANSWER,
   EDIT_SCENARIO,
   fileAt,
+  GATHER_SCENARIO,
   HIDDEN_SCENARIO,
   judge,
   RANGE_SCENARIO,
   READ_SCENARIO,
+  RENAME_SCENARIO,
+  repliesDone,
   SCENARIOS,
   SKILL_SCENARIO,
   SLASH_SCENARIO,
@@ -760,10 +764,12 @@ describe("range scenario fixture", () => {
   });
 });
 
-test("only the range and ask scenarios reject commands", () => {
+test("only the range, ask, rename, and gather scenarios reject commands", () => {
   expect(SCENARIOS.filter((scenario) => scenario.rejectCommands).map((scenario) => scenario.name)).toEqual([
     "range",
     "ask",
+    "rename",
+    "gather",
   ]);
 });
 
@@ -891,7 +897,7 @@ describe("judge on the ask scenario", () => {
   });
 });
 
-test("SCENARIOS holds read, edit, create, skill, command, slash, hidden, range, and ask, in that order", () => {
+test("SCENARIOS holds read, edit, create, skill, command, slash, hidden, range, ask, rename, and gather, in that order", () => {
   expect(SCENARIOS.map((scenario) => scenario.name)).toEqual([
     "read",
     "edit",
@@ -902,6 +908,8 @@ test("SCENARIOS holds read, edit, create, skill, command, slash, hidden, range, 
     "hidden",
     "range",
     "ask",
+    "rename",
+    "gather",
   ]);
 });
 
@@ -950,5 +958,149 @@ describe("judge on a file named __proto__", () => {
       detail: "__proto__ missing",
     });
     expect(judge(scenario, done, { ...CREATE_SCENARIO.files, ...proto })).toEqual({ pass: true });
+  });
+});
+
+describe("rename scenario fixture", () => {
+  const count = (text: string, name: string) => text.split(name).length - 1;
+  const occurrences = (files: Record<string, string>, pattern: RegExp) =>
+    Object.values(files).reduce((total, text) => total + (text.match(pattern) ?? []).length, 0);
+
+  test("defines the function once and calls it in five other files: seven occurrences, one file with two", () => {
+    const named = Object.entries(RENAME_SCENARIO.files).filter(([, text]) => /parcel_weight\(/.test(text));
+    expect(named.map(([path]) => path).sort()).toEqual(Object.keys(RENAME_SCENARIO.writes).sort());
+    expect(named).toHaveLength(6);
+    expect(occurrences(RENAME_SCENARIO.files, /parcel_weight\(/g)).toBe(7);
+    expect(count(RENAME_SCENARIO.files["src/routing.py"]!, "parcel_weight(")).toBe(2);
+  });
+
+  test("holds a decoy whose name holds the old one, which the expected files keep", () => {
+    expect(occurrences(RENAME_SCENARIO.files, /parcel_weight_limit/g)).toBe(2);
+    expect(occurrences(RENAME_SCENARIO.writes, /parcel_weight_limit/g)).toBe(2);
+    expect(occurrences(RENAME_SCENARIO.writes, /parcel_weight\(/g)).toBe(0);
+    expect(occurrences(RENAME_SCENARIO.writes, /shipment_weight\(/g)).toBe(7);
+  });
+
+  test("each expected file is its fixture with exactly the old name replaced", () => {
+    for (const [path, text] of Object.entries(RENAME_SCENARIO.writes)) {
+      expect(text).toBe(RENAME_SCENARIO.files[path]!.replaceAll("parcel_weight(", "shipment_weight("));
+    }
+  });
+
+  test("rejects commands and gives direct calls room to finish", () => {
+    expect(RENAME_SCENARIO.rejectCommands).toBe(true);
+    expect(RENAME_SCENARIO.maxToolSteps).toBe(30);
+  });
+});
+
+describe("judge on the rename scenario", () => {
+  const renameUser: ChatEntry = { role: "user", content: RENAME_SCENARIO.message, mentions: [] };
+  const done = { ...RENAME_SCENARIO.files, ...RENAME_SCENARIO.writes };
+
+  test("passes a turn that renamed every occurrence and kept the decoy", () => {
+    expect(judge(RENAME_SCENARIO, [renameUser, answer("Renamed.")], done)).toEqual({ pass: true });
+  });
+
+  test("wrongEdit: a replace-all that also renamed the decoy", () => {
+    const greedy = {
+      ...done,
+      "src/weights.py": RENAME_SCENARIO.files["src/weights.py"]!.replaceAll("parcel_weight", "shipment_weight"),
+    };
+    expect(judge(RENAME_SCENARIO, [renameUser, answer("Renamed.")], greedy)).toMatchObject({
+      pass: false,
+      category: "wrongEdit",
+    });
+  });
+
+  test("wrongEdit: a file left with the old name", () => {
+    const missed = { ...done, "src/report.py": RENAME_SCENARIO.files["src/report.py"]! };
+    expect(judge(RENAME_SCENARIO, [renameUser, answer("Renamed.")], missed)).toMatchObject({
+      pass: false,
+      category: "wrongEdit",
+    });
+  });
+});
+
+describe("gather scenario fixture", () => {
+  test("holds nine depot files, each with one quantity line, whose total the message does not give", () => {
+    const stock = Object.entries(GATHER_SCENARIO.files).filter(([path]) => path.startsWith("stock/"));
+    expect(stock).toHaveLength(9);
+    for (const [, text] of stock) expect(text.match(/^quantity: \d+$/gm)).toHaveLength(1);
+    expect(GATHER_SCENARIO.message).not.toMatch(/\d/);
+    expect(GATHER_SCENARIO.writes).toEqual({});
+    expect(GATHER_SCENARIO.rejectCommands).toBe(true);
+    expect(GATHER_SCENARIO.maxToolSteps).toBe(30);
+  });
+});
+
+describe("judge on the gather scenario", () => {
+  const gatherUser: ChatEntry = { role: "user", content: GATHER_SCENARIO.message, mentions: [] };
+  const untouchedStock = { ...GATHER_SCENARIO.files };
+  const stockPaths = Object.keys(GATHER_SCENARIO.files).filter((path) => path.startsWith("stock/"));
+  const readAll = stockPaths.flatMap((path) => [
+    callReply("read_file", path),
+    step("read_file", path, GATHER_SCENARIO.files[path]!),
+  ]);
+
+  test("passes a turn that read every file and answered with the total", () => {
+    expect(judge(GATHER_SCENARIO, [gatherUser, ...readAll, answer("The total is 766.")], untouchedStock)).toEqual({
+      pass: true,
+    });
+  });
+
+  test("passes a turn whose script printed the total, its calls recorded before it", () => {
+    const inner = stockPaths.map(
+      (path) => ({ ...step("read_file", path, GATHER_SCENARIO.files[path]!), fromScript: true }) as ChatEntry,
+    );
+    const entries: ChatEntry[] = [
+      gatherUser,
+      answer("<run_script>\n<code>\n...\n</code>\n</run_script>"),
+      ...inner,
+      { role: "tool", name: "run_script", args: { code: "..." }, status: "ok", text: "total 766" },
+      answer("766"),
+    ];
+    expect(judge(GATHER_SCENARIO, entries, untouchedStock)).toEqual({ pass: true });
+  });
+
+  test("wrongTool: an answer with the total but no step that held the quantities or the total", () => {
+    const some = readAll.slice(0, 4);
+    expect(judge(GATHER_SCENARIO, [gatherUser, ...some, answer("766")], untouchedStock)).toMatchObject({
+      pass: false,
+      category: "wrongTool",
+    });
+  });
+
+  test("wrongAnswer: the total is not a number token of its own", () => {
+    expect(judge(GATHER_SCENARIO, [gatherUser, ...readAll, answer("About 7660.")], untouchedStock)).toMatchObject({
+      pass: false,
+      category: "wrongAnswer",
+    });
+  });
+});
+
+describe("run measures", () => {
+  const scripted = (status: "ok" | "error", inner: ("ok" | "error")[]): ChatEntry[] => [
+    ...inner.map((innerStatus) => ({ ...step("read_file", "a", "x", innerStatus), fromScript: true }) as ChatEntry),
+    { role: "tool", name: "run_script", args: { code: "" }, status, text: "out" },
+  ];
+
+  test("counts the replies that ended done, summaries aside", () => {
+    const entries: ChatEntry[] = [
+      user,
+      callReply("read_file", "a"),
+      step("read_file", "a", "x"),
+      { ...answer("S."), summary: true },
+      answer("Done."),
+    ];
+    expect(repliesDone(entries)).toBe(2);
+  });
+
+  test("a script chained tools when its ok step follows at least two ok calls it made", () => {
+    expect(chainedScript([user, answer("call"), ...scripted("ok", ["ok", "ok"]), answer("Done.")])).toBe(true);
+    expect(chainedScript([user, answer("call"), ...scripted("ok", ["ok", "error"])])).toBe(false);
+    expect(chainedScript([user, answer("call"), ...scripted("error", ["ok", "ok"])])).toBe(false);
+    expect(chainedScript([user, step("read_file", "a", "x"), step("read_file", "b", "y"), ...scripted("ok", [])])).toBe(
+      false,
+    );
   });
 });

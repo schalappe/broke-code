@@ -4,7 +4,8 @@
  * steps, their approval requests, step limit, context budget), the queue of messages sent during a turn, context
  * usage, stop, "Undo changes" and "Changed files" over the latest turn that wrote a file, and the workspace's saved
  * conversations (new chat, reopen, delete). The conversation shown is saved when a message is sent, at most every 500 ms while a reply streams, when a
- * call starts, after each tool step, and when the turn ends, so a reload or crash loses at most the reply streaming.
+ * call starts, after each tool step and each call a script completes, and when the turn ends, so a reload or crash
+ * loses at most the reply streaming. Code Mode's `run_script` is offered per send through the `codeMode` port.
  * vscode-free: host passes key store, workspace memento, mention reader, conversation store, tool runner, instruction
  * file reader, skill reader, limits source, the auto-approve setting's reader and writer, the undo's workspace
  * roots and unsaved check, the changed files' diff editor, and the provider support memory through ports. The usage
@@ -56,6 +57,7 @@ import type { ProviderSupport } from "./providerSupport";
 import type { ParsedProviders, Provider } from "./providers";
 import { RecordedChanges, type RecordedFile, type RestoreOutcome } from "./recordedChanges";
 import { reservedMention } from "./reservedMentions";
+import { type InnerCalls, RUN_SCRIPT_TOOL, type ScriptEnv } from "./script";
 import { SerialQueue } from "./serialQueue";
 import { findSlashSkill, loadSkillText, type SkillDiscovery } from "./skills";
 import { builtInCommand } from "./suggestions";
@@ -68,7 +70,7 @@ import {
   type Skill,
 } from "./systemPrompt";
 import { type ParsedReply, parseToolCall, replyCut, type ToolSpec } from "./toolCalls";
-import type { ToolCall, ToolResult } from "./tools";
+import { stopped, type ToolCall, type ToolResult } from "./tools";
 import { realWorkspaceRoots, type WorkspaceRoot } from "./workspaceFiles";
 
 /** API key lookup. `undefined` = no key; must not reject. */
@@ -105,7 +107,10 @@ type ReplyRun = {
  * sent, from the last summary on (see `historyStart`): `load_skill` answers "already loaded" for these only, since the
  * text of an earlier load is no longer sent. `changes`: the turn's record of written files, which the host's applier
  * records into (`recordingApplier`) so "Undo changes" can restore them; an applier that ignores it (the eval's) makes
- * the turn hold nothing.
+ * the turn hold nothing. `innerCalls` and `scriptEnv`: how a `run_script` script's calls run, each approved and
+ * recorded by the turn as a direct call is (`runCall`), and the runtime its script runs with; given together to the
+ * `run_script` call of a send that offered it (`ChatPorts.codeMode`), never to another call or to a call a script made.
+ * `fromScript`: set on a call a script made, so a tool may give the script a value of its own (`ToolResult.forScript`).
  */
 export type ToolContext = {
   signal: AbortSignal;
@@ -115,6 +120,9 @@ export type ToolContext = {
   skillRoots: readonly string[];
   sentSkillRoots: readonly string[];
   changes: RecordedChanges;
+  innerCalls?: InnerCalls;
+  scriptEnv?: ScriptEnv;
+  fromScript?: true;
 };
 
 /**
@@ -180,7 +188,8 @@ export type LimitsSource = { read(): TurnLimits };
  * each provider, read and taught by every chat request; the host shares it with the commit message. `turnEvents`:
  * told each approval request that opens and each turn that ends `done`, `failed`, or `halted` (see `TurnEvent`), so
  * the host can notify a user who looks elsewhere; one that throws is logged and changes nothing; absent (the eval),
- * nothing is told.
+ * nothing is told. `codeMode`: whether a send offers `run_script`, asked once per send (see `CodeModePort`); absent,
+ * no send offers it.
  */
 export type ChatPorts = {
   apiKeys: KeyStore;
@@ -201,7 +210,15 @@ export type ChatPorts = {
   now?: () => number;
   providerSupport: ProviderSupport;
   turnEvents?: (event: TurnEvent) => void;
+  codeMode?: CodeModePort;
 };
+
+/**
+ * Code Mode for a send: the runtime its scripts run with when the send offers `run_script` (the setting on and its
+ * runtime probed, see `CodeModeSwitch`), `undefined` when it does not. The one decision of the send: it gates both the
+ * tool list and the runtime, and a turn never asks twice. `signal`: the turn's Stop. Must not reject.
+ */
+export type CodeModePort = { scriptEnv(signal: AbortSignal): Promise<ScriptEnv | undefined> };
 
 /**
  * What a mode pick did: `written`, the mode changed (the setting written, Plan turned on or off, or both);
@@ -269,6 +286,27 @@ type Turn = {
 type ChangedRow = ChangedFile & { realPath: string };
 
 type ToolStep = ChatEntry & { role: "tool" };
+
+/**
+ * What each call of an agent turn runs with (`runCall`): its turn, the skills of its send, and the tools offered; for
+ * a send that offered `run_script`, the runtime its scripts run with (`scriptEnv`) and the tools that exist in a script
+ * only to refuse, with their refusal (`blocked`: Plan's write tools and `run_command`).
+ */
+type CallSetup = {
+  turn: Turn;
+  skills: readonly Skill[];
+  tools: readonly ToolSpec[];
+  scriptEnv: ScriptEnv | undefined;
+  blocked: Readonly<Record<string, string>>;
+};
+
+/**
+ * The `run_script` call in flight, owned by its turn: its conversation, and the steps of the calls its script completed,
+ * in call order (the staged steps). The one source of truth for them while the script runs: projected into
+ * `ChatState.scriptSteps` while its conversation is shown, and into each save of that conversation after the reply in
+ * flight, then appended to the entries, and cleared, in the one update that ends the script (its step, or Stop).
+ */
+type ScriptRun = { conversation: Conversation; steps: ToolStep[] };
 
 type UserEntry = ChatEntry & { role: "user" };
 
@@ -353,6 +391,8 @@ export class ChatController {
   private openDiffs: { turn: Turn; realPath: string }[] = [];
   /** Line counts of each recorded write, computed once per write: a `RecordedFile` is a new object at each write. */
   private readonly lineCounts = new WeakMap<RecordedFile, LineCounts>();
+  /** The script in flight, if any; at most one, since one turn runs at a time and one call per reply. */
+  private script: ScriptRun | undefined;
 
   private readonly apiKeys: KeyStore;
   private readonly workspaceState: ChoiceStore;
@@ -372,6 +412,7 @@ export class ChatController {
   private readonly now: () => number;
   private readonly providerSupport: ProviderSupport;
   private readonly turnEvents: ((event: TurnEvent) => void) | undefined;
+  private readonly codeMode: CodeModePort | undefined;
   /**
    * What the last chat request of the conversation shown reported, kept while the next one is in flight. Replaced when
    * a request ends, cleared when the conversation shown or the model is set. Memory only, never saved.
@@ -418,6 +459,7 @@ export class ChatController {
     this.now = ports.now ?? Date.now;
     this.providerSupport = ports.providerSupport;
     this.turnEvents = ports.turnEvents;
+    this.codeMode = ports.codeMode;
     this.plan = this.workspaceState.get<unknown>(PLAN_KEY) === true;
     // [>]: Instruction files and skills are read only at a send, never just to refresh the display.
     this.systemPrompt = composeSystemPrompt(offeredTools(this.tools.tools, []), [], []);
@@ -977,11 +1019,12 @@ export class ChatController {
           this.readInstructions(),
           this.readSkills(),
           this.save(conversation),
+          this.readScriptEnv(signal),
         ]),
         signal,
       );
       if (!prepared) return settle("stopped");
-      const [mentions, access, instructions, discovery] = prepared;
+      const [mentions, access, instructions, discovery, , scriptEnv] = prepared;
       this.state.skillWarnings = discovery.warnings;
       if (start.kind === "send" && mentions) {
         // [>]: A `/<name>` that names no discovered skill (`/new` included) goes as typed. The token is never a
@@ -1004,7 +1047,13 @@ export class ChatController {
         }
       }
 
-      const tools = offeredTools(this.tools.tools, discovery.skills, mode);
+      // [!]: The one Code Mode decision of the send: without it, the tools and the prompt are those before Code Mode.
+      const tools = offeredTools(
+        scriptEnv ? [...this.tools.tools, RUN_SCRIPT_TOOL] : this.tools.tools,
+        discovery.skills,
+        mode,
+      );
+      const setup: CallSetup = { turn, skills: discovery.skills, tools, scriptEnv, blocked: this.scriptBlocked(mode) };
       const system = composeSystemPrompt(tools, instructions, discovery.skills, mode);
       this.systemPrompt = system;
       this.instructionFiles = instructions;
@@ -1063,45 +1112,26 @@ export class ChatController {
           // [>]: The reply stays `streaming` while its call runs, so the turn reads as in flight and a crash meanwhile
           // brings it back stopped.
           run.reply.call = { name, args, start, end };
-          // [>]: A tool that asks runs only once its approval is accepted (`askApproval`), never as its call shows.
+          // [>]: A tool that asks runs only once its approval is accepted (`askApproval`), never as its call shows. A
+          // script runs at once; each call it makes that asks waits on its own approval.
           this.state.callRunning = !tools.find((tool) => tool.name === name)?.asks;
+          const script: ScriptRun | undefined =
+            name === RUN_SCRIPT_TOOL.name && scriptEnv ? { conversation, steps: [] } : undefined;
+          this.script = script;
           this.emit();
           void this.save(conversation);
-          let approval: StepApproval | undefined;
-          let lines: LineCounts | undefined;
-          const context: ToolContext = {
-            signal,
-            requestApproval: async (request) => {
-              const answer = await this.askApproval(request, signal);
-              approval = answer.approval ?? approval;
-              if (answer.decision.kind === "accept") lines = request.lines ?? lines;
-              // [>]: Once Run is clicked the command runs, whether its step is recorded or dropped by Stop.
-              if (request.kind === "command" && answer.decision.kind === "accept") turn.ranCommand = true;
-              return answer.decision;
-            },
-            requestAnswer: (request) => this.askQuestion(request, signal),
-            skills: discovery.skills,
-            skillRoots: loadedSkillRoots(conversation.entries, discovery.skills),
-            sentSkillRoots: loadedSkillRoots(sentEntries(conversation.entries), discovery.skills),
-            changes: turn.changes,
-          };
-          turn.written = undefined;
-          const result = await unlessAborted(this.runTool({ name, args }, context), signal);
+          const ran = await this.runCall({ name, args }, setup, signal, { script });
+          // [!]: Set here, in the update that lands the step, never in `runCall`: a save that settles in between would
+          // otherwise publish the call as shown but not running.
           this.state.callRunning = false;
-          if (!result) return settle("stopped");
-          step = {
-            role: "tool",
-            name,
-            args,
-            status: result.status,
-            text: result.text,
-            ...(approval ? { approval } : {}),
-            // [>]: Only a write that went through: a refused or failed one changed nothing.
-            ...(lines && result.status === "ok" ? { lines: { ...lines } } : {}),
-          };
-          if (turn.written !== undefined) {
-            turn.steps.set(turn.written, [...(turn.steps.get(turn.written) ?? []), step]);
+          if (script) {
+            // [>]: The calls the script completed, writes included, land in this update, before the script's own step,
+            // or, on Stop, with the stopped reply and no step of the script's own.
+            conversation.entries.push(...script.steps);
+            this.script = undefined;
           }
+          if (!ran) return settle("stopped");
+          step = ran.step;
           malformedInARow = 0;
         } else if (mode === "plan" && planBlocked(run.reply.content, parsed)) {
           const name = malformedToolName(run.reply.content, parsed);
@@ -1124,6 +1154,7 @@ export class ChatController {
           };
           malformedInARow += 1;
         }
+        // [>]: A script is one step toward the limit, whatever the calls it made; those have their own limit.
         steps += 1;
         conversation.entries.push(step);
         if (malformedInARow >= MAX_MALFORMED_IN_A_ROW) return settle("halted", "malformedCalls");
@@ -1516,6 +1547,124 @@ export class ChatController {
     return [{ role: "system", content: composeSummaryPrompt(instructions) }, ...history.messages];
   }
 
+  /**
+   * Run one call of `setup`'s turn under `signal` and build its step, the one place a call is run and recorded, for a
+   * reply's call and for each call a script makes alike: a fresh approval and line count, the run, then the step, tied
+   * to the file its write recorded so "Undo changes" marks it (`Turn.steps`). Returns the step and the tool's result,
+   * whose `forScript` a script's call reads. `undefined` when `signal` aborted first: the step is dropped, as Stop drops
+   * a call in flight. `script`: the reply's `run_script` call, whose script's calls run through `runInnerCall` and
+   * land in `script.steps`. `inner`: a call a script made, its step marked `fromScript`; it never runs a script.
+   */
+  private async runCall(
+    call: ToolCall,
+    setup: CallSetup,
+    signal: AbortSignal,
+    { script, inner = false }: { script?: ScriptRun; inner?: boolean },
+  ): Promise<{ step: ToolStep; result: ToolResult } | undefined> {
+    const { turn } = setup;
+    const entries = turn.conversation.entries;
+    let approval: StepApproval | undefined;
+    let lines: LineCounts | undefined;
+    const scriptCalls =
+      script && setup.scriptEnv
+        ? {
+            scriptEnv: setup.scriptEnv,
+            innerCalls: {
+              tools: setup.tools,
+              blocked: setup.blocked,
+              run: (innerCall: ToolCall, innerSignal: AbortSignal) =>
+                this.runInnerCall(innerCall, setup, innerSignal, script),
+            },
+          }
+        : {};
+    const context: ToolContext = {
+      signal,
+      requestApproval: async (request) => {
+        const answer = await this.askApproval(request, signal);
+        approval = answer.approval ?? approval;
+        if (answer.decision.kind === "accept") lines = request.lines ?? lines;
+        // [>]: Once Run is clicked the command runs, whether its step is recorded or dropped by Stop.
+        if (request.kind === "command" && answer.decision.kind === "accept") turn.ranCommand = true;
+        return answer.decision;
+      },
+      requestAnswer: (request) => this.askQuestion(request, signal),
+      skills: setup.skills,
+      skillRoots: loadedSkillRoots(entries, setup.skills),
+      sentSkillRoots: loadedSkillRoots(sentEntries(entries), setup.skills),
+      changes: turn.changes,
+      ...scriptCalls,
+      ...(inner ? { fromScript: true as const } : {}),
+    };
+    turn.written = undefined;
+    const result = await unlessAborted(this.runTool(call, context), signal);
+    // [!]: Read and cleared at once: a script's calls run while its own call is in flight, and the script's step must
+    // never be tied to the file of the last write it made.
+    const written = turn.written;
+    turn.written = undefined;
+    if (!result) return undefined;
+    const step: ToolStep = {
+      role: "tool",
+      name: call.name,
+      args: call.args,
+      status: result.status,
+      text: result.text,
+      ...(approval ? { approval } : {}),
+      // [>]: Only a write that went through: a refused or failed one changed nothing.
+      ...(lines && result.status === "ok" ? { lines: { ...lines } } : {}),
+      ...(inner ? { fromScript: true as const } : {}),
+    };
+    if (written !== undefined) turn.steps.set(written, [...(turn.steps.get(written) ?? []), step]);
+    return { step, result };
+  }
+
+  /**
+   * One call `script` made, run and recorded as a reply's call is (`runCall`), its step staged in `script.steps`
+   * rather than the entries: the reply stays the last entry while the script runs. Each completed step shows at once
+   * (`ChatState.scriptSteps`) and is saved at once, after the reply in flight, so a crash keeps the record of a write
+   * that reached the disk. While the call waits on an approval the call reads as not running; once it ends, the script
+   * runs again. A call that settles after its script ended (Stop, navigation, or the script's own end) changes
+   * nothing: its step is dropped, as Stop drops a direct call's, and a write it made is still recorded for undo by the
+   * applier, tied to no step. Settles with the call's result for the script, the tool's `forScript` value when it gave
+   * one; never rejects.
+   */
+  private async runInnerCall(
+    call: ToolCall,
+    setup: CallSetup,
+    signal: AbortSignal,
+    script: ScriptRun,
+  ): Promise<ToolResult> {
+    if (signal.aborted || this.script !== script) return stopped(call.name);
+    this.state.callRunning = !setup.tools.find((tool) => tool.name === call.name)?.asks;
+    this.emit();
+    const ran = await this.runCall(call, setup, signal, { inner: true });
+    if (!ran || signal.aborted || this.script !== script) return stopped(call.name);
+    script.steps.push(ran.step);
+    this.state.callRunning = true;
+    this.emit();
+    void this.save(script.conversation);
+    // [>]: The step records what the model would read; the script gets the tool's own value for it, when it has one.
+    return ran.result.forScript ?? { status: ran.result.status, text: ran.result.text };
+  }
+
+  /** The tools a script of a turn in `mode` may name only to be refused: in Plan, those Plan leaves out. */
+  private scriptBlocked(mode: Mode | undefined): Readonly<Record<string, string>> {
+    if (mode !== "plan") return {};
+    const known = PLAN_BLOCKED_TOOLS.filter((name) => this.tools.tools.some((tool) => tool.name === name));
+    return Object.fromEntries(known.map((name) => [name, `${name} is not available in Plan mode.`]));
+  }
+
+  /** This send's Code Mode decision (`CodeModePort`); a port that rejects despite its contract gives none, logged. */
+  private readScriptEnv(signal: AbortSignal): Promise<ScriptEnv | undefined> {
+    const port = this.codeMode;
+    if (!port) return Promise.resolve(undefined);
+    return Promise.resolve()
+      .then(() => port.scriptEnv(signal))
+      .catch((error: unknown) => {
+        console.error("broke-code: could not decide whether Code Mode is on; it is off for this send", error);
+        return undefined;
+      });
+  }
+
   /** Run `call`. A runner that rejects despite its contract gives an `error` result, logged. */
   private runTool(call: ToolCall, context: ToolContext): Promise<ToolResult> {
     return Promise.resolve()
@@ -1869,7 +2018,9 @@ export class ChatController {
   }
 
   private toRecord(conversation: Conversation): ConversationRecord {
-    const entries = conversation.entries.map(
+    // [>]: A script in flight saves the steps its calls completed after the reply in flight, which a reload stops.
+    const staged = this.script?.conversation === conversation ? this.script.steps : [];
+    const entries = [...conversation.entries, ...staged].map(
       (entry): StoredEntry =>
         entry.role === "user" ? { ...entry, modelText: this.modelText.get(entry) ?? entry.content } : { ...entry },
     );
@@ -2043,6 +2194,8 @@ export class ChatController {
   }
 
   private emit(): void {
+    const script = this.script;
+    this.state.scriptSteps = script?.conversation === this.conversation ? [...script.steps] : undefined;
     this.state.context = this.contextUsage(this.currentProvider(), this.state.model);
     this.state.undo = this.undoState();
     this.state.changedFiles = this.changedRows().map(({ realPath: _, ...row }) => row);

@@ -9,6 +9,7 @@ import {
   describeFold,
   describeHalt,
   describeProviderError,
+  describeScript,
   describeSkillWarning,
   describeStorageProblem,
   describeToolStep,
@@ -546,6 +547,24 @@ describe("describeAnnouncement", () => {
     );
   });
 
+  test("says a script runs by its size, never its code, once as its call shows, not again after an approval", () => {
+    const code = "const a = await read_file({ path: 'a' });\nconsole.log(a);";
+    const script = { name: "run_script", args: { code }, start: 0, end: 4 };
+    const flight = state([ask, reply("streaming")]);
+    const running = state([ask, reply("streaming", { call: script })], { callRunning: true });
+    expect(describeAnnouncement(flight, running)).toBe("Running a script of 2 lines");
+    const deciding = state([ask, reply("streaming", { call: script })], {
+      callRunning: false,
+      approval: { id: 1, kind: "write", tool: "edit_file", summary: "a.ts" },
+    });
+    expect(describeAnnouncement(running, deciding)).toBe("Waiting for your decision: edit_file on a.ts");
+    expect(describeAnnouncement(deciding, { ...running })).toBeUndefined();
+    const oneLine = { ...script, args: { code: "console.log(1);" } };
+    expect(
+      describeAnnouncement(flight, state([ask, reply("streaming", { call: oneLine })], { callRunning: true })),
+    ).toBe("Running a script of 1 line");
+  });
+
   describe("a call, through the states the controller publishes", () => {
     const run = { name: "run_command", args: { command: "bun test" }, start: 0, end: 4 };
     const approval = { id: 1, kind: "command" as const, tool: "run_command", summary: "bun test" };
@@ -631,5 +650,12 @@ describe("describeAnnouncement", () => {
     } finally {
       l10n.config({ contents: {} });
     }
+  });
+});
+
+describe("describeScript", () => {
+  test("is the script's line count alone, the words of a step's size", () => {
+    expect(describeScript("console.log(1);")).toBe("1 line");
+    expect(describeScript("const a = 1;\nconsole.log(a);\n")).toBe("2 lines");
   });
 });

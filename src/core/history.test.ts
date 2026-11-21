@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ChatMessage } from "./client";
 import {
+  groupOwner,
   historyStart,
   isAutomaticSummary,
   resultLineCount,
@@ -8,6 +9,7 @@ import {
   sentEntries,
   summaryHistory,
   toHistory,
+  toolGroup,
 } from "./history";
 import { estimateTokens, fillsContext } from "./limits";
 import type { ChatEntry, ReplyStatus, ToolStepStatus } from "./protocol";
@@ -508,6 +510,179 @@ describe("history after an automatic summary", () => {
 
   test("an empty conversation sends no entry", () => {
     expect(sentEntries([])).toEqual([]);
+  });
+});
+
+const scriptCall = "<run_script>\n<code>\nconsole.log(1);\n</code>\n</run_script>";
+const stoppedCall: ChatEntry = { role: "assistant", reasoning: "", content: scriptCall, status: "stopped" };
+/** A step a script's call made, its result text never sent. */
+const inner = (
+  name: string,
+  { text = "inner result", status = "ok", undone, ...args }: Record<string, string | true | undefined> = {},
+): ChatEntry =>
+  ({
+    role: "tool",
+    name,
+    args,
+    status,
+    text,
+    fromScript: true,
+    ...(undone ? { undone: true } : {}),
+  }) as ChatEntry;
+
+/** A turn whose reply ran a script: two calls the script made, then the script's own step, then the answer. */
+const scriptTurn: ChatEntry[] = [
+  user("go"),
+  answer("<run_script>\n<code>\nconsole.log(await read_file({ path: 'a.ts' }));\n</code>\n</run_script>"),
+  { ...step(lines(50)), fromScript: true } as ChatEntry,
+  { ...step(lines(50), "edit_file"), fromScript: true } as ChatEntry,
+  step("printed", "run_script"),
+  answer("Done."),
+];
+
+describe("steps a script made", () => {
+  test("toHistory sends the script's step only, never the steps it made", () => {
+    const history = toHistory(scriptTurn, typed, roomy);
+    expect(history).toEqual({
+      leftOut: 0,
+      messages: [
+        { role: "user", content: "go" },
+        { role: "assistant", content: (scriptTurn[1] as ChatEntry & { role: "assistant" }).content },
+        { role: "user", content: wrapped("printed", "run_script") },
+        { role: "assistant", content: "Done." },
+      ],
+    });
+  });
+
+  test("summaryHistory leaves them out too", () => {
+    const { messages } = summaryHistory(scriptTurn, typed);
+    expect(messages.map((message) => message.content).join("\n")).not.toContain("line 0");
+    expect(messages[2]).toEqual({ role: "user", content: wrapped("printed", "run_script") });
+  });
+
+  test("a finished script's result says, inside its wrapper, which of its writes the user undid, in order", () => {
+    const entries: ChatEntry[] = [
+      user("go"),
+      answer(scriptCall),
+      inner("edit_file", { path: "src/a.ts", undone: true }),
+      inner("read_file", { path: "src/b.ts" }),
+      inner("write_file", { path: "./src/c.ts", undone: true }),
+      step("printed", "run_script"),
+      answer("Done."),
+    ];
+    const sent = toHistory(entries, typed, roomy).messages[2]!.content;
+    expect(sent).toBe(
+      wrapped(
+        [
+          "printed",
+          "The user undid this change afterwards: edit_file src/a.ts",
+          "The user undid this change afterwards: write_file ./src/c.ts",
+        ].join("\n"),
+        "run_script",
+      ),
+    );
+  });
+
+  test("a script stopped before its own step goes back as one error result naming the calls it completed", () => {
+    const entries: ChatEntry[] = [
+      user("go"),
+      stoppedCall,
+      inner("read_file", { path: "src/a.ts" }),
+      inner("edit_file", { path: "src/a.ts", undone: true }),
+      inner("run_command", { command: "bun test\n--watch", status: "error" }),
+      user("next"),
+    ];
+    const history = toHistory(entries, typed, roomy);
+    expect(history.messages).toEqual([
+      { role: "user", content: "go" },
+      { role: "assistant", content: scriptCall },
+      {
+        role: "user",
+        content: [
+          wrapped(
+            [
+              "run_script: the script was stopped before it finished, after these tool calls:",
+              "read_file src/a.ts: ok",
+              "edit_file src/a.ts: ok",
+              "run_command bun test: error",
+              "The user undid this change afterwards: edit_file src/a.ts",
+            ].join("\n"),
+            "run_script",
+            "error",
+          ),
+          "next",
+        ].join("\n\n"),
+      },
+    ]);
+    expect(history.messages.map((message) => message.content).join("\n")).not.toContain("inner result");
+  });
+
+  test("a group is one step for the context budget: kept among the recent steps, left out as one, never with an undone write", () => {
+    const big = lines(100);
+    const group = (undone: boolean): ChatEntry[] => [
+      answer(scriptCall),
+      inner("read_file", { path: "a.ts", text: big }),
+      inner("edit_file", { path: "a.ts", ...(undone ? { undone: true as const } : {}) }),
+      step(big, "run_script"),
+    ];
+    const entries: ChatEntry[] = [
+      user("go"),
+      ...group(false),
+      ...group(true),
+      ...[0, 1, 2].flatMap((index) => [answer(`call ${index}`), step("short")]),
+      answer("Done."),
+    ];
+    const tight = { system: SYSTEM, contextSize: 4000, ratio: 4 };
+    const history = toHistory(entries, typed, tight);
+    expect(history.leftOut).toBe(1);
+    const results = history.messages.filter((message) => message.content.includes('tool="run_script"'));
+    expect(results[0]!.content).toBe(wrapped("[result left out to save context: 100 lines]", "run_script"));
+    expect(results[1]!.content).toContain("The user undid this change afterwards: edit_file a.ts");
+    expect(results[1]!.content).toContain(big);
+  });
+
+  test("after a summary, an undone write of a script before it gets the summary's line, named the same way", () => {
+    const entries: ChatEntry[] = [
+      user("go"),
+      answer(scriptCall),
+      inner("edit_file", { path: "./src/a.ts", undone: true }),
+      step("printed", "run_script"),
+      answer("Done."),
+      summary("We renamed a function."),
+      user("next"),
+    ];
+    const first = toHistory(entries, typed, roomy).messages[0]!.content;
+    expect(first).toContain(
+      "The user undid this change, which the summary above may still describe: edit_file ./src/a.ts",
+    );
+    expect(first).not.toContain("printed");
+  });
+});
+
+describe("toolGroup and groupOwner", () => {
+  const entries: ChatEntry[] = [
+    user("go"),
+    answer(scriptCall),
+    inner("read_file", { path: "a.ts" }),
+    inner("edit_file", { path: "a.ts" }),
+    step("printed", "run_script"),
+    answer("call"),
+    step("one"),
+    step("orphan"),
+    stoppedCall,
+    inner("read_file", { path: "b.ts" }),
+    user("next"),
+  ];
+
+  test("a reply owns the steps its script made, then its own step, each once", () => {
+    const group = (reply: number) => toolGroup(entries, reply) as unknown;
+    expect(group(1)).toEqual({ inner: [entries[2], entries[3]], result: entries[4], end: 5 });
+    expect(group(5)).toEqual({ inner: [], result: entries[6], end: 7 });
+    expect(group(8)).toEqual({ inner: [entries[9]], result: undefined, end: 10 });
+  });
+
+  test("names the reply that owns a step, and none for a step no reply owns", () => {
+    expect([2, 3, 4, 6, 7, 9].map((index) => groupOwner(entries, index))).toEqual([1, 1, 1, 5, undefined, 8]);
   });
 });
 

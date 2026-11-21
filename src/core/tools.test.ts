@@ -975,3 +975,45 @@ describe("runReadTool", () => {
     ]);
   });
 });
+
+describe("read_file in a script", () => {
+  const read = (args: Record<string, string>) =>
+    runReadTool({ name: "read_file", args }, [app], env, new AbortController().signal, { forScript: true });
+
+  test("gives the script the file's text as stored, and the step its usual mention block", async () => {
+    await writeFile(join(app.path, "crlf.txt"), "one\r\ntwo\r\nthree");
+    const result = await read({ path: "crlf.txt" });
+    expect(result.forScript).toEqual({ status: "ok", text: "one\r\ntwo\r\nthree" });
+    expect(result.text).toStartWith("@crlf.txt (file, 3 lines)\n```\n");
+  });
+
+  test("gives a range's lines exactly, breaks included", async () => {
+    expect((await read({ path: "ten.txt", start_line: "3", end_line: "4" })).forScript).toEqual({
+      status: "ok",
+      text: "line 3\nline 4\n",
+    });
+  });
+
+  test("refuses a read the 2,000-line cap would cut, naming the range to read instead", async () => {
+    const result = await read({ path: "long.txt" });
+    expect(result.status).toBe("ok");
+    expect(result.forScript).toEqual({
+      status: "error",
+      text: "read_file: long.txt: the lines asked for are more than a read returns (2000); read it in parts of at most 2000 lines with start_line and end_line, such as start_line 1 and end_line 2000.",
+    });
+    expect((await read({ path: "long.txt", start_line: "2001" })).forScript).toEqual({
+      status: "ok",
+      text: numberedLines(3000).split("\n").slice(2000).join("\n"),
+    });
+  });
+
+  test("a direct call gets no script value", async () => {
+    const direct = await runReadTool(
+      { name: "read_file", args: { path: "ten.txt" } },
+      [app],
+      env,
+      new AbortController().signal,
+    );
+    expect(direct.forScript).toBeUndefined();
+  });
+});

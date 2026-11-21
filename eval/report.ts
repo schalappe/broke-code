@@ -1,12 +1,25 @@
 /**
  * @module report
- * The bench report: per model and scenario, the pass count against the bar, the failure categories with their counts,
- * each failed run's detail, and the wall-clock time. Pure: the bench prints the text and exits on `passed`.
+ * The bench report: per model and scenario, the pass count against the bar, the wall-clock time, the mean replies per
+ * run, the passing runs that chained tools in one script, the failure categories with their counts, and each failed
+ * run's detail. Pure: the bench prints the text and exits on `passed`.
  */
 import type { Verdict } from "./scenarios";
 
-/** One run's outcome. `run`: its index, from 0. `ms`: its wall-clock time, controller setup included. */
-export type RunResult = { model: string; scenario: string; run: number; verdict: Verdict; ms: number };
+/**
+ * One run's outcome. `run`: its index, from 0. `ms`: its wall-clock time, controller setup included. `replies`: its
+ * replies that ended `done` (`repliesDone`), the requests the model needed. `chained`: one `ok` `run_script` step ran
+ * at least two `ok` calls (`chainedScript`), so the run used Code Mode for what it measures.
+ */
+export type RunResult = {
+  model: string;
+  scenario: string;
+  run: number;
+  verdict: Verdict;
+  ms: number;
+  replies: number;
+  chained: boolean;
+};
 
 /** Passes a model needs out of `runs` on each scenario: 9 of 10, rounded up, so every run below 10. */
 export function passBar(runs: number): number {
@@ -25,7 +38,11 @@ export function formatReport(results: readonly RunResult[], runs: number): { tex
       const group = ofModel.filter((result) => result.scenario === scenario);
       const passes = group.filter((result) => result.verdict.pass).length;
       const ms = group.reduce((total, result) => total + result.ms, 0);
-      lines.push(`  ${scenario}: ${passes}/${group.length} passed (bar ${bar}), ${formatDuration(ms)}`);
+      const replies = group.reduce((total, result) => total + result.replies, 0) / group.length;
+      const chained = group.filter((result) => result.verdict.pass && result.chained).length;
+      lines.push(
+        `  ${scenario}: ${passes}/${group.length} passed (bar ${bar}), ${formatDuration(ms)}, ${replies.toFixed(1)} replies per run, ${chained} chained`,
+      );
       if (passes < bar) under.push(`${model} ${scenario} ${passes}/${group.length}`);
 
       const failures = group.flatMap(({ run, verdict }) => (verdict.pass ? [] : [{ run, ...verdict }]));

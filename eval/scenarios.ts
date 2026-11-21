@@ -68,7 +68,8 @@ export type Verdict = { pass: true } | { pass: false; category: FailureCategory;
  * show, from its entries; absent when the workspace says it all. `rejectCommands`: every `run_command` approval is
  * rejected as the user's Reject does, so a command cannot stand in for the tool the scenario measures; absent, each is
  * approved. `answer`: the bench's reply to every `ask_user` question of the run; absent, `DEFAULT_ANSWER`, so a
- * scenario that needs no decision keeps measuring what it measured.
+ * scenario that needs no decision keeps measuring what it measured. `maxToolSteps`: the turn's step limit for this
+ * scenario, for a task whose direct calls take more steps than the bench's limit; absent, the bench's.
  */
 export type Scenario = {
   name: string;
@@ -79,6 +80,7 @@ export type Scenario = {
   check?(entries: readonly ChatEntry[]): Verdict;
   rejectCommands?: true;
   answer?: string;
+  maxToolSteps?: number;
 };
 
 /** The bench's reply to a question in a scenario that defines no answer of its own. */
@@ -482,6 +484,154 @@ export const ASK_SCENARIO: Scenario = {
   },
 };
 
+/**
+ * The step limit of the scenarios that compare direct calls with one script (`rename`, `gather`): room for a call per
+ * file and a few reads more, so a model calling the tools one by one can finish; a script is one step.
+ */
+const CHAIN_STEPS = 30;
+
+const OLD_WEIGHT = "parcel_weight";
+const NEW_WEIGHT = "shipment_weight";
+
+/**
+ * The `rename` fixture with the function named `name`: defined in `src/weights.py` beside a decoy whose name holds the
+ * old name (`parcel_weight_limit`), and called in five other files, `src/routing.py` twice and `src/customs.py` beside
+ * the decoy: seven occurrences in six files.
+ */
+function weightFiles(name: string): WorkspaceFiles {
+  return {
+    "src/weights.py": [
+      '"""Parcel weights for the courier service."""',
+      "",
+      "PACKAGING_KG = 0.2",
+      "",
+      "",
+      `def ${name}(items):`,
+      '    return PACKAGING_KG + sum(item["kg"] for item in items)',
+      "",
+      "",
+      "def parcel_weight_limit(service):",
+      '    return 30 if service == "road" else 20',
+      "",
+    ].join("\n"),
+    "src/pricing.py": [
+      "import weights",
+      "",
+      "",
+      "def quote(items):",
+      `    return 4.5 + 1.25 * weights.${name}(items)`,
+      "",
+    ].join("\n"),
+    "src/labels.py": [
+      "import weights",
+      "",
+      "",
+      "def label(parcel):",
+      `    return f"{parcel['id']} {weights.${name}(parcel['items']):.1f} kg"`,
+      "",
+    ].join("\n"),
+    "src/routing.py": [
+      "import weights",
+      "",
+      "",
+      "def route(parcels):",
+      `    heavy = [p for p in parcels if weights.${name}(p["items"]) > 20]`,
+      `    light = [p for p in parcels if weights.${name}(p["items"]) <= 20]`,
+      "    return heavy, light",
+      "",
+    ].join("\n"),
+    "src/customs.py": [
+      "import weights",
+      "",
+      "",
+      "def declare(parcel, service):",
+      `    weight = weights.${name}(parcel["items"])`,
+      "    return weight <= weights.parcel_weight_limit(service)",
+      "",
+    ].join("\n"),
+    "src/report.py": [
+      "import weights",
+      "",
+      "",
+      "def total(parcels):",
+      `    return sum(weights.${name}(p["items"]) for p in parcels)`,
+      "",
+    ].join("\n"),
+  };
+}
+
+/**
+ * The same change in several files: rename a function defined in one file and called in five others, seven
+ * occurrences in all, while `parcel_weight_limit`, whose name holds the old one, stays. Passes when exactly those six
+ * files hold the new name at each occurrence, byte for byte, and nothing else changed. Every command is rejected, so
+ * the comparison is between direct calls and one script; the step limit is `CHAIN_STEPS`, so direct calls can finish.
+ */
+export const RENAME_SCENARIO: Scenario = {
+  name: "rename",
+  files: { "README.md": "# Courier\n\nRoutes parcels between depots.\n", ...weightFiles(OLD_WEIGHT) },
+  message: `Rename the function ${OLD_WEIGHT} to ${NEW_WEIGHT} everywhere it is defined or called. Change nothing else.`,
+  writes: weightFiles(NEW_WEIGHT),
+  rejectCommands: true,
+  maxToolSteps: CHAIN_STEPS,
+};
+
+/** Each depot's stock quantity, uneven so the total cannot be guessed. */
+const STOCK: Record<string, number> = {
+  bordeaux: 37,
+  brest: 142,
+  dijon: 8,
+  lille: 95,
+  lyon: 61,
+  marseille: 203,
+  nantes: 14,
+  rouen: 77,
+  toulouse: 129,
+};
+const STOCK_TOTAL = Object.values(STOCK).reduce((total, quantity) => total + quantity, 0);
+
+/** One `stock/<depot>.txt` per depot: its `quantity: N` line among others, `reserved: N` a number not to add. */
+function stockFiles(): WorkspaceFiles {
+  const files: WorkspaceFiles = {};
+  Object.entries(STOCK).forEach(([depot, quantity], index) => {
+    files[`stock/${depot}.txt`] = [
+      `depot: ${depot}`,
+      `updated: 2026-11-${index + 10}`,
+      `shelf: ${String.fromCharCode(65 + index)}${index + 2}`,
+      `quantity: ${quantity}`,
+      `reserved: ${(quantity * 7) % 13}`,
+      "",
+    ].join("\n");
+  });
+  return files;
+}
+
+/**
+ * Gather one value from many files: the total of the `quantity` lines of nine depot files. Passes when the answer holds
+ * the total as a number token of its own (the `command` scenario's check), an `ok` tool step's text (a direct call's,
+ * a script's call's, or the script's output) held the total or every `quantity` line, and no file changed; without
+ * such a step it is `wrongTool`. Every command is rejected and the step limit is `CHAIN_STEPS`, as in `rename`.
+ */
+export const GATHER_SCENARIO: Scenario = {
+  name: "gather",
+  files: { "README.md": "# Courier\n\nThe stock folder holds one file per depot.\n", ...stockFiles() },
+  message: "What is the total quantity in stock across all depots? Reply with the number.",
+  writes: {},
+  rejectCommands: true,
+  maxToolSteps: CHAIN_STEPS,
+  check(entries) {
+    const steps = entries.filter((entry) => entry.role === "tool");
+    const read = steps.filter((step) => step.status === "ok").map((step) => step.text);
+    // [>]: A whole line, or a search line's end (`path:4:quantity: 14`), so `quantity: 14` never matches `quantity: 142`.
+    const quantities = Object.values(STOCK).map((quantity) => new RegExp(`(^|:)quantity: ${quantity}$`, "m"));
+    const sawTotal = read.some((text) => numberTokens(text).includes(String(STOCK_TOTAL)));
+    const sawEach = quantities.every((line) => read.some((text) => line.test(text)));
+    if (!sawTotal && !sawEach) return { pass: false, category: "wrongTool", detail: `steps: ${describeSteps(steps)}` };
+    const answer = lastReply(entries).content;
+    if (numberTokens(answer).includes(String(STOCK_TOTAL))) return { pass: true };
+    return { pass: false, category: "wrongAnswer", detail: `answer: ${excerpt(answer)}` };
+  },
+};
+
 /** Every scenario the bench plays, in order. */
 export const SCENARIOS: readonly Scenario[] = [
   READ_SCENARIO,
@@ -493,7 +643,32 @@ export const SCENARIOS: readonly Scenario[] = [
   HIDDEN_SCENARIO,
   RANGE_SCENARIO,
   ASK_SCENARIO,
+  RENAME_SCENARIO,
+  GATHER_SCENARIO,
 ];
+
+/** The replies of a run that ended `done`, summaries aside: how many answers the model wrote. */
+export function repliesDone(entries: readonly ChatEntry[]): number {
+  return entries.filter((entry) => entry.role === "assistant" && entry.status === "done" && !entry.summary).length;
+}
+
+/**
+ * Whether one `ok` `run_script` step ran at least two `ok` calls. The steps a script made sit right before its own
+ * step (`fromScript`), so a script that chained tools is read from the entries alone.
+ */
+export function chainedScript(entries: readonly ChatEntry[]): boolean {
+  let inner = 0;
+  for (const entry of entries) {
+    if (entry.role !== "tool") continue;
+    if (entry.fromScript) {
+      if (entry.status === "ok") inner += 1;
+      continue;
+    }
+    if (entry.name === "run_script" && entry.status === "ok" && inner >= 2) return true;
+    inner = 0;
+  }
+  return false;
+}
 
 /**
  * `scenarios` as the bench judges them when `ask_user` is not offered: `ask` on the workspace alone, its check

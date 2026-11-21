@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { RUN_COMMAND_TOOL } from "./commands";
+import { RUN_SCRIPT_TOOL } from "./script";
 import { LOAD_SKILL_TOOL } from "./skills";
 import type { Skill } from "./systemPrompt";
 import { composeSummaryPrompt, composeSystemPrompt, offeredTools } from "./systemPrompt";
-import type { ToolSpec } from "./toolCalls";
+import { describeTool, type ToolSpec } from "./toolCalls";
 import { READ_TOOLS } from "./tools";
 import { WRITE_TOOLS } from "./writeTools";
 
@@ -95,6 +96,15 @@ describe("composeSystemPrompt", () => {
       "- When the request names one thing and several distinct ones match it, such as two functions defined with the same name in two files (two different functions, not one), call ask_user to ask which before any write instead of changing them all or picking one yourself; otherwise do not ask.";
     expect(composeSystemPrompt([...TOOLS, toolNamed("ask_user")], [], []).split("# Tools")[0]).toContain(rule);
     expect(composeSystemPrompt(TOOLS, [], [])).not.toContain(rule);
+  });
+
+  test("adds no rule for run_script: its description carries its guidance, and nothing else changes", () => {
+    const ALL = [...READ_TOOLS, ...WRITE_TOOLS, RUN_COMMAND_TOOL, LOAD_SKILL_TOOL];
+    const without = composeSystemPrompt(ALL, [], []);
+    const withScript = composeSystemPrompt([...ALL, RUN_SCRIPT_TOOL], [], []);
+    expect(withScript.split("# Tools")[0]).not.toContain("run_script");
+    const section = `\n\n## run_script\n\n${RUN_SCRIPT_TOOL.description}\n\n${describeTool(RUN_SCRIPT_TOOL)}`;
+    expect(withScript).toBe(without + section);
   });
 
   test("never shows the format inside a code fence", () => {

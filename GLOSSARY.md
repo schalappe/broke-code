@@ -57,6 +57,23 @@ steps; the last reply, and a step after it, stay in view. Each step there has on
 edited, ran, or other); paths count once after a lexical cleanup (`a.ts` and `./a.ts` are one file). The row wraps in a narrow panel.
 _Avoid_: tool use, action, iteration
 
+**Code Mode**:
+The experimental user setting `brokeCode.codeMode`, off by default: a send offers the `run_script` tool, so the model
+may write a **script** in place of one call per reply. On only from the user value, and only once a probe has run a
+script in this window. Combines with every mode.
+_Avoid_: script mode, programmatic tool calling
+
+**Script**:
+The JavaScript a `run_script` call holds: the body of an async function whose globals are the harness's tools, as
+async functions, and `console.log`. It runs in a separate process under a default-deny macOS sandbox, so it acts only
+through its **inner calls**; only what it prints or returns goes back to the model. A script is one tool step.
+_Avoid_: code block, snippet, program
+
+**Inner call**:
+A tool call a **script** makes. It is approved, run, and recorded as a direct call is: its own tool step, marked
+`fromScript`, shown one level in under the script's row and never sent to the model, which reads the script's output.
+_Avoid_: sub-call, nested call, child call
+
 **Approval**:
 The user's Accept (Run, for a command) or Reject of a tool call that changes the workspace or runs a command, given in
 the chat while the agent turn waits; a rejection, with its optional reason, goes back to the model as the call's

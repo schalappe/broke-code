@@ -9,13 +9,16 @@ import { MASK, maskCode } from "./markdownCode";
  * A tool as the model sees it. `args`: in the order the call shape and the system prompt list them. `oneLine`: the
  * value cannot hold a line break (a path, a name, a ripgrep pattern), so the parser drops every leading and trailing
  * one, whatever the other side holds. `asks`: the tool may ask the user before it acts, through an approval or a
- * question (`ToolContext`), so its call runs only once an approval is accepted; never sent to the model.
+ * question (`ToolContext`), so its call runs only once an approval is accepted; never sent to the model. `bareArg`:
+ * the call may also be written bare, its whole content that argument's value, when the content does not start with
+ * that argument's tag (`run_script`'s `code`, ADR 0001, 2026-11-21; see `readCall`).
  */
 export type ToolSpec = {
   name: string;
   description: string;
   args: { name: string; required: boolean; oneLine?: boolean; description: string }[];
   asks?: true;
+  bareArg?: string;
 };
 
 /**
@@ -117,9 +120,28 @@ export function parseToolCall(answer: string, tools: readonly ToolSpec[]): Parse
   return forged === -1 ? { kind: "none" } : forgedReply;
 }
 
-/** The call to `tool` whose block opens at `start` and whose body starts at `bodyStart`, or why it is malformed. */
+/**
+ * The call to `tool` whose block opens at `start` and whose body starts at `bodyStart`, or why it is malformed. A tool
+ * with a `bareArg` whose content, after whitespace, is not empty and does not start with that argument's opening tag
+ * is a bare call: it ends at the first `</tool>` after its opening tag, and everything before that, its line breaks
+ * trimmed as a multi-line value's, is the argument's value.
+ */
 function readCall(answer: string, tool: ToolSpec, start: number, bodyStart: number): ParsedReply {
   const name = tool.name;
+  const contentStart = skipWhitespace(answer, bodyStart);
+  const bare = tool.bareArg;
+  if (
+    bare !== undefined &&
+    !answer.startsWith(`</${name}>`, contentStart) &&
+    !answer.startsWith(`<${bare}>`, contentStart)
+  ) {
+    const close = answer.indexOf(`</${name}>`, bodyStart);
+    if (close === -1) {
+      return malformed(`The <${name}> tag never closes: end the call with </${name}>.`, tool, start, answer.length);
+    }
+    const args = { [bare]: trimLineBreaks(answer.slice(bodyStart, close)) };
+    return { kind: "call", name, args, start, end: close + `</${name}>`.length };
+  }
   const read = readArgs(answer, tool, bodyStart);
   if ("problem" in read) {
     const end = answer.indexOf(`</${name}>`, read.at);

@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { realpathSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,7 +10,7 @@ import { RecordedChanges } from "./recordedChanges";
 import { LOAD_SKILL_TOOL } from "./skills";
 import { composeSystemPrompt, offeredTools, type Skill } from "./systemPrompt";
 import { workspaceToolRunner } from "./toolRunner";
-import { READ_TOOLS } from "./tools";
+import { READ_TOOLS, type ToolResult } from "./tools";
 import type { WorkspaceRoot } from "./workspaceFiles";
 import { type PlannedChange, WRITE_TOOLS } from "./writeTools";
 
@@ -60,6 +61,18 @@ function recordingRunner(commandEnv?: () => CommandEnv, askUser?: boolean) {
 describe("workspaceToolRunner", () => {
   test("lists the read tools, then the write tools, then load_skill", () => {
     expect(recordingRunner().runner.tools).toEqual([...READ_TOOLS, ...WRITE_TOOLS, LOAD_SKILL_TOOL]);
+  });
+
+  test("never lists run_script, and runs it only with the script environment and inner calls the turn gives", async () => {
+    const { runner } = recordingRunner(undefined, true);
+    expect(runner.tools.map((tool) => tool.name)).not.toContain("run_script");
+    const env = { runtime: [realpathSync(process.execPath)] as [string], environment: {}, readable: [] };
+    const call = { name: "run_script", args: { code: "return await read_file({ path: 'a.txt' });" } };
+    const refused: ToolResult = { status: "error", text: "run_script: scripts cannot run in this call." };
+    expect(await runner.run(call, context)).toEqual(refused);
+    expect(await runner.run(call, { ...context, scriptEnv: env })).toEqual(refused);
+    const innerCalls = { tools: READ_TOOLS, run: async () => ({ status: "ok" as const, text: "alpha" }) };
+    expect(await runner.run(call, { ...context, scriptEnv: env, innerCalls })).toEqual({ status: "ok", text: "alpha" });
   });
 
   test("with a command environment, lists run_command before load_skill", () => {

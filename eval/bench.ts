@@ -9,6 +9,10 @@
  *
  * `--no-ask-user` leaves the `ask_user` tool out of every run and judges the `ask` scenario on the workspace alone:
  * the baseline that shows what the tool changes, `bun run eval --no-ask-user --scenario ask`.
+ *
+ * `--code-mode` offers `run_script` in every run (Code Mode, phase 1: the extension does not offer it). Before any run
+ * the bench runs a trivial script under the exact sandbox and environment of a run's scripts (`benchScriptProblem`), and
+ * exits 1 naming the cause when it cannot.
  */
 
 import { rmSync } from "node:fs";
@@ -19,11 +23,14 @@ import { parseArgs } from "node:util";
 import { listModels, type ModelListing } from "../src/core/client";
 import { runCommand } from "../src/core/commands";
 import { SANDBOX_EXEC } from "../src/core/fullAccess";
+import { type ScriptEnv, scriptProblem } from "../src/core/script";
 import { formatDuration, formatReport, type RunResult } from "./report";
-import { benchCommandEnv, playScenario, type RunOutcome, type RunTarget } from "./run";
+import { benchCommandEnv, benchScriptEnv, playScenario, type RunOutcome, type RunTarget } from "./run";
 import {
+  chainedScript,
   describeError,
   judge,
+  repliesDone,
   SCENARIOS,
   type Scenario,
   type Verdict,
@@ -45,8 +52,8 @@ const MAX_TOOL_STEPS = 10;
  * order of `SCENARIOS`, each once, else every scenario. `runs`: `--runs`, else 10. `dump`: `--dump <file>`, a JSON
  * Lines file each run's `dumpLine` is appended to, for reading failed replies and writes. `baseUrl`: `--base-url`,
  * an `http` or `https` URL, trailing slashes dropped, else the local Ollama. `withoutAskUser`: `--no-ask-user`, under
- * which `scenarios` judge `ask` on the workspace alone (`withoutAskUser` of `scenarios.ts`). Throws on an unknown
- * scenario, a base URL that is not one, and on any other flag.
+ * which `scenarios` judge `ask` on the workspace alone (`withoutAskUser` of `scenarios.ts`). `codeMode`: set by
+ * `--code-mode`, every run offers `run_script`; absent without it. Throws on an unknown scenario, a base URL that is not one, and on any other flag.
  */
 export function parseBenchArgs(args: string[]): {
   models: string[];
@@ -55,6 +62,7 @@ export function parseBenchArgs(args: string[]): {
   dump: string | undefined;
   baseUrl: string;
   withoutAskUser: boolean;
+  codeMode?: true;
 } {
   const { values } = parseArgs({
     args,
@@ -65,6 +73,7 @@ export function parseBenchArgs(args: string[]): {
       dump: { type: "string" },
       "base-url": { type: "string" },
       "no-ask-user": { type: "boolean" },
+      "code-mode": { type: "boolean" },
     },
     strict: true,
     allowPositionals: false,
@@ -87,7 +96,8 @@ export function parseBenchArgs(args: string[]): {
     throw new Error(`--base-url takes an http or https URL, not ${JSON.stringify(values["base-url"])}.`);
   }
   const models = [...new Set(values.model ?? BENCH_MODELS)];
-  return { models, scenarios, runs, dump: values.dump, baseUrl, withoutAskUser: noAskUser };
+  const parsed = { models, scenarios, runs, dump: values.dump, baseUrl, withoutAskUser: noAskUser };
+  return values["code-mode"] === true ? { ...parsed, codeMode: true } : parsed;
 }
 
 /**
@@ -117,6 +127,17 @@ export async function sandboxProblem(folder: string): Promise<string | undefined
     benchCommandEnv(paths, process.env),
   );
   return probe.status === "ok" ? undefined : describeSandboxFailure(probe.text);
+}
+
+/**
+ * Why the bench cannot run a script under `--code-mode`, or `undefined` when it can: the runtime probe of Code Mode
+ * (`scriptProblem` of `script.ts`: a script that calls a stub tool and returns its answer) under `env`, the sandbox
+ * and environment of every run's scripts. The bench never runs a script outside its sandbox, so a script that cannot
+ * run there stops the bench before any run.
+ */
+export async function benchScriptProblem(env: ScriptEnv): Promise<string | undefined> {
+  const problem = await scriptProblem(env);
+  return problem && `--code-mode could not run a script, so no run started. ${problem}`;
 }
 
 /** The message the bench exits with when its sandbox probe gave `result`, the probe command's result text. */
@@ -173,23 +194,33 @@ export function dumpLine(run: {
 }
 
 /**
- * The target each run of `model` plays on, from the parsed command line: the bench's step limit, and `ask_user` left
- * out under `--no-ask-user`.
+ * The target each run of `model` plays on, from the parsed command line: the bench's step limit, `ask_user` left
+ * out under `--no-ask-user`, and `run_script` offered under `--code-mode`.
  */
 export function benchTarget(
-  options: { baseUrl: string; withoutAskUser: boolean },
+  options: { baseUrl: string; withoutAskUser: boolean; codeMode?: boolean },
   model: string,
   apiKey: string | undefined,
 ): RunTarget {
   const target: RunTarget = { baseUrl: options.baseUrl, apiKey, model, maxToolSteps: MAX_TOOL_STEPS };
   if (options.withoutAskUser) target.withoutAskUser = true;
+  if (options.codeMode) target.codeMode = true;
   return target;
 }
 
-/** The line the bench starts with, so a log tells a baseline without `ask_user` from a run with it. */
-export function startLine(options: { baseUrl: string; runs: number; withoutAskUser: boolean }): string {
+/**
+ * The line the bench starts with, so a log tells a baseline without `ask_user` from a run with it, and a run in Code
+ * Mode from one without.
+ */
+export function startLine(options: {
+  baseUrl: string;
+  runs: number;
+  withoutAskUser: boolean;
+  codeMode?: boolean;
+}): string {
   const askUser = options.withoutAskUser ? ", ask_user not offered" : "";
-  return `broke-code eval: ${options.baseUrl}, ${options.runs} runs per scenario, step limit ${MAX_TOOL_STEPS}${askUser}.`;
+  const codeMode = options.codeMode ? ", code mode (run_script offered)" : "";
+  return `broke-code eval: ${options.baseUrl}, ${options.runs} runs per scenario, step limit ${MAX_TOOL_STEPS}${askUser}${codeMode}.`;
 }
 
 async function main(): Promise<number> {
@@ -202,6 +233,13 @@ async function main(): Promise<number> {
   if (sandbox) {
     console.error(sandbox);
     return 1;
+  }
+  if (options.codeMode) {
+    const script = await benchScriptProblem(await benchScriptEnv());
+    if (script) {
+      console.error(script);
+      return 1;
+    }
   }
 
   const listing = await listModels({ provider: { name: "bench", baseUrl }, apiKey });
@@ -233,7 +271,9 @@ async function main(): Promise<number> {
           const outcome = await playScenario(scenario, benchTarget(options, model, apiKey), tmpRoot);
           const verdict = judge(scenario, outcome.entries, outcome.after);
           const ms = performance.now() - runStarted;
-          results.push({ model, scenario: scenario.name, run, verdict, ms });
+          const replies = repliesDone(outcome.entries);
+          const chained = chainedScript(outcome.entries);
+          results.push({ model, scenario: scenario.name, run, verdict, ms, replies, chained });
           const shown = verdict.pass ? "pass" : `${verdict.category}: ${verdict.detail}`;
           console.error(`${model} ${scenario.name} ${run + 1}/${runs} ${formatDuration(ms)} ${shown}`);
           if (dump) await appendFile(dump, dumpLine({ model, scenario, run, verdict, ms, outcome }));

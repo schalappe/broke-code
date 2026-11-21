@@ -1,6 +1,6 @@
 # Harness
 
-This file specifies the agent loop: the body tool calls, the tools, the approvals, the history sent to the model, and the context budget. ADR 0001, 0002, 0003, and 0005 in `docs/adr/` record the decisions behind it.
+This file specifies the agent loop: the body tool calls, the tools, the approvals, the history sent to the model, Code Mode, and the context budget. ADR 0001, 0002, 0003, 0005, and 0008 in `docs/adr/` record the decisions behind it.
 
 ## Body tool calls
 
@@ -493,6 +493,95 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
   run: the step in flight is dropped, nothing later runs, and the record is saved as it stands. A failed reply ends
   the turn `failed`; so does an unexpected exception inside the turn (a bug), with an `internal` error giving its
   message, logged with its stack, so the composer never stays locked. Truncate tool results longer than about 2,000 lines and say so in the result.
+
+## Code Mode
+
+Code Mode (ADR 0008) lets the model write one JavaScript script that chains the harness's tools in one reply; only
+what the script prints or returns goes back to the model. It is an experimental user setting, off by default.
+
+- The setting. `brokeCode.codeMode`: boolean, default `false`, `application` scope, tagged experimental, read from the
+  user value only (`codeModeSetting`: only the user value `true` turns it on, so a workspace `settings.json` never
+  does) at each send. Off, or any value that is not `true`: `run_script` is not offered, and the system prompt and
+  every request are those before Code Mode, byte for byte, for every record without inner steps.
+- The decision, once per send (`ChatPorts.codeMode`, `CodeModeSwitch`). With the setting on, the first send that would
+  offer the tool probes the script runtime, lazily, once per window: `scriptProblem` runs, through the exact launch of
+  every script (the profile, the processor time limit, the environment), a script that calls one stub tool and
+  returns its answer, and requires that answer back within 10 seconds (`SCRIPT_PROBE_MS`); the turn's Stop aborts it.
+  A pass gives the runtime to every later send. A failure keeps `run_script` off for the window, logs the cause, and
+  shows one warning notification: "Code Mode is off in this window: its scripts cannot run here." and the cause; the
+  turn goes on without the tool. A probe that Stop aborted is not kept. The kept outcome is dropped when the setting
+  changes, or when a send reads it off, so turning it off then on probes again. The send's one decision gates both the
+  tool list (the send's prompt; the usage display's prompt before the first send never lists the tool) and the
+  runtime: the `run_script` call gets its script environment and inner calls only in a send that offered it, and the
+  tool runner itself never lists `run_script`. `run_script` comes last among the tools.
+- The tool. `run_script(code)`, its description unchanged from the eval's last iteration and no rule in the Rules
+  list (`docs/eval.md`). `code` is a multi-line argument, or the call's whole content when it does not start with
+  `<code>` (the bare form, ADR 0001, 2026-11-21). The malformed-call message shows the `<code>` form, which the parser
+  accepts. The code is the body of an async function: `await` and `return` work at the top level. Its globals are the
+  tool functions and `console.log` (and `console.error`, the same stream); no `require`, `process`, `fetch`, or timers.
+- The script API. Each tool the send offers but `run_script`, `load_skill`, and `ask_user` is an async function of the
+  same name taking one object of its arguments (each value converted with `String()`, an `undefined` one dropped). The
+  host checks each call before anything runs: a tool the script may call, one object of text values, no unknown
+  argument, every required one given; a refused call throws in the script. A call resolves with the result text when
+  the result is `ok` and throws an `Error` holding it otherwise, a rejection by the user included. `read_file` resolves
+  with the lines asked for exactly as stored (no header, no fence, no notice) and throws when the 2,000-line cap would
+  cut them, naming the range to read in parts; its step keeps the mention block. Calls run one at a time, in arrival
+  order, so `Promise.all` works but runs them in turn.
+- The step's text: each printed line in order, then the returned value (a string as is, anything else as JSON), cut
+  at 2,000 lines with the usual notice. Nothing printed or returned gives an `ok` text telling the model to print what
+  it needs. An uncaught error makes the step `error`, ending `run_script: the script stopped on an error: <message>`.
+- Limits, each ending the script with its own message: 100 calls (`MAX_SCRIPT_CALLS`; call 101 throws and never
+  runs); 10 seconds of the script's own running time between calls (`SCRIPT_RUN_MS`; the time a call takes, a wait for
+  an approval included, never counts); 1 MiB of printed output, counted in the child; one protocol line over 8 MiB;
+  and 60 seconds of processor time (`SCRIPT_CPU_SECONDS`), a kernel limit that holds even when the host died. A script
+  is one step toward `brokeCode.maxToolSteps`, whatever the calls it made.
+- The sandbox. The child is `/bin/sh -c 'ulimit -t 60 || exit 125; exec "$@"'`, then `/usr/bin/sandbox-exec -p
+  <profile>`, then the runtime with `-e <bootstrap>`, in `/`, with an environment built from nothing. The runtime is
+  the extension host's own executable (`process.execPath`, by its real path) run as Node, `ELECTRON_RUN_AS_NODE=1` its
+  only variable (`hostScriptEnv`), with each `*.framework` folder of its app bundle's `Contents/Frameworks` readable.
+  The profile is default deny and allows only: exec and read of the runtime's program; read of `/usr/lib`,
+  `/usr/share/icu`, `/System/Library`, and the OS cryptex; the listing of `/`; read and write of `/dev/null`; the
+  kernel's settings; the metadata of each folder above the runtime, those folders alone; and the readable paths. No
+  file of the user's, no write, no network, no process, no service lookup. Every path goes as a `sandbox-exec -D`
+  parameter, never spliced into the profile. Fail closed: without `sandbox-exec`, when it cannot apply the profile, or
+  when the processor time limit cannot be set (exit 125), nothing runs and the step is an `error` naming the cause.
+- Inner calls and approvals. Each call a script makes runs through the turn exactly as a direct call (`runCall`): its
+  approval in the mode the setting holds then (Ask's diff, Accept, and Reject with a reason; Run for a command;
+  Auto-edit's writes at once; Full access's denied commands and command sandbox), its `approval`, its line counts, and
+  its tie to the file for "Undo changes". An approval it opens raises the usual `approvalRequested` event. A rejection
+  throws in the script. `callRunning` is true while the script runs and no request is open, false while an inner call
+  waits on its approval, as for a direct call.
+- Plan. A Plan turn offers `run_script` with the read tools; in its script, `write_file`, `edit_file`, and
+  `run_command` exist as functions that throw `<tool> is not available in Plan mode.`, with no approval and no step
+  (ADR 0005, addendum of 2026-11-21). The Plan paragraph of the prompt is unchanged.
+- Live state and the record. While a script runs, its reply stays the last entry, `streaming`, so `isReplying` and
+  every guard hold. The steps of the calls it completed, marked `fromScript: true`, are staged by the turn, in call
+  order: shown live in `ChatState.scriptSteps` (absent otherwise), and saved at once, after the reply in flight, at
+  each step, through the store's queue without waiting, as a direct call's step is saved. When the script ends, its
+  inner steps join the entries, then its `run_script` step and the next reply, in one update. On Stop, the reply ends
+  `stopped` followed by the completed inner steps, and no `run_script` step: the open approval is dismissed, the calls
+  still queued are cancelled, and the call in flight has its step dropped, as a direct call's is; a write it made that
+  lands after Stop is still recorded for undo by the applier, tied to no step. A call that settles after Stop, New
+  chat, or another navigation changes nothing: no entry, no staged step, no `callRunning`. A reload while a script ran
+  shows the reply stopped, with the inner steps saved so far (`docs/spec/conversations.md`). Accepted window, the same
+  as for a direct call: a crash between a write reaching the disk and its step's save loses that step's record; without
+  a storage folder, nothing is saved.
+- History. A reply's tool group (`toolGroup`: the inner steps, then the first tool step after them a script did not
+  make) goes to the model as one step. A finished script sends its `run_script` result; after its text, inside the
+  wrapper, one line per inner write since undone, in order: `The user undid this change afterwards: <tool> <path>`,
+  the path as the script gave it. A script with no step of its own (Stop, a reload) sends one result the history
+  writes: `<tool_result tool="run_script" status="error">`, `run_script: the script was stopped before it finished,
+  after these tool calls:`, one line per completed call (`<tool> <path or the command's first line>: ok` or
+  `error`, never its result text), then the same undo lines. Inner steps are never sent otherwise. The context budget,
+  the kept recent steps, the summary request, and the size estimate see a group as one step; a group with an undone
+  inner write is never replaced by the left-out line. After a summary, an undone inner write before it gets the
+  summary's undo line, named the same way (`<tool> <path>`). Records holding inner steps are replayed this way
+  whatever the setting.
+- Undo. An inner write is recorded and undone as a direct write: "Undo changes" restores its file and marks its step
+  `undone`, never the `run_script` step. The Retry and Edit warning, "Changed files", and the hint about commands count
+  inner steps as steps of the turn. Undo's lifetime is the same as for direct calls: memory only, lost at a reload,
+  which restores the step rows and their saved `undone` marks.
+- Not callable from a script: `run_script` (a script never starts another), `load_skill`, and `ask_user`.
 
 ## Notifications
 
