@@ -34,8 +34,12 @@ import {
   type WorkspaceRoot,
 } from "./workspaceFiles";
 
-/** What a tool call gives back to the model: `ok` with its output, or `error` with what went wrong. */
-export type ToolResult = { status: "ok" | "error"; text: string };
+/**
+ * What a tool call gives back to the model: `ok` with its output, or `error` with what went wrong. `forScript`: what a
+ * `run_script` script gets instead of `text`, when it differs: a `read_file` in a script resolves with the file's text
+ * as stored, never the mention block the model reads (see `runReadTool`'s `forScript` option).
+ */
+export type ToolResult = { status: "ok" | "error"; text: string; forScript?: { status: "ok" | "error"; text: string } };
 
 /** A parsed body tool call: the `call` variant of `ParsedReply` satisfies it. */
 export type ToolCall = { name: string; args: Record<string, string> };
@@ -112,11 +116,13 @@ export const READ_TOOLS: ToolSpec[] = [
 
 /**
  * What a read tool may reach besides the workspace. `skillRoots`: the real paths of the folders of the skills loaded in
- * the conversation, read by absolute path; one outside the workspace is read-only (see `readWorkspaceEntry`). `seam`:
- * for tests, see
- * `readWorkspaceEntry`.
+ * the conversation, read by absolute path; one outside the workspace is read-only (see `readWorkspaceEntry`).
+ * `forScript`: the call comes from a `run_script` script, so a `read_file` that reads also sets the result's
+ * `forScript`: the lines asked for exactly as stored (no header, no fence, no notice), so a script can change them and
+ * write them back, or an `error` when the 2,000-line cap would cut them, never a silently partial text. `seam`: for
+ * tests, see `readWorkspaceEntry`.
  */
-export type ReadToolOptions = { skillRoots?: readonly string[]; seam?: RaceSeam };
+export type ReadToolOptions = { skillRoots?: readonly string[]; forScript?: boolean; seam?: RaceSeam };
 
 /**
  * Run read tool `call` inside `roots` and the loaded skills' folders. Never rejects: an unknown tool, a refused path,
@@ -148,7 +154,8 @@ export async function runReadTool(
   signal.addEventListener("abort", onAbort, { once: true });
   try {
     // [>]: The race subscribes to the tool's promise, so an outcome dropped after Stop never rejects unhandled.
-    const result = await Promise.race([runTool(call, access, env, signal, ripgrepRuns), aborted]);
+    const run = runTool(call, access, env, signal, ripgrepRuns, options.forScript === true);
+    const result = await Promise.race([run, aborted]);
     if (result !== "aborted" && !signal.aborted) return result;
     await Promise.all(ripgrepRuns);
     return stopped(call.name);
@@ -167,9 +174,10 @@ async function runTool(
   env: ReadToolEnv,
   signal: AbortSignal,
   ripgrepRuns: Promise<unknown>[],
+  forScript: boolean,
 ): Promise<ToolResult> {
   try {
-    if (call.name === "read_file") return await readFileTool(access, call.args);
+    if (call.name === "read_file") return await readFileTool(access, call.args, forScript);
     if (call.name === "list_files") return await listFilesTool(access, call.args.path);
     return await searchTool(access, call.args.pattern ?? "", call.args.path, env, signal, ripgrepRuns);
   } catch (error) {
@@ -187,6 +195,7 @@ async function runTool(
 async function readFileTool(
   { roots, skillRoots, seam }: ReadAccess,
   args: Record<string, string>,
+  forScript: boolean,
 ): Promise<ToolResult> {
   const path = args.path ?? "";
   const range = lineRangeOf(args);
@@ -217,12 +226,18 @@ async function readFileTool(
       content: entry.text,
       omitted: 0,
     };
-    return { status: "ok", text: formatMention(whole) };
+    const result: ToolResult = { status: "ok", text: formatMention(whole) };
+    return forScript ? { ...result, forScript: { status: "ok", text: entry.text } } : result;
   }
   const lines = range.start === cut.last ? `line ${cut.last}` : `lines ${range.start}-${cut.last}`;
   const block = fencedBlock(`@${shown} (file, ${lines} of ${cut.total})`, cut.text);
   const notice = `[truncated: ${cut.omitted} more lines not shown; read on with start_line ${cut.last + 1}]`;
-  return { status: "ok", text: cut.omitted > 0 ? `${block}\n${notice}` : block };
+  const result: ToolResult = { status: "ok", text: cut.omitted > 0 ? `${block}\n${notice}` : block };
+  if (!forScript) return result;
+  if (cut.omitted === 0) return { ...result, forScript: { status: "ok", text: cut.text } };
+  const parts = `read it in parts of at most ${MAX_MENTION_LINES} lines with start_line and end_line, such as start_line ${range.start} and end_line ${cut.last}`;
+  const text = `read_file: ${excerpt(path)}: the lines asked for are more than a read returns (${MAX_MENTION_LINES}); ${parts}.`;
+  return { ...result, forScript: { status: "error", text } };
 }
 
 /**

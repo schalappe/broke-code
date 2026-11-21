@@ -1,8 +1,8 @@
 /**
  * @module run
  * One run of a scenario: the chat controller the extension runs, hosted through its ports with the read and
- * write tools, `run_command`, `load_skill`, and `ask_user` (unless the target leaves it out) over a throwaway copy of
- * the fixture under the system temporary directory, each write applied at once and recorded, each question answered at
+ * write tools, `run_command`, `load_skill`, `ask_user` (unless the target leaves it out), and `run_script` (only under
+ * `--code-mode`) over a throwaway copy of the fixture under the system temporary directory, each write applied at once and recorded, each question answered at
  * once with the scenario's answer, each command approved at once (rejected in a scenario that says so) and run with
  * `/bin/sh` in the copy, inside the macOS sandbox with an allow-listed environment (`benchCommandEnv`: a reply may come
  * from a remote server, so a command gets none of the bench's variables, reads nothing under the user's home, and
@@ -24,6 +24,7 @@ import { SANDBOX_EXEC } from "../src/core/fullAccess";
 import { DEFAULT_CONTEXT_SIZE, parseLimits } from "../src/core/limits";
 import type { ChatEntry } from "../src/core/protocol";
 import { ProviderSupport } from "../src/core/providerSupport";
+import type { ScriptEnv } from "../src/core/script";
 import { readSkills } from "../src/core/skills";
 import { workspaceToolRunner } from "../src/core/toolRunner";
 import { ripgrepCandidates } from "../src/core/tools";
@@ -89,8 +90,10 @@ export function benchCommandEnv(paths: BenchCommandPaths, benchEnv: NodeJS.Proce
 
 /**
  * Where and how a run plays. `baseUrl`: an OpenAI-compatible provider; `apiKey`: its key, `undefined` for none (local
- * Ollama). `maxToolSteps`: the turn's step limit, small so a looping model fails fast. `withoutAskUser`: `ask_user` is
- * not offered, for the baseline that shows what the tool changes; absent, it is.
+ * Ollama). `maxToolSteps`: the turn's step limit, small so a looping model fails fast, unless the scenario sets its
+ * own. `withoutAskUser`: `ask_user` is not offered, for the baseline that shows what the tool changes; absent, it is.
+ * `codeMode`: `run_script` is offered, its scripts run by `benchScriptEnv`; absent, it is not, and the run is the one
+ * before Code Mode.
  */
 export type RunTarget = {
   baseUrl: string;
@@ -98,7 +101,17 @@ export type RunTarget = {
   model: string;
   maxToolSteps: number;
   withoutAskUser?: true;
+  codeMode?: true;
 };
+
+/**
+ * How the bench runs a script under `--code-mode`: the bench's own runtime (bun, by its real path, which the script
+ * sandbox lets it exec and read), an empty environment, since bun needs no variable to run the bootstrap (measured),
+ * and nothing else readable.
+ */
+export async function benchScriptEnv(): Promise<ScriptEnv> {
+  return { runtime: [await realpath(process.execPath)], environment: {}, readable: [] };
+}
 
 /**
  * A change a write tool handed to the applier, as the dump records it: `before` is `null` for a new file, `status` the
@@ -137,13 +150,14 @@ export async function playScenario(scenario: Scenario, target: RunTarget, tmpRoo
     };
     await mkdir(commandPaths.tmp);
     const commandEnv = benchCommandEnv(commandPaths, process.env);
+    const scriptEnv = target.codeMode ? await benchScriptEnv() : undefined;
     // [>]: The tools compare resolved paths; on macOS the temporary directory sits behind the /var symlink.
     const root = { name: basename(copy), path: await realpath(copy) };
     const toolEnv = { ripgrepCandidates: ripgrepCandidates(undefined, process.env.PATH) };
     // [>]: The loaded context, not the model card's: Ollama loads both bench models with 32,768 tokens, and a vLLM
     // server for the bench is started with `--max-model-len 32768`.
     const limits = parseLimits({
-      maxToolSteps: target.maxToolSteps,
+      maxToolSteps: scenario.maxToolSteps ?? target.maxToolSteps,
       contextSizes: { [target.model]: DEFAULT_CONTEXT_SIZE },
     });
     const controller = new ChatController({
@@ -172,6 +186,8 @@ export async function playScenario(scenario: Scenario, target: RunTarget, tmpRoo
       limits: { read: () => limits },
       // [>]: Fresh per run, so what one run learns of the server never changes the requests of the next.
       providerSupport: new ProviderSupport(),
+      // [>]: The bench probes its runtime once before any run (`benchScriptProblem`), so every send offers scripts.
+      ...(scriptEnv ? { codeMode: { scriptEnv: async () => scriptEnv } } : {}),
     });
 
     controller.setProviders({ providers: [{ name: "bench", baseUrl: target.baseUrl }], skipped: [] });
@@ -195,7 +211,8 @@ export async function playScenario(scenario: Scenario, target: RunTarget, tmpRoo
  * `runner`, with every request of its runs answered at once as the user would: an approval accepted, or rejected as
  * the user's Reject does when the scenario sets `rejectCommands`; a question answered with the scenario's `answer`, or
  * `DEFAULT_ANSWER`. The bench plays the model, not the user, and the product never auto-approves a command, so this
- * lives in the run context the bench hands the tools, not in a setting. Only `run_command` asks an approval; a write
+ * lives in the run context the bench hands the tools, not in a setting. A call a script makes reaches the tools through
+ * this runner too, so its requests are answered the same way. Only `run_command` asks an approval; a write
  * goes straight to the bench's applier.
  */
 function answeringAsUser(scenario: Scenario, runner: ToolRunner): ToolRunner {

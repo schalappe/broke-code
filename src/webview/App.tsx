@@ -22,7 +22,7 @@ import {
   filterConversations,
   shownAnswer,
 } from "../core/conversation";
-import { historyStart, isAutomaticSummary, sentEntries } from "../core/history";
+import { groupOwner, historyStart, isAutomaticSummary, sentEntries, toolGroup } from "../core/history";
 import { hasFinalAnswer, type LastTurnActions, lastTurnActions, unrevertedEffects } from "../core/lastTurn";
 import { codeBlockText, FENCE_CLOSED, hasTextAfter, remarkFenceClosed } from "../core/markdownCode";
 import { emptyModelsLabel } from "../core/modelList";
@@ -92,6 +92,7 @@ import {
   describeMention,
   describeProviderError,
   describeRowDetails,
+  describeScript,
   describeSkillWarning,
   describeSkippedProvider,
   describeStorageProblem,
@@ -205,6 +206,7 @@ export function App({
               key={state.conversationId}
               conversationId={state.conversationId}
               entries={state.entries}
+              scriptSteps={state.scriptSteps}
               approval={state.approval}
               question={state.question}
               undo={state.undo}
@@ -820,8 +822,8 @@ export function ConversationList({
 }
 
 /**
- * `approval` and `question`: the request open, an approval or a question, shown on the last reply, the one in flight.
- * `undo`: "Undo changes", shown under the
+ * `approval` and `question`: the request open, an approval or a question, shown on the last reply, the one in flight;
+ * so are `scriptSteps`, the steps the script in flight completed. `undo`: "Undo changes", shown under the
  * reply it names, with "Changed files" (`changedFiles`), and the last undo's outcome under the reply it undid. Retry and Continue show under the last turn's
  * reply (`lastTurnActions`), enabled when `canAct` (Send would act). `implementIn`: Plan is on, and this is the mode
  * it leaves for, so the final answer (`hasFinalAnswer`) also offers "Implement in ... mode". `hidden`: History shows
@@ -833,6 +835,7 @@ export function ConversationList({
 function Conversation({
   conversationId,
   entries,
+  scriptSteps,
   approval,
   question,
   undo,
@@ -847,6 +850,7 @@ function Conversation({
 }: {
   conversationId: string;
   entries: ChatEntry[];
+  scriptSteps?: ToolStepEntry[];
   approval?: PendingApproval;
   question?: PendingQuestion;
   undo: UndoState;
@@ -915,13 +919,17 @@ function Conversation({
   // entry, never folded, since only an ended turn folds.
   const entry = (index: number) => {
     const shown = entries[index]!;
+    const group = shown.role === "assistant" ? toolGroup(entries, index) : undefined;
     const rendered = (
       <Entry
         key={index}
         entry={shown}
         earlier={index < latestUser}
-        previous={entries[index - 1]}
+        owned={shown.role === "tool" && groupOwner(entries, index) !== undefined}
         next={entries[index + 1]}
+        // [>]: Live, the script's completed calls are staged in the state; once it ends they are entries of its group.
+        inner={index === entries.length - 1 && replying ? (scriptSteps ?? []) : (group?.inner ?? [])}
+        step={group?.result}
         approval={index === entries.length - 1 ? approval : undefined}
         question={index === entries.length - 1 ? question : undefined}
         undo={index === undo.reply && !replying ? undo : undefined}
@@ -1064,16 +1072,19 @@ function Fold({ counts, children }: { counts: FoldCounts; children: ReactNode })
 }
 
 /**
- * One entry of the conversation, with its neighbours: a tool step shows inside the reply before it. `approval` and
- * `question`: the request open, given to the last entry only. `undo`, `changedFiles`, and `undone`: "Undo changes", "Changed files",
+ * One entry of the conversation, with its neighbours: a tool step shows inside the reply that owns it (`owned`: its
+ * tool group, `toolGroup`), given to that reply as `inner`, the steps its script made, and `step`, its own result.
+ * `approval` and `question`: the request open, given to the last entry only. `undo`, `changedFiles`, and `undone`: "Undo changes", "Changed files",
  * and the last undo's files, given to the reply they belong to. `turnActions`: Retry and Continue, given to the last turn's reply. `earlier`: a user
  * message a later one follows, which keeps only the outline of the latest one's block.
  */
 function Entry({
   entry,
   earlier,
-  previous,
+  owned,
   next,
+  inner,
+  step,
   approval,
   question,
   undo,
@@ -1083,8 +1094,10 @@ function Entry({
 }: {
   entry: ChatEntry;
   earlier: boolean;
-  previous?: ChatEntry;
+  owned: boolean;
   next?: ChatEntry;
+  inner: readonly ToolStepEntry[];
+  step?: ToolStepEntry;
   approval?: PendingApproval;
   question?: PendingQuestion;
   undo?: UndoState;
@@ -1106,6 +1119,7 @@ function Entry({
           <p className="summary-separator">{describeSummary(entry, isAutomaticSummary(entry, next))}</p>
           <Reply
             entry={entry}
+            inner={[]}
             approval={approval}
             question={question}
             undo={undo}
@@ -1117,7 +1131,8 @@ function Entry({
       ) : (
         <Reply
           entry={entry}
-          step={next?.role === "tool" ? next : undefined}
+          inner={inner}
+          step={step}
           approval={approval}
           question={question}
           undo={undo}
@@ -1127,8 +1142,8 @@ function Entry({
         />
       );
     case "tool":
-      // [>]: A step without a reply before it is still shown, never lost.
-      return previous?.role === "assistant" ? null : (
+      // [>]: A step no reply owns is still shown, never lost.
+      return owned ? null : (
         <div className="message assistant">
           <ToolStep result={entry} />
         </div>
@@ -1138,13 +1153,15 @@ function Entry({
 
 /**
  * One reply of an agent turn: its reasoning, its answer as Markdown less its call block, the row of its tool step
- * (`step`: the entry after it), the decision or the answer its call waits on (`approval` or `question`, the request
+ * (`step`: its group's own step), for a `run_script` call first the script's row and the rows of the calls its script
+ * made (`inner`), one level in, the decision or the answer its call waits on (`approval` or `question`, the request
  * open, given while this is the last reply), in one `decision` block with the call's row, how the turn ended when it ended here, the files the held
  * turn changed (`changedFiles`), what the last undo did (`undone`), then one row of the turn's actions: Retry and Continue (`turnActions`) when this is the last turn's
  * reply, and "Undo changes" (`undo`) when this is the last reply of the turn whose writes are held.
  */
 function Reply({
   entry,
+  inner,
   step,
   approval,
   question,
@@ -1154,7 +1171,8 @@ function Reply({
   turnActions,
 }: {
   entry: ChatEntry & { role: "assistant" };
-  step?: ChatEntry & { role: "tool" };
+  inner: readonly ToolStepEntry[];
+  step?: ToolStepEntry;
   approval?: PendingApproval;
   question?: PendingQuestion;
   undo?: UndoState;
@@ -1163,12 +1181,15 @@ function Reply({
   turnActions?: TurnActionsProps;
 }) {
   const { call } = entry;
+  const script = call?.name === RUN_SCRIPT ? (call.args.code ?? "") : undefined;
   const answer = shownAnswer(entry);
   const inFlight = entry.status === "waiting" || entry.status === "streaming";
   const waitsOnUser = inFlight && call !== undefined && step === undefined;
   const deciding = waitsOnUser ? approval : undefined;
   const asked = waitsOnUser ? question : undefined;
   const unfinished: PendingCall["outcome"] = inFlight ? "running" : entry.status === "stopped" ? "stopped" : "noResult";
+  // [>]: A script's decision names the call its script made, the one the user decides on, never the script.
+  const decided = deciding && script !== undefined ? requestedCall(deciding) : call;
   return (
     <div className="message assistant">
       {entry.reasoning !== "" && <Reasoning key="reasoning" entry={entry} />}
@@ -1177,12 +1198,21 @@ function Reply({
       ) : (
         answer !== "" && <Answer answer={answer} ended={!inFlight} />
       )}
+      {script !== undefined && <ScriptRow code={script} />}
+      {inner.length > 0 && (
+        <div className="script-steps">
+          {inner.map((innerStep, index) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: a script's steps only ever grow at the end.
+            <ToolStep key={index} result={innerStep} />
+          ))}
+        </div>
+      )}
       {step ? (
         <ToolStep result={step} />
-      ) : deciding && call ? (
+      ) : deciding && decided ? (
         // [>]: One block for the call and its controls: the decision is the one element that asks for attention.
         <div className="decision">
-          <ToolStep call={call} outcome="deciding" />
+          <ToolStep call={decided} outcome="deciding" />
           {/* [>]: Keyed by request, so a new request starts with an empty reason. */}
           <Approval key={deciding.id} approval={deciding} />
         </div>
@@ -1614,7 +1644,41 @@ function CodeActions({ text }: { text: string }) {
  * Reject. `asking`: it waits for the user's answer to its question. `stopped`: Stop came while it ran, so its result was dropped; the tool may have finished. `noResult`: the
  * turn ended otherwise before a result came.
  */
-type PendingCall = { call: ReplyCall; outcome: "running" | "deciding" | "asking" | "stopped" | "noResult" };
+type PendingCall = {
+  call: Pick<ReplyCall, "name" | "args">;
+  outcome: "running" | "deciding" | "asking" | "stopped" | "noResult";
+};
+
+type ToolStepEntry = ChatEntry & { role: "tool" };
+
+/** The tool whose call runs a script: its row shows the script, and its steps' rows follow it. */
+const RUN_SCRIPT = "run_script";
+
+/**
+ * The call an approval asks about, as its decision row shows it when a script made it: its tool, with the command
+ * the user runs or the path the change writes.
+ */
+function requestedCall({ kind, tool, summary }: PendingApproval): PendingCall["call"] {
+  return { name: tool, args: kind === "command" ? { command: summary } : { path: summary } };
+}
+
+/**
+ * A script's row: the tool, then the script's size in lines; it opens to the code in the editor font, as the user
+ * reads a command before it runs. No status: the script's result has a row of its own, after the rows of its calls.
+ */
+function ScriptRow({ code }: { code: string }) {
+  return (
+    <details className="step">
+      <summary className="step-row">
+        <span className="step-tool">{RUN_SCRIPT}</span>
+        <span className="step-arg">{describeScript(code)}</span>
+      </summary>
+      <pre className="step-result">
+        <code>{code}</code>
+      </pre>
+    </details>
+  );
+}
 
 /**
  * A compact tool step row: tool name, main argument, and the result's status and size. The result text, or a

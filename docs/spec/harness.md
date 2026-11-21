@@ -1,6 +1,6 @@
 # Harness
 
-This file specifies the agent loop: the body tool calls, the tools, the approvals, the history sent to the model, and the context budget. ADR 0001, 0002, 0003, and 0005 in `docs/adr/` record the decisions behind it.
+This file specifies the agent loop: the body tool calls, the tools, the approvals, the history sent to the model, Code Mode, and the context budget. ADR 0001, 0002, 0003, 0005, and 0008 in `docs/adr/` record the decisions behind it.
 
 ## Body tool calls
 
@@ -487,12 +487,157 @@ This file specifies the agent loop: the body tool calls, the tools, the approval
   tool not offered outside Plan (`load_skill` without a listed skill). The reply stays `streaming` while its
   call runs, and the step and the next reply are appended together, so `isReplying` holds across the whole turn.
 - An agent turn has a Stop button and stops after `brokeCode.maxToolSteps` tool steps (a user setting, `application`
-  scope, default 50, at least 1; calls, Plan's refused calls, and malformed calls alike) as `halted` with reason `stepLimit`; three malformed calls in a row (`MAX_MALFORMED_IN_A_ROW`) halt it with reason
+  scope, default 50, at least 1; calls, Plan's refused calls, and malformed calls alike, and each call a `run_script`
+  script makes, see Code Mode) as `halted` with reason `stepLimit`. The turn keeps one count (`StepCount`), read once
+  when it starts: a reply's call takes its step before it runs, and the turn halts after the step that reaches the
+  limit; three malformed calls in a row (`MAX_MALFORMED_IN_A_ROW`) halt it with reason
   `malformedCalls`, and a call that parses, or a call Plan refuses, resets that count. Known cost, accepted: a model
   that insists on writing in Plan uses requests up to the step limit. Stop ends the turn at once, during a reply or a tool
   run: the step in flight is dropped, nothing later runs, and the record is saved as it stands. A failed reply ends
   the turn `failed`; so does an unexpected exception inside the turn (a bug), with an `internal` error giving its
   message, logged with its stack, so the composer never stays locked. Truncate tool results longer than about 2,000 lines and say so in the result.
+
+## Code Mode
+
+Code Mode (ADR 0008) lets the model write one JavaScript script that chains the harness's tools in one reply; only
+what the script prints or returns goes back to the model. It is an experimental user setting, off by default.
+
+- The setting. `brokeCode.codeMode`: boolean, default `false`, `application` scope, tagged experimental, read from the
+  user value only (`codeModeSetting`: only the user value `true` turns it on, so a workspace `settings.json` never
+  does) at each send. Off, or any value that is not `true`: `run_script` is not offered, and the system prompt and
+  every request are those before Code Mode, byte for byte, for every record without inner steps.
+- The decision, once per send (`ChatPorts.codeMode`, `CodeModeSwitch`). With the setting on, the first send that would
+  offer the tool probes the script runtime, lazily, once per window: `scriptProblem` runs, through the exact launch of
+  every script (the profile, the processor time limit, the environment), a script that calls one stub tool and
+  returns its answer, and requires that answer back within 10 seconds (`SCRIPT_PROBE_MS`); the turn's Stop aborts it.
+  A pass gives the runtime to every later send. A failure keeps `run_script` off for the window, logs the cause, and
+  shows one warning notification: "Code Mode is off in this window: its scripts cannot run here." and the cause; the
+  turn goes on without the tool. A probe that Stop aborted is not kept. The kept outcome is dropped when the setting
+  changes, or when a send reads it off, so turning it off then on probes again. The send's one decision gates both the
+  tool list (the send's prompt; the usage display's prompt before the first send never lists the tool) and the
+  runtime: the `run_script` call gets its script environment and inner calls only in a send that offered it, and the
+  tool runner itself never lists `run_script`. `run_script` comes last among the tools.
+- The tool. `run_script(code)`, its description unchanged from the eval's last iteration and no rule in the Rules
+  list (`docs/eval.md`). `code` is a multi-line argument, or the call's whole content when it does not start with
+  `<code>` (the bare form, ADR 0001, 2026-11-21). The malformed-call message shows the `<code>` form, which the parser
+  accepts. The code is the body of an async function: `await` and `return` work at the top level. Its globals are the
+  tool functions and `console.log` (and `console.error`, the same stream); no `require`, `process`, `fetch`, or timers.
+- The script API. Each tool the send offers but `run_script`, `load_skill`, and `ask_user` is an async function of the
+  same name taking one object of its arguments (each value converted with `String()`, an `undefined` one dropped). The
+  host checks each call before anything runs: a tool the script may call, one object of text values, no unknown
+  argument, every required one given; a refused call throws in the script. A call resolves with the result text when
+  the result is `ok` and throws an `Error` holding it otherwise, a rejection by the user included. `read_file` resolves
+  with the lines asked for exactly as stored (no header, no fence, no notice) and throws when the 2,000-line cap would
+  cut them, naming the range to read in parts; its step keeps the mention block. Calls run one at a time, in arrival
+  order, so `Promise.all` works but runs them in turn. The script ends when it returns or throws, or when its output
+  passes the limit: then the call it did not wait for that is running is aborted, the calls queued behind it never
+  run, a call it makes afterwards throws `run_script: the script has ended; this call was not made.`, and the step
+  waits for the call in flight to settle: its approval and its command are cancelled, and a write already handed to
+  the applier lands before the turn's next call runs, recorded for undo. The user did not stop that call, so its step
+  is kept as any settled call's and joins the inner steps, with what it returned (`stopped before it finished.` for a
+  cancelled approval or a stopped command): "Undo changes" marks a write that landed, the history names it, and
+  Retry's and Edit's warning counts a command that started (`docs/spec/chat-panel.md`). Only Stop drops a step.
+- The step's text: each printed line in order, then the returned value (a string as is, anything else as JSON), cut
+  at 2,000 lines with the usual notice. Nothing printed or returned gives an `ok` text telling the model to print what
+  it needs. An uncaught error makes the step `error`, ending `run_script: the script stopped on an error: <message>`,
+  the message cut to 2,000 characters and `…`. The host applies these cuts and the output limit below to the end
+  frame it receives, since the child is untrusted and a script that leaves the vm can write that frame itself.
+- The step limit. Every tool call of a turn is one step toward `brokeCode.maxToolSteps`, whoever makes it: the
+  `run_script` call is one, taken before the script starts, and each call the script makes is one more, taken when
+  the host admits the call (the checks above passed, and the arguments limit below), before it queues, so calls queued
+  at once never pass the limit. A call when the turn's count has reached the limit throws `run_script: the agent turn
+  has reached its limit of <limit> tool steps, where each call a script makes is one step; this call was not made.
+  End the script with what it has so far.`, never runs, takes no step and leaves none, and asks nothing of the user;
+  a call refused by another check takes no step either. A call admitted, then never run because the script ended
+  without waiting for it, keeps its step in the count. The script may catch it and end; its step is recorded as usual,
+  and the turn then halts `stepLimit` after that step, as after a direct call that reaches the limit. A script whose
+  calls leave steps over lets the turn go on, the next reply's call counting after them. The count is the turn's
+  (`InnerCalls.steps`, given by the controller): the script host never reads a setting. Every per-turn bound of a
+  script's calls rests on it, as for direct calls: the steps the record keeps, and the files the undo record holds
+  (each changed file's text before and after, up to 1 MiB each), at most one write per step.
+- Limits, each with its own message: 8 MiB of
+  arguments in the calls admitted and not yet answered, the one running and those queued behind it
+  (`MAX_QUEUED_ARGUMENT_CHARS`, counted by the host as each call arrives, before it queues, and freed once the call is
+  answered; a call whose arguments would pass it throws `run_script: the tool calls a script has waiting may hold at
+  most 8388608 characters of arguments in all; this call was not made. Wait for a call before you make the next.`,
+  never runs, and leaves no step). It bounds transient memory only, since the calls queued behind one waiting for an
+  approval may wait as long as the user takes; what the record keeps is bounded by the trace (below). Each of the
+  others ends the script: 10 seconds of the script's own running time between calls
+  (`SCRIPT_RUN_MS`; the time a call takes, a wait for an approval included, never counts); 1 MiB of printed output,
+  counted on the output as it comes back, its lines joined by line breaks, so output of exactly 1048576 characters
+  passes; the child counts it as the script prints and the host checks it again on the end frame (past it, the result keeps
+  the output's first 1048576 characters, the line that crossed the limit cut there, and the script ends on `the script
+  printed more than 1048576 characters`); one protocol line over 8 MiB; 32 MiB of answers the child left unread; 512 MiB of resident
+  memory (`SCRIPT_MEMORY_BYTES`), read with `/bin/ps` every 250 ms, since macOS applies no memory limit to a process,
+  and failing closed when it cannot be read; 10 seconds for the child to exit once the host has ended its input after
+  the script's end (a script that left the vm could keep it alive); and 60 seconds of processor time (`SCRIPT_CPU_SECONDS`), a kernel limit that holds even when the host died.
+- The sandbox. The child is `/bin/sh -c 'ulimit -t 60 || exit 125; exec "$@"'`, then `/usr/bin/sandbox-exec -p
+  <profile>`, then the runtime with `-e <bootstrap>`, in `/`, with an environment built from nothing. The runtime is
+  the extension host's own executable (`process.execPath`, by its real path) run as Node, `ELECTRON_RUN_AS_NODE=1` its
+  only variable (`hostScriptEnv`), with each `*.framework` folder of its app bundle's `Contents/Frameworks` readable.
+  The profile is default deny and allows only: exec and read of the runtime's program; read of `/usr/lib`,
+  `/usr/share/icu`, `/System/Library`, and the OS cryptex; the listing of `/`; read and write of `/dev/null`; the
+  kernel's settings; the metadata of each folder above the runtime, those folders alone; and the readable paths. No
+  file of the user's, no write, no network, no process, no service lookup. Every path goes as a `sandbox-exec -D`
+  parameter, never spliced into the profile. Fail closed: without `sandbox-exec`, when it cannot apply the profile, or
+  when the processor time limit cannot be set (exit 125), nothing runs and the step is an `error` naming the cause.
+- Inner calls and approvals. Each call a script makes runs through the turn exactly as a direct call (`runCall`): its
+  approval in the mode the setting holds then (Ask's diff, Accept, and Reject with a reason; Run for a command;
+  Auto-edit's writes at once; Full access's denied commands and command sandbox), its `approval`, its line counts, and
+  its tie to the file for "Undo changes". An approval it opens raises the usual `approvalRequested` event. A rejection
+  throws in the script. `callRunning` is true while the script runs and no request is open, false while an inner call
+  waits on its approval, as for a direct call.
+- Plan. A Plan turn offers `run_script` with the read tools; in its script, `write_file`, `edit_file`, and
+  `run_command` exist as functions that throw `<tool> is not available in Plan mode.`, with no approval and no step
+  (ADR 0005, addendum of 2026-11-21). The Plan paragraph of the prompt is unchanged.
+- The trace. The model never reads an inner step, so the context budget never bounds it; the step keeps a trace
+  instead (`innerStepTrace`, applied once, as the turn builds the step, so the live rows, every save, the entries, and
+  the step "Undo changes" marks hold the same one). The arguments that name what the call acted on, `path`, `pattern`,
+  `start_line`, `end_line`, `command`, and `cwd`, which the undo lines, the stopped-script line, the folded turn's file
+  counts, and the step row read, are each kept whole up to 4,096 characters (`NAME_ARGUMENT_CHARS`, four times the
+  macOS path limit of 1,024 bytes, so a path a tool can open is never cut); past it one keeps its start, then the cut
+  line below, within the 4,096. A step whose names fit that cap and whose other argument values (`content`, `old`,
+  `new`) and result text fit 2,000 characters together (`INNER_STEP_CHARS`) is kept as it is.
+  Otherwise the 2,000 characters are shared evenly among those values: a value shorter than its share keeps whole and
+  leaves the rest to the others; a longer value keeps its start, then, on a line of its own, `[cut to save memory: <N> lines, <C> characters
+  in all]`, the size it had whole, within its share. The tool, the status, `approval`, `lines`, `undone`, and
+  `fromScript` are kept. Only the record is cut: the tool ran with the whole arguments and the script got the whole
+  result, so a script still processes far more than the model's context holds. A trace thus holds at most 6 × 4,096 + 2,000 = 26,576 characters of values and fits the
+  bound, so it loads back and bounds again unchanged; the record stays at version 2 with no new field (ADR 0003).
+- Live state and the record. While a script runs, its reply stays the last entry, `streaming`, so `isReplying` and
+  every guard hold. The steps of the calls it completed, marked `fromScript: true`, as traces, are staged by the turn, in call
+  order: shown live in `ChatState.scriptSteps` (absent otherwise), and saved after the reply in flight, at each step,
+  through the store's queue; the script gets the call's result only once that save has settled (or the script ended
+  or Stop came), so it makes no further call meanwhile. A direct call's step is saved the same way, queued in the
+  update that records it, but the next request does not wait for that save: the next call needs a whole reply first,
+  while a script's next call comes within milliseconds. A failed save shows the panel's save error
+  (`storageProblem` `saveFailed`, "Could not save the conversation.") and the script goes on: the call's result is
+  unchanged, the step stays staged, and the next save holds it. When the script ends, its
+  inner steps join the entries, then its `run_script` step and the next reply, in one update. On Stop, the reply ends
+  `stopped` followed by the completed inner steps, and no `run_script` step: the open approval is dismissed, the calls
+  still queued are cancelled, and the call in flight has its step dropped, as a direct call's is; a write it made that
+  lands after Stop is still recorded for undo by the applier, tied to no step. A call that settles after Stop, New
+  chat, or another navigation changes nothing: no entry, no staged step, no `callRunning`. A reload while a script ran
+  shows the reply stopped, with the inner steps saved so far (`docs/spec/conversations.md`). Accepted window, the same
+  as for a direct call: a crash between a write reaching the disk and its step's save landing loses that step's
+  record, which for a script is at most its last completed call; without a storage folder, nothing is saved.
+- History. A reply's tool group (`toolGroup`: the inner steps, then the first tool step after them a script did not
+  make) goes to the model as one step. A finished script sends its `run_script` result; after its text, inside the
+  wrapper, one line per inner write since undone, in order: `The user undid this change afterwards: <tool> <path>`,
+  the path as the script gave it. A script with no step of its own (Stop, a reload) sends one result the history
+  writes: `<tool_result tool="run_script" status="error">`, `run_script: the script was stopped before it finished,
+  after these tool calls:`, one line per completed call (`<tool> <first line of its path or command>: ok` or
+  `error`, never its result text), then the same undo lines; a script stopped before any call completed sends
+  `run_script: the script was stopped before it finished, before any of its tool calls completed.` Inner steps are never sent otherwise. The context budget,
+  the kept recent steps, the summary request, and the size estimate see a group as one step; a group with an undone
+  inner write is never replaced by the left-out line. After a summary, an undone inner write before it gets the
+  summary's undo line, named the same way (`<tool> <path>`). Records holding inner steps are replayed this way
+  whatever the setting.
+- Undo. An inner write is recorded and undone as a direct write: "Undo changes" restores its file and marks its step
+  `undone`, never the `run_script` step. The Retry and Edit warning, "Changed files", and the hint about commands count
+  inner steps as steps of the turn. Undo's lifetime is the same as for direct calls: memory only, lost at a reload,
+  which restores the step rows and their saved `undone` marks.
+- Not callable from a script: `run_script` (a script never starts another), `load_skill`, and `ask_user`.
 
 ## Notifications
 

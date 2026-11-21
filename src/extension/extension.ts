@@ -4,14 +4,16 @@
  * and the selection `@selection` read), read tools, write tools and commands behind their approval, each turn's
  * written files recorded for "Undo changes" and listed in "Changed files" with their diffs, instruction files, skills, turn limits, file index, saved conversations, chat controller, chat view, `broke-code.setApiKey`,
  * `broke-code.addProvider`, `broke-code.generateCommitMessage`, `broke-code.editSelection` and its presets, the notifications of a turn that ended or waits while
- * the chat is not in view, and the editor's entry points into the chat:
- * `broke-code.addSelectionToChat` and the quick fix "Fix with broke-code" (`broke-code.fixDiagnostic`).
+ * the chat is not in view, Code Mode (the experimental setting, its script runtime, and its per-window probe), and the
+ * editor's entry points into the chat: `broke-code.addSelectionToChat` and the quick fix "Fix with broke-code"
+ * (`broke-code.fixDiagnostic`).
  */
 import { homedir } from "node:os";
 import * as vscode from "vscode";
 import { CHAT_COMMANDS, type ChatCommand, runChatCommand } from "../core/chatCommands";
 import { ChatController, type InstructionReader, type SkillReader } from "../core/chatController";
 import type { ChatModel } from "../core/client";
+import { CodeModeSwitch, codeModeSetting, hostScriptEnv } from "../core/codeMode";
 import { type CommandEnv, commandShell, killRunningCommands } from "../core/commands";
 import { directoryFiles } from "../core/conversationFiles";
 import { answerConversationSearch, ConversationStore } from "../core/conversationStore";
@@ -82,6 +84,17 @@ export function activate(context: vscode.ExtensionContext): void {
   const discoverSkills = () => readSkills(homedir(), workspaceRoots());
   const skills: SkillReader = { read: () => discoverSkills().then(logSkills) };
 
+  // [!]: User settings only, read at each send. Scripts run with this window's own executable as Node, under the script
+  // sandbox; a send offers `run_script` only once a script ran there (`CodeModeSwitch`).
+  const codeMode = new CodeModeSwitch({
+    enabled: () => codeModeSetting(vscode.workspace.getConfiguration("brokeCode").inspect<unknown>("codeMode")),
+    scriptEnv: () => hostScriptEnv(process.execPath),
+    warn: (problem) =>
+      void vscode.window.showWarningMessage(
+        vscode.l10n.t("Code Mode is off in this window: its scripts cannot run here. {0}", problem),
+      ),
+  });
+
   // [>]: `storageUri` is a `file:` URI in the desktop extension host, and only with a folder or workspace open.
   const conversations = new ConversationStore(directoryFiles(context.storageUri?.fsPath));
   let view: ChatView | undefined;
@@ -113,6 +126,7 @@ export function activate(context: vscode.ExtensionContext): void {
     changeDiffs: turnDiffs.diffs,
     providerSupport,
     turnEvents: turnNotifier(() => view?.visible === true),
+    codeMode,
   });
   const fileIndex = new WorkspaceFileIndex();
   view = new ChatView(context.extensionUri, controller, {
@@ -186,6 +200,7 @@ export function activate(context: vscode.ExtensionContext): void {
       if (event.affectsConfiguration("brokeCode.providers")) applySettings();
       if (LIMIT_SETTINGS.some((setting) => event.affectsConfiguration(setting))) controller.limitsChanged();
       if (event.affectsConfiguration("brokeCode.mode")) controller.modeChanged();
+      if (event.affectsConfiguration("brokeCode.codeMode")) codeMode.settingChanged();
     }),
     apiKeys.onDidChange((provider) => controller.keyChanged(provider)),
     fileIndex,

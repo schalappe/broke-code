@@ -331,6 +331,15 @@
           "scope": "application",
           "default": true,
           "markdownDescription": "%config.notifications.description%"
+        },
+        "brokeCode.codeMode": {
+          "type": "boolean",
+          "scope": "application",
+          "default": false,
+          "tags": [
+            "experimental"
+          ],
+          "markdownDescription": "%config.codeMode.description%"
         }
       }
     }

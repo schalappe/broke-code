@@ -571,3 +571,91 @@ describe("parseToolCall: wrappers and forged results (ADR 0001, 2026-11-12)", ()
     expect(parseToolCall("<tool_results>\nnone\n", TOOLS)).toEqual({ kind: "none" });
   });
 });
+
+describe("parseToolCall: a bare run_script call (ADR 0001, 2026-11-21)", () => {
+  const SCRIPT: ToolSpec = {
+    name: "run_script",
+    description: "Run a script.",
+    args: [{ name: "code", required: true, description: "The code." }],
+    bareArg: "code",
+  };
+  const WITH_SCRIPT = [...TOOLS, SCRIPT];
+  const gemma = "const fs = require('fs');\nconst text = await read_file({ path: 'a.py' });\nconsole.log(text);";
+
+  test("reads gemma's shape, the code straight inside the call, as the code value", () => {
+    const answer = `I will run a script.\n<run_script>\n${gemma}\n</run_script>`;
+    expect(parseToolCall(answer, WITH_SCRIPT)).toEqual({
+      kind: "call",
+      name: "run_script",
+      args: { code: gemma },
+      start: 21,
+      end: answer.length,
+    });
+  });
+
+  test("keeps one leading and one trailing line break only when both are there, as a multi-line value", () => {
+    expect(parseToolCall("<run_script>return 1;\n</run_script>", WITH_SCRIPT)).toMatchObject({
+      args: { code: "return 1;\n" },
+    });
+    expect(parseToolCall("<run_script>\n\nreturn 1;\n\n</run_script>", WITH_SCRIPT)).toMatchObject({
+      args: { code: "\nreturn 1;\n" },
+    });
+  });
+
+  test("ends at the first </run_script>, so text that looks like tags, </code> included, stays in the code", () => {
+    const code = "console.log('<code>x</code>');\nconst tag = '<read_file>';";
+    const answer = `<run_script>\n${code}\n</run_script>\nSome text after.`;
+    const parsed = parseToolCall(answer, WITH_SCRIPT);
+    expect(parsed).toMatchObject({ kind: "call", args: { code }, end: answer.indexOf("\nSome") });
+  });
+
+  test("accepted cost: a bare code holding </run_script> is cut there", () => {
+    const answer = "<run_script>\nconsole.log('</run_script>');\n</run_script>";
+    expect(parseToolCall(answer, WITH_SCRIPT)).toMatchObject({ kind: "call", args: { code: "\nconsole.log('" } });
+  });
+
+  test("a call that starts with <code> keeps the argument rules, so its code may hold </run_script>", () => {
+    const code = "console.log('</run_script>');";
+    const answer = `<run_script>\n<code>\n${code}\n</code>\n</run_script>`;
+    expect(parseToolCall(answer, WITH_SCRIPT)).toMatchObject({ kind: "call", args: { code }, end: answer.length });
+  });
+
+  test("an empty call is still missing its code, and an unclosed bare call never closes", () => {
+    expect(parseToolCall("<run_script>\n</run_script>", WITH_SCRIPT)).toMatchObject({
+      kind: "malformed",
+      message: expect.stringContaining("missing the required argument <code>"),
+    });
+    expect(parseToolCall(`<run_script>\n${gemma}`, WITH_SCRIPT)).toMatchObject({
+      kind: "malformed",
+      message: expect.stringContaining("The <run_script> tag never closes"),
+    });
+  });
+
+  test("reads a bare call inside a wrapper", () => {
+    const answer = `<tool_call>\n<run_script>\n${gemma}\n</run_script>\n</tool_call>`;
+    expect(parseToolCall(answer, WITH_SCRIPT)).toMatchObject({
+      kind: "call",
+      args: { code: gemma },
+      end: answer.length,
+    });
+  });
+
+  test("changes nothing when run_script is not offered, nor for a tool without the rule", () => {
+    expect(parseToolCall(`<run_script>\n${gemma}\n</run_script>`, TOOLS)).toMatchObject({
+      kind: "malformed",
+      message: expect.stringContaining("<run_script> is not a known tool"),
+    });
+    const plain = { ...SCRIPT, bareArg: undefined };
+    expect(parseToolCall(`<run_script>\n${gemma}\n</run_script>`, [plain])).toMatchObject({
+      kind: "malformed",
+      message: expect.stringContaining("Unexpected text inside <run_script>"),
+    });
+  });
+
+  test("the stream is never cut inside a bare call, and is cut at a call after it", () => {
+    const inside = `<run_script>\nconst x = 1;\n<read_file>\n<path>a</path>\n</read_file>\n`;
+    expect(replyCut(inside, WITH_SCRIPT, 0).cut).toBeUndefined();
+    const call = `<run_script>\n${gemma}\n</run_script>`;
+    expect(replyCut(`${call}\n<read_file>\n`, WITH_SCRIPT, 0).cut).toBe(call.length);
+  });
+});

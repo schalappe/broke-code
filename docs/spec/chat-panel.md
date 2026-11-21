@@ -1,6 +1,6 @@
 # Chat panel behavior
 
-This file specifies what the chat panel does around a turn: folding, code block actions, Quote, the question block, queued messages, Retry, Continue, "Implement in ... mode", Edit, and the recall of earlier messages. `DESIGN.md` holds the look; `docs/spec/harness.md` holds the turn itself.
+This file specifies what the chat panel does around a turn: folding, a script's rows, code block actions, Quote, the question block, queued messages, Retry, Continue, "Implement in ... mode", Edit, and the recall of earlier messages. `DESIGN.md` holds the look; `docs/spec/harness.md` holds the turn itself.
 
 ## Turn folding
 
@@ -46,6 +46,34 @@ This file specifies what the chat panel does around a turn: folding, code block 
   above it changes and the browser's scroll anchoring is off (`overflow-anchor: none`), which would otherwise re-anchor
   on a visible entry under the row (maintainer decision, 2026-11-11). Known limit: a fold that leaves too little
   content under the view makes the browser lower the scroll position, moving the row down. It moves no focus.
+
+## A script's rows
+
+A reply whose call is `run_script` (Code Mode, `docs/spec/harness.md`) owns one tool group (`toolGroup`): the steps
+its script's calls made (`fromScript`), then its own step, the first tool step after them that a script did not make;
+live, the steps staged in `ChatState.scriptSteps`. Each entry renders once, inside the reply that owns it
+(`groupOwner`); a tool step no reply owns renders on its own, as before. In order, under the reply's narration:
+
+- the script's row: `run_script`, then the script's size alone ("12 lines", "1 line": the tool name says it is a
+  script, and a narrow panel cuts the label from its end); it opens, as a tool
+  step does, to the code in the editor font, as the user reads a command before it runs. No status: the result has its
+  own row;
+- the rows of the calls the script made, in call order, one level in (`.script-steps`, their nodes still on the
+  thread), each exactly the row of a direct step: tool, path or command, status, `+N −M`, "auto-approved", "rejected
+  by you" and its reason line, "undone"; it opens to the step's trace (`docs/spec/harness.md`), its path or command whole up to 4,096 characters and a long
+  result's start ending in its `[cut to save memory: N lines, C characters in all]` line, and its size counts the lines the result
+  had whole, read from that line;
+- while a call the script made waits on its approval, the decision block, exactly as for a direct call, its row
+  labelled from that call's request (its tool, with the path or the command it asks about), never the script; one
+  decision block at a time, with the keyboard path and the Command Palette commands unchanged;
+- then the script's own result row (`run_script`, its status and size, opening to what the script printed), or,
+  without it, the pending row: "running…" while it runs, "stopped, no result" after Stop or a reload, "no result"
+  otherwise, then the reply's end ("Stopped").
+
+A folded turn counts each inner step as a step of the turn, by its kind ("Read 2 files, changed 2 files, 1 other
+step", the script's own step among the other steps), and renders the group inside the fold as it rendered before.
+"Changed files", "Undo changes", the hint about commands, Retry's and Edit's warning, and Continue read the entries,
+inner steps included. The live rows and the saved ones are the same markup.
 
 ## Code blocks of an answer
 
@@ -213,8 +241,8 @@ This file specifies what the chat panel does around a turn: folding, code block 
   a blank line, as a typed message there does. Both go through `startTurn`, `send`'s turn start: Stop, saving, folding, and the queue (Send
   queues meanwhile; ending `done` sends the first queued message, so a Retry resumes a paused queue) work as for any
   turn. Files written and commands run by the removed steps are not reverted: when `unrevertedEffects(entries, user +
-  1)` counts a write step that applied and is not undone (`write_file` or `edit_file`, `ok`) or a `run_command` the
-  user ran (`accepted`), or "Undo changes" is offered for that turn (`ChatState.undo.reply` past the user entry), the
+  1)` counts a write step that applied and is not undone (`write_file` or `edit_file`, `ok`) or a `run_command` that
+  ran (`accepted` by the user's Run, or `auto` in Full access), a script's inner steps included, or "Undo changes" is offered for that turn (`ChatState.undo.reply` past the user entry), the
   panel's first click on Retry posts nothing: a line says what is not reverted and that "Undo changes" gets the files
   back first, the same button reads "Retry anyway" (the focus stays on it), and Cancel follows it; the second click
   posts `retry`, and Cancel, or any change of the turn's entries (one added or removed, a status, an `undone` mark,
@@ -313,7 +341,8 @@ before, in the same conversation, and says at most one thing:
 - a call that starts running, as the host marks it (`ChatState.callRunning`, `docs/spec/harness.md`): "Running
   {command}" for `run_command`, else "Running {tool} on {argument}" (`mainArgument`), or "Running {tool}" without
   one. A call that asks is named only once its approval is accepted, never as it shows nor after Reject, Stop, or an
-  answer to a question;
+  answer to a question. A `run_script` call is named by its size, never its code: "Running a script of {N} lines"
+  ("of 1 line"), once, as its call shows, and not again when it runs on after one of its calls' approvals;
 - the reply in flight ending: "Reply finished." when it ends `done` without a call, "Stopped", or the halt's reason.
 
 It says nothing for a failed reply (its error block is an alert), a reply that ends on a call (its step follows),

@@ -8,13 +8,18 @@ import {
   ASK_SCENARIO,
   COMMAND_SCENARIO,
   CREATE_SCENARIO,
+  chainedScript,
   DEFAULT_ANSWER,
   EDIT_SCENARIO,
   fileAt,
+  GATHER_SCENARIO,
+  givesStockTotal,
   HIDDEN_SCENARIO,
   judge,
   RANGE_SCENARIO,
   READ_SCENARIO,
+  RENAME_SCENARIO,
+  repliesDone,
   SCENARIOS,
   SKILL_SCENARIO,
   SLASH_SCENARIO,
@@ -760,10 +765,12 @@ describe("range scenario fixture", () => {
   });
 });
 
-test("only the range and ask scenarios reject commands", () => {
+test("only the range, ask, rename, and gather scenarios reject commands", () => {
   expect(SCENARIOS.filter((scenario) => scenario.rejectCommands).map((scenario) => scenario.name)).toEqual([
     "range",
     "ask",
+    "rename",
+    "gather",
   ]);
 });
 
@@ -891,7 +898,7 @@ describe("judge on the ask scenario", () => {
   });
 });
 
-test("SCENARIOS holds read, edit, create, skill, command, slash, hidden, range, and ask, in that order", () => {
+test("SCENARIOS holds read, edit, create, skill, command, slash, hidden, range, ask, rename, and gather, in that order", () => {
   expect(SCENARIOS.map((scenario) => scenario.name)).toEqual([
     "read",
     "edit",
@@ -902,6 +909,8 @@ test("SCENARIOS holds read, edit, create, skill, command, slash, hidden, range, 
     "hidden",
     "range",
     "ask",
+    "rename",
+    "gather",
   ]);
 });
 
@@ -950,5 +959,224 @@ describe("judge on a file named __proto__", () => {
       detail: "__proto__ missing",
     });
     expect(judge(scenario, done, { ...CREATE_SCENARIO.files, ...proto })).toEqual({ pass: true });
+  });
+});
+
+describe("rename scenario fixture", () => {
+  const count = (text: string, name: string) => text.split(name).length - 1;
+  const occurrences = (files: Record<string, string>, pattern: RegExp) =>
+    Object.values(files).reduce((total, text) => total + (text.match(pattern) ?? []).length, 0);
+
+  test("defines the function once and calls it in five other files: seven occurrences, one file with two", () => {
+    const named = Object.entries(RENAME_SCENARIO.files).filter(([, text]) => /parcel_weight\(/.test(text));
+    expect(named.map(([path]) => path).sort()).toEqual(Object.keys(RENAME_SCENARIO.writes).sort());
+    expect(named).toHaveLength(6);
+    expect(occurrences(RENAME_SCENARIO.files, /parcel_weight\(/g)).toBe(7);
+    expect(count(RENAME_SCENARIO.files["src/routing.py"]!, "parcel_weight(")).toBe(2);
+  });
+
+  test("holds a decoy whose name holds the old one, which the expected files keep", () => {
+    expect(occurrences(RENAME_SCENARIO.files, /parcel_weight_limit/g)).toBe(2);
+    expect(occurrences(RENAME_SCENARIO.writes, /parcel_weight_limit/g)).toBe(2);
+    expect(occurrences(RENAME_SCENARIO.writes, /parcel_weight\(/g)).toBe(0);
+    expect(occurrences(RENAME_SCENARIO.writes, /shipment_weight\(/g)).toBe(7);
+  });
+
+  test("each expected file is its fixture with exactly the old name replaced", () => {
+    for (const [path, text] of Object.entries(RENAME_SCENARIO.writes)) {
+      expect(text).toBe(RENAME_SCENARIO.files[path]!.replaceAll("parcel_weight(", "shipment_weight("));
+    }
+  });
+
+  test("rejects commands and gives direct calls room to finish", () => {
+    expect(RENAME_SCENARIO.rejectCommands).toBe(true);
+    expect(RENAME_SCENARIO.maxToolSteps).toBe(30);
+  });
+});
+
+describe("judge on the rename scenario", () => {
+  const renameUser: ChatEntry = { role: "user", content: RENAME_SCENARIO.message, mentions: [] };
+  const done = { ...RENAME_SCENARIO.files, ...RENAME_SCENARIO.writes };
+
+  test("passes a turn that renamed every occurrence and kept the decoy", () => {
+    expect(judge(RENAME_SCENARIO, [renameUser, answer("Renamed.")], done)).toEqual({ pass: true });
+  });
+
+  test("wrongEdit: a replace-all that also renamed the decoy", () => {
+    const greedy = {
+      ...done,
+      "src/weights.py": RENAME_SCENARIO.files["src/weights.py"]!.replaceAll("parcel_weight", "shipment_weight"),
+    };
+    expect(judge(RENAME_SCENARIO, [renameUser, answer("Renamed.")], greedy)).toMatchObject({
+      pass: false,
+      category: "wrongEdit",
+    });
+  });
+
+  test("wrongEdit: a file left with the old name", () => {
+    const missed = { ...done, "src/report.py": RENAME_SCENARIO.files["src/report.py"]! };
+    expect(judge(RENAME_SCENARIO, [renameUser, answer("Renamed.")], missed)).toMatchObject({
+      pass: false,
+      category: "wrongEdit",
+    });
+  });
+});
+
+describe("gather scenario fixture", () => {
+  test("holds nine depot files, each with one quantity line, whose total the message does not give", () => {
+    const stock = Object.entries(GATHER_SCENARIO.files).filter(([path]) => path.startsWith("stock/"));
+    expect(stock).toHaveLength(9);
+    for (const [, text] of stock) expect(text.match(/^quantity: \d+$/gm)).toHaveLength(1);
+    expect(GATHER_SCENARIO.message).not.toMatch(/\d/);
+    expect(GATHER_SCENARIO.writes).toEqual({});
+    expect(GATHER_SCENARIO.rejectCommands).toBe(true);
+    expect(GATHER_SCENARIO.maxToolSteps).toBe(30);
+  });
+});
+
+describe("judge on the gather scenario", () => {
+  const gatherUser: ChatEntry = { role: "user", content: GATHER_SCENARIO.message, mentions: [] };
+  const untouchedStock = { ...GATHER_SCENARIO.files };
+  const stockPaths = Object.keys(GATHER_SCENARIO.files).filter((path) => path.startsWith("stock/"));
+  const readAll = stockPaths.flatMap((path) => [
+    callReply("read_file", path),
+    step("read_file", path, GATHER_SCENARIO.files[path]!),
+  ]);
+
+  test("passes a turn that read every file and answered with the total", () => {
+    expect(judge(GATHER_SCENARIO, [gatherUser, ...readAll, answer("The total is 766.")], untouchedStock)).toEqual({
+      pass: true,
+    });
+  });
+
+  test("passes a turn whose script printed the total, its calls recorded before it", () => {
+    const inner = stockPaths.map(
+      (path) => ({ ...step("read_file", path, GATHER_SCENARIO.files[path]!), fromScript: true }) as ChatEntry,
+    );
+    const entries: ChatEntry[] = [
+      gatherUser,
+      answer("<run_script>\n<code>\n...\n</code>\n</run_script>"),
+      ...inner,
+      { role: "tool", name: "run_script", args: { code: "..." }, status: "ok", text: "total 766" },
+      answer("766"),
+    ];
+    expect(judge(GATHER_SCENARIO, entries, untouchedStock)).toEqual({ pass: true });
+  });
+
+  test("wrongTool: a script that printed the total without reading the files", () => {
+    const entries: ChatEntry[] = [
+      gatherUser,
+      answer("<run_script>\n<code>\nreturn 766;\n</code>\n</run_script>"),
+      { role: "tool", name: "run_script", args: { code: "return 766;" }, status: "ok", text: "766" },
+      answer("766"),
+    ];
+    expect(judge(GATHER_SCENARIO, entries, untouchedStock)).toMatchObject({ pass: false, category: "wrongTool" });
+  });
+
+  test("wrongTool: a script that printed every quantity line itself, its calls reading nothing of the stock", () => {
+    const printed = Object.values(GATHER_SCENARIO.files).join("\n");
+    const entries: ChatEntry[] = [
+      gatherUser,
+      answer("<run_script>\n<code>\n...\n</code>\n</run_script>"),
+      { ...step("read_file", "README.md", GATHER_SCENARIO.files["README.md"]!), fromScript: true } as ChatEntry,
+      { ...step("list_files", ".", printed), fromScript: true } as ChatEntry,
+      { role: "tool", name: "run_script", args: { code: "..." }, status: "ok", text: printed },
+      answer("766"),
+    ];
+    expect(judge(GATHER_SCENARIO, entries, untouchedStock)).toMatchObject({ pass: false, category: "wrongTool" });
+  });
+
+  test("wrongTool: an answer with the total but no read that held every quantity", () => {
+    const some = readAll.slice(0, 4);
+    expect(judge(GATHER_SCENARIO, [gatherUser, ...some, answer("766")], untouchedStock)).toMatchObject({
+      pass: false,
+      category: "wrongTool",
+    });
+  });
+
+  test("wrongAnswer: an answer that names the total but gives another one", () => {
+    const wrong = answer("766 is incorrect. The total is 203.");
+    expect(judge(GATHER_SCENARIO, [gatherUser, ...readAll, wrong], untouchedStock)).toMatchObject({
+      pass: false,
+      category: "wrongAnswer",
+    });
+  });
+});
+
+describe("givesStockTotal", () => {
+  const sum = "37 + 142 + 8 + 95 + 61 + 203 + 14 + 77 + 129 = 766";
+
+  test("passes the total alone or in a sentence", () => {
+    expect(givesStockTotal("766")).toBe(true);
+    expect(givesStockTotal("The total is 766.")).toBe(true);
+  });
+
+  test("fails the total beside the depot count or a sum written out, a known strictness", () => {
+    expect(givesStockTotal("The total is 766 across 9 depots.")).toBe(false);
+    expect(givesStockTotal(`Across the 9 depots: ${sum}.`)).toBe(false);
+    expect(givesStockTotal(`${sum}, so the total is 766.`)).toBe(false);
+    expect(givesStockTotal("Marseille holds 203 and Brest 142; the total is 766.")).toBe(false);
+  });
+
+  test("fails 766 contradicted by the depot count given as the total", () => {
+    expect(givesStockTotal("766 is incorrect. The total is 9.")).toBe(false);
+  });
+
+  test("fails 766 contradicted by a quantity given as the total, the other quantities beside it", () => {
+    expect(givesStockTotal("766 is incorrect. The total is 37. Other figures: 142, 8, 95, 61, 203, 14, 77, 129.")).toBe(
+      false,
+    );
+  });
+
+  test("fails another total given beside it", () => {
+    expect(givesStockTotal("766 is incorrect. The total is 203.")).toBe(false);
+    expect(givesStockTotal("766 is incorrect. The total is 765.")).toBe(false);
+    expect(givesStockTotal(`${sum}; no, the total is 203.`)).toBe(false);
+  });
+
+  test("fails no number, or the depot count alone", () => {
+    expect(givesStockTotal("I could not add them up.")).toBe(false);
+    expect(givesStockTotal("There are 9 depots.")).toBe(false);
+  });
+
+  test("never reads 766 inside another number: 7660, 1766, 766.0, and 1,766 are each one token", () => {
+    for (const text of ["About 7660.", "1766", "The total is 766.0.", "The total is 1,766."]) {
+      expect(givesStockTotal(text)).toBe(false);
+    }
+  });
+
+  test("judges a 1 MiB token of periods that does not end in them in linear time", () => {
+    // [>]: The former `replace(/[.,]+$/, "")` took 11 s on 128 Ki periods and grew with their square.
+    const reply = `The total is 766. 1${".".repeat(1024 * 1024)}a`;
+    const started = performance.now();
+    expect(givesStockTotal(reply)).toBe(false);
+    expect(performance.now() - started).toBeLessThan(2000);
+  });
+});
+
+describe("run measures", () => {
+  const scripted = (status: "ok" | "error", inner: ("ok" | "error")[]): ChatEntry[] => [
+    ...inner.map((innerStatus) => ({ ...step("read_file", "a", "x", innerStatus), fromScript: true }) as ChatEntry),
+    { role: "tool", name: "run_script", args: { code: "" }, status, text: "out" },
+  ];
+
+  test("counts the replies that ended done, summaries aside", () => {
+    const entries: ChatEntry[] = [
+      user,
+      callReply("read_file", "a"),
+      step("read_file", "a", "x"),
+      { ...answer("S."), summary: true },
+      answer("Done."),
+    ];
+    expect(repliesDone(entries)).toBe(2);
+  });
+
+  test("a script chained tools when its ok step follows at least two ok calls it made", () => {
+    expect(chainedScript([user, answer("call"), ...scripted("ok", ["ok", "ok"]), answer("Done.")])).toBe(true);
+    expect(chainedScript([user, answer("call"), ...scripted("ok", ["ok", "error"])])).toBe(false);
+    expect(chainedScript([user, answer("call"), ...scripted("error", ["ok", "ok"])])).toBe(false);
+    expect(chainedScript([user, step("read_file", "a", "x"), step("read_file", "b", "y"), ...scripted("ok", [])])).toBe(
+      false,
+    );
   });
 });

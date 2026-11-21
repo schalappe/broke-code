@@ -330,5 +330,8 @@
   "A provider is an OpenAI-compatible service: its base URL, and an API key if it asks for one.": "Un fournisseur est un service compatible OpenAI : son URL de base, et une clé d'API s'il en demande une.",
   "Full access": "Accès complet",
   "Changes are written and commands run without asking. Commands run in a sandbox that keeps their writes inside the workspace, and denied commands are refused.": "Les modifications sont écrites et les commandes exécutées sans demander. Les commandes tournent dans un bac à sable qui limite leurs écritures à l'espace de travail, et les commandes interdites sont refusées.",
-  "Implement in Full access mode": "Implémenter en mode Accès complet"
+  "Implement in Full access mode": "Implémenter en mode Accès complet",
+  "Running a script of 1 line": "Exécution d'un script d'une ligne",
+  "Running a script of {0} lines": "Exécution d'un script de {0} lignes",
+  "Code Mode is off in this window: its scripts cannot run here. {0}": "Le mode Code est désactivé dans cette fenêtre : ses scripts ne peuvent pas s'exécuter ici. {0}"
 }

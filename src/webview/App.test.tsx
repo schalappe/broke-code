@@ -4589,3 +4589,108 @@ describe("live region", () => {
     });
   });
 });
+
+describe("a script's tool group", () => {
+  const code = "const a = await read_file({ path: 'a.ts' });\nawait edit_file({ path: 'a.ts', old: 'x', new: 'y' });";
+  const content = `Renaming.\n<run_script>\n<code>\n${code}\n</code>\n</run_script>`;
+  const call = { name: "run_script", args: { code }, start: 10, end: content.length };
+  const reply = (status: Reply["status"]): ChatEntry => ({ role: "assistant", reasoning: "", content, status, call });
+  const read: ChatEntry = {
+    role: "tool",
+    name: "read_file",
+    args: { path: "a.ts" },
+    status: "ok",
+    text: "@a.ts (file, 3 lines)\n```\nx\n```",
+    fromScript: true,
+  };
+  const edit: ChatEntry = {
+    role: "tool",
+    name: "edit_file",
+    args: { path: "a.ts", old: "x", new: "y" },
+    status: "ok",
+    text: "Edited a.ts.",
+    approval: "accepted",
+    lines: { added: 1, removed: 1 },
+    fromScript: true,
+  };
+  const own: ChatEntry = { role: "tool", name: "run_script", args: { code }, status: "ok", text: "renamed" };
+  const done: ChatEntry = { role: "assistant", reasoning: "", content: "Done.", status: "done" };
+
+  function renderScript(entries: ChatEntry[], extra: Partial<ChatState> = {}): string {
+    const state: ChatState = {
+      providers: ["P"],
+      skipped: [],
+      skillWarnings: [],
+      ...unsaved,
+      provider: "P",
+      models: { status: "loaded", models: ["m"] },
+      model: "m",
+      reasoningEffort: undefined,
+      entries: [{ role: "user", content: "Rename", mentions: [] }, ...entries],
+      ...extra,
+    };
+    return renderToStaticMarkup(<App state={state} language="en" />);
+  }
+  /** Where each of `parts` first shows in `html`, in order: -1 when one is missing. */
+  const order = (html: string, parts: string[]) => parts.map((part) => html.indexOf(part));
+  const count = (html: string, part: string) => html.split(part).length - 1;
+
+  test("live: the script's row with its code, the calls it completed, then the running row", () => {
+    const html = renderScript([reply("streaming")], { scriptSteps: [read], callRunning: true });
+    const at = order(html, ['class="step-arg">2 lines<', "await read_file", ">read_file<", "running…"]);
+    expect(at.every((index) => index !== -1)).toBe(true);
+    expect([...at].sort((a, b) => a - b)).toEqual(at);
+    expect(html).toContain('class="script-steps"');
+    expect(count(html, 'class="step-tool">run_script<')).toBe(2);
+  });
+
+  test("live: a call's approval sits after the completed calls, labelled from the call, not the script", () => {
+    const html = renderScript([reply("streaming")], {
+      scriptSteps: [read],
+      approval: { id: 7, kind: "write", tool: "edit_file", summary: "a.ts", lines: { added: 1, removed: 1 } },
+    });
+    const decision = html.slice(html.indexOf('class="decision"'));
+    expect(html.indexOf(">read_file<")).toBeLessThan(html.indexOf('class="decision"'));
+    expect(decision).toContain('class="step-tool">edit_file<');
+    expect(decision).toContain('class="step-arg">a.ts<');
+    expect(decision).toContain("waiting for your decision");
+    expect(decision).not.toContain(">run_script<");
+    expect(count(html, 'class="decision"')).toBe(1);
+  });
+
+  test("saved: each step once, the calls after the script's row, then the script's own result", () => {
+    const html = renderScript([reply("done"), read, edit, own, done]);
+    const at = order(html, ['class="step-arg">2 lines<', ">read_file<", ">edit_file<", "ok, 1 line", "Done."]);
+    expect(at.every((index) => index !== -1)).toBe(true);
+    expect([...at].sort((a, b) => a - b)).toEqual(at);
+    expect(count(html, ">read_file<")).toBe(1);
+    expect(count(html, ">edit_file<")).toBe(1);
+    expect(count(html, 'class="step-tool">run_script<')).toBe(2);
+    expect(html).toContain("+1 \u22121");
+  });
+
+  test("live and saved render the calls' rows the same", () => {
+    const rows = (html: string) =>
+      html.slice(html.indexOf('class="script-steps"'), html.indexOf("</div>", html.indexOf('class="script-steps"')));
+    const live = renderScript([reply("streaming")], { scriptSteps: [read, edit], callRunning: true });
+    const saved = renderScript([reply("done"), read, edit, own, done]);
+    expect(rows(live)).toBe(rows(saved));
+  });
+
+  test("a stopped script shows its completed calls, then the stopped row, and the reply after it stands apart", () => {
+    const html = renderScript([reply("stopped"), read, { role: "user", content: "Go on", mentions: [] }, done]);
+    const at = order(html, ['class="step-arg">2 lines<', ">read_file<", "stopped, no result", "Go on", "Done."]);
+    expect(at.every((index) => index !== -1)).toBe(true);
+    expect([...at].sort((a, b) => a - b)).toEqual(at);
+    expect(count(html, ">read_file<")).toBe(1);
+  });
+
+  test("folded, the turn counts the script's calls, and its group renders inside the fold", () => {
+    const html = renderScript([reply("done"), read, edit, own, done]);
+    expect(html).toContain('class="turn-fold"');
+    expect(html).toContain("Read 1 file, changed 1 file, 1 other step");
+    const fold = html.slice(html.indexOf('class="turn-fold"'), html.indexOf("Done."));
+    expect(fold).toContain('class="script-steps"');
+    expect(count(fold, ">edit_file<")).toBe(1);
+  });
+});

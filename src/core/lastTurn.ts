@@ -66,8 +66,9 @@ export function hasFinalAnswer(entries: readonly ChatEntry[]): boolean {
 
 /**
  * What removing the entries from index `from` on leaves on disk, since a removal reverts nothing: `writes`, the write
- * steps that applied and were not undone since; `commands`, the commands the user ran. A command whose step Stop
- * dropped is not counted, since nothing records it.
+ * steps that applied and were not undone since; `commands`, the commands that ran, the user's Run and Full access's
+ * auto-approval alike. The steps a script's calls made count as any other. A command whose step Stop dropped is not
+ * counted, since nothing records it.
  */
 export function unrevertedEffects(entries: readonly ChatEntry[], from: number): { writes: number; commands: number } {
   let writes = 0;
@@ -76,7 +77,7 @@ export function unrevertedEffects(entries: readonly ChatEntry[], from: number): 
     if (entry.role !== "tool") continue;
     const write = entry.name === "write_file" || entry.name === "edit_file";
     if (write && entry.status === "ok" && entry.undone !== true) writes += 1;
-    if (entry.name === "run_command" && entry.approval === "accepted") commands += 1;
+    if (entry.name === "run_command" && (entry.approval === "accepted" || entry.approval === "auto")) commands += 1;
   }
   return { writes, commands };
 }

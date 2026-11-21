@@ -17,7 +17,10 @@ const summary = (status: ReplyStatus = "done", content = "Summary."): ChatEntry 
   status,
   summary: true,
 });
-const step = (name: string, extra: { status?: "ok" | "error"; approval?: StepApproval; undone?: true } = {}) =>
+const step = (
+  name: string,
+  extra: { status?: "ok" | "error"; approval?: StepApproval; undone?: true; fromScript?: true } = {},
+) =>
   ({ role: "tool", name, args: { path: "a.ts" }, status: extra.status ?? "ok", text: "Done.", ...extra }) as ChatEntry;
 
 describe("lastTurnActions", () => {
@@ -125,5 +128,20 @@ describe("unrevertedEffects", () => {
     expect(unrevertedEffects(entries, 3)).toEqual({ writes: 1, commands: 1 });
     expect(unrevertedEffects(entries, 0)).toEqual({ writes: 2, commands: 1 });
     expect(unrevertedEffects(entries, entries.length)).toEqual({ writes: 0, commands: 0 });
+  });
+
+  test("counts a command Full access ran without asking, and the writes and commands of a script's calls", () => {
+    const entries = [
+      user("A"),
+      reply(),
+      step("run_command", { approval: "auto" }),
+      reply(),
+      step("write_file", { approval: "auto", fromScript: true }),
+      step("run_command", { approval: "auto", fromScript: true }),
+      step("run_command", { status: "error", fromScript: true }),
+      step("run_script"),
+      reply(),
+    ];
+    expect(unrevertedEffects(entries, 0)).toEqual({ writes: 1, commands: 2 });
   });
 });

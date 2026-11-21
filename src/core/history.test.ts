@@ -1,13 +1,19 @@
 import { describe, expect, test } from "bun:test";
 import type { ChatMessage } from "./client";
 import {
+  groupOwner,
   historyStart,
+  INNER_STEP_CHARS,
+  innerStepTrace,
   isAutomaticSummary,
+  NAME_ARGUMENT_CHARS,
   resultLineCount,
   SUMMARY_REQUEST,
   sentEntries,
+  stepResultLines,
   summaryHistory,
   toHistory,
+  toolGroup,
 } from "./history";
 import { estimateTokens, fillsContext } from "./limits";
 import type { ChatEntry, ReplyStatus, ToolStepStatus } from "./protocol";
@@ -511,6 +517,213 @@ describe("history after an automatic summary", () => {
   });
 });
 
+const scriptCall = "<run_script>\n<code>\nconsole.log(1);\n</code>\n</run_script>";
+const stoppedCall: ChatEntry = { role: "assistant", reasoning: "", content: scriptCall, status: "stopped" };
+/** A step a script's call made, its result text never sent. */
+const inner = (
+  name: string,
+  { text = "inner result", status = "ok", undone, ...args }: Record<string, string | true | undefined> = {},
+): ChatEntry =>
+  ({
+    role: "tool",
+    name,
+    args,
+    status,
+    text,
+    fromScript: true,
+    ...(undone ? { undone: true } : {}),
+  }) as ChatEntry;
+
+/** A turn whose reply ran a script: two calls the script made, then the script's own step, then the answer. */
+const scriptTurn: ChatEntry[] = [
+  user("go"),
+  answer("<run_script>\n<code>\nconsole.log(await read_file({ path: 'a.ts' }));\n</code>\n</run_script>"),
+  { ...step(lines(50)), fromScript: true } as ChatEntry,
+  { ...step(lines(50), "edit_file"), fromScript: true } as ChatEntry,
+  step("printed", "run_script"),
+  answer("Done."),
+];
+
+describe("steps a script made", () => {
+  test("toHistory sends the script's step only, never the steps it made", () => {
+    const history = toHistory(scriptTurn, typed, roomy);
+    expect(history).toEqual({
+      leftOut: 0,
+      messages: [
+        { role: "user", content: "go" },
+        { role: "assistant", content: (scriptTurn[1] as ChatEntry & { role: "assistant" }).content },
+        { role: "user", content: wrapped("printed", "run_script") },
+        { role: "assistant", content: "Done." },
+      ],
+    });
+  });
+
+  test("summaryHistory leaves them out too", () => {
+    const { messages } = summaryHistory(scriptTurn, typed);
+    expect(messages.map((message) => message.content).join("\n")).not.toContain("line 0");
+    expect(messages[2]).toEqual({ role: "user", content: wrapped("printed", "run_script") });
+  });
+
+  test("a finished script's result says, inside its wrapper, which of its writes the user undid, in order", () => {
+    const entries: ChatEntry[] = [
+      user("go"),
+      answer(scriptCall),
+      inner("edit_file", { path: "src/a.ts", undone: true }),
+      inner("read_file", { path: "src/b.ts" }),
+      inner("write_file", { path: "./src/c.ts", undone: true }),
+      step("printed", "run_script"),
+      answer("Done."),
+    ];
+    const sent = toHistory(entries, typed, roomy).messages[2]!.content;
+    expect(sent).toBe(
+      wrapped(
+        [
+          "printed",
+          "The user undid this change afterwards: edit_file src/a.ts",
+          "The user undid this change afterwards: write_file ./src/c.ts",
+        ].join("\n"),
+        "run_script",
+      ),
+    );
+  });
+
+  test("a script stopped before its own step goes back as one error result naming the calls it completed", () => {
+    const entries: ChatEntry[] = [
+      user("go"),
+      stoppedCall,
+      inner("read_file", { path: "src/a.ts" }),
+      inner("edit_file", { path: "src/a.ts", undone: true }),
+      inner("run_command", { command: "bun test\n--watch", status: "error" }),
+      user("next"),
+    ];
+    const history = toHistory(entries, typed, roomy);
+    expect(history.messages).toEqual([
+      { role: "user", content: "go" },
+      { role: "assistant", content: scriptCall },
+      {
+        role: "user",
+        content: [
+          wrapped(
+            [
+              "run_script: the script was stopped before it finished, after these tool calls:",
+              "read_file src/a.ts: ok",
+              "edit_file src/a.ts: ok",
+              "run_command bun test: error",
+              "The user undid this change afterwards: edit_file src/a.ts",
+            ].join("\n"),
+            "run_script",
+            "error",
+          ),
+          "next",
+        ].join("\n\n"),
+      },
+    ]);
+    expect(history.messages.map((message) => message.content).join("\n")).not.toContain("inner result");
+  });
+
+  test("a script stopped before any of its calls completed still goes back with its error result", () => {
+    const call = { name: "run_script", args: { code: "console.log(1);" }, start: 0, end: scriptCall.length };
+    const entries: ChatEntry[] = [user("go"), { ...stoppedCall, call } as ChatEntry, user("Continue.")];
+    const history = toHistory(entries, typed, roomy);
+    expect(history.messages).toEqual([
+      { role: "user", content: "go" },
+      { role: "assistant", content: scriptCall },
+      {
+        role: "user",
+        content: [
+          wrapped(
+            "run_script: the script was stopped before it finished, before any of its tool calls completed.",
+            "run_script",
+            "error",
+          ),
+          "Continue.",
+        ].join("\n\n"),
+      },
+    ]);
+  });
+
+  test("a stopped direct call, and a script still running, get no result the history writes", () => {
+    const readCall = { name: "read_file", args: { path: "a.ts" }, start: 0, end: scriptCall.length };
+    const scriptRunning = { name: "run_script", args: { code: "console.log(1);" }, start: 0, end: scriptCall.length };
+    const stoppedRead = { ...stoppedCall, call: readCall } as ChatEntry;
+    const running = { ...stoppedCall, status: "streaming", call: scriptRunning } as ChatEntry;
+    for (const reply of [stoppedRead, running]) {
+      expect(toHistory([user("go"), reply], typed, roomy).messages).toEqual([
+        { role: "user", content: "go" },
+        { role: "assistant", content: scriptCall },
+      ]);
+    }
+  });
+
+  test("a group is one step for the context budget: kept among the recent steps, left out as one, never with an undone write", () => {
+    const big = lines(100);
+    const group = (undone: boolean): ChatEntry[] => [
+      answer(scriptCall),
+      inner("read_file", { path: "a.ts", text: big }),
+      inner("edit_file", { path: "a.ts", ...(undone ? { undone: true as const } : {}) }),
+      step(big, "run_script"),
+    ];
+    const entries: ChatEntry[] = [
+      user("go"),
+      ...group(false),
+      ...group(true),
+      ...[0, 1, 2].flatMap((index) => [answer(`call ${index}`), step("short")]),
+      answer("Done."),
+    ];
+    const tight = { system: SYSTEM, contextSize: 4000, ratio: 4 };
+    const history = toHistory(entries, typed, tight);
+    expect(history.leftOut).toBe(1);
+    const results = history.messages.filter((message) => message.content.includes('tool="run_script"'));
+    expect(results[0]!.content).toBe(wrapped("[result left out to save context: 100 lines]", "run_script"));
+    expect(results[1]!.content).toContain("The user undid this change afterwards: edit_file a.ts");
+    expect(results[1]!.content).toContain(big);
+  });
+
+  test("after a summary, an undone write of a script before it gets the summary's line, named the same way", () => {
+    const entries: ChatEntry[] = [
+      user("go"),
+      answer(scriptCall),
+      inner("edit_file", { path: "./src/a.ts", undone: true }),
+      step("printed", "run_script"),
+      answer("Done."),
+      summary("We renamed a function."),
+      user("next"),
+    ];
+    const first = toHistory(entries, typed, roomy).messages[0]!.content;
+    expect(first).toContain(
+      "The user undid this change, which the summary above may still describe: edit_file ./src/a.ts",
+    );
+    expect(first).not.toContain("printed");
+  });
+});
+
+describe("toolGroup and groupOwner", () => {
+  const entries: ChatEntry[] = [
+    user("go"),
+    answer(scriptCall),
+    inner("read_file", { path: "a.ts" }),
+    inner("edit_file", { path: "a.ts" }),
+    step("printed", "run_script"),
+    answer("call"),
+    step("one"),
+    step("orphan"),
+    stoppedCall,
+    inner("read_file", { path: "b.ts" }),
+    user("next"),
+  ];
+
+  test("a reply owns the steps its script made, then its own step, each once", () => {
+    const group = (reply: number) => toolGroup(entries, reply) as unknown;
+    expect(group(1)).toEqual({ inner: [entries[2], entries[3]], result: entries[4], end: 5 });
+    expect(group(5)).toEqual({ inner: [], result: entries[6], end: 7 });
+    expect(group(8)).toEqual({ inner: [entries[9]], result: undefined, end: 10 });
+  });
+
+  test("names the reply that owns a step, and none for a step no reply owns", () => {
+    expect([2, 3, 4, 6, 7, 9].map((index) => groupOwner(entries, index))).toEqual([1, 1, 1, 5, undefined, 8]);
+  });
+});
+
 describe("summaryHistory", () => {
   test("leaves out every eligible result, the last 3 included, keeps load_skill and short results, and asks last", () => {
     const entries: ChatEntry[] = [
@@ -668,5 +881,158 @@ describe("resultLineCount", () => {
     expect(resultLineCount("one\n")).toBe(1);
     expect(resultLineCount("one\ntwo")).toBe(2);
     expect(resultLineCount("one\n\n")).toBe(2);
+  });
+});
+
+describe("innerStepTrace", () => {
+  type ToolStep = ChatEntry & { role: "tool" };
+  const inner = (args: Record<string, string>, text: string, name = "read_file"): ToolStep => ({
+    role: "tool",
+    name,
+    args,
+    status: "ok",
+    text,
+    fromScript: true,
+  });
+  /** A path of about 800 characters: four folders of 199, then `file`. */
+  const deepPath = (file: string) =>
+    [..."abcd"]
+      .map((letter) => letter.repeat(199))
+      .concat(file)
+      .join("/");
+  /** Characters the bound covers: the result and the arguments that are not a name. */
+  const names = ["path", "pattern", "start_line", "end_line", "command", "cwd"];
+  const stored = (step: ToolStep) =>
+    Object.entries(step.args).reduce(
+      (sum, [name, value]) => sum + (names.includes(name) ? 0 : value.length),
+      step.text.length,
+    );
+
+  test("keeps a step that fits the bound as it is", () => {
+    const small = inner({ path: "a.ts" }, "x".repeat(INNER_STEP_CHARS - 4));
+    expect(innerStepTrace(small)).toBe(small);
+  });
+
+  test("cuts a large result to its start and a line stating its whole size, the arguments whole", () => {
+    const text = lines(5000);
+    const trace = innerStepTrace(inner({ path: "big.txt" }, text));
+    expect(trace.args).toEqual({ path: "big.txt" });
+    expect(trace.text.endsWith(`\n[cut to save memory: 5000 lines, ${text.length} characters in all]`)).toBe(true);
+    expect(text.startsWith(trace.text.slice(0, trace.text.lastIndexOf("\n")))).toBe(true);
+    expect(stored(trace)).toBeLessThanOrEqual(INNER_STEP_CHARS);
+    // [>]: The row counts the lines the result had, not those of the excerpt.
+    expect(stepResultLines(trace)).toBe(5000);
+    expect(resultLineCount(trace.text)).toBeLessThan(40);
+  });
+
+  test("cuts a large argument, keeping the path whole and the other fields of the step", () => {
+    const content = "y".repeat(100_000);
+    const write = {
+      ...inner({ path: "out.txt", content }, "Created out.txt.", "write_file"),
+      lines: { added: 1, removed: 0 },
+    };
+    const trace = innerStepTrace(write);
+    expect(trace).toMatchObject({
+      name: "write_file",
+      status: "ok",
+      text: "Created out.txt.",
+      lines: { added: 1, removed: 0 },
+    });
+    expect(trace.args.path).toBe("out.txt");
+    expect(trace.args.content!.endsWith("\n[cut to save memory: 1 line, 100000 characters in all]")).toBe(true);
+    expect(stored(trace)).toBeLessThanOrEqual(INNER_STEP_CHARS);
+  });
+
+  test("shares the bound among large file texts and a large result, and bounding twice changes nothing", () => {
+    const edit = inner({ path: "a.ts", old: "x".repeat(50_000), new: "y".repeat(50_000) }, lines(3000), "edit_file");
+    const trace = innerStepTrace(edit);
+    for (const value of [trace.args.old!, trace.args.new!, trace.text]) {
+      expect(value.length).toBeGreaterThan(INNER_STEP_CHARS / 4);
+    }
+    expect(stored(trace)).toBeLessThanOrEqual(INNER_STEP_CHARS);
+    expect(innerStepTrace(trace)).toBe(trace);
+  });
+
+  test("keeps every name under its cap whole, the bound shared among the other values", () => {
+    const path = deepPath("a.ts");
+    const edit = inner({ path, old: "x".repeat(50_000), new: "y".repeat(50_000) }, "Edited.", "edit_file");
+    const trace = innerStepTrace(edit);
+    expect(trace.args.path).toBe(path);
+    expect(trace.args.old!.endsWith("\n[cut to save memory: 1 line, 50000 characters in all]")).toBe(true);
+    expect(stored(trace)).toBeLessThanOrEqual(INNER_STEP_CHARS);
+    expect(innerStepTrace(trace)).toBe(trace);
+
+    const command = `cat > out.txt <<'EOF'\n${"z".repeat(NAME_ARGUMENT_CHARS - 30)}\nEOF`;
+    const run = innerStepTrace(inner({ command, cwd: "c".repeat(3000) }, lines(3000), "run_command"));
+    expect(run.args).toEqual({ command, cwd: "c".repeat(3000) });
+    expect(run.text.endsWith(`\n[cut to save memory: 3000 lines, ${lines(3000).length} characters in all]`)).toBe(true);
+    expect(innerStepTrace(run)).toBe(run);
+
+    const search = { pattern: "p".repeat(NAME_ARGUMENT_CHARS), path };
+    expect(innerStepTrace(inner(search, "no match", "search")).args).toEqual(search);
+    const range = { path, start_line: "1".repeat(3000), end_line: "2".repeat(3000) };
+    expect(innerStepTrace(inner(range, lines(5000))).args).toEqual(range);
+  });
+
+  test("cuts a name past its cap with the same line, so a trace has a fixed bound", () => {
+    const huge = (letter: string) => `${letter.repeat(100_000)}\n${letter.repeat(100)}`;
+    const names = { path: huge("a"), pattern: huge("p"), command: huge("c"), cwd: huge("d") };
+    const step = inner({ ...names, start_line: huge("1"), end_line: huge("2"), content: huge("x") }, lines(5000));
+    const trace = innerStepTrace(step);
+    for (const [name, value] of Object.entries(trace.args)) {
+      expect(value.endsWith("\n[cut to save memory: 2 lines, 100101 characters in all]")).toBe(true);
+      if (name !== "content") expect(value.length).toBeLessThanOrEqual(NAME_ARGUMENT_CHARS);
+      expect(step.args[name]!.startsWith(value.slice(0, value.lastIndexOf("\n")))).toBe(true);
+    }
+    const values = Object.values(trace.args).reduce((sum, value) => sum + value.length, trace.text.length);
+    expect(values).toBeLessThanOrEqual(6 * NAME_ARGUMENT_CHARS + INNER_STEP_CHARS);
+    expect(6 * NAME_ARGUMENT_CHARS + INNER_STEP_CHARS).toBe(26_576);
+    expect(innerStepTrace(trace)).toBe(trace);
+  });
+
+  test("a direct step's result that ends like a cut line counts its own lines", () => {
+    const text = "a\n[cut to save memory: 900 lines, 9 characters in all]";
+    expect(stepResultLines({ ...inner({ path: "a" }, text), fromScript: undefined })).toBe(2);
+  });
+
+  test("the history of a stopped script names each call on one line, a deep path whole, and an undo names it too", () => {
+    const path = deepPath("out.txt");
+    // [>]: A cut command and a cut bogus path: each line names the start kept, never the cut line after it.
+    const command = innerStepTrace(inner({ command: "z".repeat(100_000) }, "exit code 1", "run_command"));
+    const read = innerStepTrace({ ...inner({ path: "q".repeat(100_000) }, "read_file: not found."), status: "error" });
+    const kept = (value: string) => value.slice(0, value.indexOf("\n"));
+    expect(kept(command.args.command!)).toMatch(/^z{4000,}$/);
+    expect(kept(read.args.path!)).toMatch(/^q{4000,}$/);
+    const write: ToolStep = {
+      ...innerStepTrace(inner({ path, content: "y".repeat(100_000) }, `Created ${path}.`, "write_file")),
+      undone: true,
+    };
+    const entries: ChatEntry[] = [
+      user("go"),
+      {
+        role: "assistant",
+        reasoning: "",
+        content: "<run_script>",
+        status: "stopped",
+        call: { name: "run_script", args: {}, start: 0, end: 12 },
+      },
+      write,
+      command,
+      read,
+    ];
+    expect(toHistory(entries, typed, roomy).messages.at(-1)).toEqual({
+      role: "user",
+      content: wrapped(
+        [
+          "run_script: the script was stopped before it finished, after these tool calls:",
+          `write_file ${path}: ok`,
+          `run_command ${kept(command.args.command!)}: ok`,
+          `read_file ${kept(read.args.path!)}: error`,
+          `The user undid this change afterwards: write_file ${path}`,
+        ].join("\n"),
+        "run_script",
+        "error",
+      ),
+    });
   });
 });

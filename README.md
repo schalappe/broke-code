@@ -319,7 +319,8 @@ Auto-edit or Full access in one window applies to every window and project. A wo
 it. The selector is disabled while the agent works.
 
 The fourth mode, **Plan**, asks the agent for a plan instead of changes. The agent gets only the tools that change
-nothing (**read_file**, **list_files**, **search**, **ask_user**, and **load_skill** when a skill is listed). It answers with a plan of the
+nothing (**read_file**, **list_files**, **search**, **ask_user**, **load_skill** when a skill is listed, and
+**run_script** when [Code Mode](#code-mode-experimental) is on). It answers with a plan of the
 changes, file by file, in order. broke-code writes nothing and runs no command. If the model still tries to write or
 run a command, the chat shows a failed step that says the tool is not available in Plan mode, and the model goes on.
 
@@ -454,6 +455,46 @@ To turn the notifications off, set `brokeCode.notifications` to `false` in your 
 ```json
 "brokeCode.notifications": false
 ```
+
+### Code Mode (experimental)
+
+Code Mode lets the agent write one JavaScript script that calls several of its tools in a single reply, such as
+reading nine files and adding up a number from each, instead of one reply per call. Only what the script prints comes
+back to the model. It is off by default. To turn it on, set `brokeCode.codeMode` to `true` in your **user** settings.
+A workspace `settings.json` cannot turn it on.
+
+```json
+"brokeCode.codeMode": true
+```
+
+- The agent then has one more tool, **run_script**, in every mode, Plan included. In Plan, a script can only read.
+- Each tool call a script makes asks for your approval exactly as a direct call does: a change waits for **Accept** in
+  Ask, a command for **Run**, and Full access refuses its denied commands and runs the others in its sandbox. If you
+  reject a call, the script gets an error and decides what to do. A script cannot ask you a question or load a skill.
+- A script runs in a separate process of your editor, in a macOS sandbox that reads none of your files, writes
+  nothing, starts no program, and reaches no network: it can act only through the tools. It stops after 10 seconds
+  without a tool call or after 60 seconds of processor time.
+- Each tool call a script makes counts as one step toward the agent turn's step limit (`brokeCode.maxToolSteps`), and
+  so does the script itself: a script saves replies, not steps. Once the turn reaches its limit, the script's next
+  call is refused without running, the script ends, and the turn stops as it does after a direct call.
+- The chat shows a script as one row, `run_script` with its number of lines, which opens to the code. The rows of the
+  calls it made follow, one level in, then its result. They show as each call finishes, and each is saved before the script
+  goes on, so a reload keeps what a script already wrote; a crash can lose at most the record of its last call, if
+  it came while that call was being saved. To keep conversations small, each of those rows keeps only the start of
+  a long result or file content (about 2,000 characters), ending with a line that gives its full size, and keeps
+  the whole path or command up to 4,096 characters; the script
+  itself gets everything, and **Changed files** shows each change whole. **Stop** stops the script; the calls it finished stay, and **Undo
+  changes** puts back the files they wrote.
+- The first message after you turn it on tests that a script can run in this window. If it cannot, a notification
+  says why, and the agent works without **run_script** until you turn the setting off and on again.
+
+Known limits. Code Mode is measured on two local models only (`docs/eval.md`): when the agent reads several files to
+combine them, it saved replies on `gemma4:26b-a4b-it-qat` but not reliably on `qwen3.8:27b`, and it brings no gain on
+a rename across several files, where the models make one call per reply anyway. With `gemma4:26b-a4b-it-qat`, a
+request that names one of two same-named functions was settled correctly in 7 to 9 runs of 10, against 9 of 10
+without it; whether Code Mode lowers that is not settled. The models of an internal service are not measured. A
+conversation from Code Mode, opened by an older broke-code version, shows the script's calls as ordinary steps.
+The setting may change or be removed in a later version.
 
 ### Retry or continue a turn
 
@@ -592,7 +633,8 @@ LLM services do not report a model's context size. broke-code reads it from the 
 your **user** settings, by model name as the provider lists it. A model absent from the table uses 32,768 tokens, and
 the chat shows a **Set context size** link after the token count. Enter the size there, and broke-code saves it to the table.
 
-To set the tool step limit of an agent turn, use `brokeCode.maxToolSteps` (default 50, at least 1).
+To set the tool step limit of an agent turn, use `brokeCode.maxToolSteps` (default 50, at least 1). Every tool call
+counts as one step, each call a Code Mode script makes included.
 
 ```json
 "brokeCode.contextSizes": { "gemma-4": 262144, "qwen3:8b": 40960 },

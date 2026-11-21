@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import * as l10n from "@vscode/l10n";
 import french from "../../l10n/bundle.l10n.fr.json";
+import { innerStepTrace } from "../core/history";
 import type { ChatEntry, ChatState, SkillProblem } from "../core/protocol";
 import {
   describeAnnouncement,
@@ -9,6 +10,7 @@ import {
   describeFold,
   describeHalt,
   describeProviderError,
+  describeScript,
   describeSkillWarning,
   describeStorageProblem,
   describeToolStep,
@@ -392,6 +394,19 @@ describe("describeToolStep", () => {
     lines: { added: 4, removed: 1 },
   } as const;
 
+  test("an inner step whose result its trace cut counts the lines the result had whole", () => {
+    const result = `exit code 0\n${"line\n".repeat(4999)}`;
+    const trace = innerStepTrace({
+      role: "tool",
+      name: "run_command",
+      args: { command: "seq" },
+      status: "ok",
+      text: result,
+      fromScript: true,
+    });
+    expect(describeToolStep(trace)).toBe("exit code 0, 5000 lines");
+  });
+
   test("an undone step says so first, its approval and line counts unchanged", () => {
     expect(describeToolStep({ ...step, undone: true })).toBe("undone, ok, +4 \u22121");
     expect(describeToolStep({ ...step, approval: "auto", undone: true })).toBe("undone, auto-approved, ok, +4 \u22121");
@@ -546,6 +561,24 @@ describe("describeAnnouncement", () => {
     );
   });
 
+  test("says a script runs by its size, never its code, once as its call shows, not again after an approval", () => {
+    const code = "const a = await read_file({ path: 'a' });\nconsole.log(a);";
+    const script = { name: "run_script", args: { code }, start: 0, end: 4 };
+    const flight = state([ask, reply("streaming")]);
+    const running = state([ask, reply("streaming", { call: script })], { callRunning: true });
+    expect(describeAnnouncement(flight, running)).toBe("Running a script of 2 lines");
+    const deciding = state([ask, reply("streaming", { call: script })], {
+      callRunning: false,
+      approval: { id: 1, kind: "write", tool: "edit_file", summary: "a.ts" },
+    });
+    expect(describeAnnouncement(running, deciding)).toBe("Waiting for your decision: edit_file on a.ts");
+    expect(describeAnnouncement(deciding, { ...running })).toBeUndefined();
+    const oneLine = { ...script, args: { code: "console.log(1);" } };
+    expect(
+      describeAnnouncement(flight, state([ask, reply("streaming", { call: oneLine })], { callRunning: true })),
+    ).toBe("Running a script of 1 line");
+  });
+
   describe("a call, through the states the controller publishes", () => {
     const run = { name: "run_command", args: { command: "bun test" }, start: 0, end: 4 };
     const approval = { id: 1, kind: "command" as const, tool: "run_command", summary: "bun test" };
@@ -631,5 +664,12 @@ describe("describeAnnouncement", () => {
     } finally {
       l10n.config({ contents: {} });
     }
+  });
+});
+
+describe("describeScript", () => {
+  test("is the script's line count alone, the words of a step's size", () => {
+    expect(describeScript("console.log(1);")).toBe("1 line");
+    expect(describeScript("const a = 1;\nconsole.log(a);\n")).toBe("2 lines");
   });
 });
