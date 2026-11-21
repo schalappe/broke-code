@@ -564,8 +564,10 @@ what the script prints or returns goes back to the model. It is an experimental 
   approval may wait as long as the user takes; what the record keeps is bounded by the trace (below). Each of the
   others ends the script: 10 seconds of the script's own running time between calls
   (`SCRIPT_RUN_MS`; the time a call takes, a wait for an approval included, never counts); 1 MiB of printed output,
-  counted in the child as the script prints and checked again by the host on the end frame (past it, the output is
-  cut to 1 MiB and the script ends on `the script printed more than 1048576 characters`); one protocol line over 8 MiB; 32 MiB of answers the child left unread; 512 MiB of resident
+  counted on the output as it comes back, its lines joined by line breaks, so output of exactly 1048576 characters
+  passes; the child counts it as the script prints and the host checks it again on the end frame (past it, the result keeps
+  the output's first 1048576 characters, the line that crossed the limit cut there, and the script ends on `the script
+  printed more than 1048576 characters`); one protocol line over 8 MiB; 32 MiB of answers the child left unread; 512 MiB of resident
   memory (`SCRIPT_MEMORY_BYTES`), read with `/bin/ps` every 250 ms, since macOS applies no memory limit to a process,
   and failing closed when it cannot be read; 10 seconds for the child to exit once the host has ended its input after
   the script's end (a script that left the vm could keep it alive); and 60 seconds of processor time (`SCRIPT_CPU_SECONDS`), a kernel limit that holds even when the host died.

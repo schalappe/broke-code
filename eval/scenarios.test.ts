@@ -1106,22 +1106,32 @@ describe("judge on the gather scenario", () => {
 describe("givesStockTotal", () => {
   const sum = "37 + 142 + 8 + 95 + 61 + 203 + 14 + 77 + 129 = 766";
 
-  test("passes the total alone, in a sentence, beside the number of depots, or ending a sum written out", () => {
+  test("passes the total alone or in a sentence", () => {
     expect(givesStockTotal("766")).toBe(true);
     expect(givesStockTotal("The total is 766.")).toBe(true);
-    expect(givesStockTotal("The total is 766 across 9 depots.")).toBe(true);
-    expect(givesStockTotal(`Across the 9 depots: ${sum}.`)).toBe(true);
-    expect(givesStockTotal(`${sum}, so the total is 766.`)).toBe(true);
   });
 
-  test("fails another total given beside it, even a depot's quantity", () => {
+  test("fails the total beside the depot count or a sum written out, a known strictness", () => {
+    expect(givesStockTotal("The total is 766 across 9 depots.")).toBe(false);
+    expect(givesStockTotal(`Across the 9 depots: ${sum}.`)).toBe(false);
+    expect(givesStockTotal(`${sum}, so the total is 766.`)).toBe(false);
+    expect(givesStockTotal("Marseille holds 203 and Brest 142; the total is 766.")).toBe(false);
+  });
+
+  test("fails 766 contradicted by the depot count given as the total", () => {
+    expect(givesStockTotal("766 is incorrect. The total is 9.")).toBe(false);
+  });
+
+  test("fails 766 contradicted by a quantity given as the total, the other quantities beside it", () => {
+    expect(givesStockTotal("766 is incorrect. The total is 37. Other figures: 142, 8, 95, 61, 203, 14, 77, 129.")).toBe(
+      false,
+    );
+  });
+
+  test("fails another total given beside it", () => {
     expect(givesStockTotal("766 is incorrect. The total is 203.")).toBe(false);
     expect(givesStockTotal("766 is incorrect. The total is 765.")).toBe(false);
     expect(givesStockTotal(`${sum}; no, the total is 203.`)).toBe(false);
-  });
-
-  test("fails some quantities cited beside the total, a known strictness, since the message asks for the number", () => {
-    expect(givesStockTotal("Marseille holds 203 and Brest 142; the total is 766.")).toBe(false);
   });
 
   test("fails no number, or the depot count alone", () => {
@@ -1133,6 +1143,14 @@ describe("givesStockTotal", () => {
     for (const text of ["About 7660.", "1766", "The total is 766.0.", "The total is 1,766."]) {
       expect(givesStockTotal(text)).toBe(false);
     }
+  });
+
+  test("judges a 1 MiB token of periods that does not end in them in linear time", () => {
+    // [>]: The former `replace(/[.,]+$/, "")` took 11 s on 128 Ki periods and grew with their square.
+    const reply = `The total is 766. 1${".".repeat(1024 * 1024)}a`;
+    const started = performance.now();
+    expect(givesStockTotal(reply)).toBe(false);
+    expect(performance.now() - started).toBeLessThan(2000);
   });
 });
 

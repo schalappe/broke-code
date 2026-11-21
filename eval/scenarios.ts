@@ -381,10 +381,23 @@ export const COMMAND_SCENARIO: Scenario = {
  * The numbers written in `text`, each whole as written: every longest run of digits, letters, `.`, `,`, `_`, signs,
  * and U+2212 that holds a digit, less its trailing `.` and `,` (sentence punctuation). A count passes only as a token
  * of its own, so `161`, `1,061`, `61,000`, `61.5`, `0,61`, `-61`, `\u221261`, `+61`, `61e3`, and `61k` never hold 61.
+ * Linear in the length of `text`, which a provider controls.
  */
 function numberTokens(text: string): string[] {
   const runs = text.match(/[0-9A-Za-z.,_+\-\u2212]+/g) ?? [];
-  return runs.filter((run) => /\d/.test(run)).map((run) => run.replace(/[.,]+$/, ""));
+  return runs.filter((run) => /\d/.test(run)).map(withoutTrailingPunctuation);
+}
+
+/**
+ * `run` less its trailing `.` and `,`.
+ *
+ * [!]: A loop, not `replace(/[.,]+$/, "")`: that regex retries from each `.` of a run that does not end the token, so
+ * a reply holding `1` and 128 Ki periods before a letter took 11 seconds, and 1 MiB of them would take minutes.
+ */
+function withoutTrailingPunctuation(run: string): string {
+  let end = run.length;
+  while (end > 0 && (run[end - 1] === "." || run[end - 1] === ",")) end -= 1;
+  return run.slice(0, end);
 }
 
 const DISPATCH_LOG = "dispatch.log";
@@ -592,23 +605,16 @@ const STOCK: Record<string, number> = {
 const STOCK_TOTAL = Object.values(STOCK).reduce((total, quantity) => total + quantity, 0);
 
 /**
- * Whether a gather `answer` gives the stock total and no other number. Of its number tokens (`numberTokens`, so `7660`,
- * `1766`, `766.0`, and `1,766` are each one token, never 766), drop each one that is the number of depots; then, if
- * the rest hold every depot's quantity (as a multiset), drop one of each, a sum written out; at least one token must
- * be left, and every one left must be the total. So "766 is incorrect. The total is 203." fails, and so does an answer
- * that cites only some quantities beside the total.
+ * Whether a gather `answer` gives the stock total and nothing else, as the message asks ("Reply with the number"): it
+ * holds at least one number token (`numberTokens`, so `7660`, `1766`, `766.0`, and `1,766` are each one token, never
+ * 766), and every one is the total. No number is let through beside it, not the depot count, not a quantity.
+ *
+ * [!]: Strict on purpose: a right answer that also cites the depot count or a sum written out fails. Each allowance
+ * tried (the depot count, a full sum) let an answer that contradicts the total pass.
  */
 export function givesStockTotal(answer: string): boolean {
-  const depots = String(Object.keys(STOCK).length);
-  const tokens = numberTokens(answer).filter((token) => token !== depots);
-  const rest = [...tokens];
-  const wroteSum = Object.values(STOCK).every((quantity) => {
-    const at = rest.indexOf(String(quantity));
-    if (at !== -1) rest.splice(at, 1);
-    return at !== -1;
-  });
-  const left = wroteSum ? rest : tokens;
-  return left.length > 0 && left.every((token) => token === String(STOCK_TOTAL));
+  const tokens = numberTokens(answer);
+  return tokens.length > 0 && tokens.every((token) => token === String(STOCK_TOTAL));
 }
 
 /** One `stock/<depot>.txt` per depot: its `quantity: N` line among others, `reserved: N` a number not to add. */

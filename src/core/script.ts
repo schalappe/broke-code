@@ -83,9 +83,11 @@ export function stepLimitRefusal(limit: number): string {
  */
 export const SCRIPT_RUN_MS = 10_000;
 /**
- * Characters the script may print, its returned value included. The host applies it to the done frame (`doneResult`),
- * since the child is untrusted; the child also counts it, so an ordinary script that passes it ends there on the error
- * rather than on the frame limit. Passing it ends the script on an error.
+ * Characters the script may print, its returned value included, counted on the output as it comes back (its lines
+ * joined by line breaks). Passing it ends the script on `OUTPUT_OVERFLOW`, and the result keeps the output's first
+ * `MAX_SCRIPT_OUTPUT` characters. The host applies it to the done frame (`doneResult`), since the child is untrusted;
+ * the child applies the same rule as the script prints, so an ordinary script that passes it ends there on the error
+ * rather than on the frame limit.
  */
 export const MAX_SCRIPT_OUTPUT = 1024 * 1024;
 /**
@@ -190,7 +192,8 @@ const SCRIPT_ENDED = `${TOOL}: the script has ended; this call was not made.`;
  * `{ id, status, text }`, the result of each call it asked for. It writes JSON Lines on stdout: `{ call: { id, name,
  * args } }` per tool call, its ids increasing in the order the frames are written (the arguments are converted to text
  * before the id is taken, since a getter or a `toString` may call another tool), then `{ done: { output, error? } }`,
- * sent as the script returns or throws, or as its output passes the limit; a call made after it throws without being
+ * sent as the script returns or throws, or as its output passes the limit, with the output's first `MAX_SCRIPT_OUTPUT`
+ * characters, the line that crossed it cut there; a call made after it throws without being
  * sent. The host trusts none of it: it checks every frame and applies every limit itself. The script runs inside a
  * `node:vm` context whose only
  * globals are the tool functions and `console`, whose `log` and `error` are captured here, never written to stdout. A
@@ -226,9 +229,13 @@ export const SCRIPT_BOOTSTRAP = [
   "}",
   "function keep(line) {",
   "  if (overflow) throw new ContextError(OVERFLOW);",
-  "  outputSize += line.length + 1;",
-  "  if (outputSize > MAX_OUTPUT) { overflow = true; finish(true); throw new ContextError(OVERFLOW); }",
-  "  output.push(line);",
+  "  const separator = output.length > 0 ? 1 : 0;",
+  "  const room = MAX_OUTPUT - outputSize - separator;",
+  "  if (line.length <= room) { output.push(line); outputSize += separator + line.length; return; }",
+  "  if (room >= 0) output.push(line.slice(0, room));",
+  "  overflow = true;",
+  "  finish(true);",
+  "  throw new ContextError(OVERFLOW);",
   "}",
   'function log(...values) { keep(values.map(shown).join(" ")); }',
   "function errorText(error) {",
@@ -715,8 +722,8 @@ function scriptResult(run: {
 
 /**
  * The result of the child's done frame, the one place its limits hold, since the child is untrusted and writes the
- * frame itself: an output over `MAX_SCRIPT_OUTPUT` characters is cut to them and ends the script on `OUTPUT_OVERFLOW`,
- * as the child ends it; the output is then cut to its first 2,000 lines with the usual notice; the error is cut to
+ * frame itself: an output over `MAX_SCRIPT_OUTPUT` characters is cut to its first `MAX_SCRIPT_OUTPUT` and ends the
+ * script on `OUTPUT_OVERFLOW`, as the child cuts and ends it; the output is then cut to its first 2,000 lines with the usual notice; the error is cut to
  * `MAX_ERROR_CHARS`, ending with `…`.
  */
 function doneResult(done: Done): ToolResult {

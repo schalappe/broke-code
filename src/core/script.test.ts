@@ -414,15 +414,37 @@ describe("runScript limits", () => {
     expect(result.text).toStartWith("run_script: the script ran for 0.3 seconds without a tool call");
   });
 
-  test("output past the limit ends the script on an error, even when the script catches it", async () => {
-    const line = "x".repeat(1000);
-    const result = await script(
-      `for (let i = 0; i < 2000; i++) { try { console.log('${line}'); } catch {} } return 'end';`,
-    );
-    expect(result.status).toBe("error");
-    expect(result.text).toEndWith(
-      `run_script: the script stopped on an error: the script printed more than ${MAX_SCRIPT_OUTPUT} characters`,
-    );
+  describe("the output limit keeps the output's first MAX_SCRIPT_OUTPUT characters", () => {
+    const overflow = `run_script: the script stopped on an error: the script printed more than ${MAX_SCRIPT_OUTPUT} characters`;
+
+    test("one line of exactly the limit comes back whole", async () => {
+      const result = await script(`return 'x'.repeat(${MAX_SCRIPT_OUTPUT});`);
+      expect(result).toEqual({ status: "ok", text: "x".repeat(MAX_SCRIPT_OUTPUT) });
+    });
+
+    test("lines of exactly the limit, their line breaks included, come back whole", async () => {
+      const result = await script(`console.log('x'.repeat(${MAX_SCRIPT_OUTPUT - 2})); return 'y';`);
+      expect(result).toEqual({ status: "ok", text: `${"x".repeat(MAX_SCRIPT_OUTPUT - 2)}\ny` });
+    });
+
+    test("one character more ends the script and keeps the limit's worth", async () => {
+      const result = await script(`console.log('x'.repeat(${MAX_SCRIPT_OUTPUT - 2})); return 'yz';`);
+      expect(result).toEqual({ status: "error", text: `${"x".repeat(MAX_SCRIPT_OUTPUT - 2)}\ny\n${overflow}` });
+    });
+
+    test("a single line that crosses the limit keeps its start", async () => {
+      const result = await script(`console.log('x'.repeat(${MAX_SCRIPT_OUTPUT + 5})); return 'end';`);
+      expect(result).toEqual({ status: "error", text: `${"x".repeat(MAX_SCRIPT_OUTPUT)}\n${overflow}` });
+    });
+
+    test("many lines whose last crosses keep the start of that line, even when the script catches the error", async () => {
+      const line = "x".repeat(1000);
+      const result = await script(
+        `for (let i = 0; i < 2000; i++) { try { console.log('${line}'); } catch {} } return 'end';`,
+      );
+      const printed = Array.from({ length: 2000 }, () => line).join("\n");
+      expect(result).toEqual({ status: "error", text: `${printed.slice(0, MAX_SCRIPT_OUTPUT)}\n${overflow}` });
+    });
   });
 
   test("a call made after catching the output overflow never reaches the tools", async () => {
