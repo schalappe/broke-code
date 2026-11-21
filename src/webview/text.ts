@@ -6,7 +6,7 @@
  */
 import * as l10n from "@vscode/l10n";
 import type { ConversationSummary } from "../core/conversation";
-import { resultLineCount } from "../core/history";
+import { resultLineCount, stepResultLines } from "../core/history";
 import type { MentionResult } from "../core/mentions";
 import type {
   ChatEntry,
@@ -187,9 +187,11 @@ function describeTruncated(kind: MentionKind, count: number): string {
  * line range shows it after the path as the model wrote it (`big.log 2001-4000`), its missing end left blank
  * (`big.log 2001-`) and its missing start shown as 1 (`big.log 1-50`), so two reads of one file differ. An `ask_user`
  * shows the first line of its question, never its options, whichever the model wrote first; nothing without a question.
+ * A `run_script` shows none: its script has a row of its own (`describeScript`).
  */
 export function mainArgument(name: string, args: Record<string, string>): string | undefined {
   if (name === "ask_user") return args.question?.trim().split("\n")[0]?.trim() || undefined;
+  if (name === "run_script") return undefined;
   const { start_line: start, end_line: end } = args;
   if (name === "read_file" && args.path !== undefined && (start !== undefined || end !== undefined)) {
     return `${args.path} ${start ?? 1}-${end ?? ""}`;
@@ -198,10 +200,19 @@ export function mainArgument(name: string, args: Record<string, string>): string
 }
 
 /**
+ * A script's row, its size in lines alone ("12 lines"): the tool name before it already says it is a script, and a
+ * narrow panel cuts the label from its end.
+ */
+export function describeScript(code: string): string {
+  return describeLines(resultLineCount(code));
+}
+
+/**
  * Short status of a finished tool step: `ok` or `error` and its size, or the first line of a malformed call's message,
  * which says what is wrong. The size is the one the user knows the step by: a write's added and removed lines, as its
  * approval showed them (none for a record saved before they were kept); the lines of the file `read_file` returned,
- * from its result's header; the result's lines for the other tools. A call the user rejected says so, its reason in
+ * from its result's header; the result's lines for the other tools, the lines it had whole when an inner step's trace
+ * cut it (`stepResultLines`). A call the user rejected says so, its reason in
  * the expanded result; one auto-approved says so before its status; a write "Undo changes" undid says so first.
  * Model-facing messages are English, never localized.
  */
@@ -210,10 +221,10 @@ export function describeToolStep(step: ChatEntry & { role: "tool" }): string {
   if (step.approval === "rejected") return l10n.t("rejected by you");
   if (stepNote(step) !== undefined) return l10n.t("you answered");
   const ending = step.name === "run_command" ? describeCommandEnding(step.text) : undefined;
-  if (ending !== undefined) return l10n.t("{0}, {1}", ending, describeLines(resultLineCount(step.text)));
+  if (ending !== undefined) return l10n.t("{0}, {1}", ending, describeLines(stepResultLines(step)));
   const size = stepSize(step);
   const ok = size === undefined ? l10n.t("ok") : l10n.t("ok, {0}", size);
-  const status = step.status === "ok" ? ok : l10n.t("error, {0}", describeLines(resultLineCount(step.text)));
+  const status = step.status === "ok" ? ok : l10n.t("error, {0}", describeLines(stepResultLines(step)));
   const approved = step.approval === "auto" ? l10n.t("auto-approved, {0}", status) : status;
   return step.undone ? l10n.t("undone, {0}", approved) : approved;
 }
@@ -236,7 +247,7 @@ const WRITE_TOOLS: ReadonlySet<string> = new Set(["write_file", "edit_file"]);
 function stepSize(step: ChatEntry & { role: "tool" }): string | undefined {
   if (WRITE_TOOLS.has(step.name)) return step.lines && `+${step.lines.added} \u2212${step.lines.removed}`;
   const read = step.name === "read_file" ? readLineCount(step.text) : undefined;
-  return describeLines(read ?? resultLineCount(step.text));
+  return describeLines(read ?? stepResultLines(step));
 }
 
 function describeLines(count: number): string {
@@ -388,6 +399,8 @@ export function describeAnnouncement(previous: ChatState, next: ChatState): stri
   if (waiting) return approval ? describeWaiting(next) : question && describeQuestion(question);
   const call = runningCall(next);
   if (call && !runningCall(previous)) {
+    // [>]: A script is announced once, as its call shows, by its size: never its code, nor again after each approval.
+    if (call.name === "run_script") return shownCall(previous) === undefined ? describeRunningScript(call) : undefined;
     if (call.name === "run_command" && call.args.command !== undefined) return l10n.t("Running {0}", call.args.command);
     const argument = mainArgument(call.name, call.args);
     return argument === undefined
@@ -411,14 +424,24 @@ export function describeAnnouncement(previous: ChatState, next: ChatState): stri
   }
 }
 
+function describeRunningScript(call: ReplyCall): string {
+  const lines = resultLineCount(call.args.code ?? "");
+  return lines === 1 ? l10n.t("Running a script of 1 line") : l10n.t("Running a script of {0} lines", lines);
+}
+
+/** The call the reply in flight shows, running or not; `undefined` while it shows none or no reply is in flight. */
+function shownCall(state: ChatState): ReplyCall | undefined {
+  const last = state.entries.at(-1);
+  if (last?.role !== "assistant" || (last.status !== "waiting" && last.status !== "streaming")) return undefined;
+  return last.call;
+}
+
 /**
  * The call the reply in flight runs now, as the host marks it (`ChatState.callRunning`): a call that waits on a
  * decision or an answer, or whose request was rejected, cancelled, or answered, is not running.
  */
 function runningCall(state: ChatState): ReplyCall | undefined {
-  const last = state.entries.at(-1);
-  if (last?.role !== "assistant" || (last.status !== "waiting" && last.status !== "streaming")) return undefined;
-  return state.callRunning ? last.call : undefined;
+  return state.callRunning ? shownCall(state) : undefined;
 }
 
 /** The empty summary's wording with the panel's translator; see `describeEmptySummary` in the core. */

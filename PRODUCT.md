@@ -48,10 +48,15 @@ supports them (ADR 0001), so one contract covers the internal service and Ollama
 
 ## Capabilities and Constraints
 
-- Tools: `read_file`, `list_files`, `search`, `write_file`, `edit_file`, `run_command`, `load_skill`, `ask_user`.
+- Tools: `read_file`, `list_files`, `search`, `write_file`, `edit_file`, `run_command`, `load_skill`, `ask_user`, and,
+  with the experimental setting `brokeCode.codeMode` on, `run_script`: Code Mode, one sandboxed JavaScript script that
+  chains the other tools in one reply, each of its calls approved as a direct call (ADR 0008). Measured gain on
+  grouped reads only, clear on `gemma4` and not on `qwen3.8`; `gemma4`'s `ask` scenario measured between 7/10 and
+  9/10 with it, against 9/10 without.
 - Four modes of one agent: Ask (each write waits for Accept or Reject, each command for Run), Auto-edit (writes are
   accepted at once), Full access (writes and commands at once, commands in a sandbox that keeps their writes in the
-  workspace, denied commands refused), Plan (the read tools and `ask_user` only) (ADR 0002, ADR 0005).
+  workspace, denied commands refused), Plan (the read tools and `ask_user` only, and `run_script` limited to them
+  with Code Mode on) (ADR 0002, ADR 0005).
 - The way back: "Undo changes" for a turn's writes, Retry, Continue, and Edit on the last turn.
 - Mentions (`@file`, `@folder`, `@problems`, `@diff`, `@selection`), slash commands (`/new`, `/model`, `/compact`,
   skills), queued messages, saved conversations per workspace with History.

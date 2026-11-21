@@ -330,6 +330,10 @@ least, so a long queue never pushes a waiting decision out of view.
   failed, and the line count stays the result's.
 - A call without a result has no chevron: its node is filled and breathing while it runs, hollow when it ended with
   no result.
+- A script (Code Mode): its row is a tool step's, `run_script` then its size, "12 lines", opening to the code in the
+  editor font like a result. The rows of the calls it made follow it, one level in (`.script-steps`, 12px), each an
+  ordinary step row whose node stays on the thread; then the decision block, labelled from the call that waits, or
+  the script's result row. No new color, mark, or block.
 - Folded turn: an ended turn's steps and intermediate replies under one small dim row, a double-ring node on the
   thread, between the user's message and the final reply: what the steps did, "Read 3 files, changed 1 file, ran 1
   command, 1 failed", the counts in words, never in color alone, a path counted once after a lexical cleanup (`a.ts` and

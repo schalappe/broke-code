@@ -214,6 +214,24 @@ describe("conversation record", () => {
     }
   });
 
+  test("reads back a step a script made, and refuses a script mark of another shape", () => {
+    const step = { role: "tool", name: "edit_file", args: { path: "a.ts" }, status: "ok", text: "t" } as const;
+    const scripted = record({
+      entries: [
+        { role: "user", content: "edit", mentions: [], modelText: "edit" },
+        { ...step, fromScript: true },
+        { role: "tool", name: "run_script", args: { code: "await edit_file({})" }, status: "ok", text: "done" },
+      ],
+    });
+    expect(parseConversation(serializeConversation(scripted))).toEqual({ ok: true, record: scripted });
+    for (const mark of [false, null, "true", 1]) {
+      expect(parse({ ...record(), entries: [{ ...step, fromScript: mark }] })).toEqual({
+        ok: false,
+        reason: "invalid entry 0",
+      });
+    }
+  });
+
   test("reads back a write step's line counts, and refuses counts of another shape", () => {
     const step = { role: "tool", name: "edit_file", args: { path: "a.ts" }, status: "ok", text: "t" } as const;
     const counted = record({

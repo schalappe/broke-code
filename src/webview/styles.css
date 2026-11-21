@@ -1650,6 +1650,15 @@ summary.step-row:hover,
   display: none;
 }
 
+/* The calls a script made, one level in under the script's row; their nodes stay on the thread. */
+.script-steps {
+  margin-left: var(--bc-space-4);
+}
+
+.script-steps .step-row::before {
+  left: calc(-1 * (var(--bc-thread-indent) + var(--bc-space-4)));
+}
+
 /* Reasoning is a dotted node, a failed step a ring in the error color; its status says so in words. */
 .message.assistant:has(.step) .reasoning summary::before {
   border-style: dotted;

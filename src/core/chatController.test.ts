@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -12,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Decision, type InspectedSetting, type Preview, type SettingMode, settingMode } from "./approval";
 import { ASK_USER_TOOL } from "./askUser";
@@ -20,17 +21,20 @@ import {
   ChatController,
   type ChatPorts,
   type ChoiceStore,
+  type CodeModePort,
   type HeldFileDiff,
   type InstructionReader,
   type LimitsSource,
   type SkillReader,
   type ToolRunner,
 } from "./chatController";
+import { CodeModeSwitch } from "./codeMode";
 import { RUN_COMMAND_TOOL } from "./commands";
 import { type ConversationRecord, newConversationId, serializeSummary } from "./conversation";
 import { type MemoryFiles, memoryFiles } from "./conversationFixture";
 import { ConversationStore } from "./conversationStore";
-import { SUMMARY_REQUEST } from "./history";
+import { INNER_STEP_CHARS, SUMMARY_REQUEST } from "./history";
+import { unrevertedEffects } from "./lastTurn";
 import { estimateTokens, parseLimits } from "./limits";
 import { mentionReader } from "./mentionReader";
 import type { MentionReader, ReadMention } from "./mentions";
@@ -47,6 +51,7 @@ import {
 import { ProviderSupport } from "./providerSupport";
 import type { Provider } from "./providers";
 import { recordingApplier } from "./recordedChanges";
+import { stepLimitRefusal } from "./script";
 import { LOAD_SKILL_TOOL, readSkills, type SkillDiscovery } from "./skills";
 import { composeSummaryPrompt, composeSystemPrompt, type InstructionFile, type Skill } from "./systemPrompt";
 import { createTlsFixture, removeTlsFixture } from "./tlsFixture";
@@ -7458,5 +7463,962 @@ describe("ChatController running call", () => {
 
   test("an auto-approved write runs without a request", async () => {
     expect(await phases(writeCall, undefined, () => "autoEdit")).toEqual(["shown", "running", "done"]);
+  });
+});
+
+describe("ChatController run_script", () => {
+  let scriptTurnCount = 0;
+  let dir = "";
+  beforeEach(() => {
+    dir = realpathSync(mkdtempSync(join(tmpdir(), "broke-code-script-turn-")));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+  const text = (name: string) => readFileSync(join(dir, name), "utf8");
+  const scriptCall = (code: string) => `<run_script>\n<code>\n${code}\n</code>\n</run_script>`;
+  const runtime = realpathSync(process.execPath);
+
+  /**
+   * Controller over a temporary workspace offering `run_script` (bun as the script runtime, under its sandbox), writes
+   * going through `approvalApplier` around the recording applier, as the extension wires them, auto-approved unless
+   * `ask`. `beforeWrite`: awaited before each write reaches the disk. Records every published state.
+   */
+  async function scriptTurn(
+    script: ScriptedReply[],
+    options: {
+      ask?: boolean;
+      mode?: SettingMode;
+      plan?: boolean;
+      commands?: boolean;
+      files?: MemoryFiles;
+      codeMode?: CodeModePort | null;
+      beforeWrite?: () => Promise<void>;
+      steps?: number;
+    } = {},
+  ) {
+    const prefix = `script-turn-${scriptTurnCount++}`;
+    scripts.set(prefix, [...script]);
+    const roots = [{ name: "ws", path: dir }];
+    const host: WriteApprovalHost = {
+      preview: async () => ({ show: async () => {}, close: async () => {} }),
+      hasUnsavedChanges: async () => false,
+    };
+    const runner = workspaceToolRunner(
+      () => roots,
+      { ripgrepCandidates: [] },
+      (current, { requestApproval, changes }) => {
+        const write = fileApplier(current);
+        const delayed: typeof write = async (change) => {
+          await options.beforeWrite?.();
+          return write(change);
+        };
+        return approvalApplier(recordingApplier(delayed, changes), host, requestApproval);
+      },
+      options.commands ? () => ({ shell: "/bin/sh", timeoutMs: 10_000 }) : undefined,
+      false,
+    );
+    const states: ChatState[] = [];
+    const codeMode =
+      options.codeMode === null
+        ? undefined
+        : (options.codeMode ?? { scriptEnv: async () => ({ runtime: [runtime], environment: {}, readable: [] }) });
+    const controller = new ChatController({
+      apiKeys: { get: async () => undefined },
+      workspaceState: memoryStore(),
+      publish: (state) => states.push(JSON.parse(JSON.stringify(state)) as ChatState),
+      mentions: noMentions,
+      store: new ConversationStore(options.files ?? memoryFiles()),
+      providerSupport: new ProviderSupport(),
+      tools: runner,
+      instructions: { read: async () => [] },
+      skills: noSkills,
+      limits: fixedLimits({ steps: options.steps }),
+      settingMode: () => options.mode ?? (options.ask ? "ask" : "autoEdit"),
+      undo: { roots: () => roots, hasUnsavedChanges: async () => false },
+      ...(codeMode ? { codeMode } : {}),
+    });
+    const state = () => controller.snapshot;
+    controller.setProviders({
+      providers: [{ name: "Agent", baseUrl: `http://localhost:${server.port}/${prefix}/v1` }],
+      skipped: [],
+    });
+    await until(state, (s) => s.model === "m");
+    if (options.plan) await controller.setMode("plan");
+    const sent = () => (requests.get(prefix) ?? []) as { messages: { role: string; content: string }[] }[];
+    return { controller, state, states, sent };
+  }
+
+  const renameScript = [
+    'for (const path of ["a.txt", "b.txt"]) {',
+    "  const before = await read_file({ path });",
+    '  await edit_file({ path, old: "old_name", new: "new_name" });',
+    "}",
+    'console.log("renamed 2 files");',
+  ].join("\n");
+
+  test("records the script's calls as steps before its own, and sends the model the script's output only", async () => {
+    writeFileSync(join(dir, "a.txt"), "old_name()\n");
+    writeFileSync(join(dir, "b.txt"), "x = old_name\n");
+    const reply = scriptCall(renameScript);
+    const { controller, state, states, sent } = await scriptTurn([{ content: reply }, { content: "Done." }]);
+    await controller.send("rename old_name");
+
+    expect(text("a.txt")).toBe("new_name()\n");
+    expect(text("b.txt")).toBe("x = new_name\n");
+    const entries = state().entries;
+    expect(
+      entries.map((entry) => (entry.role === "tool" ? `${entry.name}${entry.fromScript ? "*" : ""}` : entry.role)),
+    ).toEqual(["user", "assistant", "read_file*", "edit_file*", "read_file*", "edit_file*", "run_script", "assistant"]);
+    expect(entries[3]).toMatchObject({ role: "tool", name: "edit_file", status: "ok", approval: "auto" });
+    expect(entries[6]).toEqual({
+      role: "tool",
+      name: "run_script",
+      args: { code: renameScript },
+      status: "ok",
+      text: "renamed 2 files",
+    });
+    expect(entries.at(-1)).toMatchObject({ content: "Done.", status: "done" });
+
+    const history = sent()[1]!.messages;
+    expect(history.slice(1)).toEqual([
+      { role: "user", content: "rename old_name" },
+      { role: "assistant", content: reply },
+      { role: "user", content: '<tool_result tool="run_script" status="ok">\nrenamed 2 files\n</tool_result>' },
+    ]);
+    expect(history[0]!.content).toContain("## run_script");
+
+    // [!]: Staged, never live: no published state shows a script's step without the script's own step after it.
+    for (const published of states) {
+      const scripted = published.entries.findIndex((entry) => entry.role === "tool" && entry.fromScript === true);
+      if (scripted === -1) continue;
+      expect(published.entries.some((entry) => entry.role === "tool" && entry.name === "run_script")).toBe(true);
+    }
+  });
+
+  /** The kind of each entry, a script's call marked `*`, as in the test above. */
+  const kinds = (entries: readonly ChatEntry[]) =>
+    entries.map((entry) => (entry.role === "tool" ? `${entry.name}${entry.fromScript ? "*" : ""}` : entry.role));
+  const lastReply = (entries: readonly ChatEntry[]) => entries.findLast((entry) => entry.role === "assistant");
+
+  test("a script's calls take the turn's last steps: the next call throws in the script, never runs, leaves no step, and the turn halts", async () => {
+    const code = [
+      "for (let i = 0; i < 5; i++) {",
+      '  try { await write_file({ path: "w" + i + ".txt", content: "x" }); } catch (error) { console.log(error.message); }',
+      "}",
+      'console.log("finished");',
+    ].join("\n");
+    // [>]: A limit of 3: the run_script call's own step, then two of its calls.
+    const { controller, state, sent } = await scriptTurn([{ content: scriptCall(code) }, { content: "never sent" }], {
+      steps: 3,
+    });
+    await controller.send("write five files");
+
+    expect(existsSync(join(dir, "w1.txt"))).toBe(true);
+    expect(existsSync(join(dir, "w2.txt"))).toBe(false);
+    const entries = state().entries;
+    expect(kinds(entries)).toEqual(["user", "assistant", "write_file*", "write_file*", "run_script"]);
+    const refusal = stepLimitRefusal(3);
+    expect(entries.at(-1)).toMatchObject({
+      role: "tool",
+      name: "run_script",
+      status: "ok",
+      text: [refusal, refusal, refusal, "finished"].join("\n"),
+    });
+    expect(lastReply(entries)).toMatchObject({ status: "halted", haltReason: "stepLimit" });
+    expect(sent()).toHaveLength(1);
+  });
+
+  test("direct calls and a script's calls share one count across the turn", async () => {
+    writeFileSync(join(dir, "a.txt"), "a\n");
+    const read = "<read_file>\n<path>a.txt</path>\n</read_file>";
+    const code = [
+      "for (let i = 0; i < 4; i++) {",
+      "  try { await read_file({ path: 'a.txt' }); } catch (error) { console.log(error.message); }",
+      "}",
+    ].join("\n");
+    // [>]: 2 direct calls, then the script's own step, leave room for exactly 2 of its calls under a limit of 5.
+    const { controller, state, sent } = await scriptTurn(
+      [{ content: read }, { content: read }, { content: scriptCall(code) }, { content: "never sent" }],
+      { steps: 5 },
+    );
+    await controller.send("read a.txt");
+
+    const entries = state().entries;
+    expect(kinds(entries)).toEqual([
+      "user",
+      "assistant",
+      "read_file",
+      "assistant",
+      "read_file",
+      "assistant",
+      "read_file*",
+      "read_file*",
+      "run_script",
+    ]);
+    expect(entries.at(-1)).toMatchObject({ text: [stepLimitRefusal(5), stepLimitRefusal(5)].join("\n") });
+    expect(lastReply(entries)).toMatchObject({ status: "halted", haltReason: "stepLimit" });
+    expect(sent()).toHaveLength(3);
+  });
+
+  test("a script whose calls end below the limit leaves the turn going, and the next direct call counts after them", async () => {
+    writeFileSync(join(dir, "a.txt"), "a\n");
+    const read = "<read_file>\n<path>a.txt</path>\n</read_file>";
+    const code = "await read_file({ path: 'a.txt' }); console.log('one');";
+    // [>]: The script's step and its one call leave one step under a limit of 3: the direct call after it takes it.
+    const { controller, state, sent } = await scriptTurn(
+      [{ content: scriptCall(code) }, { content: read }, { content: "never sent" }],
+      { steps: 3 },
+    );
+    await controller.send("read a.txt");
+
+    expect(kinds(state().entries)).toEqual(["user", "assistant", "read_file*", "run_script", "assistant", "read_file"]);
+    expect(lastReply(state().entries)).toMatchObject({ status: "halted", haltReason: "stepLimit" });
+    expect(sent()).toHaveLength(2);
+  });
+
+  test("writes queued at once through scripts never pass the limit: the turn records fewer writes than its limit", async () => {
+    /** A script that asks for `count` writes at once, none awaited before the next, and prints how many ran. */
+    const queued = (prefix: string, count: number) =>
+      [
+        `const writes = Array.from({ length: ${count} }, (_, i) => write_file({ path: \`${prefix}\${i}.txt\`, content: "x" }));`,
+        "const settled = await Promise.allSettled(writes);",
+        'console.log(settled.filter((each) => each.status === "fulfilled").length);',
+      ].join("\n");
+    // [>]: A limit of 6: the first script's step and its 2 writes, then the second script's step and 2 of its 10.
+    const { controller, state, sent } = await scriptTurn(
+      [{ content: scriptCall(queued("p", 2)) }, { content: scriptCall(queued("q", 10)) }, { content: "never sent" }],
+      { steps: 6 },
+    );
+    await controller.send("write files");
+
+    const entries = state().entries;
+    const scripts = entries.filter((entry) => entry.role === "tool" && entry.name === "run_script");
+    expect(scripts.map((entry) => (entry.role === "tool" ? entry.text : ""))).toEqual(["2", "2"]);
+    expect(entries.filter((entry) => entry.role === "tool" && entry.fromScript)).toHaveLength(4);
+    expect(state().changedFiles.map((file) => file.path)).toEqual(["p0.txt", "p1.txt", "q0.txt", "q1.txt"]);
+    expect(readdirSync(dir).sort()).toEqual(["p0.txt", "p1.txt", "q0.txt", "q1.txt"]);
+    expect(lastReply(entries)).toMatchObject({ status: "halted", haltReason: "stepLimit" });
+    expect(sent()).toHaveLength(2);
+  });
+
+  /** A script that reads `path`, replaces the old name, and writes the text back with `tool`. */
+  const roundTrip = (path: string, tool: "write_file" | "edit_file") =>
+    [
+      `const text = await read_file({ path: "${path}" });`,
+      'const changed = text.replaceAll("old_name", "new_name");',
+      tool === "write_file"
+        ? `await write_file({ path: "${path}", content: changed });`
+        : `await edit_file({ path: "${path}", old: text, new: changed });`,
+      'console.log("done");',
+    ].join("\n");
+
+  test("a script reads a file's exact text: read, replace, and write back changes only the name", async () => {
+    writeFileSync(join(dir, "crlf.py"), "def old_name():\r\n    return 1\r\n\r\nold_name()\r\n");
+    writeFileSync(join(dir, "bare.py"), "x = old_name\ny = 2");
+    const script = [
+      { content: scriptCall(roundTrip("crlf.py", "write_file")) },
+      { content: scriptCall(roundTrip("bare.py", "edit_file")) },
+      { content: "Done." },
+    ];
+    const { controller, state } = await scriptTurn(script);
+    await controller.send("rename");
+    expect(text("crlf.py")).toBe("def new_name():\r\n    return 1\r\n\r\nnew_name()\r\n");
+    expect(text("bare.py")).toBe("x = new_name\ny = 2");
+    // [>]: The step keeps the mention block the model would read; only the script got the raw text.
+    const read = state().entries.find((entry) => entry.role === "tool" && entry.name === "read_file");
+    expect(read).toMatchObject({ fromScript: true, status: "ok" });
+    expect(read?.role === "tool" ? read.text : "").toStartWith("@crlf.py (file, 4 lines)\n```\n");
+  });
+
+  test("write_file still ends a file without a final line break with one, as its contract says", async () => {
+    writeFileSync(join(dir, "bare.py"), "x = old_name\ny = 2");
+    const { controller } = await scriptTurn([
+      { content: scriptCall(roundTrip("bare.py", "write_file")) },
+      { content: "Done." },
+    ]);
+    await controller.send("rename");
+    expect(text("bare.py")).toBe("x = new_name\ny = 2\n");
+  });
+
+  test("a read the 2,000-line cap would cut throws in the script, which gets no partial text", async () => {
+    writeFileSync(join(dir, "long.txt"), Array.from({ length: 2100 }, (_, i) => `line ${i + 1}\n`).join(""));
+    const code = 'try { await read_file({ path: "long.txt" }); } catch (error) { console.log(error.message); }';
+    const { controller, state } = await scriptTurn([{ content: scriptCall(code) }, { content: "Done." }]);
+    await controller.send("read");
+    const own = state().entries.find((entry) => entry.role === "tool" && entry.name === "run_script");
+    expect(own).toMatchObject({
+      status: "ok",
+      text: "read_file: long.txt: the lines asked for are more than a read returns (2000); read it in parts of at most 2000 lines with start_line and end_line, such as start_line 1 and end_line 2000.",
+    });
+  });
+
+  test("each call of a script asks the approval a direct call asks, and a rejection throws inside the script", async () => {
+    writeFileSync(join(dir, "a.txt"), "old_name()\n");
+    const code = [
+      'try { await edit_file({ path: "a.txt", old: "old_name", new: "new_name" }); }',
+      "catch (error) { console.log(error.message); }",
+    ].join("\n");
+    const { controller, state } = await scriptTurn([{ content: scriptCall(code) }, { content: "Done." }], {
+      ask: true,
+    });
+    const sent = controller.send("rename");
+    await until(state, (s) => s.approval !== undefined);
+    expect(state().approval).toMatchObject({ kind: "write", tool: "edit_file" });
+    controller.reject(state().approval!.id);
+    await sent;
+    expect(text("a.txt")).toBe("old_name()\n");
+    const steps = state().entries.filter((entry) => entry.role === "tool");
+    expect(steps).toEqual([
+      expect.objectContaining({ name: "edit_file", status: "error", approval: "rejected", fromScript: true }),
+      expect.objectContaining({ name: "run_script", status: "ok", text: "The user rejected this change." }),
+    ]);
+  });
+
+  test("undo restores a script's write and marks the script's step for it, never the script's own step", async () => {
+    writeFileSync(join(dir, "a.txt"), "old_name()\n");
+    writeFileSync(join(dir, "b.txt"), "x = old_name\n");
+    const { controller, state } = await scriptTurn([{ content: scriptCall(renameScript) }, { content: "Done." }]);
+    await controller.send("rename old_name");
+    await until(state, (s) => s.undo.reply !== undefined);
+    await controller.undoChanges();
+
+    expect(text("a.txt")).toBe("old_name()\n");
+    expect(text("b.txt")).toBe("x = old_name\n");
+    const steps = state().entries.filter((entry) => entry.role === "tool");
+    const undone = steps.filter((step) => step.undone === true).map((step) => `${step.name} ${step.args.path}`);
+    expect(undone).toEqual(["edit_file a.txt", "edit_file b.txt"]);
+    expect(steps.find((step) => step.name === "run_script")?.undone).toBeUndefined();
+  });
+
+  test("Stop keeps the steps of the calls a script completed, and drops the script's own step", async () => {
+    writeFileSync(join(dir, "a.txt"), "old_name()\n");
+    writeFileSync(join(dir, "b.txt"), "x = old_name\n");
+    let writes = 0;
+    let reach: () => void = () => {};
+    const reached = new Promise<void>((resolve) => {
+      reach = resolve;
+    });
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    // [>]: The first write lands; the second waits until the test has stopped the turn.
+    const beforeWrite = () => {
+      if (writes++ === 0) return Promise.resolve();
+      reach();
+      return gate;
+    };
+    const { controller, state } = await scriptTurn([{ content: scriptCall(renameScript) }], { beforeWrite });
+    const sent = controller.send("rename old_name");
+    await reached;
+    controller.stop();
+    await sent;
+    release();
+
+    expect(text("a.txt")).toBe("new_name()\n");
+    const entries = state().entries;
+    expect(
+      entries.map((entry) => (entry.role === "tool" ? `${entry.name}${entry.fromScript ? "*" : ""}` : entry.role)),
+    ).toEqual(["user", "assistant", "read_file*", "edit_file*", "read_file*"]);
+    expect(entries[1]).toMatchObject({ role: "assistant", status: "stopped" });
+  });
+
+  /** Each entry as a short name: `user`, `assistant:<status>`, a tool step's name, a `*` after a script's call. */
+  const outline = (entries: readonly ChatEntry[]) =>
+    entries.map((entry) =>
+      entry.role === "tool"
+        ? `${entry.name}${entry.fromScript ? "*" : ""}`
+        : entry.role === "assistant"
+          ? `assistant:${entry.status}`
+          : entry.role,
+    );
+
+  /** The record of the conversation shown as last saved, read back through a store as a reload reads it. */
+  const reloaded = async (files: MemoryFiles, id: string) => {
+    const record = await new ConversationStore(files).load(id);
+    if (!record) throw new Error(`no saved record ${id}`);
+    return record.entries as ChatEntry[];
+  };
+
+  /** A script that reads a.txt, renames in it, then renames in b.txt, each write asking in Ask. */
+  const twoWrites = [
+    'await read_file({ path: "a.txt" });',
+    'await edit_file({ path: "a.txt", old: "old_name", new: "new_name" });',
+    'await edit_file({ path: "b.txt", old: "old_name", new: "new_name" });',
+    'console.log("renamed");',
+  ].join("\n");
+
+  test("while a script runs, its completed calls show live, are saved after the reply in flight, and reload stopped", async () => {
+    writeFileSync(join(dir, "a.txt"), "old_name()\n");
+    writeFileSync(join(dir, "b.txt"), "x = old_name\n");
+    const files = memoryFiles();
+    const { controller, state, states } = await scriptTurn([{ content: scriptCall(twoWrites) }, { content: "Done." }], {
+      ask: true,
+      files,
+    });
+    const sent = controller.send("rename");
+    await until(state, (s) => s.approval !== undefined);
+    // [>]: The reply stays the last entry; the read is staged, shown live, and the call waits.
+    expect(outline(state().entries)).toEqual(["user", "assistant:streaming"]);
+    expect(state().scriptSteps?.map((step) => step.name)).toEqual(["read_file"]);
+    expect(state().callRunning).toBe(false);
+    expect(state().approval).toMatchObject({ tool: "edit_file", summary: "a.txt" });
+    controller.approve(state().approval!.id);
+    await until(state, (s) => s.approval !== undefined && s.approval.summary === "b.txt");
+    expect(state().scriptSteps?.map((step) => step.name)).toEqual(["read_file", "edit_file"]);
+    // [>]: Between the accepted write and the next call's request, the script ran: the call read as running.
+    expect(states.some((s) => s.scriptSteps?.length === 2 && s.callRunning && s.approval === undefined)).toBe(true);
+
+    // [!]: A crash now keeps the record of the write that reached the disk: it reopens after the stopped reply.
+    await Bun.sleep(20);
+    const reopened = await reloaded(files, state().conversationId);
+    expect(outline(reopened)).toEqual(["user", "assistant:stopped", "read_file*", "edit_file*"]);
+    expect(reopened[3]).toMatchObject({
+      name: "edit_file",
+      args: { path: "a.txt" },
+      status: "ok",
+      approval: "accepted",
+    });
+
+    controller.approve(state().approval!.id);
+    await sent;
+    expect(state().scriptSteps).toBeUndefined();
+    const expected = [
+      "user",
+      "assistant:done",
+      "read_file*",
+      "edit_file*",
+      "edit_file*",
+      "run_script",
+      "assistant:done",
+    ];
+    expect(outline(state().entries)).toEqual(expected);
+    await Bun.sleep(20);
+    // [>]: The final save holds each step once.
+    expect(outline(await reloaded(files, state().conversationId))).toEqual(expected);
+  });
+
+  test("a script gets a call's result only once the save holding the call's step has landed", async () => {
+    writeFileSync(join(dir, "a.txt"), "a\n");
+    const files = memoryFiles();
+    const write = files.write;
+    let release = () => {};
+    const landed = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    // [>]: Only the saves that hold a script's step wait; the turn's own saves before the script land at once.
+    files.write = async (name, content) => {
+      if (content.includes('"fromScript"')) await landed;
+      return write(name, content);
+    };
+    const reads = 3;
+    const code = `for (let i = 0; i < ${reads}; i++) await read_file({ path: "a.txt" }); console.log("read");`;
+    const { controller, state } = await scriptTurn([{ content: scriptCall(code) }, { content: "Done." }], { files });
+    const sent = controller.send("read it");
+    await until(state, (s) => s.scriptSteps?.length === 1);
+    await Bun.sleep(100);
+    // [!]: The second read waits on the first one's save: a crash now loses at most the step still landing.
+    expect(state().scriptSteps).toHaveLength(1);
+    release();
+    await sent;
+    const expected = ["user", "assistant:done", ...Array(reads).fill("read_file*"), "run_script", "assistant:done"];
+    expect(outline(state().entries)).toEqual(expected);
+    await Bun.sleep(20);
+    expect(outline(await reloaded(files, state().conversationId))).toEqual(expected);
+  });
+
+  test("a save that fails while a script runs shows the save error, and the script goes on to its result", async () => {
+    writeFileSync(join(dir, "a.txt"), "a\n");
+    const files = memoryFiles();
+    const write = files.write;
+    files.write = async (name, content) => {
+      if (content.includes('"fromScript"')) throw new Error("ENOSPC");
+      return write(name, content);
+    };
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    const code = 'await read_file({ path: "a.txt" }); await read_file({ path: "a.txt" }); console.log("read");';
+    const { controller, state, states } = await scriptTurn([{ content: scriptCall(code) }, { content: "Done." }], {
+      files,
+    });
+    await controller.send("read it");
+    logged.mockRestore();
+    // [>]: The failure shows while the script still runs, beside its staged step, never as the call's result.
+    expect(states.some((s) => s.scriptSteps?.length === 1 && s.storageProblem?.kind === "saveFailed")).toBe(true);
+    expect(outline(state().entries)).toEqual([
+      "user",
+      "assistant:done",
+      "read_file*",
+      "read_file*",
+      "run_script",
+      "assistant:done",
+    ]);
+    expect(state().entries[4]).toMatchObject({ name: "run_script", status: "ok", text: "read" });
+    expect(state().storageProblem).toMatchObject({ kind: "saveFailed", cause: "Error: ENOSPC" });
+  });
+
+  test("Stop during a call's approval cancels it, keeps the calls completed, and drops the script's step", async () => {
+    writeFileSync(join(dir, "a.txt"), "old_name()\n");
+    writeFileSync(join(dir, "b.txt"), "x = old_name\n");
+    const files = memoryFiles();
+    const { controller, state } = await scriptTurn([{ content: scriptCall(twoWrites) }], { ask: true, files });
+    const sent = controller.send("rename");
+    await until(state, (s) => s.approval !== undefined);
+    controller.stop();
+    await sent;
+    expect(state().approval).toBeUndefined();
+    expect(state().callRunning).toBe(false);
+    expect(state().scriptSteps).toBeUndefined();
+    expect(outline(state().entries)).toEqual(["user", "assistant:stopped", "read_file*"]);
+    expect(text("a.txt")).toBe("old_name()\n");
+    await Bun.sleep(20);
+    expect(outline(await reloaded(files, state().conversationId))).toEqual(["user", "assistant:stopped", "read_file*"]);
+  });
+
+  test("New chat during a call's approval saves the stopped script in its own record and shows nothing of it", async () => {
+    writeFileSync(join(dir, "a.txt"), "old_name()\n");
+    writeFileSync(join(dir, "b.txt"), "x = old_name\n");
+    const files = memoryFiles();
+    const { controller, state } = await scriptTurn([{ content: scriptCall(twoWrites) }], { ask: true, files });
+    const sent = controller.send("rename");
+    await until(state, (s) => s.approval !== undefined);
+    const first = state().conversationId;
+    await controller.newChat();
+    await sent;
+    expect(state().conversationId).not.toBe(first);
+    expect(state().entries).toEqual([]);
+    expect(state().scriptSteps).toBeUndefined();
+    expect(state().callRunning).toBe(false);
+    await Bun.sleep(20);
+    expect(outline(await reloaded(files, first))).toEqual(["user", "assistant:stopped", "read_file*"]);
+  });
+
+  /** Holds the second write to reach the applier until `release`; `reached` settles once it waits. */
+  function holdSecondWrite() {
+    let writes = 0;
+    let reach: () => void = () => {};
+    const reached = new Promise<void>((resolve) => {
+      reach = resolve;
+    });
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const beforeWrite = () => {
+      if (writes++ === 0) return Promise.resolve();
+      reach();
+      return gate;
+    };
+    return { beforeWrite, reached, release };
+  }
+
+  test("a write accepted before Stop that lands after it changes no entry and no state, and is held for undo", async () => {
+    writeFileSync(join(dir, "a.txt"), "old_name()\n");
+    writeFileSync(join(dir, "b.txt"), "x = old_name\n");
+    const hold = holdSecondWrite();
+    const { controller, state } = await scriptTurn([{ content: scriptCall(twoWrites) }], {
+      beforeWrite: hold.beforeWrite,
+    });
+    const sent = controller.send("rename");
+    await hold.reached;
+    controller.stop();
+    await sent;
+    const after = JSON.stringify(state().entries);
+    hold.release();
+    await until(state, () => text("b.txt") === "x = new_name\n");
+    await Bun.sleep(20);
+    expect(JSON.stringify(state().entries)).toBe(after);
+    expect(outline(state().entries)).toEqual(["user", "assistant:stopped", "read_file*", "edit_file*"]);
+    expect(state().callRunning).toBe(false);
+    expect(state().scriptSteps).toBeUndefined();
+    // [>]: The late write is recorded for undo by the applier, tied to no step, as after a direct call's Stop.
+    expect(state().changedFiles.map((file) => file.path)).toEqual(["a.txt", "b.txt"]);
+  });
+
+  test("a write accepted before New chat that lands after it changes nothing in the new conversation", async () => {
+    writeFileSync(join(dir, "a.txt"), "old_name()\n");
+    writeFileSync(join(dir, "b.txt"), "x = old_name\n");
+    const hold = holdSecondWrite();
+    const files = memoryFiles();
+    const { controller, state } = await scriptTurn([{ content: scriptCall(twoWrites) }], {
+      beforeWrite: hold.beforeWrite,
+      files,
+    });
+    const sent = controller.send("rename");
+    await hold.reached;
+    const first = state().conversationId;
+    await controller.newChat();
+    await sent;
+    hold.release();
+    await until(state, () => text("b.txt") === "x = new_name\n");
+    await Bun.sleep(20);
+    expect(state().entries).toEqual([]);
+    expect(state().callRunning).toBe(false);
+    expect(state().scriptSteps).toBeUndefined();
+    expect(state().undo.reply).toBeUndefined();
+    expect(outline(await reloaded(files, first))).toEqual(["user", "assistant:stopped", "read_file*", "edit_file*"]);
+  });
+
+  test("Stop right after a call completed keeps that call's step", async () => {
+    writeFileSync(join(dir, "a.txt"), "old_name()\n");
+    const code = 'await read_file({ path: "a.txt" });\nfor (;;) {}';
+    const { controller, state } = await scriptTurn([{ content: scriptCall(code) }]);
+    const sent = controller.send("read");
+    await until(state, (s) => s.scriptSteps?.length === 1);
+    expect(state().callRunning).toBe(true);
+    controller.stop();
+    await sent;
+    expect(outline(state().entries)).toEqual(["user", "assistant:stopped", "read_file*"]);
+  });
+
+  test("a write the script did not wait for lands before the script's step settles and the next request is sent", async () => {
+    let reach: () => void = () => {};
+    const reached = new Promise<void>((resolve) => {
+      reach = resolve;
+    });
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    // [>]: The script runs on for half a second after its call, so the write reaches the applier before the script ends.
+    const code = [
+      'write_file({ path: "late.txt", content: "late" });',
+      "const start = Date.now();",
+      "while (Date.now() - start < 500) {}",
+      'return "returned";',
+    ].join("\n");
+    const replies = [{ content: scriptCall(code) }, { content: "Done." }, { content: "Noted." }];
+    const { controller, state, sent } = await scriptTurn(replies, {
+      beforeWrite: () => {
+        reach();
+        return gate;
+      },
+    });
+    const turn = controller.send("write");
+    await reached;
+    // [>]: Well past the script's end: its step must still wait for the write in the applier.
+    await Bun.sleep(1000);
+    expect(sent()).toHaveLength(1);
+    expect(outline(state().entries)).toEqual(["user", "assistant:streaming"]);
+    release();
+    await turn;
+
+    expect(text("late.txt")).toBe("late\n");
+    // [>]: The write landed, so its step is kept, tied to its file: Undo marks it and the model is told.
+    expect(outline(state().entries)).toEqual(["user", "assistant:done", "write_file*", "run_script", "assistant:done"]);
+    expect(state().changedFiles.map((file) => file.path)).toEqual(["late.txt"]);
+    await controller.undoChanges();
+    expect(existsSync(join(dir, "late.txt"))).toBe(false);
+    expect(state().entries[2]).toMatchObject({ name: "write_file", fromScript: true, undone: true });
+    await controller.send("next");
+    expect(sent()[2]!.messages[3]).toEqual({
+      role: "user",
+      content:
+        '<tool_result tool="run_script" status="ok">\nreturned\nThe user undid this change afterwards: write_file late.txt\n</tool_result>',
+    });
+  });
+
+  /** Characters an inner step stores beside its path, which its trace keeps whole: its other values and result. */
+  const storedChars = (step: ChatEntry) =>
+    step.role === "tool"
+      ? Object.entries(step.args).reduce(
+          (sum, [name, value]) => sum + (name === "path" ? 0 : value.length),
+          step.text.length,
+        )
+      : 0;
+
+  test("a large read and a large write leave bounded steps live, saved, and in the entries; the script gets it all", async () => {
+    const whole = `${"x".repeat(99)}\n`.repeat(1500);
+    writeFileSync(join(dir, "big.txt"), whole);
+    // [>]: The write asks in Ask, so the read's step is seen live and saved while the script waits.
+    const code = [
+      'const read = await read_file({ path: "big.txt" });',
+      'await write_file({ path: "out.txt", content: "y".repeat(100000) });',
+      "return read.length;",
+    ].join("\n");
+    const files = memoryFiles();
+    const { controller, state, sent } = await scriptTurn(
+      [{ content: scriptCall(code) }, { content: "Done." }, { content: "Noted." }],
+      { ask: true, files },
+    );
+    const turn = controller.send("copy");
+    await until(state, (s) => s.approval !== undefined);
+    const live = state().scriptSteps![0]!;
+    expect(live).toMatchObject({ name: "read_file", args: { path: "big.txt" }, status: "ok" });
+    // [>]: The result the model would read: the file's header and fence around its 1500 lines.
+    const cut = /\n\[cut to save memory: (\d+) lines, (\d+) characters in all\]$/.exec(live.text);
+    expect(Number(cut?.[1])).toBeGreaterThan(1500);
+    expect(Number(cut?.[2])).toBeGreaterThan(whole.length);
+    expect(storedChars(live)).toBeLessThanOrEqual(INNER_STEP_CHARS);
+    await Bun.sleep(20);
+    expect((await reloaded(files, state().conversationId))[2]).toEqual(live);
+    // [>]: The approval shows the whole write; only its recorded step is bounded.
+    controller.approve(state().approval!.id);
+    await turn;
+
+    expect(text("out.txt")).toBe(`${"y".repeat(100000)}\n`);
+    const inner = state().entries.filter((entry) => entry.role === "tool" && entry.fromScript);
+    expect(inner[0]).toEqual(live);
+    expect(inner[1]).toMatchObject({ name: "write_file", args: { path: "out.txt" }, status: "ok" });
+    const content = inner[1]?.role === "tool" ? inner[1].args.content! : "";
+    expect(content.endsWith("\n[cut to save memory: 1 line, 100000 characters in all]")).toBe(true);
+    for (const step of inner) expect(storedChars(step)).toBeLessThanOrEqual(INNER_STEP_CHARS);
+    await Bun.sleep(20);
+    expect(
+      (await reloaded(files, state().conversationId)).filter((entry) => entry.role === "tool" && entry.fromScript),
+    ).toEqual(inner);
+    // [>]: The script read the whole file, not the excerpt its step keeps.
+    expect(sent()[1]!.messages.at(-1)!.content).toContain(`\n${whole.length}\n`);
+
+    await controller.undoChanges();
+    expect(existsSync(join(dir, "out.txt"))).toBe(false);
+    expect(state().entries[3]).toMatchObject({ name: "write_file", fromScript: true, undone: true });
+    await controller.send("next");
+    expect(sent()[2]!.messages[3]!.content).toContain("The user undid this change afterwards: write_file out.txt");
+  });
+
+  test("a large inner edit keeps its deep path whole in its step, the undo line, and the changed files", async () => {
+    // [>]: Four folders of 199 characters: about 800, within the system's path limit once under the workspace.
+    const folder = Array.from({ length: 4 }, (_, index) => `${index}`.repeat(199)).join("/");
+    const path = `${folder}/a.txt`;
+    mkdirSync(join(dir, folder), { recursive: true });
+    writeFileSync(join(dir, path), `${"a".repeat(5000)}\n`);
+    const code = `await edit_file({ path: "${path}", old: "a".repeat(5000), new: "b".repeat(5000) });\nreturn "edited";`;
+    const replies = [{ content: scriptCall(code) }, { content: "Done." }, { content: "Noted." }];
+    const { controller, state, sent } = await scriptTurn(replies);
+    await controller.send("edit");
+
+    expect(text(path)).toBe(`${"b".repeat(5000)}\n`);
+    const edit = state().entries[2]!;
+    expect(edit).toMatchObject({ name: "edit_file", fromScript: true, status: "ok", args: { path } });
+    const old = edit.role === "tool" ? edit.args.old! : "";
+    expect(old.endsWith("\n[cut to save memory: 1 line, 5000 characters in all]")).toBe(true);
+    expect(storedChars(edit)).toBeLessThanOrEqual(INNER_STEP_CHARS);
+    expect(state().changedFiles.map((file) => file.path)).toEqual([path]);
+    await controller.undoChanges();
+    expect(text(path)).toBe(`${"a".repeat(5000)}\n`);
+    await controller.send("next");
+    expect(sent()[2]!.messages[3]).toEqual({
+      role: "user",
+      content: `<tool_result tool="run_script" status="ok">\nedited\nThe user undid this change afterwards: edit_file ${path}\n</tool_result>`,
+    });
+  });
+
+  test("many large inner calls keep the script's group under one bound per call", async () => {
+    writeFileSync(join(dir, "big.txt"), `${"x".repeat(999)}\n`.repeat(1000));
+    const code = 'for (let i = 0; i < 40; i++) await read_file({ path: "big.txt" });\nreturn "read 40";';
+    const { controller, state } = await scriptTurn([{ content: scriptCall(code) }, { content: "Done." }]);
+    await controller.send("read");
+
+    const inner = state().entries.filter((entry) => entry.role === "tool" && entry.fromScript);
+    expect(inner).toHaveLength(40);
+    expect(inner.reduce((sum, step) => sum + storedChars(step), 0)).toBeLessThanOrEqual(40 * INNER_STEP_CHARS);
+    expect(state().entries.find((entry) => entry.role === "tool" && !entry.fromScript)).toMatchObject({
+      name: "run_script",
+      status: "ok",
+      text: "read 40",
+    });
+  });
+
+  test("Plan offers run_script; a script's write or command throws the Plan message, with no approval and no step", async () => {
+    writeFileSync(join(dir, "a.txt"), "old_name()\n");
+    const code = [
+      'console.log(await read_file({ path: "a.txt" }));',
+      'try { await edit_file({ path: "a.txt", old: "old_name", new: "x" }); } catch (error) { console.log(error.message); }',
+      'try { await run_command({ command: "ls" }); } catch (error) { console.log(error.message); }',
+      "try { await no_such_tool(); } catch (error) { console.log(error.name); }",
+    ].join("\n");
+    const { controller, state, states, sent } = await scriptTurn(
+      [{ content: scriptCall(code) }, { content: "Plan." }],
+      {
+        plan: true,
+        commands: true,
+        ask: true,
+      },
+    );
+    await controller.send("plan a rename");
+    const system = sent()[0]!.messages[0]!.content;
+    expect(system).toContain("## run_script");
+    expect(system).toContain("You are in Plan mode.");
+    expect(system).not.toContain("## edit_file");
+    expect(states.every((s) => s.approval === undefined)).toBe(true);
+    expect(text("a.txt")).toBe("old_name()\n");
+    expect(outline(state().entries)).toEqual(["user", "assistant:done", "read_file*", "run_script", "assistant:done"]);
+    const own = state().entries.find((entry) => entry.role === "tool" && entry.name === "run_script");
+    expect(own?.role === "tool" ? own.text : "").toBe(
+      [
+        "old_name()\n",
+        "edit_file is not available in Plan mode.",
+        "run_command is not available in Plan mode.",
+        "ReferenceError",
+      ].join("\n"),
+    );
+  });
+
+  test("Auto-edit writes a script's change at once and waits for Run on its command", async () => {
+    const code = [
+      'await write_file({ path: "new.txt", content: "made" });',
+      'console.log(await run_command({ command: "cat new.txt" }));',
+    ].join("\n");
+    const { controller, state } = await scriptTurn([{ content: scriptCall(code) }, { content: "Done." }], {
+      mode: "autoEdit",
+      commands: true,
+    });
+    const sent = controller.send("make it");
+    await until(state, (s) => s.approval !== undefined);
+    expect(state().approval).toMatchObject({ kind: "command", tool: "run_command", summary: "cat new.txt" });
+    expect(state().scriptSteps).toEqual([expect.objectContaining({ name: "write_file", approval: "auto" })]);
+    controller.approve(state().approval!.id);
+    await sent;
+    const steps = state().entries.filter((entry) => entry.role === "tool");
+    expect(steps).toEqual([
+      expect.objectContaining({ name: "write_file", approval: "auto", fromScript: true }),
+      expect.objectContaining({ name: "run_command", approval: "accepted", status: "ok", fromScript: true }),
+      expect.objectContaining({ name: "run_script", status: "ok" }),
+    ]);
+    expect(steps[2]?.role === "tool" ? steps[2].text : "").toContain("made");
+  });
+
+  test("Full access refuses a script's denied command and runs the others in the command sandbox", async () => {
+    // [>]: A folder of the test's own in the home folder, outside every folder the command sandbox lets a command write
+    // (the temporary ones are). Only this folder is removed afterwards.
+    const outsideDir = mkdtempSync(join(realpathSync(homedir()), ".broke-code-outside-"));
+    const outside = join(outsideDir, "out.txt");
+    const outsideCommand = `echo out > '${outside.replaceAll("'", "'\\''")}'`;
+    const code = [
+      'try { await run_command({ command: "sudo ls" }); } catch (error) { console.log("denied:", error.message.split("\\n")[0]); }',
+      'await run_command({ command: "echo inside > in.txt" });',
+      `try { await run_command({ command: ${JSON.stringify(outsideCommand)} }); } catch (error) { console.log("outside failed"); }`,
+    ].join("\n");
+    let leaked = false;
+    let ran: Awaited<ReturnType<typeof scriptTurn>>;
+    try {
+      ran = await scriptTurn([{ content: scriptCall(code) }, { content: "Done." }], {
+        mode: "fullAccess",
+        commands: true,
+      });
+      await ran.controller.send("run them");
+    } finally {
+      // [>]: Only a broken sandbox writes into it; the assertion below then fails.
+      leaked = existsSync(outside);
+      rmSync(outsideDir, { recursive: true, force: true });
+    }
+    const { state, states } = ran;
+    expect(states.every((s) => s.approval === undefined)).toBe(true);
+    expect(text("in.txt")).toBe("inside\n");
+    expect(leaked).toBe(false);
+    const steps = state().entries.filter((entry) => entry.role === "tool" && entry.fromScript);
+    expect(steps.map((step) => (step.role === "tool" ? `${step.status} ${step.approval ?? "-"}` : ""))).toEqual([
+      "error -",
+      "ok auto",
+      "error auto",
+    ]);
+    const own = state().entries.find((entry) => entry.role === "tool" && entry.name === "run_script");
+    expect(own?.role === "tool" ? own.text : "").toContain("outside failed");
+  });
+
+  test("a command the script did not wait for keeps its step once the script's end stops it, so Retry warns", async () => {
+    // [>]: The script runs on for half a second after its call, so the command has started when the script ends.
+    const code = [
+      'run_command({ command: "echo started > ran.txt; sleep 5" });',
+      "const start = Date.now();",
+      "while (Date.now() - start < 500) {}",
+      'return "returned";',
+    ].join("\n");
+    const { controller, state } = await scriptTurn([{ content: scriptCall(code) }, { content: "Done." }], {
+      mode: "fullAccess",
+      commands: true,
+    });
+    await controller.send("start it");
+    expect(text("ran.txt")).toBe("started\n");
+    expect(outline(state().entries)).toEqual([
+      "user",
+      "assistant:done",
+      "run_command*",
+      "run_script",
+      "assistant:done",
+    ]);
+    expect(state().entries[2]).toMatchObject({
+      name: "run_command",
+      approval: "auto",
+      status: "error",
+      text: expect.stringMatching(/^run_command: stopped before it finished\./),
+      fromScript: true,
+    });
+    expect(unrevertedEffects(state().entries, 1)).toEqual({ writes: 0, commands: 1 });
+  });
+});
+
+describe("ChatController with Code Mode off", () => {
+  /**
+   * The requests of one turn whose reply calls `read_file`, then answers, sent through a controller whose Code Mode
+   * port is `codeMode` (absent: a build before Code Mode). Also returns what the panel's usage display counted.
+   */
+  async function readTurn(codeMode: CodeModePort | undefined) {
+    const prefix = `code-mode-off-${Math.random().toString(36).slice(2)}`;
+    scripts.set(prefix, [{ content: "<read_file>\n<path>a.txt</path>\n</read_file>" }, { content: "Done." }]);
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "broke-code-off-")));
+    writeFileSync(join(dir, "a.txt"), "alpha\n");
+    try {
+      const runner = workspaceToolRunner(
+        () => [{ name: "ws", path: dir }],
+        { ripgrepCandidates: [] },
+        (roots) => fileApplier(roots),
+        () => ({ shell: "/bin/sh", timeoutMs: 10_000 }),
+        true,
+      );
+      const controller = new ChatController({
+        apiKeys: { get: async () => undefined },
+        workspaceState: memoryStore(),
+        publish: () => {},
+        mentions: noMentions,
+        store: new ConversationStore(memoryFiles()),
+        providerSupport: new ProviderSupport(),
+        tools: runner,
+        instructions: { read: async () => [] },
+        skills: noSkills,
+        ...(codeMode ? { codeMode } : {}),
+      });
+      const before = controller.snapshot.context.used;
+      controller.setProviders({
+        providers: [{ name: "Agent", baseUrl: `http://localhost:${server.port}/${prefix}/v1` }],
+        skipped: [],
+      });
+      await until(
+        () => controller.snapshot,
+        (s) => s.model === "m",
+      );
+      await controller.send("read a.txt");
+      return { requests: JSON.stringify(requests.get(prefix)), before, entries: controller.snapshot.entries };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  test("the setting off, or a failed probe, sends byte for byte the requests of a build without Code Mode", async () => {
+    const today = await readTurn(undefined);
+    expect(today.requests).not.toContain("run_script");
+    const warned: string[] = [];
+    const off = new CodeModeSwitch({
+      enabled: () => false,
+      scriptEnv: async () => {
+        throw new Error("never asked while off");
+      },
+      warn: (problem) => warned.push(problem),
+    });
+    const failing = new CodeModeSwitch({
+      enabled: () => true,
+      scriptEnv: async () => ({ runtime: ["/nonexistent/runtime"], environment: {}, readable: [] }),
+      warn: (problem) => warned.push(problem),
+    });
+    const port = (codeMode: CodeModeSwitch): CodeModePort => ({ scriptEnv: (signal) => codeMode.scriptEnv(signal) });
+    for (const codeMode of [off, failing]) {
+      const turn = await readTurn(port(codeMode));
+      expect(turn.requests).toBe(today.requests);
+      expect(turn.before).toBe(today.before);
+      expect(turn.entries).toEqual(today.entries);
+    }
+    // [>]: The failed probe is kept for the window: a second send probes nothing and warns no more.
+    expect((await readTurn(port(failing))).requests).toBe(today.requests);
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toContain("/nonexistent/runtime");
   });
 });

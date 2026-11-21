@@ -107,7 +107,8 @@ export type ChatEntry =
    * A tool step: one body tool call of the reply before it, or its malformed block, and the text the model got back.
    * `approval`: set when the call asked for one. `lines`: the lines a write that went through added and removed, as
    * its approval showed them. `undone`: a write step whose file "Undo changes" later restored or removed; the history
-   * tells the model so, and never leaves its result out.
+   * tells the model so, and never leaves its result out. `fromScript`: a call a `run_script` script made, recorded
+   * before that script's own step; the history never sends it, since the model reads the script's output only.
    */
   | {
       role: "tool";
@@ -118,6 +119,7 @@ export type ChatEntry =
       approval?: StepApproval;
       lines?: { added: number; removed: number };
       undone?: true;
+      fromScript?: true;
     };
 
 /**
@@ -292,9 +294,17 @@ export type ChatState = {
   /**
    * The call of the reply in flight is running: set as the call shows when its tool never asks (`ToolSpec.asks`), and
    * once its approval is accepted, by the user or auto-approve. False before a tool that asks opens its request, while
-   * a request is open, after a rejection, a cancellation, or an answer, and from the moment the call ends.
+   * a request is open, after a rejection, a cancellation, or an answer, and from the moment the call ends. A
+   * `run_script` call runs while its script runs: false only while a call the script made waits on its approval.
    */
   callRunning: boolean;
+  /**
+   * The steps of the calls the `run_script` script in flight has completed, in call order, while its reply is the last
+   * entry; absent otherwise. They join `entries`, after that reply and before the script's own step, in the update that
+   * ends the script (or after the stopped reply, on Stop). The whole state is posted at each update, so this holds the
+   * step entries alone.
+   */
+  scriptSteps?: (ChatEntry & { role: "tool" })[];
   /**
    * `plan` while Plan is on in this workspace, else the mode the setting holds; never the one last picked: a failed
    * write leaves it as it was.

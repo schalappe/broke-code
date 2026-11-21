@@ -1,7 +1,8 @@
 /**
  * @module history
  * The history a request of an agent turn sends, and the results it leaves out when the request would not fit the
- * model's context. No `node:` or `vscode` import: the webview loads `resultLineCount`.
+ * model's context, and the trace the conversation keeps of an inner call's step, which the model never reads. No
+ * `node:` or `vscode` import: the webview loads `resultLineCount` and `stepResultLines`.
  */
 
 import type { ChatMessage } from "./client";
@@ -90,8 +91,13 @@ function isSentSummary(entry: ChatEntry): boolean {
  * `entries` as sent to the model, from `historyStart`: user messages as `userText` gives them (the text composed at
  * send time), assistant answers verbatim, their call blocks included (stopped and cut-off partials too), and each tool
  * step as a `user` message holding a `<tool_result>` tag, never the `tool` role, which needs native tool calling (ADR
- * 0001); an undone step's result ends with `UNDONE_LINE`. Reasoning is never sent. A reply without text is left out,
- * unless a tool step follows it: an empty answer goes back with its malformed step. The summary the history starts at
+ * 0001); an undone step's result ends with `UNDONE_LINE`. A script's group (`toolGroup`) goes as one step: the steps
+ * its calls made (`fromScript`) are never sent themselves; its `run_script` result goes with one `SCRIPT_UNDONE_LEAD`
+ * line per inner write since undone, in order, inside its wrapper; a script with no step of its own (stopped, or cut
+ * by a reload) goes as one `run_script` error result the history writes (`stoppedScript`): it was stopped, then
+ * one line per call it completed, never their result text, then the same undo lines; a reply whose `run_script` call
+ * has no step after it at all (stopped before any call completed) gets the same result, with no call line. Reasoning is never sent. A reply
+ * without text is left out, unless a tool step follows it: an empty answer goes back with its malformed step. The summary the history starts at
  * goes as a user message, `Summary of the conversation so far:` then its text; an automatic one (`isAutomaticSummary`)
  * is followed by its turn's user message, then by the turn's next reply. Undone steps before the summary, no longer
  * sent, each get a line after the summary's text (see `replacedUndoneLines`), before that user message. Every other
@@ -105,9 +111,10 @@ function isSentSummary(entry: ChatEntry): boolean {
  * replaced by `[result left out to save context: N lines]`, inside the step's `<tool_result>` wrapper only, so a user
  * message joined to it stays whole: the fewest steps that make the request fit, rounded up to a multiple of
  * `LEFT_OUT_BLOCK` and capped at the steps that may be replaced. The estimate counts the request as sent, joins
- * included. Never replaced: the last `KEPT_RECENT_STEPS` steps sent, every `load_skill` step (a second
+ * included. A script's group counts as one step there, in the kept recent steps and the summary request alike. Never
+ * replaced: the last `KEPT_RECENT_STEPS` steps sent, every `load_skill` step (a second
  * load answers "already loaded" without the body, so the model could not get it back), every `ask_user` step (the
- * user's decision must stay in front of the model), every undone step, and a result
+ * user's decision must stay in front of the model), every undone step, a script's group with an undone write, and a result
  * no longer than its replacement line. When the request cannot fit even then, the history goes whole and `leftOut` is
  * 0: nothing is sent, so nothing is left out. Pure and linear in the entries, since the usage display runs it at each
  * streamed delta: the same entries, system prompt, context size, and ratio always leave the same results out. A lower
@@ -125,8 +132,8 @@ export function toHistory(
   if (fits()) return { messages: whole, leftOut: 0 };
 
   let leftOut = 0;
-  for (const { at, part, step } of steps.slice(0, Math.max(0, steps.length - KEPT_RECENT_STEPS))) {
-    const content = leftOutResult(step);
+  for (const { at, part, step, whole: keep } of steps.slice(0, Math.max(0, steps.length - KEPT_RECENT_STEPS))) {
+    const content = keep ? undefined : leftOutResult(step);
     if (content === undefined) continue;
     const parts = messages[at]!.parts;
     characters -= parts[part]!.length - content.length;
@@ -149,8 +156,8 @@ export function summaryHistory(
 ): History {
   const { messages, steps } = sentMessages(entries, userText);
   let leftOut = 0;
-  for (const { at, part, step } of steps) {
-    const content = leftOutResult(step);
+  for (const { at, part, step, whole: keep } of steps) {
+    const content = keep ? undefined : leftOutResult(step);
     if (content === undefined) continue;
     messages[at]!.parts[part] = content;
     leftOut++;
@@ -162,8 +169,12 @@ export function summaryHistory(
 /** A message being built: the texts it joins, so a tool result can be left out without touching the text joined to it. */
 type SentMessage = { role: ChatMessage["role"]; parts: string[] };
 
-/** Where a tool step's text sits among the messages being built. */
-type SentStep = { at: number; part: number; step: ToolStep };
+/**
+ * Where a tool step's text sits among the messages being built: `step`, the step as sent (a script's group as its
+ * `run_script` step, or the one the history writes for it); `whole`: it must never be left out (a group with an undone
+ * write, which a left-out line would hide).
+ */
+type SentStep = { at: number; part: number; step: ToolStep; whole: boolean };
 
 /** The messages sent for `entries` from `historyStart`, not yet joined, and where each tool step sits among them. */
 function sentMessages(
@@ -178,7 +189,17 @@ function sentMessages(
     if (entry.role === "user") {
       push(messages, "user", userText(entry));
     } else if (entry.role === "tool") {
-      steps.push({ ...push(messages, "user", toolResultMessage(entry, entry.text)), step: entry });
+      if (!entry.fromScript) {
+        steps.push({ ...push(messages, "user", toolResultMessage(entry, entry.text)), step: entry, whole: false });
+        continue;
+      }
+      // [>]: The calls a script made are never sent: the model reads the script's own step, its output, only.
+      const group = toolGroup(entries, index - 1);
+      const undone = scriptUndoneLines(group.inner);
+      const own = group.result ?? stoppedScript(group.inner);
+      const text = undone === "" ? own.text : `${own.text}\n${undone}`;
+      steps.push({ ...push(messages, "user", toolResultMessage(own, text)), step: own, whole: undone !== "" });
+      index = group.end - 1;
     } else if (entry.summary) {
       // [>]: Only the starting summary is sent; any other one (failed, stopped, halted, empty) changes nothing.
       if (index !== start || !isSentSummary(entry)) continue;
@@ -190,6 +211,11 @@ function sentMessages(
       if (quoted) push(messages, "user", userText(quoted));
     } else if (entry.content !== "" || entries[index + 1]?.role === "tool") {
       push(messages, "assistant", entry.content);
+      // [!]: A script stopped before any call completed leaves no step at all, yet its call still needs a result.
+      if (entry.call?.name === "run_script" && entry.status !== "streaming" && entries[index + 1]?.role !== "tool") {
+        const own = stoppedScript([]);
+        steps.push({ ...push(messages, "user", toolResultMessage(own, own.text)), step: own, whole: false });
+      }
     }
   }
   return { messages, steps };
@@ -217,10 +243,73 @@ function replacedUndoneLines(entries: readonly ChatEntry[], start: number): stri
   const lines: string[] = [];
   for (const entry of entries.slice(0, start)) {
     if (entry.role !== "tool" || !entry.undone) continue;
-    const path = entry.args.path;
-    lines.push(`${SUMMARY_UNDONE_LEAD} ${entry.name}${path === undefined ? "" : ` ${path}`}`);
+    lines.push(`${SUMMARY_UNDONE_LEAD} ${changeName(entry)}`);
   }
   return lines.join("\n");
+}
+
+/** A write step as an undo line names it: its tool, then its `path` argument as the model or the script gave it. */
+function changeName(step: ToolStep): string {
+  const path = step.args.path;
+  return `${step.name}${path === undefined ? "" : ` ${path}`}`;
+}
+
+/**
+ * A reply's tool group, the entries its call left: the steps of the calls its script made (`fromScript`), in order,
+ * then `result`, the first tool step after them that a script did not make, its own step (absent when the script
+ * stopped before it, or the call was not a script's and no step came); `end`: the index after the group. A direct
+ * call's group is its one step. The history sends a group as one step, and the panel renders it under its reply.
+ */
+export function toolGroup(
+  entries: readonly ChatEntry[],
+  reply: number,
+): { inner: ToolStep[]; result: ToolStep | undefined; end: number } {
+  const inner: ToolStep[] = [];
+  let index = reply + 1;
+  for (let entry = entries[index]; entry?.role === "tool" && entry.fromScript; entry = entries[++index])
+    inner.push(entry);
+  const after = entries[index];
+  const result = after?.role === "tool" ? after : undefined;
+  return { inner, result, end: result ? index + 1 : index };
+}
+
+/**
+ * The reply whose tool group (`toolGroup`) holds the tool step at `index`, or `undefined` for a step no reply owns (an
+ * older record's, or a second step after one): the entry before the steps a script made just before it.
+ */
+export function groupOwner(entries: readonly ChatEntry[], index: number): number | undefined {
+  let at = index - 1;
+  while (at >= 0 && entries[at]!.role === "tool" && (entries[at] as ToolStep).fromScript) at--;
+  return at >= 0 && entries[at]!.role === "assistant" ? at : undefined;
+}
+
+/** Leads each undo line of a script's group: an inner write the user undid after the script ran. */
+const SCRIPT_UNDONE_LEAD = "The user undid this change afterwards:";
+
+/** One `SCRIPT_UNDONE_LEAD` line per undone step of `inner`, in order, joined by line breaks; `""` when none. */
+function scriptUndoneLines(inner: readonly ToolStep[]): string {
+  return inner
+    .filter((step) => step.undone)
+    .map((step) => `${SCRIPT_UNDONE_LEAD} ${changeName(step)}`)
+    .join("\n");
+}
+
+/**
+ * The `run_script` result the history writes for a script that has no step of its own (Stop, or a reload while it
+ * ran): an error saying so, then one line per call it completed (`<tool> <first line of its path or command>: ok` or
+ * `error`), never their result text; with no call completed, a line saying so.
+ */
+function stoppedScript(inner: readonly ToolStep[]): ToolStep {
+  const calls = inner.map((step) => {
+    // [>]: The first line only: a trace's cut line follows its value on a line of its own.
+    const target = (step.name === "run_command" ? step.args.command : step.args.path)?.split("\n")[0];
+    return `${step.name}${target === undefined ? "" : ` ${target}`}: ${step.status === "ok" ? "ok" : "error"}`;
+  });
+  const text =
+    calls.length === 0
+      ? "run_script: the script was stopped before it finished, before any of its tool calls completed."
+      : ["run_script: the script was stopped before it finished, after these tool calls:", ...calls].join("\n");
+  return { role: "tool", name: "run_script", args: {}, status: "error", text };
 }
 
 /** Leads each undone step a summary replaces, after the summary's text. */
@@ -246,7 +335,99 @@ export function resultLineCount(text: string): number {
 }
 
 function leftOutLine(lines: number): string {
-  return `[result left out to save context: ${lines === 1 ? "1 line" : `${lines} lines`}]`;
+  return `[result left out to save context: ${describeLineCount(lines)}]`;
+}
+
+function describeLineCount(lines: number): string {
+  return lines === 1 ? "1 line" : `${lines} lines`;
+}
+
+/**
+ * Characters the step of an inner call keeps across its cut values, its result text and the arguments that are not a
+ * name (`innerStepTrace`): about thirty lines of the panel's expanded result, enough to see what the call did and how
+ * it began, and a bound of a few kilobytes per call however much the script read or wrote.
+ */
+export const INNER_STEP_CHARS = 2000;
+
+/**
+ * The arguments that name what a call acted on, which an inner step's trace keeps whole up to `NAME_ARGUMENT_CHARS`
+ * each: the undo lines and the stopped-script line name a step by its `path` (a command by its first line), the folded
+ * turn counts the files by `path`, and the step row shows the `pattern`, the `path` with its `start_line` and
+ * `end_line`, and the `command` with its `cwd`, the text the user approved. The file text (`content`, `old`, `new`)
+ * and the result share `INNER_STEP_CHARS`.
+ */
+const NAME_ARGUMENTS: readonly string[] = ["path", "pattern", "start_line", "end_line", "command", "cwd"];
+
+/**
+ * Characters each name argument keeps whole in a trace, past which it is cut as the other values are. Four times the
+ * macOS path limit: the tools set no length of their own, and the system refuses a resolved path over `PATH_MAX`, 1,024
+ * bytes (never fewer characters), so a path a tool can open is never cut unless it is padded with redundant `./`
+ * segments. A command or a pattern that long is a payload, not a name; past the cap the trace keeps its start.
+ */
+export const NAME_ARGUMENT_CHARS = 4096;
+
+/**
+ * The step the conversation keeps of an inner call (`fromScript`): `step` itself when each of its `NAME_ARGUMENTS` fits
+ * `NAME_ARGUMENT_CHARS` and its other argument values and result text fit `INNER_STEP_CHARS` together, else its trace.
+ * The model never reads an inner step, so the context budget never bounds it; the tool ran with the whole arguments
+ * and the script got the whole result, so only the panel and the saved record hold the trace. A trace keeps each name
+ * argument whole up to `NAME_ARGUMENT_CHARS` and shares `INNER_STEP_CHARS` evenly among the other values: one shorter
+ * than its share keeps whole and leaves the rest to the others. A longer value keeps its start, then its `cutLine` on
+ * a line of its own, within its cap or its share. Everything else of the step is kept, so a trace holds at most
+ * 6 × 4,096 + 2,000 = 26,576 characters of values. A trace fits the bound (a tool takes at most a few arguments, each
+ * share far above a cut line), so it comes back unchanged: bounding twice is bounding once.
+ */
+export function innerStepTrace(step: ToolStep): ToolStep {
+  const names = Object.keys(step.args).filter((name) => NAME_ARGUMENTS.includes(name));
+  const shared = Object.keys(step.args).filter((name) => !NAME_ARGUMENTS.includes(name));
+  const lengths = [...shared.map((name) => step.args[name]!.length), step.text.length];
+  const namesFit = names.every((name) => step.args[name]!.length <= NAME_ARGUMENT_CHARS);
+  if (namesFit && lengths.reduce((total, length) => total + length, 0) <= INNER_STEP_CHARS) return step;
+  const shares = evenShares(lengths, INNER_STEP_CHARS);
+  const args = { ...step.args };
+  for (const name of names) args[name] = cutTo(step.args[name]!, NAME_ARGUMENT_CHARS);
+  shared.forEach((name, index) => {
+    args[name] = cutTo(step.args[name]!, shares[index]!);
+  });
+  return { ...step, args, text: cutTo(step.text, shares.at(-1)!) };
+}
+
+/** `total` shared among `lengths`, shortest first: each gets its length, or an even part of what is left if less. */
+function evenShares(lengths: readonly number[], total: number): number[] {
+  const shares = lengths.map(() => 0);
+  const order = lengths.map((_, index) => index).sort((a, b) => lengths[a]! - lengths[b]!);
+  let left = total;
+  order.forEach((index, rank) => {
+    shares[index] = Math.min(lengths[index]!, Math.floor(left / (order.length - rank)));
+    left -= shares[index]!;
+  });
+  return shares;
+}
+
+/** `value` within `share` characters: whole when it fits, else its start, then its `cutLine` on a line of its own. */
+function cutTo(value: string, share: number): string {
+  if (value.length <= share) return value;
+  const marker = `\n${cutLine(value)}`;
+  let keep = Math.max(0, share - marker.length);
+  // [>]: Never half a surrogate pair at the cut.
+  if (keep > 0 && /[\uD800-\uDBFF]/.test(value[keep - 1]!)) keep--;
+  return `${value.slice(0, keep)}${marker}`;
+}
+
+/** The line that ends a value `innerStepTrace` cut: the lines and characters the value had whole. */
+function cutLine(value: string): string {
+  return `[cut to save memory: ${describeLineCount(resultLineCount(value))}, ${value.length} characters in all]`;
+}
+
+const CUT_LINE = /\n\[cut to save memory: (\d+) lines?, \d+ characters in all\]$/;
+
+/**
+ * Lines of `step`'s result as its row counts them (`resultLineCount`); for an inner step whose result its trace cut,
+ * the lines the result had whole, read from its `cutLine`.
+ */
+export function stepResultLines(step: ToolStep): number {
+  const cut = step.fromScript ? CUT_LINE.exec(step.text) : null;
+  return cut ? Number(cut[1]) : resultLineCount(step.text);
 }
 
 /** The last line of an undone step's result: the file no longer holds what the step wrote. */

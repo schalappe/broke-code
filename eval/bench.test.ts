@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   BENCH_MODELS,
+  benchScriptProblem,
   benchTarget,
   describeSandboxFailure,
   dumpLine,
@@ -14,8 +15,16 @@ import {
   startLine,
   trimIncompleteLine,
 } from "./bench";
-import { playScenario } from "./run";
-import { ASK_SCENARIO, CREATE_SCENARIO, judge, SCENARIOS } from "./scenarios";
+import { benchScriptEnv, playScenario } from "./run";
+import {
+  ASK_SCENARIO,
+  CREATE_SCENARIO,
+  chainedScript,
+  GATHER_SCENARIO,
+  judge,
+  repliesDone,
+  SCENARIOS,
+} from "./scenarios";
 
 describe("parseBenchArgs", () => {
   test("defaults to both models, every scenario, and 10 runs", () => {
@@ -72,7 +81,7 @@ describe("parseBenchArgs", () => {
 
   test("refuses a scenario the bench does not hold, naming those it does", () => {
     expect(() => parseBenchArgs(["--scenario", "reed"])).toThrow(
-      '--scenario takes one of read, edit, create, skill, command, slash, hidden, range, ask, not "reed".',
+      '--scenario takes one of read, edit, create, skill, command, slash, hidden, range, ask, rename, gather, not "reed".',
     );
   });
 
@@ -282,5 +291,93 @@ describe("the --no-ask-user flag, from the command line to the run", () => {
     expect(prompt).toContain("## ask_user");
     expect(verdict).toMatchObject({ pass: false, category: "wrongTool" });
     expect(startLine(parseBenchArgs([]))).not.toContain("ask_user");
+  });
+});
+
+describe("benchScriptProblem", () => {
+  test("finds no problem where the bench's runtime runs a script in its sandbox", async () => {
+    expect(await benchScriptProblem(await benchScriptEnv())).toBeUndefined();
+  });
+
+  test("names the runtime and sandbox-exec, says no run started, and keeps the script's result as the cause", async () => {
+    const env = { ...(await benchScriptEnv()), sandboxExec: "/nonexistent/sandbox-exec" };
+    const problem = await benchScriptProblem(env);
+    expect(problem).toStartWith("--code-mode could not run a script, so no run started.");
+    expect(problem).toContain(`Scripts run with ${env.runtime[0]} under /nonexistent/sandbox-exec`);
+    expect(problem).toContain("/nonexistent/sandbox-exec was not found");
+  });
+});
+
+describe("the --code-mode flag, from the command line to the run", () => {
+  type ChatRequest = { messages: { role: string; content: string }[] };
+  const systemPrompts: string[] = [];
+  let replies: string[] = [];
+  const server = Bun.serve({
+    port: 0,
+    async fetch(request) {
+      if (new URL(request.url).pathname.endsWith("/models")) return Response.json({ data: [{ id: "m" }] });
+      const body: ChatRequest = await request.json();
+      systemPrompts.push(body.messages[0]?.content ?? "");
+      const content = replies.shift() ?? "script exhausted";
+      const event = `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`;
+      return new Response(`${event}data: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
+    },
+  });
+  afterAll(() => server.stop(true));
+  const script = [
+    "<run_script>",
+    "<code>",
+    "const names = (await list_files({ path: 'stock' })).split('\\n').filter((line) => line.endsWith('.txt'));",
+    "let total = 0;",
+    "for (const name of names) {",
+    "  const text = await read_file({ path: 'stock/' + name.trim() });",
+    "  total += Number(/^quantity: (\\d+)$/m.exec(text)[1]);",
+    "}",
+    "console.log('total ' + total);",
+    "</code>",
+    "</run_script>",
+  ].join("\n");
+
+  /** Plays `gather` once as `bun run eval` would with `flags`: one script that sums the files, then the answer. */
+  async function gatherWithScript(flags: string[]) {
+    const options = parseBenchArgs([
+      "--base-url",
+      `http://localhost:${server.port}/v1`,
+      "--scenario",
+      "gather",
+      ...flags,
+    ]);
+    systemPrompts.length = 0;
+    replies = [script, "The total is 766."];
+    const parent = await mkdtemp(join(tmpdir(), "broke-code-bench-code-"));
+    try {
+      const outcome = await playScenario(GATHER_SCENARIO, benchTarget(options, "m", undefined), parent);
+      return {
+        prompt: systemPrompts[0] ?? "",
+        outcome,
+        verdict: judge(GATHER_SCENARIO, outcome.entries, outcome.after),
+      };
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  }
+
+  test("under the flag, run_script is in the prompt and a script that sums the files passes, chained", async () => {
+    const { prompt, outcome, verdict } = await gatherWithScript(["--code-mode"]);
+    expect(prompt).toContain("## run_script");
+    expect(verdict).toEqual({ pass: true });
+    const steps = outcome.entries.filter((entry) => entry.role === "tool");
+    expect(steps.filter((step) => step.fromScript)).toHaveLength(10);
+    expect(steps.at(-1)).toMatchObject({ name: "run_script", status: "ok", text: "total 766" });
+    expect(chainedScript(outcome.entries)).toBe(true);
+    expect(repliesDone(outcome.entries)).toBe(2);
+    expect(startLine(parseBenchArgs(["--code-mode"]))).toEndWith(", code mode (run_script offered).");
+  });
+
+  test("without the flag, run_script is not offered, and the call is a malformed step", async () => {
+    const { prompt, outcome } = await gatherWithScript([]);
+    expect(prompt).not.toContain("run_script");
+    expect(outcome.entries.find((entry) => entry.role === "tool")).toMatchObject({ status: "malformed" });
+    expect(startLine(parseBenchArgs([]))).not.toContain("code mode");
   });
 });

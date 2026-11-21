@@ -45,7 +45,12 @@ This file says which file holds which responsibility. Update it when a module ga
   send replacing the last turn (`send`'s `replaces`, Edit, over the same checks and `removeFrom`), and "Undo changes": each turn's `RecordedChanges` on `ToolContext.changes`, the held turn with its
   write steps by file, and `undoChanges` over the `UndoHost` port, which marks the steps of the files put back; and
   "Changed files": the held turn's rows in `ChatState.changedFiles`, named at each recorded write, and
-  `openChangeDiff` and the closing of the diffs of files no longer held over the `ChangeDiffHost` port), the line
+  `openChangeDiff` and the closing of the diffs of files no longer held over the `ChangeDiffHost` port; and Code Mode:
+  the send's one decision over the `CodeModePort` (`ChatPorts.codeMode`), the script in flight (`ScriptRun`), whose
+  completed inner steps it projects into `ChatState.scriptSteps` and each save, and `runInnerCall`, an inner call run
+  and recorded as a direct one, awaited to its end even once aborted, which keeps the step of a write that landed
+  after its script's end and changes nothing after Stop, its step bounded to its trace (`innerStepTrace`) as `runCall`
+  builds it), the line
   counts of a change (`lineDiff.ts`: `lineDiffCount`, a minimal line diff within `LINE_DIFF_WORK_LIMIT`), the
   "Changed files" diffs (`turnDiffs.ts`: `TurnDiffs`, the `ChangeDiffHost` over a `TurnDiffEditor` port, with the
   left sides' text, the existence check, the error wording, an open cancelled when its file is closed meanwhile;
@@ -89,16 +94,20 @@ This file says which file holds which responsibility. Update it when a module ga
   host fills with `window.activeTextEditor`: no editor, edit refused, failed, or done), the menu logic (`suggestions.ts`: the `@` token at the caret, index entries,
   filtering, the index exclusions; the `/` token at the start of the message, `BUILT_IN_COMMANDS`, `builtInCommand`, the built-in
   command a message runs, which the composer runs and the controller never queues, the slash command filter), the menu's file index (`fileIndex.ts`: one scan shared until a file
-  changes, behind a scan port), the request history (`history.ts`: `toHistory`, the history a request sends, the
+  changes, behind a scan port), the request history (`history.ts`: `toHistory`, the history a request sends, a reply's tool group (`toolGroup`,
+  `groupOwner`, which the webview renders too) as one step, the script's result with its undo lines or the result it
+  writes for a stopped script, never a step a script made, the
   oldest tool results left out when it would fill the context; `historyStart`, the last `done` summary it starts at,
   which the webview reads for the "no longer sent" mark; `isAutomaticSummary`, a summary the turn ran itself, told by
   the reply after it, and `sentEntries`, the entries the history sends, the message an automatic summary quotes
   included; `summaryHistory` and `SUMMARY_REQUEST`, the summary request's
-  history; and `resultLineCount`, the step row's line count), the body tool call parser (`toolCalls.ts`: `ToolSpec`, the first call-shaped block, `CALL_WRAPPERS`, a forged
+  history; `resultLineCount`, the step row's line count, and `stepResultLines`, which reads the whole count from a cut
+  inner step; and `innerStepTrace`, the trace an inner step keeps: its `NAME_ARGUMENTS` whole up to `NAME_ARGUMENT_CHARS` each, the rest within `INNER_STEP_CHARS`), the body tool call parser (`toolCalls.ts`: `ToolSpec`, the first call-shaped block, `CALL_WRAPPERS`, a forged
   result before the call, `replyCut`, the stream's cut, malformed-call messages), the system prompt composer (`systemPrompt.ts`: role, the Plan paragraph, call format, rules, tools,
   skills, instruction files; `composeSummaryPrompt`, the summary request's own prompt; `offeredTools`, the tools a send
   offers, and `PLAN_BLOCKED_TOOLS`), the turn limits (`limits.ts`: `brokeCode.maxToolSteps`, `brokeCode.contextSizes`, and `brokeCode.autoCompact` parsing,
-  `userLimits`, their user values only,
+  `userLimits`, their user values only, `StepCount`, the one step count of a turn, which direct calls and a script's
+  calls share,
   the token estimate at a model's characters per token and the most characters that fit, exact in tenths, the
   context-full threshold, the typed size check, and `brokeCode.commandTimeoutSeconds` parsing),
   the command tool (`commands.ts`: `RUN_COMMAND_TOOL`, `runCommandTool` checks the call and the folder and asks the
@@ -128,14 +137,30 @@ This file says which file holds which responsibility. Update it when a module ga
   tool runner (`toolRunner.ts`: the read and write tools over the
   workspace folders, the read tools also over the run's `skillRoots`, each write handed to the applier the host builds
   for the run, `run_command` with the command environment the host passes, read at each call, `load_skill` over
-  the run's `skills`, and `ask_user` only when its caller turns it on, which the extension does, and the eval bench but
-  for its baseline run), the instruction files
+  the run's `skills`, `ask_user` only when its caller turns it on, which the extension does, and the eval bench but
+  for its baseline run, and `run_script` never listed, run only with the script environment and inner calls the turn
+  gives a send that offered it), Code Mode (`script.ts`: `RUN_SCRIPT_TOOL`; `runScript` runs the model's JavaScript in
+  a child process, the extension host's own executable as Node or the bench's bun, under `sandbox-exec` with the
+  default-deny `scriptSandboxProfile`, behind `/bin/sh`'s `ulimit -t`, which fails closed, talking JSON Lines with
+  `SCRIPT_BOOTSTRAP`, which runs the script in a `node:vm` context; the host checks each call the script asks for
+  (`admit`, the `blocked` tools that only refuse, Plan's, then `MAX_QUEUED_ARGUMENT_CHARS`, the arguments of the
+  calls waiting, then a step of the turn's count, `InnerCalls.steps`, refused with `stepLimitRefusal` when none is
+  left, all before the call queues), runs the calls one at a time through the run context's
+  `innerCalls`, which the controller's `runCall` approves and records as steps marked `fromScript`, a `read_file`
+  among them handing the script the file's raw text (`ToolResult.forScript`), and enforces
+  `SCRIPT_RUN_MS`, `MAX_SCRIPT_OUTPUT`, `SCRIPT_MEMORY_BYTES` (read with
+  `ps`), and `SCRIPT_CPU_SECONDS`, aborting the calls a script left once it ends and killing a child that does not
+  exit then; `scriptProblem`, the runtime
+  probe, a round trip through a stub tool within `SCRIPT_PROBE_MS`; the measured profile is in `docs/eval.md`; and
+  `codeMode.ts`: `codeModeSetting`, the setting from its user value only, `hostScriptEnv`, the extension host's
+  executable and its app bundle's frameworks as the script runtime, and `CodeModeSwitch`, the per-window probe and the
+  once-per-send decision the controller asks through `ChatPorts.codeMode`), the instruction files
   (`instructions.ts`: `~/.agents/AGENTS.md`, then each workspace folder's `AGENTS.md`, under the mention caps), and the
   skills (`skills.ts`: discovery in `~/.agents/skills/` and each workspace folder's `.agents/skills/`, the frontmatter
   subset, validation, precedence, warnings, the line the extension logs at each send; `LOAD_SKILL_TOOL`, `loadSkill`
   for the model's call, `findSlashSkill`, the skill a `/<name> args` message loads, `loadSkillText`, the load result
   whoever loads, the user's arguments substituted or appended, and `answerSkillQuery`, the `/` menu's answer). the last turn's actions (`lastTurn.ts`: `lastTurnActions`, whether the last turn offers Retry and Continue and
-  under which reply; `unrevertedEffects`, the applied writes and run commands a removal from an index leaves on disk;
+  under which reply; `unrevertedEffects`, the applied writes and run commands (Run or Full access's auto-approval) a removal from an index leaves on disk;
   `CONTINUE_TEXT`; `hasFinalAnswer`, whether the conversation ends on a final answer, which "Implement in ... mode"
   needs, and `IMPLEMENT_PLAN_TEXT`). `markdownCode.ts`, `suggestions.ts`, `reservedMentions.ts`, `modelList.ts`, `conversation.ts`,
   `history.ts`, `lastTurn.ts`, `providerError.ts`, and `turnEndText.ts` import nothing from
@@ -153,7 +178,9 @@ This file says which file holds which responsibility. Update it when a module ga
   settings and the "Set context size" input box in `contextSizes.ts`, the tool runner's wiring (the ripgrep candidates
   from `vscode.env.appRoot` and `PATH`, the write tools behind `approvalApplier` around `recordingApplier`, the `undo` port over the workspace folders
   and `hasUnsavedChanges`, the command shell from
-  `vscode.env.shell`, `$SHELL`, or `/bin/sh`), the write approval's editor side in
+  `vscode.env.shell`, `$SHELL`, or `/bin/sh`), Code Mode's wiring (the `brokeCode.codeMode` user value, `process.execPath`
+  to the core's `hostScriptEnv`, the probe's warning notification, and the setting's change dropping the probe), the
+  write approval's editor side in
   `approval.ts` (the diff preview over `vscode.diff` and a content provider, the tabs, documents, and
   `brokeCode.mode` and `brokeCode.deniedCommands` values it feeds the core decisions, and `writeSettingMode`, the user
   value the mode selector writes), the "Changed files" diffs in `turnDiffs.ts` (`registerTurnDiffs`: the core `TurnDiffs` over
@@ -180,7 +207,9 @@ This file says which file holds which responsibility. Update it when a module ga
   `ChatState.undo` names), Show change in the approval controls (posting `showChange`), Set context size in the header
   (`SetContextSize`), Edit under the last turn's user message and the replacing state's mark with Cancel (held by
   `App`, the composer's Send carrying it), "Changed files" under the reply `ChatState.undo` names (`ChangedFiles`, a
-  button per row posting `openChangeDiff`), and the last undo's outcome (`UndoOutcome`), and the answer's code blocks with Copy and Insert at cursor (`CodeBlock`,
+  button per row posting `openChangeDiff`), and the last undo's outcome (`UndoOutcome`), a script's rows (`ScriptRow`,
+  then its inner steps one level in, `.script-steps`, from its tool group or, live, `ChatState.scriptSteps`, and a
+  decision labelled from the inner call's request, `requestedCall`), and the answer's code blocks with Copy and Insert at cursor (`CodeBlock`,
   the `pre` override of the answer's renderer) included, and Quote under an answer whose text is selected (`Answer`,
   `holdsSelection`; the quoted text reaches the composer as `App` state beside Edit's draft). `SuggestionMenu.tsx` is the autocomplete list the `@` and
   `/` menus share, a row with an optional description; `composer.ts` holds the message box's decisions without React
@@ -194,7 +223,8 @@ This file says which file holds which responsibility. Update it when a module ga
   `Root.tsx` is the panel's root: it posts `ready`, renders each state, and queues the `insertDraft` drafts for the
   message box; `main.tsx` mounts it. `turns.ts` groups the entries for rendering without React (`foldTurns`: each entry once,
   an ended turn's fold and its step counts by kind, one pass, paths cleaned lexically, a summary a boundary of its own), and `text.ts` words the fold's row (`describeFold`, a row that may wrap, its failed part apart with the failed tools), the step row
-  (`mainArgument`, a `read_file` range after its path; `describeToolStep`, "undone" included), and the undo's outcome (`describeUndoOutcome`, `describeUndoneFile`, each path a part of its own for the editor font,
+  (`mainArgument`, a `read_file` range after its path; `describeToolStep`, "undone" included; `describeScript`, a
+  script's size), the live region's words (`describeAnnouncement`, a script by its size), and the undo's outcome (`describeUndoOutcome`, `describeUndoneFile`, each path a part of its own for the editor font,
   `describeUndoFailure`), and the header's usage line and its tooltip with the reported usage (`describeContextUsage`,
   `describeContextTitle`), a History row's date and message count (`describeRowDetails`), and a question's inline code
   (`splitInlineCode`).
@@ -210,16 +240,20 @@ This file says which file holds which responsibility. Update it when a module ga
   release workflow runs it as a CLI. Its tests sit next to it.
 - `eval/`: the Ollama eval bench (`bun run eval`). `scenarios.ts` holds each scenario (fixture files, an optional
   fixture home folder, message, the files it must write with their exact text, an optional check of a turn that ended
-  `done`, an optional answer to `ask_user`, `DEFAULT_ANSWER` when absent), `withoutAskUser` (the scenarios judged
+  `done`, an optional answer to `ask_user`, `DEFAULT_ANSWER` when absent, an optional step limit of its own),
+  `withoutAskUser` (the scenarios judged
   without the tool: `ask` on the workspace alone), and `judge`, the verdict and failure category of a run, which compares the workspace after the run with the
   fixture plus those writes; `run.ts` plays one run through the `ChatController` ports, with the read and write tools,
-  `run_command`, `load_skill`, and `ask_user` (unless the target leaves it out) over a copy of the fixture under the
+  `run_command`, `load_skill`, `ask_user` (unless the target leaves it out), and `run_script` (under `--code-mode`,
+  run with `benchScriptEnv`) over a copy of the fixture under the
   system temporary directory, each write applied at once by `fileApplier` and recorded for the dump, each question
   answered at once with the scenario's answer, each command approved at once (rejected instead in a scenario with
   `rejectCommands`, as a user's Reject would) and run with `benchCommandEnv` (the
   allow-listed environment and `sandbox-exec` with `BENCH_SANDBOX_PROFILE` as the launcher, the run's real paths as
   its parameters), and the skills discovered in a copy of the fixture home, never the real one;
-  `report.ts` formats the scores; `bench.ts` is the CLI (`sandboxProblem`, its check before any run; `--no-ask-user`, the baseline without the tool), guarded by `import.meta.main` so `bun test` never starts it.
+  `report.ts` formats the scores, the mean replies per run, and the runs that chained tools in one script
+  (`repliesDone` and `chainedScript` of `scenarios.ts`), each failed run's detail through `printable`, which escapes
+  the control characters a provider's text may hold, as `bench.ts` prints each run's line; `bench.ts` is the CLI (`sandboxProblem`, its check before any run; `--no-ask-user`, the baseline without the tool; `--code-mode`, `run_script` offered, with `benchScriptProblem`, its own check before any run over the core probe), guarded by `import.meta.main` so `bun test` never starts it.
   Its unit tests sit next to them and need no Ollama.
 - `media/`: `logo.png` (256 px), the extension icon on Open VSX and the Visual Studio Marketplace (`icon` in
   `package.json`; the registries refuse SVG), rendered from its source `logo.svg` with

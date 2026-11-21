@@ -287,3 +287,30 @@ still never carries `tools`, and the call format is unchanged. Unlike the usage 
 without the field: the user asked for it, and a silent drop would hide that it does nothing there. The internal
 service's answer to the field is unknown, and so is the effect of an effort on the measured models; nothing in the
 eval measures it.
+
+## Amendment (2026-11-21): a bare `run_script` call
+
+Decided by the maintainer (schalappe) on 2026-11-21, on eval evidence. `run_script` (Code Mode, phase 1) is offered by
+the eval bench only, under `--code-mode`; the extension does not offer it. With it, on local Ollama, 10 runs per cell,
+`gemma4:26b-a4b-it-qat` wrote the JavaScript straight inside `<run_script>`, with no `<code>` tag, as its first
+`run_script` call in 8 of 10 `rename` runs. Each got "Unexpected text inside <run_script>", and recovered only after
+the malformed-call message (`docs/eval.md`).
+
+**Decision.** A tool may name one argument that its call may hold bare (`ToolSpec.bareArg`); only `run_script` does,
+for `code`. A `run_script` call whose content, after whitespace, is not empty and does not start with `<code>` is
+read as if the whole content were the `code` value: the call ends at the first `</run_script>` after its opening
+tag, and the value is everything before it, with the "both or neither" line break rule of a multi-line argument. A
+call that starts with `<code>` keeps the existing rules. An empty call is still missing its `code`, and a bare call
+with no `</run_script>` never closes. The stream's cut follows from the parser, as before: a bare call still open is
+never cut, and the opening of another call after a closed one ends the reply. Without `run_script` offered, nothing
+changes.
+
+**Cost, accepted.** A bare call's code cannot hold the text `</run_script>`: it ends there, and the rest of the code
+is dropped with the text after the call, so the script usually fails on a syntax error the model reads. The `<code>`
+form carries such code.
+
+**Verified (2026-11-21).** With the rule, the raw `read_file` value in a script, and the new prompt, `--code-mode` on
+`ask`, `rename`, and `gather`, 10 runs per cell: of the 52 `run_script` calls `gemma4` wrote, 13 were bare and were read
+as calls, and `gemma4` `rename` went back to 9/10 (5/10 before). `gemma4` `ask` stays at 7/10 under `--code-mode`
+(9/10 without it): open, and unrelated to this rule, since its failures renamed both functions without calling
+`ask_user` (`docs/eval.md`).
