@@ -7948,7 +7948,8 @@ describe("ChatController run_script", () => {
       "while (Date.now() - start < 500) {}",
       'return "returned";',
     ].join("\n");
-    const { controller, state, sent } = await scriptTurn([{ content: scriptCall(code) }, { content: "Done." }], {
+    const replies = [{ content: scriptCall(code) }, { content: "Done." }, { content: "Noted." }];
+    const { controller, state, sent } = await scriptTurn(replies, {
       beforeWrite: () => {
         reach();
         return gate;
@@ -7964,9 +7965,37 @@ describe("ChatController run_script", () => {
     await turn;
 
     expect(text("late.txt")).toBe("late\n");
-    // [>]: The write's step is dropped, as on Stop; the write is still recorded for undo, tied to no step.
-    expect(outline(state().entries)).toEqual(["user", "assistant:done", "run_script", "assistant:done"]);
+    // [>]: The write landed, so its step is kept, tied to its file: Undo marks it and the model is told.
+    expect(outline(state().entries)).toEqual(["user", "assistant:done", "write_file*", "run_script", "assistant:done"]);
     expect(state().changedFiles.map((file) => file.path)).toEqual(["late.txt"]);
+    await controller.undoChanges();
+    expect(existsSync(join(dir, "late.txt"))).toBe(false);
+    expect(state().entries[2]).toMatchObject({ name: "write_file", fromScript: true, undone: true });
+    await controller.send("next");
+    expect(sent()[2]!.messages[3]).toEqual({
+      role: "user",
+      content:
+        '<tool_result tool="run_script" status="ok">\nreturned\nThe user undid this change afterwards: write_file late.txt\n</tool_result>',
+    });
+  });
+
+  test("a script's queued calls count their arguments as they arrive: one past the budget throws before the first runs", async () => {
+    writeFileSync(join(dir, "a.txt"), "old_name()\n");
+    // [>]: The first call waits on its approval in Ask; the others queue behind it, three of 3 MiB each.
+    const code = [
+      'const big = "x".repeat(3 * 1024 * 1024);',
+      'const first = edit_file({ path: "a.txt", old: "old_name", new: "new_name" });',
+      'const queued = [0, 1, 2].map(() => edit_file({ path: "a.txt", old: big, new: "y" }).catch((error) => error.message));',
+      "return await queued[2];",
+    ].join("\n");
+    const { controller, state } = await scriptTurn([{ content: scriptCall(code) }, { content: "Done." }], {
+      ask: true,
+    });
+    await controller.send("rename");
+
+    expect(text("a.txt")).toBe("old_name()\n");
+    const tools = state().entries.filter((entry) => entry.role === "tool");
+    expect(tools).toEqual([expect.objectContaining({ name: "run_script", status: "ok", text: STEP_BUDGET_REFUSAL })]);
   });
 
   test("a script's steps hold a bounded amount of text: the call past the budget throws and never runs", async () => {

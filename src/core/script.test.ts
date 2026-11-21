@@ -43,7 +43,7 @@ function okEcho(call: ToolCall): ToolResult {
 }
 
 function script(code: string, run = recorder().run, env: ScriptEnv = ENV, signal = new AbortController().signal) {
-  return runScript(code, TOOLS, run, signal, env);
+  return runScript(code, { tools: TOOLS, run }, signal, env);
 }
 
 describe("runScript", () => {
@@ -209,8 +209,7 @@ describe("runScript", () => {
     const tools = [...READ_TOOLS, RUN_SCRIPT_TOOL, LOAD_SKILL_TOOL, ASK_USER_TOOL];
     const result = await runScript(
       "console.log([typeof run_script, typeof load_skill, typeof ask_user, typeof read_file].join(','));",
-      tools,
-      recorder().run,
+      { tools, run: recorder().run },
       new AbortController().signal,
       ENV,
     );
@@ -249,6 +248,39 @@ describe("runScript", () => {
 });
 
 describe("runScript limits", () => {
+  test("asks the turn to admit each call as it arrives, before it queues, and throws its refusal without running it", async () => {
+    const admitted: string[] = [];
+    const ran: string[] = [];
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const inner = {
+      tools: TOOLS,
+      admit: (call: ToolCall) => {
+        admitted.push(call.args.path ?? "");
+        return call.args.path === "c" ? "refused c" : undefined;
+      },
+      run: async (call: ToolCall) => {
+        ran.push(call.args.path ?? "");
+        if (ran.length === 1) await gate;
+        return { status: "ok" as const, text: call.args.path ?? "" };
+      },
+    };
+    const code = [
+      "const all = ['a', 'b', 'c'].map((path) => read_file({ path }).catch((error) => 'caught ' + error.message));",
+      "return (await Promise.all(all)).join(',');",
+    ].join("\n");
+    const result = runScript(code, inner, new AbortController().signal, ENV);
+    // [>]: All three arrive while the first call waits: each is admitted then, not when it would start.
+    for (let tries = 0; admitted.length < 3 && tries < 200; tries++) await Bun.sleep(10);
+    expect(admitted).toEqual(["a", "b", "c"]);
+    expect(ran).toEqual(["a"]);
+    release();
+    expect(await result).toEqual({ status: "ok", text: "a,b,caught refused c" });
+    expect(ran).toEqual(["a", "b"]);
+  });
+
   test(`call ${MAX_SCRIPT_CALLS + 1} throws inside the script and is never run`, async () => {
     const tools = recorder();
     const result = await script(
@@ -407,7 +439,12 @@ describe("runScript cancellation", () => {
         signal.addEventListener("abort", () => resolve({ status: "error", text: "cancelled" }), { once: true });
         abort.abort();
       });
-    const result = await runScript("await write_file({ path: 'a', content: 'x' });", TOOLS, run, abort.signal, ENV);
+    const result = await runScript(
+      "await write_file({ path: 'a', content: 'x' });",
+      { tools: TOOLS, run },
+      abort.signal,
+      ENV,
+    );
     expect(result).toEqual({ status: "error", text: "run_script: stopped before it finished." });
     expect(callSignal?.aborted).toBe(true);
   });

@@ -530,15 +530,19 @@ what the script prints or returns goes back to the model. It is an experimental 
   passes the limit: then the call it did not wait for that is running is aborted, as on Stop (its step dropped), the
   calls queued behind it never run, a call it makes afterwards throws `run_script: the script has ended; this call was
   not made.`, and the step waits for the call in flight to settle: its approval and its command are cancelled, and a
-  write already handed to the applier lands, recorded for undo, tied to no step, before the turn's next call runs.
+  write already handed to the applier lands before the turn's next call runs, recorded for undo with its step, which
+  joins the inner steps, so "Undo changes" marks it and the history names it; the step of a call that changed no
+  file is dropped.
 - The step's text: each printed line in order, then the returned value (a string as is, anything else as JSON), cut
   at 2,000 lines with the usual notice. Nothing printed or returned gives an `ok` text telling the model to print what
   it needs. An uncaught error makes the step `error`, ending `run_script: the script stopped on an error: <message>`.
 - Limits, each with its own message: 100 calls (`MAX_SCRIPT_CALLS`; call 101 throws and never runs); 8 MiB of
-  arguments and result text in the steps of one script's calls (`MAX_SCRIPT_STEP_CHARS`, counted by the turn, which
-  shows, saves, and keeps each step: a call whose arguments would pass it throws `run_script: the tool calls of a
-  script may pass and return at most 8388608 characters in all; this call was not made.`, never runs, and leaves no
-  step, so the steps hold at most that plus one call's result). Each of the others ends the script: 10 seconds of the script's own running time between calls
+  arguments and result text in one script's calls (`MAX_SCRIPT_STEP_CHARS`, counted by the turn, which shows, saves,
+  and keeps each step: the arguments of each call as the host admits it, before it queues, and kept when it never
+  runs, then each step's result text as it is recorded; a call whose arguments would pass it, or that would start once
+  a result has passed it, throws `run_script: the tool calls of a script may pass and return at most 8388608
+  characters in all; this call was not made.`, never runs, and leaves no step, so the calls queued hold at most that
+  and the steps at most that plus one call's result). Each of the others ends the script: 10 seconds of the script's own running time between calls
   (`SCRIPT_RUN_MS`; the time a call takes, a wait for an approval included, never counts); 1 MiB of printed output,
   counted in the child; one protocol line over 8 MiB; 32 MiB of answers the child left unread; 512 MiB of resident
   memory (`SCRIPT_MEMORY_BYTES`), read with `/bin/ps` every 250 ms, since macOS applies no memory limit to a process,

@@ -32,15 +32,15 @@ script makes are execution detail (ADR 0001's "one body call per reply" stands).
   input has ended). The child is untrusted once the script runs: a script can leave the vm, so the host never takes
   its done frame as proof that it will exit. When the script ends, the call it did not wait for is aborted and the
   queued ones never run; the script's step waits for the aborted call to settle, so a write already handed to the
-  applier lands before the turn's next call runs. macOS applies no memory limit to a process (`ulimit -v`, `-d`, and `-m` fail), so the host
+  applier lands before the turn's next call runs, and keeps its step so its undo reaches the history. macOS applies no memory limit to a process (`ulimit -v`, `-d`, and `-m` fail), so the host
   reads the child's resident memory with `ps` every 250 ms, a bound with that lag rather than a hard one. Fail closed:
   when the sandbox or a limit cannot apply, the script does not run, or stops, and the step says why.
 - **Every inner call goes through the usual approvals** (maintainer decision 1). The turn runs each call a script
   makes exactly as a direct call (`runCall`): Ask's diff and Accept, Run for a command, Auto-edit, Full access with its
   denied commands and command sandbox, the step's `approval`, its line counts, and its tie to the file for "Undo
-  changes". A rejection throws in the script. The turn bounds what a script makes it hold: the steps of one script's
-  calls hold at most 8 MiB of arguments and result text, plus one call's result; a call whose arguments would pass it
-  throws and never runs. Each step is shown, saved, and kept, so this is the bound, not the child's own limits.
+  changes". A rejection throws in the script. The turn bounds what a script makes it hold: one script's calls hold at
+  most 8 MiB of arguments and result text, plus one call's result, each call's arguments counted as the host admits
+  it, before it queues; a call whose arguments would pass it throws and never runs. Each step is shown, saved, and kept, so this is the bound, not the child's own limits.
 - **Inner calls are recorded as steps and never sent.** Each call's step is an ordinary tool step marked `fromScript:
   true`, an optional field, so the record stays at version 2 (ADR 0003). While the script runs, the completed steps
   are staged by the turn: shown live (`ChatState.scriptSteps`) and saved after the reply in flight, so a crash keeps

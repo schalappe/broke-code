@@ -48,8 +48,10 @@ This file says which file holds which responsibility. Update it when a module ga
   `openChangeDiff` and the closing of the diffs of files no longer held over the `ChangeDiffHost` port; and Code Mode:
   the send's one decision over the `CodeModePort` (`ChatPorts.codeMode`), the script in flight (`ScriptRun`), whose
   completed inner steps it projects into `ChatState.scriptSteps` and each save, and `runInnerCall`, an inner call run
-  and recorded as a direct one, awaited to its end even once aborted, which changes nothing once its script ended,
-  and which refuses a call past `MAX_SCRIPT_STEP_CHARS`, the bound on what the script's steps hold), the line
+  and recorded as a direct one, awaited to its end even once aborted, which keeps the step of a write that landed
+  after its script's end and changes nothing after Stop, with `admitScriptCall`, which counts each call's arguments
+  against `MAX_SCRIPT_STEP_CHARS` as the host admits it (`InnerCalls.admit`), the bound on what the script's calls
+  hold), the line
   counts of a change (`lineDiff.ts`: `lineDiffCount`, a minimal line diff within `LINE_DIFF_WORK_LIMIT`), the
   "Changed files" diffs (`turnDiffs.ts`: `TurnDiffs`, the `ChangeDiffHost` over a `TurnDiffEditor` port, with the
   left sides' text, the existence check, the error wording, an open cancelled when its file is closed meanwhile;
@@ -140,7 +142,8 @@ This file says which file holds which responsibility. Update it when a module ga
   a child process, the extension host's own executable as Node or the bench's bun, under `sandbox-exec` with the
   default-deny `scriptSandboxProfile`, behind `/bin/sh`'s `ulimit -t`, which fails closed, talking JSON Lines with
   `SCRIPT_BOOTSTRAP`, which runs the script in a `node:vm` context; the host checks each call the script asks for
-  (`admit`, and the `blocked` tools that only refuse, Plan's), runs the calls one at a time through the run context's
+  (`admit`, the `blocked` tools that only refuse, Plan's, then `InnerCalls.admit`, the turn's budget, before the call
+  queues), runs the calls one at a time through the run context's
   `innerCalls`, which the controller's `runCall` approves and records as steps marked `fromScript`, a `read_file`
   among them handing the script the file's raw text (`ToolResult.forScript`), and enforces
   `MAX_SCRIPT_CALLS`, `SCRIPT_RUN_MS`, `MAX_SCRIPT_OUTPUT`, `SCRIPT_MEMORY_BYTES` (read with

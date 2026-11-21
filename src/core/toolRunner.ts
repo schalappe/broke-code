@@ -46,7 +46,7 @@ export function workspaceToolRunner(
         const { innerCalls: inner, scriptEnv } = context;
         // [>]: The turn gives both only to a reply's call of a send that offered run_script; a script never calls it.
         if (!inner || !scriptEnv) return { status: "error", text: "run_script: scripts cannot run in this call." };
-        return runScript(call.args.code ?? "", inner.tools, inner.run, context.signal, scriptEnv, inner.blocked);
+        return runScript(call.args.code ?? "", inner, context.signal, scriptEnv);
       }
       if (offerAskUser && call.name === ASK_USER_TOOL.name) return askUser(call, context);
       if (call.name === LOAD_SKILL_TOOL.name) {

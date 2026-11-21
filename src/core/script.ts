@@ -58,12 +58,16 @@ export type ScriptEnv = {
  * How the script's calls run, from the turn that runs the script. `tools`: the tools offered in this send; a script may
  * call each of them but `NOT_CALLABLE`. `blocked`: tools the send leaves out that still exist in the script, each a
  * function that throws its text without running anything (Plan's write tools and `run_command`, so ordinary code
- * gets the Plan message rather than a `ReferenceError`). `run`: runs one call as the turn runs a direct one (its
- * approval, its record), under `signal`, which aborts when the turn stops or the script ends. Must not reject.
+ * gets the Plan message rather than a `ReferenceError`). `admit`: takes each call the host admitted, as it arrives and
+ * before it queues, and returns the refusal the script throws instead, or `undefined` to queue it: the turn counts the
+ * call's arguments there against `MAX_SCRIPT_STEP_CHARS`, so the calls a script queues hold no more than that; absent,
+ * every admitted call queues. `run`: runs one call as the turn runs a direct one (its approval, its record), under
+ * `signal`, which aborts when the turn stops or the script ends. Must not reject.
  */
 export type InnerCalls = {
   tools: readonly ToolSpec[];
   blocked?: Readonly<Record<string, string>>;
+  admit?(call: ToolCall): string | undefined;
   run(call: ToolCall, signal: AbortSignal): Promise<ToolResult>;
 };
 
@@ -93,10 +97,11 @@ export const SCRIPT_CPU_SECONDS = 60;
  */
 const MAX_FRAME_CHARS = 8 * 1024 * 1024;
 /**
- * Characters the steps of one script's calls may hold, their arguments and their result text, counted by the turn
- * that records them (`runInnerCall`): the turn shows each step and saves it with the record, so a script never makes it
- * hold more than this plus one call's result. A call whose arguments would pass it throws inside the script
- * (`STEP_BUDGET_REFUSAL`) and is never run.
+ * Characters one script's calls may make the turn hold: the arguments of every call admitted, counted as the call
+ * arrives (`InnerCalls.admit`), so the calls queued behind the one running hold no more, and the result text of each
+ * step, counted as it is recorded (`runInnerCall`). The turn shows each step and saves it with the record, so a script
+ * never makes it hold more than this plus one call's result. A call whose arguments would pass it, or that would start
+ * once a result has passed it, throws inside the script (`STEP_BUDGET_REFUSAL`) and is never run.
  */
 export const MAX_SCRIPT_STEP_CHARS = 8 * 1024 * 1024;
 
@@ -324,25 +329,23 @@ export function scriptLaunch(
 }
 
 /**
- * Run `code` as a script that may call `tools` (less `NOT_CALLABLE`) through `callTool`, under `env`'s sandbox. Never
- * rejects. Each call the script asks for is checked here before anything runs (a tool it may call, one object of known
- * arguments, every required one given, at most `MAX_SCRIPT_CALLS`); a refused call throws inside the script. Admitted
- * calls run one at a time, in arrival order, so `Promise.all` works but runs them in turn, under a signal that aborts
- * with `signal` or when the script ends: a call the script did not wait for is aborted, or never run, once it ends.
- * The result is final once the child has exited and no admitted call is outstanding; a child that does not exit within
- * `runMs` of its input ending is killed. `ok`: what the script printed, then its returned value; `error`: that output,
- * then why the script stopped. Fail closed: when `sandbox-exec` is missing or cannot apply the profile, the result is
- * an `error` naming the cause, and the script never runs outside the sandbox. An abort of `signal` kills the child and
- * gives the stopped error; so do the limits (`MAX_SCRIPT_CALLS` refuses the call instead) and
- * a protocol error, each with its own message.
+ * Run `code` as a script that may call `inner.tools` (less `NOT_CALLABLE`) through `inner.run`, under `env`'s sandbox.
+ * Never rejects. Each call the script asks for is checked here before anything runs (a tool it may call, one object of
+ * known arguments, every required one given, at most `MAX_SCRIPT_CALLS`), then by `inner.admit`; a refused call throws
+ * inside the script. Admitted calls run one at a time, in arrival order, so `Promise.all` works but runs them in
+ * turn, under a signal that aborts with `signal` or when the script ends: a call the script did not wait for is
+ * aborted, or never run, once it ends. The result is final once the child has exited and no admitted call is
+ * outstanding; a child that does not exit within `runMs` of its input ending is killed. `ok`: what the script printed,
+ * then its returned value; `error`: that output, then why the script stopped. Fail closed: when `sandbox-exec` is
+ * missing or cannot apply the profile, the result is an `error` naming the cause, and the script never runs outside
+ * the sandbox. An abort of `signal` kills the child and gives the stopped error; so do the limits (`MAX_SCRIPT_CALLS`
+ * and `inner.admit` refuse the call instead) and a protocol error, each with its own message.
  */
 export async function runScript(
   code: string,
-  tools: readonly ToolSpec[],
-  callTool: InnerCalls["run"],
+  inner: InnerCalls,
   signal: AbortSignal,
   env: ScriptEnv,
-  blocked: Readonly<Record<string, string>> = {},
 ): Promise<ToolResult> {
   if (signal.aborted) return stopped(TOOL);
   if (code.trim() === "") return { status: "error", text: `${TOOL}: the code is empty.` };
@@ -358,8 +361,8 @@ export async function runScript(
     };
   }
   if (signal.aborted) return stopped(TOOL);
-  const callable = tools.filter((tool) => !NOT_CALLABLE.includes(tool.name));
-  return runChild(code, callable, blocked, callTool, signal, env);
+  const callable = inner.tools.filter((tool) => !NOT_CALLABLE.includes(tool.name));
+  return runChild(code, callable, inner, signal, env);
 }
 
 /**
@@ -387,8 +390,7 @@ export async function scriptProblem(
   const answer = async () => ({ status: "ok" as const, text: PROBE_ANSWER });
   const result = await runScript(
     `return await ${PROBE_TOOL.name}();`,
-    [PROBE_TOOL],
-    answer,
+    { tools: [PROBE_TOOL], run: answer },
     AbortSignal.any([signal, timeout]),
     env,
   );
@@ -411,22 +413,22 @@ type Done = { output: string; error?: string };
 function runChild(
   code: string,
   callable: readonly ToolSpec[],
-  blocked: Readonly<Record<string, string>>,
-  callTool: InnerCalls["run"],
+  inner: InnerCalls,
   signal: AbortSignal,
   env: ScriptEnv,
 ): Promise<ToolResult> {
+  const blocked = inner.blocked ?? {};
   return new Promise((resolve) => {
     const runMs = env.runMs ?? SCRIPT_RUN_MS;
     const memoryBytes = env.memoryBytes ?? SCRIPT_MEMORY_BYTES;
-    const inner = new AbortController();
+    const callAbort = new AbortController();
     let lastId = 0;
     let ending: Ending | undefined;
     let done: Done | undefined;
     let exit: { code: number | null; signal: NodeJS.Signals | null } | undefined;
     let startFailure: string | undefined;
     let outstanding = 0;
-    let calls = 0;
+    let made = 0;
     let unread = 0;
     let queue: Promise<void> = Promise.resolve();
     let pendingLine = "";
@@ -459,7 +461,7 @@ function runChild(
     const end = (reason: Ending) => {
       ending ??= reason;
       stopTimer();
-      inner.abort();
+      callAbort.abort();
       child.kill("SIGKILL");
     };
     const onAbort = () => end({ kind: "stopped" });
@@ -469,7 +471,7 @@ function runChild(
       stopTimer();
       clearTimeout(exitTimer);
       clearInterval(memoryTimer);
-      inner.abort();
+      callAbort.abort();
       signal.removeEventListener("abort", onAbort);
       resolve(
         scriptResult({
@@ -530,18 +532,20 @@ function runChild(
         return end({ kind: "killed", detail: "a tool call came without a new id" });
       }
       lastId = id;
-      calls += 1;
+      made += 1;
       const refusal =
         typeof frame.name === "string" && Object.hasOwn(blocked, frame.name) ? blocked[frame.name] : undefined;
-      const admitted = calls > MAX_SCRIPT_CALLS ? callLimitText() : (refusal ?? admit(frame, callable));
+      const checked = made > MAX_SCRIPT_CALLS ? callLimitText() : (refusal ?? admit(frame, callable));
+      // [!]: Asked before the call queues: a queued call holds its arguments until it runs.
+      const admitted = typeof checked === "string" ? checked : (inner.admit?.(checked) ?? checked);
       // [>]: A refusal is answered at once and the running time keeps counting, so a loop of refused calls ends.
       if (typeof admitted === "string") return send({ id, status: "error", text: admitted });
       outstanding += 1;
       stopTimer();
       queue = queue.then(async () => {
-        const result = inner.signal.aborted
+        const result = callAbort.signal.aborted
           ? stopped(admitted.name)
-          : await callSafely(callTool, admitted, inner.signal);
+          : await callSafely(inner.run, admitted, callAbort.signal);
         send({ id, status: result.status, text: result.text });
         outstanding -= 1;
         startTimer();
@@ -558,7 +562,7 @@ function runChild(
       stopTimer();
       // [!]: A call the script did not wait for never runs past its end: the one in flight is aborted, as on Stop, and
       // the queued ones answer stopped without running. The result waits for the one in flight to settle.
-      inner.abort();
+      callAbort.abort();
       finishInput();
     };
     const onLine = (line: string) => {
@@ -606,7 +610,7 @@ function runChild(
     child.on("close", (code, exitSignal) => {
       exit = { code, signal: exitSignal };
       // [>]: Nothing more can come from the child: a call it was waiting on is no longer wanted.
-      inner.abort();
+      callAbort.abort();
       settle();
     });
 
