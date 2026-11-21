@@ -478,8 +478,9 @@ A workspace `settings.json` cannot turn it on.
   so does the script itself: a script saves replies, not steps. Once the turn reaches its limit, the script's next
   call is refused without running, the script ends, and the turn stops as it does after a direct call.
 - The chat shows a script as one row, `run_script` with its number of lines, which opens to the code. The rows of the
-  calls it made follow, one level in, then its result. They show as each call finishes, and are saved at once, so a
-  reload keeps what a script already wrote. To keep conversations small, each of those rows keeps only the start of
+  calls it made follow, one level in, then its result. They show as each call finishes, and each is saved before the script
+  goes on, so a reload keeps what a script already wrote; a crash can lose at most the record of its last call, if
+  it came while that call was being saved. To keep conversations small, each of those rows keeps only the start of
   a long result or file content (about 2,000 characters), ending with a line that gives its full size, and keeps
   the whole path or command up to 4,096 characters; the script
   itself gets everything, and **Changed files** shows each change whole. **Stop** stops the script; the calls it finished stay, and **Undo

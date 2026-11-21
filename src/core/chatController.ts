@@ -317,9 +317,8 @@ type CallSetup = {
  * flight, then appended to the entries, and cleared, in the one update that ends the script (its step, or Stop).
  * Each staged step is the trace `innerStepTrace` keeps, at most 26,576 characters of values per call: the names its
  * call acted on (its path, its command) up to `NAME_ARGUMENT_CHARS` each, plus `INNER_STEP_CHARS`.
- * `save`: the save of those steps in flight (`saveScriptSteps`), `again` once a step was staged after it started.
  */
-type ScriptRun = { conversation: Conversation; stop: AbortSignal; steps: ToolStep[]; save?: { again: boolean } };
+type ScriptRun = { conversation: Conversation; stop: AbortSignal; steps: ToolStep[] };
 
 type UserEntry = ChatEntry & { role: "user" };
 
@@ -1653,9 +1652,12 @@ export class ChatController {
   /**
    * One call `script` made, run and recorded as a reply's call is (`runCall`), its step staged in `script.steps`
    * rather than the entries: the reply stays the last entry while the script runs. Each completed step shows at once
-   * (`ChatState.scriptSteps`) and is saved at once, after the reply in flight, so a crash keeps the record of a write
-   * that reached the disk. While the call waits on an approval the call reads as not running; once it ends, the script
-   * runs again. A call aborted by the script's own end is staged as any call that settled: the user did not stop it,
+   * (`ChatState.scriptSteps`) and is saved at once, after the reply in flight, and the script gets the call's result
+   * only once that save has settled (or `signal` aborted): a script makes its next call within milliseconds, so
+   * without the wait a crash could lose the record of several writes that reached the disk; with it, a crash loses at
+   * most the record of the last call, whose save was still landing. A failed save is reported as any other
+   * (`storageProblem`) and the script goes on: its steps stay staged and the next save holds them. While the call
+   * waits on an approval the call reads as not running; once it ends, the script runs again. A call aborted by the script's own end is staged as any call that settled: the user did not stop it,
    * and its command may have run or its write landed, which Retry's and Edit's warning count. A call that settles after
    * Stop or a navigation changes nothing: its step is dropped, as Stop drops a direct call's, and a write it made is
    * still recorded for undo by the applier. The step staged is the call's trace
@@ -1677,28 +1679,9 @@ export class ChatController {
     script.steps.push(ran.step);
     this.state.callRunning = true;
     this.emit();
-    this.saveScriptSteps(script);
+    await unlessAborted(this.save(script.conversation), signal);
     // [>]: The step keeps a trace; the script gets the whole result, or the tool's own value for it when it has one.
     return ran.result.forScript ?? { status: ran.result.status, text: ran.result.text };
-  }
-
-  /**
-   * Save `script`'s conversation with the steps staged so far: at once when no save of the script is in flight, else
-   * once that one has landed, and then once for every step staged meanwhile. A script's calls can complete faster
-   * than the disk takes their saves, and each save holds a copy of the whole record, so at most one is in flight and
-   * the next is taken when it starts, holding every step staged by then.
-   */
-  private saveScriptSteps(script: ScriptRun): void {
-    if (script.save) {
-      script.save.again = true;
-      return;
-    }
-    const save = { again: false };
-    script.save = save;
-    void this.save(script.conversation).then(() => {
-      script.save = undefined;
-      if (save.again) this.saveScriptSteps(script);
-    });
   }
 
   /** The tools a script of a turn in `mode` may name only to be refused: in Plan, those Plan leaves out. */

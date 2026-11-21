@@ -539,7 +539,9 @@ what the script prints or returns goes back to the model. It is an experimental 
   Retry's and Edit's warning counts a command that started (`docs/spec/chat-panel.md`). Only Stop drops a step.
 - The step's text: each printed line in order, then the returned value (a string as is, anything else as JSON), cut
   at 2,000 lines with the usual notice. Nothing printed or returned gives an `ok` text telling the model to print what
-  it needs. An uncaught error makes the step `error`, ending `run_script: the script stopped on an error: <message>`.
+  it needs. An uncaught error makes the step `error`, ending `run_script: the script stopped on an error: <message>`,
+  the message cut to 2,000 characters and `…`. The host applies these cuts and the output limit below to the end
+  frame it receives, since the child is untrusted and a script that leaves the vm can write that frame itself.
 - The step limit. Every tool call of a turn is one step toward `brokeCode.maxToolSteps`, whoever makes it: the
   `run_script` call is one, taken before the script starts, and each call the script makes is one more, taken when
   the host admits the call (the checks above passed, and the arguments limit below), before it queues, so calls queued
@@ -562,7 +564,8 @@ what the script prints or returns goes back to the model. It is an experimental 
   approval may wait as long as the user takes; what the record keeps is bounded by the trace (below). Each of the
   others ends the script: 10 seconds of the script's own running time between calls
   (`SCRIPT_RUN_MS`; the time a call takes, a wait for an approval included, never counts); 1 MiB of printed output,
-  counted in the child; one protocol line over 8 MiB; 32 MiB of answers the child left unread; 512 MiB of resident
+  counted in the child as the script prints and checked again by the host on the end frame (past it, the output is
+  cut to 1 MiB and the script ends on `the script printed more than 1048576 characters`); one protocol line over 8 MiB; 32 MiB of answers the child left unread; 512 MiB of resident
   memory (`SCRIPT_MEMORY_BYTES`), read with `/bin/ps` every 250 ms, since macOS applies no memory limit to a process,
   and failing closed when it cannot be read; 10 seconds for the child to exit once the host has ended its input after
   the script's end (a script that left the vm could keep it alive); and 60 seconds of processor time (`SCRIPT_CPU_SECONDS`), a kernel limit that holds even when the host died.
@@ -602,16 +605,20 @@ what the script prints or returns goes back to the model. It is an experimental 
 - Live state and the record. While a script runs, its reply stays the last entry, `streaming`, so `isReplying` and
   every guard hold. The steps of the calls it completed, marked `fromScript: true`, as traces, are staged by the turn, in call
   order: shown live in `ChatState.scriptSteps` (absent otherwise), and saved after the reply in flight, at each step,
-  through the store's queue without waiting, as a direct call's step is saved, with at most one save of a script in
-  flight: a step staged while one is in flight is saved by the next, which starts as that one lands. When the script ends, its
+  through the store's queue; the script gets the call's result only once that save has settled (or the script ended
+  or Stop came), so it makes no further call meanwhile. A direct call's step is saved the same way, queued in the
+  update that records it, but the next request does not wait for that save: the next call needs a whole reply first,
+  while a script's next call comes within milliseconds. A failed save shows the panel's save error
+  (`storageProblem` `saveFailed`, "Could not save the conversation.") and the script goes on: the call's result is
+  unchanged, the step stays staged, and the next save holds it. When the script ends, its
   inner steps join the entries, then its `run_script` step and the next reply, in one update. On Stop, the reply ends
   `stopped` followed by the completed inner steps, and no `run_script` step: the open approval is dismissed, the calls
   still queued are cancelled, and the call in flight has its step dropped, as a direct call's is; a write it made that
   lands after Stop is still recorded for undo by the applier, tied to no step. A call that settles after Stop, New
   chat, or another navigation changes nothing: no entry, no staged step, no `callRunning`. A reload while a script ran
   shows the reply stopped, with the inner steps saved so far (`docs/spec/conversations.md`). Accepted window, the same
-  as for a direct call: a crash between a write reaching the disk and its step's save loses that step's record; without
-  a storage folder, nothing is saved.
+  as for a direct call: a crash between a write reaching the disk and its step's save landing loses that step's
+  record, which for a script is at most its last completed call; without a storage folder, nothing is saved.
 - History. A reply's tool group (`toolGroup`: the inner steps, then the first tool step after them a script did not
   make) goes to the model as one step. A finished script sends its `run_script` result; after its text, inside the
   wrapper, one line per inner write since undone, in order: `The user undid this change afterwards: <tool> <path>`,

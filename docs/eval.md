@@ -122,10 +122,14 @@ This file describes `bun run eval`: what it runs, its sandbox, its scenarios, it
   - `gather`: nine files `stock/<depot>.txt`, each with a `quantity: N` line among a `depot`, an `updated`, a `shelf`,
     and a `reserved: N` line; the message asks for the total quantity across all depots (766). Passes when the `ok`
     `read_file` and `search` steps (a direct call's or a script's call's) held every `quantity: N` line between them
-    (a whole line, or a search line's end), else `wrongTool`; the answer holds 766 as a number token of its own (the
-    `command` scenario's split) and no other number token but a depot's quantity or the count of depots (9), else
-    `wrongAnswer`, so a reply that shows its sum passes and "766 is incorrect. The total is 765." fails; and no file
-    changed. A script's own output never counts, since a script can print 766 without reading a file. Until 2026-11-21
+    (a whole line, or a search line's end), else `wrongTool`; the answer gives 766 and no other number, else
+    `wrongAnswer`: of its number tokens (the `command` scenario's split, so `7660`, `1766`, `766.0`, and `1,766` are
+    each one token and none is 766), each 9 (the count of depots) is dropped, then, when the rest hold all nine depot
+    quantities, one of each is dropped (a sum written out), and at least one token must be left, each 766. So "766",
+    "The total is 766 across 9 depots.", and a full sum ending in 766 pass; "766 is incorrect. The total is 203." and
+    "766 is incorrect. The total is 765." fail. A known strictness: an answer that cites only some quantities beside
+    766 ("Marseille holds 203; the total is 766."), a numbered list, a decimal 766.0, or a sum written without spaces
+    (`37+142+…`, one token) fails too, since the message asks to reply with the number; and no file changed. A script's own output never counts, since a script can print 766 without reading a file. Until 2026-11-21
     a step holding 766, the script's output included, also counted, and any other number beside 766 in the answer was
     accepted; the measured results below were judged that way and were not judged again.
 
@@ -217,7 +221,7 @@ request are the ones before it, byte for byte.
   value past the cut, is judged `wrongTool`. Every fixture file but `dispatch.log` fits whole.
 - Limits, each ending the script with its own message: 10 seconds
   of the script's own running time between calls (the time a call takes, such as a wait for approval, never counts);
-  1 MiB of printed output, counted in the child; one protocol line over 8 MiB; and a kernel limit of 60 seconds of
+  1 MiB of printed output, counted in the child and checked again by the host on the end frame; one protocol line over 8 MiB; and a kernel limit of 60 seconds of
   processor time (`ulimit -t`, set by `/bin/sh` before `sandbox-exec` applies the profile), which holds even if the
   host dies. Stop kills the child and aborts the call running.
 - The child. `/bin/sh -c 'ulimit -t 60 || exit 125; exec "$@"'` runs `/usr/bin/sandbox-exec -p <profile> -D RUNTIME=<bun>`, which

@@ -7897,30 +7897,62 @@ describe("ChatController run_script", () => {
     expect(outline(await reloaded(files, state().conversationId))).toEqual(expected);
   });
 
-  test("a script's calls that complete faster than the disk saves keep one save of them in flight", async () => {
+  test("a script gets a call's result only once the save holding the call's step has landed", async () => {
     writeFileSync(join(dir, "a.txt"), "a\n");
     const files = memoryFiles();
     const write = files.write;
-    let writes = 0;
+    let release = () => {};
+    const landed = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    // [>]: Only the saves that hold a script's step wait; the turn's own saves before the script land at once.
     files.write = async (name, content) => {
-      writes += 1;
-      await Bun.sleep(30);
+      if (content.includes('"fromScript"')) await landed;
       return write(name, content);
     };
-    const reads = 20;
+    const reads = 3;
     const code = `for (let i = 0; i < ${reads}; i++) await read_file({ path: "a.txt" }); console.log("read");`;
     const { controller, state } = await scriptTurn([{ content: scriptCall(code) }, { content: "Done." }], { files });
-    await controller.send("read it");
+    const sent = controller.send("read it");
+    await until(state, (s) => s.scriptSteps?.length === 1);
+    await Bun.sleep(100);
+    // [!]: The second read waits on the first one's save: a crash now loses at most the step still landing.
+    expect(state().scriptSteps).toHaveLength(1);
+    release();
+    await sent;
     const expected = ["user", "assistant:done", ...Array(reads).fill("read_file*"), "run_script", "assistant:done"];
     expect(outline(state().entries)).toEqual(expected);
-    // [>]: The store's queue has drained once no write started for longer than one takes.
-    for (let seen = -1; seen !== writes; ) {
-      seen = writes;
-      await Bun.sleep(150);
-    }
-    // [>]: A record and a summary per save: one save per call would make more than 2 writes per call.
-    expect(writes).toBeLessThan(2 * reads);
+    await Bun.sleep(20);
     expect(outline(await reloaded(files, state().conversationId))).toEqual(expected);
+  });
+
+  test("a save that fails while a script runs shows the save error, and the script goes on to its result", async () => {
+    writeFileSync(join(dir, "a.txt"), "a\n");
+    const files = memoryFiles();
+    const write = files.write;
+    files.write = async (name, content) => {
+      if (content.includes('"fromScript"')) throw new Error("ENOSPC");
+      return write(name, content);
+    };
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    const code = 'await read_file({ path: "a.txt" }); await read_file({ path: "a.txt" }); console.log("read");';
+    const { controller, state, states } = await scriptTurn([{ content: scriptCall(code) }, { content: "Done." }], {
+      files,
+    });
+    await controller.send("read it");
+    logged.mockRestore();
+    // [>]: The failure shows while the script still runs, beside its staged step, never as the call's result.
+    expect(states.some((s) => s.scriptSteps?.length === 1 && s.storageProblem?.kind === "saveFailed")).toBe(true);
+    expect(outline(state().entries)).toEqual([
+      "user",
+      "assistant:done",
+      "read_file*",
+      "read_file*",
+      "run_script",
+      "assistant:done",
+    ]);
+    expect(state().entries[4]).toMatchObject({ name: "run_script", status: "ok", text: "read" });
+    expect(state().storageProblem).toMatchObject({ kind: "saveFailed", cause: "Error: ENOSPC" });
   });
 
   test("Stop during a call's approval cancels it, keeps the calls completed, and drops the script's step", async () => {

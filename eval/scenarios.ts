@@ -590,11 +590,26 @@ const STOCK: Record<string, number> = {
   toulouse: 129,
 };
 const STOCK_TOTAL = Object.values(STOCK).reduce((total, quantity) => total + quantity, 0);
+
 /**
- * The number tokens a gather answer may hold beside the total: the depots' quantities and how many depots there are,
- * so a reply that shows its sum passes, and one that also gives another total does not.
+ * Whether a gather `answer` gives the stock total and no other number. Of its number tokens (`numberTokens`, so `7660`,
+ * `1766`, `766.0`, and `1,766` are each one token, never 766), drop each one that is the number of depots; then, if
+ * the rest hold every depot's quantity (as a multiset), drop one of each, a sum written out; at least one token must
+ * be left, and every one left must be the total. So "766 is incorrect. The total is 203." fails, and so does an answer
+ * that cites only some quantities beside the total.
  */
-const STOCK_INPUTS = new Set([...Object.values(STOCK), Object.keys(STOCK).length].map(String));
+export function givesStockTotal(answer: string): boolean {
+  const depots = String(Object.keys(STOCK).length);
+  const tokens = numberTokens(answer).filter((token) => token !== depots);
+  const rest = [...tokens];
+  const wroteSum = Object.values(STOCK).every((quantity) => {
+    const at = rest.indexOf(String(quantity));
+    if (at !== -1) rest.splice(at, 1);
+    return at !== -1;
+  });
+  const left = wroteSum ? rest : tokens;
+  return left.length > 0 && left.every((token) => token === String(STOCK_TOTAL));
+}
 
 /** One `stock/<depot>.txt` per depot: its `quantity: N` line among others, `reserved: N` a number not to add. */
 function stockFiles(): WorkspaceFiles {
@@ -615,8 +630,8 @@ function stockFiles(): WorkspaceFiles {
 /**
  * Gather one value from many files: the total of the `quantity` lines of nine depot files. Passes when the `ok`
  * `read_file` and `search` steps (a direct call's or a script's call's) held every `quantity` line between them, else
- * `wrongTool`, and the answer holds the total as a number token of its own (the `command` scenario's split) and no other
- * number token but `STOCK_INPUTS`, else `wrongAnswer`, so "766 is wrong, the total is 765." fails; no file changes.
+ * `wrongTool`, and the answer gives the total and no other number (`givesStockTotal`), else `wrongAnswer`; no file
+ * changes.
  * A script's own output never counts: it can print the total without reading a file. Every command is rejected and
  * the step limit is `CHAIN_STEPS`, as in `rename`.
  */
@@ -637,11 +652,7 @@ export const GATHER_SCENARIO: Scenario = {
     const sawEach = quantities.every((line) => read.some((text) => line.test(text)));
     if (!sawEach) return { pass: false, category: "wrongTool", detail: `steps: ${describeSteps(steps)}` };
     const answer = lastReply(entries).content;
-    const tokens = numberTokens(answer);
-    const total = String(STOCK_TOTAL);
-    if (tokens.includes(total) && tokens.every((token) => token === total || STOCK_INPUTS.has(token))) {
-      return { pass: true };
-    }
+    if (givesStockTotal(answer)) return { pass: true };
     return { pass: false, category: "wrongAnswer", detail: `answer: ${excerpt(answer)}` };
   },
 };

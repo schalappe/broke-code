@@ -82,6 +82,38 @@ describe("runScript", () => {
     expect(tools.calls).toEqual([{ name: "read_file", args: { path: "a", start_line: "3" } }]);
   });
 
+  test("a call made while another's arguments convert goes first, so the ids follow the frames and both run", async () => {
+    const tools = recorder();
+    const result = await script(
+      [
+        "let first;",
+        "const path = { toString() { first = read_file({ path: 'inner' }); return 'outer'; } };",
+        "const second = await read_file({ path });",
+        "console.log(await first, '|', second);",
+      ].join("\n"),
+      tools.run,
+    );
+    expect(tools.calls.map((call) => call.args.path)).toEqual(["inner", "outer"]);
+    expect(result).toEqual({
+      status: "ok",
+      text: 'read_file {"path":"inner"} | read_file {"path":"outer"}',
+    });
+  });
+
+  test("a getter that throws while the arguments convert rejects that call alone, sending nothing", async () => {
+    const tools = recorder();
+    const result = await script(
+      [
+        "try { await read_file({ get path() { throw new Error('no path'); } }); }",
+        "catch (error) { console.log('caught:', error.message); }",
+        "console.log(await read_file({ path: 'a' }));",
+      ].join("\n"),
+      tools.run,
+    );
+    expect(tools.calls).toEqual([{ name: "read_file", args: { path: "a" } }]);
+    expect(result).toEqual({ status: "ok", text: 'caught: no path\nread_file {"path":"a"}' });
+  });
+
   test("a failed call throws an Error holding the result text, which the script may catch", async () => {
     const tools = recorder(() => ({ status: "error", text: "edit_file: the passage was not found." }));
     const result = await script(
@@ -409,6 +441,47 @@ describe("runScript limits", () => {
     expect(result.text).toEndWith(
       `run_script: the script stopped on an error: the script printed more than ${MAX_SCRIPT_OUTPUT} characters`,
     );
+  });
+
+  test("an error the script stops on is cut to 2,000 characters", async () => {
+    const result = await script("throw new Error('e'.repeat(5000));");
+    expect(result).toEqual({
+      status: "error",
+      text: `run_script: the script stopped on an error: ${"e".repeat(2000)}…`,
+    });
+  });
+
+  describe("an end frame the child writes itself is held to the same limits", () => {
+    /** A script that leaves the vm, writes its own end frame `done`, then waits for its input to end. */
+    const forged = (done: string) =>
+      [
+        "const outer = console.log.constructor('return globalThis')();",
+        `outer.process.stdout.write(JSON.stringify({ done: ${done} }) + '\\n');`,
+        "await new Promise(() => {});",
+      ].join("\n");
+
+    test("one line of output over the limit is cut to it and ends the script on the overflow error", async () => {
+      const result = await script(forged(`{ output: 'x'.repeat(${MAX_SCRIPT_OUTPUT + 10}) }`));
+      expect(result).toEqual({
+        status: "error",
+        text: `${"x".repeat(MAX_SCRIPT_OUTPUT)}\nrun_script: the script stopped on an error: the script printed more than ${MAX_SCRIPT_OUTPUT} characters`,
+      });
+    });
+
+    test("an error over 2,000 characters is cut", async () => {
+      const result = await script(forged("{ output: 'before', error: 'e'.repeat(100000) }"));
+      expect(result).toEqual({
+        status: "error",
+        text: `before\nrun_script: the script stopped on an error: ${"e".repeat(2000)}…`,
+      });
+    });
+
+    test("output over 2,000 lines is cut to them with the usual notice", async () => {
+      const result = await script(forged("{ output: Array(2100).fill('l').join('\\n') }"));
+      expect(result.status).toBe("ok");
+      expect(result.text.split("\n")).toHaveLength(2001);
+      expect(result.text).toEndWith("[truncated: 100 more lines not shown]");
+    });
   });
 
   test("a child that ends and then stays alive is killed once its time to exit is up", async () => {

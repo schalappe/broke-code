@@ -83,8 +83,9 @@ export function stepLimitRefusal(limit: number): string {
  */
 export const SCRIPT_RUN_MS = 10_000;
 /**
- * Characters the script may print, its returned value included, captured in the child: a bound on the child's memory
- * and on the frame it sends. Passing it ends the script on an error.
+ * Characters the script may print, its returned value included. The host applies it to the done frame (`doneResult`),
+ * since the child is untrusted; the child also counts it, so an ordinary script that passes it ends there on the error
+ * rather than on the frame limit. Passing it ends the script on an error.
  */
 export const MAX_SCRIPT_OUTPUT = 1024 * 1024;
 /**
@@ -127,7 +128,7 @@ const MEMORY_CHECK_MS = 250;
 const PS = "/bin/ps";
 /** The child's error output kept for the result: enough for the runtime's or the sandbox's message, never a flood. */
 const MAX_STDERR_CHARS = 4096;
-/** Characters of a thrown error's text the child keeps. */
+/** Characters of the error a script stopped on that its result keeps, cut by the host (`doneResult`). */
 const MAX_ERROR_CHARS = 2000;
 /**
  * Tools a script never calls: itself, and those whose result must reach the model whole (a skill's instructions, the
@@ -187,8 +188,10 @@ const SCRIPT_ENDED = `${TOOL}: the script has ended; this call was not made.`;
 /**
  * The child's program, run as `<runtime> -e <source>`. It reads JSON Lines on stdin: first `{ code, tools }`, then
  * `{ id, status, text }`, the result of each call it asked for. It writes JSON Lines on stdout: `{ call: { id, name,
- * args } }` per tool call, its ids increasing, then `{ done: { output, error? } }`, sent as the script returns or
- * throws, or as its output passes the limit; a call made after it throws without being sent. The script runs inside a
+ * args } }` per tool call, its ids increasing in the order the frames are written (the arguments are converted to text
+ * before the id is taken, since a getter or a `toString` may call another tool), then `{ done: { output, error? } }`,
+ * sent as the script returns or throws, or as its output passes the limit; a call made after it throws without being
+ * sent. The host trusts none of it: it checks every frame and applies every limit itself. The script runs inside a
  * `node:vm` context whose only
  * globals are the tool functions and `console`, whose `log` and `error` are captured here, never written to stdout. A
  * second layer only: functions passed into the context lead back to the child's realm, so the OS sandbox is the guard.
@@ -198,7 +201,6 @@ export const SCRIPT_BOOTSTRAP = [
   '"use strict";',
   'const vm = require("node:vm");',
   `const MAX_OUTPUT = ${MAX_SCRIPT_OUTPUT};`,
-  `const MAX_ERROR = ${MAX_ERROR_CHARS};`,
   `const OVERFLOW = ${JSON.stringify(OUTPUT_OVERFLOW)};`,
   `const ENDED = ${JSON.stringify(SCRIPT_ENDED)};`,
   "const waiting = new Map();",
@@ -237,7 +239,7 @@ export const SCRIPT_BOOTSTRAP = [
   '      text = name === "Error" ? error.message : name + ": " + error.message;',
   "    } else text = shown(error);",
   "  } catch (failure) { text = plain(error); }",
-  '  return text.length > MAX_ERROR ? text.slice(0, MAX_ERROR) + "…" : text;',
+  "  return text;",
   "}",
   "function finish(failed, value, error) {",
   "  if (finished) return;",
@@ -256,9 +258,11 @@ export const SCRIPT_BOOTSTRAP = [
   "  return converted;",
   "}",
   "function call(name, args) {",
+  "  let converted;",
+  "  try { converted = argumentsOf(args); } catch (error) { return Promise.reject(error); }",
   "  if (finished) return Promise.reject(new ContextError(ENDED));",
   "  return new Promise((resolve, reject) => {",
-  "    const frame = { id: ++nextId, name, args: argumentsOf(args) };",
+  "    const frame = { id: ++nextId, name, args: converted };",
   "    waiting.set(frame.id, { resolve, reject });",
   "    send({ call: frame });",
   "  });",
@@ -702,24 +706,28 @@ function scriptResult(run: {
   if (ending?.kind === "killed") {
     return { status: "error", text: `${TOOL}: the script was stopped, since ${ending.detail}.` };
   }
-  if (done !== undefined) {
-    const output = cutOutput(done.output);
-    if (done.error !== undefined) {
-      const line = `${TOOL}: the script stopped on an error: ${done.error}`;
-      return { status: "error", text: output === "" ? line : `${output}\n${line}` };
-    }
-    return { status: "ok", text: output === "" ? NO_OUTPUT : output };
-  }
+  if (done !== undefined) return doneResult(done);
   if (run.startFailure !== undefined) {
     return { status: "error", text: `${TOOL}: the script runtime could not start (${run.startFailure}).` };
   }
   return { status: "error", text: endedEarlyText(exit, run.stderr, run.cpuSeconds) };
 }
 
-/** `output` cut to its first 2,000 lines, with the usual notice. */
-function cutOutput(output: string): string {
-  const cut = truncateLines(output, MAX_MENTION_LINES);
-  return cut.omitted > 0 ? `${cut.text}\n${truncationNotice(cut.omitted)}` : cut.text;
+/**
+ * The result of the child's done frame, the one place its limits hold, since the child is untrusted and writes the
+ * frame itself: an output over `MAX_SCRIPT_OUTPUT` characters is cut to them and ends the script on `OUTPUT_OVERFLOW`,
+ * as the child ends it; the output is then cut to its first 2,000 lines with the usual notice; the error is cut to
+ * `MAX_ERROR_CHARS`, ending with `…`.
+ */
+function doneResult(done: Done): ToolResult {
+  const overflowed = done.output.length > MAX_SCRIPT_OUTPUT;
+  const cut = truncateLines(overflowed ? done.output.slice(0, MAX_SCRIPT_OUTPUT) : done.output, MAX_MENTION_LINES);
+  const output = cut.omitted > 0 ? `${cut.text}\n${truncationNotice(cut.omitted)}` : cut.text;
+  const error = overflowed ? OUTPUT_OVERFLOW : done.error;
+  if (error === undefined) return { status: "ok", text: output === "" ? NO_OUTPUT : output };
+  const shown = error.length > MAX_ERROR_CHARS ? `${error.slice(0, MAX_ERROR_CHARS)}…` : error;
+  const line = `${TOOL}: the script stopped on an error: ${shown}`;
+  return { status: "error", text: output === "" ? line : `${output}\n${line}` };
 }
 
 /**

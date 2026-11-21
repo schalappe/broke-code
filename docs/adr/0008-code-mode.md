@@ -78,9 +78,11 @@ script makes are execution detail (ADR 0001's "one body call per reply" stands).
   the store, which would refuse saves the user cannot act on, and capping a script at the context size, which would
   remove the point of a script. Two earlier bounds, on the arguments and then on the result text a script's steps
   hold in all (8 MiB), are gone: the trace makes them redundant, and they left a turn of 50 scripts holding 400 MiB. While the script runs, the completed steps
-  are staged by the turn: shown live (`ChatState.scriptSteps`) and saved after the reply in flight, so a crash keeps
-  the record of a write that reached the disk, with at most one save of them in flight, since calls can complete
-  faster than the disk takes a copy of the whole record. When the script ends they join the entries before the `run_script`
+  are staged by the turn: shown live (`ChatState.scriptSteps`) and saved after the reply in flight at each completed
+  call, and the script gets that call's result only once its save has settled. A script makes its next call within
+  milliseconds, so a crash loses at most the record of its last completed call, whose save was still landing, as a
+  crash loses a direct call's step before its save lands; the earlier design, one save in flight that later steps
+  joined, let a script write several files that a crash then left out of the record. When the script ends they join the entries before the `run_script`
   step; on Stop, after the stopped reply, with no `run_script` step. The history sends a reply's group as one step:
   the `run_script` result, with a line per inner write the user undid, or, for a script with no step of its own, one
   error result the history writes (stopped, then one line per completed call, never their result text, or a line
