@@ -142,7 +142,9 @@ This file says which file holds which responsibility. Update it when a module ga
   (`admit`, and the `blocked` tools that only refuse, Plan's), runs the calls one at a time through the run context's
   `innerCalls`, which the controller's `runCall` approves and records as steps marked `fromScript`, a `read_file`
   among them handing the script the file's raw text (`ToolResult.forScript`), and enforces
-  `MAX_SCRIPT_CALLS`, `SCRIPT_RUN_MS`, `MAX_SCRIPT_OUTPUT`, and `SCRIPT_CPU_SECONDS`; `scriptProblem`, the runtime
+  `MAX_SCRIPT_CALLS`, `MAX_SCRIPT_ARGUMENTS`, `SCRIPT_RUN_MS`, `MAX_SCRIPT_OUTPUT`, `SCRIPT_MEMORY_BYTES` (read with
+  `ps`), and `SCRIPT_CPU_SECONDS`, aborting the calls a script left once it ends and killing a child that does not
+  exit then; `scriptProblem`, the runtime
   probe, a round trip through a stub tool within `SCRIPT_PROBE_MS`; the measured profile is in `docs/eval.md`; and
   `codeMode.ts`: `codeModeSetting`, the setting from its user value only, `hostScriptEnv`, the extension host's
   executable and its app bundle's frameworks as the script runtime, and `CodeModeSwitch`, the per-window probe and the
@@ -244,7 +246,8 @@ This file says which file holds which responsibility. Update it when a module ga
   allow-listed environment and `sandbox-exec` with `BENCH_SANDBOX_PROFILE` as the launcher, the run's real paths as
   its parameters), and the skills discovered in a copy of the fixture home, never the real one;
   `report.ts` formats the scores, the mean replies per run, and the runs that chained tools in one script
-  (`repliesDone` and `chainedScript` of `scenarios.ts`); `bench.ts` is the CLI (`sandboxProblem`, its check before any run; `--no-ask-user`, the baseline without the tool; `--code-mode`, `run_script` offered, with `benchScriptProblem`, its own check before any run over the core probe), guarded by `import.meta.main` so `bun test` never starts it.
+  (`repliesDone` and `chainedScript` of `scenarios.ts`), each failed run's detail through `printable`, which escapes
+  the control characters a provider's text may hold, as `bench.ts` prints each run's line; `bench.ts` is the CLI (`sandboxProblem`, its check before any run; `--no-ask-user`, the baseline without the tool; `--code-mode`, `run_script` offered, with `benchScriptProblem`, its own check before any run over the core probe), guarded by `import.meta.main` so `bun test` never starts it.
   Its unit tests sit next to them and need no Ollama.
 - `media/`: `logo.png` (256 px), the extension icon on Open VSX and the Visual Studio Marketplace (`icon` in
   `package.json`; the registries refuse SVG), rendered from its source `logo.svg` with

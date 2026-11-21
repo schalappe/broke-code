@@ -526,14 +526,21 @@ what the script prints or returns goes back to the model. It is an experimental 
   the result is `ok` and throws an `Error` holding it otherwise, a rejection by the user included. `read_file` resolves
   with the lines asked for exactly as stored (no header, no fence, no notice) and throws when the 2,000-line cap would
   cut them, naming the range to read in parts; its step keeps the mention block. Calls run one at a time, in arrival
-  order, so `Promise.all` works but runs them in turn.
+  order, so `Promise.all` works but runs them in turn. The script ends when it returns or throws, or when its output
+  passes the limit: then the call it did not wait for that is running is aborted, as on Stop (its step dropped), the
+  calls queued behind it never run, a call it makes afterwards throws `run_script: the script has ended; this call was
+  not made.`, and the step waits for the call in flight to settle.
 - The step's text: each printed line in order, then the returned value (a string as is, anything else as JSON), cut
   at 2,000 lines with the usual notice. Nothing printed or returned gives an `ok` text telling the model to print what
   it needs. An uncaught error makes the step `error`, ending `run_script: the script stopped on an error: <message>`.
-- Limits, each ending the script with its own message: 100 calls (`MAX_SCRIPT_CALLS`; call 101 throws and never
-  runs); 10 seconds of the script's own running time between calls (`SCRIPT_RUN_MS`; the time a call takes, a wait for
-  an approval included, never counts); 1 MiB of printed output, counted in the child; one protocol line over 8 MiB;
-  and 60 seconds of processor time (`SCRIPT_CPU_SECONDS`), a kernel limit that holds even when the host died. A script
+- Limits, each with its own message: 100 calls (`MAX_SCRIPT_CALLS`; call 101 throws and never runs); 8 MiB of
+  arguments across the calls of one script, admitted calls only (`MAX_SCRIPT_ARGUMENTS`; the call past it throws and
+  never runs). Each of the others ends the script: 10 seconds of the script's own running time between calls
+  (`SCRIPT_RUN_MS`; the time a call takes, a wait for an approval included, never counts); 1 MiB of printed output,
+  counted in the child; one protocol line over 8 MiB; 32 MiB of answers the child left unread; 512 MiB of resident
+  memory (`SCRIPT_MEMORY_BYTES`), read with `/bin/ps` every 250 ms, since macOS applies no memory limit to a process,
+  and failing closed when it cannot be read; 10 seconds for the child to exit once the host has ended its input after
+  the script's end (a script that left the vm could keep it alive); and 60 seconds of processor time (`SCRIPT_CPU_SECONDS`), a kernel limit that holds even when the host died. A script
   is one step toward `brokeCode.maxToolSteps`, whatever the calls it made.
 - The sandbox. The child is `/bin/sh -c 'ulimit -t 60 || exit 125; exec "$@"'`, then `/usr/bin/sandbox-exec -p
   <profile>`, then the runtime with `-e <bootstrap>`, in `/`, with an environment built from nothing. The runtime is
@@ -556,8 +563,9 @@ what the script prints or returns goes back to the model. It is an experimental 
   (ADR 0005, addendum of 2026-11-21). The Plan paragraph of the prompt is unchanged.
 - Live state and the record. While a script runs, its reply stays the last entry, `streaming`, so `isReplying` and
   every guard hold. The steps of the calls it completed, marked `fromScript: true`, are staged by the turn, in call
-  order: shown live in `ChatState.scriptSteps` (absent otherwise), and saved at once, after the reply in flight, at
-  each step, through the store's queue without waiting, as a direct call's step is saved. When the script ends, its
+  order: shown live in `ChatState.scriptSteps` (absent otherwise), and saved after the reply in flight, at each step,
+  through the store's queue without waiting, as a direct call's step is saved, with at most one save of a script in
+  flight: a step staged while one is in flight is saved by the next, which starts as that one lands. When the script ends, its
   inner steps join the entries, then its `run_script` step and the next reply, in one update. On Stop, the reply ends
   `stopped` followed by the completed inner steps, and no `run_script` step: the open approval is dismissed, the calls
   still queued are cancelled, and the call in flight has its step dropped, as a direct call's is; a write it made that
@@ -572,7 +580,8 @@ what the script prints or returns goes back to the model. It is an experimental 
   the path as the script gave it. A script with no step of its own (Stop, a reload) sends one result the history
   writes: `<tool_result tool="run_script" status="error">`, `run_script: the script was stopped before it finished,
   after these tool calls:`, one line per completed call (`<tool> <path or the command's first line>: ok` or
-  `error`, never its result text), then the same undo lines. Inner steps are never sent otherwise. The context budget,
+  `error`, never its result text), then the same undo lines; a script stopped before any call completed sends
+  `run_script: the script was stopped before it finished, before any of its tool calls completed.` Inner steps are never sent otherwise. The context budget,
   the kept recent steps, the summary request, and the size estimate see a group as one step; a group with an undone
   inner write is never replaced by the left-out line. After a summary, an undone inner write before it gets the
   summary's undo line, named the same way (`<tool> <path>`). Records holding inner steps are replayed this way

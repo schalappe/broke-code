@@ -120,10 +120,12 @@ This file describes `bun run eval`: what it runs, its sandbox, its scenarios, it
     replace-all of the old name also renames the decoy and fails `wrongEdit`; an `edit_file` of `parcel_weight` alone
     in `src/weights.py` matches twice and is refused.
   - `gather`: nine files `stock/<depot>.txt`, each with a `quantity: N` line among a `depot`, an `updated`, a `shelf`,
-    and a `reserved: N` line; the message asks for the total quantity across all depots (766). Passes when an `ok` tool
-    step's text (a direct call's, a script's call's, or the script's output) held the total as a number token or every
-    `quantity: N` line (a whole line, or a search line's end), the answer holds 766 as a number token of its own (the
-    `command` scenario's check), and no file changed; without such a step it is `wrongTool`.
+    and a `reserved: N` line; the message asks for the total quantity across all depots (766). Passes when the `ok`
+    `read_file` and `search` steps (a direct call's or a script's call's) held every `quantity: N` line between them
+    (a whole line, or a search line's end), the answer holds 766 as a number token of its own (the `command` scenario's
+    check), and no file changed; otherwise it is `wrongTool`. A script's own output never counts, since a script can
+    print 766 without reading a file. Until 2026-11-21 a step holding 766, the script's output included, also counted;
+    the measured results below were judged that way and were not judged again.
 
   `rename` and `gather` measure Code Mode (below): each takes several related calls, one per file. Both
   reject every command, so a shell command cannot stand in and a run compares direct calls with one script, and both
@@ -133,7 +135,8 @@ This file describes `bun run eval`: what it runs, its sandbox, its scenarios, it
   A failed run shows one category and a one-line detail: `malformed`, `wrongTool`, `wrongAnswer`, `stepLimit`,
   `contextFull`, `providerError`, `wrongEdit` (a file the scenario writes is missing or holds other text, with the
   first differing line), or `workspaceChanged` (the written files are right, or none was asked for, but another file
-  changed). Each scenario's line of the report also gives the mean number of replies per run that ended `done`
+  changed). The detail holds what the provider wrote, so the per-run lines and the report print each control
+  character in it as a `\u` escape; the dump keeps it as written. Each scenario's line of the report also gives the mean number of replies per run that ended `done`
   (summaries aside), how many requests the model needed, and how many passing runs `chained`: one `ok` `run_script`
   step ran at least two `ok` calls of its own. The bar is 9 runs of 10 per model and scenario; the bench exits 1 when a model is under it, and before
   any run when the sandbox cannot be applied, or Ollama is unreachable or does not list a model. `--model <name>`, `--scenario <name>` (both

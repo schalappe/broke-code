@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { formatReport, passBar, type RunResult } from "./report";
+import { formatReport, passBar, printable, type RunResult } from "./report";
 
 const pass = (model: string, ms = 20_000): RunResult => ({
   model,
@@ -88,6 +88,13 @@ describe("formatReport", () => {
     );
   });
 
+  test("prints a failed run's detail with its control characters escaped", () => {
+    const detail = "answer: \u001b[2K\u001b[1Agemma read: 10/10 passed\u0007\u009b";
+    const failed: RunResult = { ...pass("m"), verdict: { pass: false, category: "wrongAnswer", detail } };
+    const text = formatReport([failed], 1).text;
+    expect(text).toContain("    run 1 wrongAnswer: answer: \\u001b[2K\\u001b[1Agemma read: 10/10 passed\\u0007\\u009b");
+  });
+
   test("says every model met the bar", () => {
     const results = [...Array.from({ length: 9 }, () => pass("gemma", 1_000)), pass("gemma", 400)];
     expect(formatReport(results, 10)).toEqual({
@@ -99,5 +106,11 @@ describe("formatReport", () => {
         "Every model met the bar.",
       ].join("\n"),
     });
+  });
+});
+
+describe("printable", () => {
+  test("escapes every control character, line breaks included, and keeps the rest", () => {
+    expect(printable("a\nb\tc\u001b[31md\u007fé…")).toBe("a\\u000ab\\u0009c\\u001b[31md\\u007fé…");
   });
 });

@@ -8,7 +8,7 @@
  * caller's `InnerCalls`, which records and approves each one as a direct call, and enforces the limits. No `vscode`
  * import. Model-facing text is English and never localized.
  */
-import { type ChildProcess, spawn } from "node:child_process";
+import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { access } from "node:fs/promises";
 import { SANDBOX_EXEC } from "./fullAccess";
@@ -40,8 +40,9 @@ export const RUN_SCRIPT_TOOL: ToolSpec = {
  * which the profile lets the sandbox run and read; the bootstrap is passed after them as `-e <source>`. `environment`:
  * the child's whole environment, nothing inherited. `readable`: real paths the runtime must read besides its program
  * and the system libraries (a file or a folder, read-only). The rest is for tests: `sandboxExec`, where `sandbox-exec`
- * is (`SANDBOX_EXEC`); `runMs`, the script's running time between calls (`SCRIPT_RUN_MS`); `cpuSeconds`, the kernel
- * limit on the child's processor time (`SCRIPT_CPU_SECONDS`).
+ * is (`SANDBOX_EXEC`); `runMs`, the script's running time between calls (`SCRIPT_RUN_MS`), and the time the child
+ * has to exit once its input ends; `cpuSeconds`, the kernel limit on the child's processor time
+ * (`SCRIPT_CPU_SECONDS`); `memoryBytes`, the limit on its resident memory (`SCRIPT_MEMORY_BYTES`).
  */
 export type ScriptEnv = {
   runtime: readonly [string, ...string[]];
@@ -50,6 +51,7 @@ export type ScriptEnv = {
   sandboxExec?: string;
   runMs?: number;
   cpuSeconds?: number;
+  memoryBytes?: number;
 };
 
 /**
@@ -90,6 +92,24 @@ export const SCRIPT_CPU_SECONDS = 60;
  * anyway) and for the done frame, whose output may grow six times when escaped. Past it the script is stopped.
  */
 const MAX_FRAME_CHARS = 8 * 1024 * 1024;
+/**
+ * Characters of arguments all the calls of one script may pass, admitted calls only: the turn keeps each call's
+ * arguments in its step and saves them, so a script never makes it hold more than this. A call past it throws inside the
+ * script and is never run.
+ */
+export const MAX_SCRIPT_ARGUMENTS = 8 * 1024 * 1024;
+/**
+ * Characters of answers the host sent that have not reached the child's pipe: a child that stops reading its input
+ * while it asks for calls would otherwise grow the host's buffer without bound. Past it the script is stopped.
+ */
+const MAX_UNREAD_INPUT = 32 * 1024 * 1024;
+/**
+ * The child's resident memory past which the host kills it, in bytes. macOS applies no memory limit to a process
+ * (`ulimit -v`, `-d`, and `-m` all fail), so the host reads it with `ps` every `MEMORY_CHECK_MS`.
+ */
+export const SCRIPT_MEMORY_BYTES = 512 * 1024 * 1024;
+const MEMORY_CHECK_MS = 250;
+const PS = "/bin/ps";
 /** The child's error output kept for the result: enough for the runtime's or the sandbox's message, never a flood. */
 const MAX_STDERR_CHARS = 4096;
 /** Characters of a thrown error's text the child keeps. */
@@ -146,11 +166,15 @@ export function ancestorFolders(path: string): string[] {
 
 /** The message a script that printed too much ends on, in the child and in the result. */
 const OUTPUT_OVERFLOW = `the script printed more than ${MAX_SCRIPT_OUTPUT} characters`;
+/** What a call made once the script has ended throws, in the child: its done frame is sent, so the call never runs. */
+const SCRIPT_ENDED = `${TOOL}: the script has ended; this call was not made.`;
 
 /**
  * The child's program, run as `<runtime> -e <source>`. It reads JSON Lines on stdin: first `{ code, tools }`, then
  * `{ id, status, text }`, the result of each call it asked for. It writes JSON Lines on stdout: `{ call: { id, name,
- * args } }` per tool call, then `{ done: { output, error? } }`. The script runs inside a `node:vm` context whose only
+ * args } }` per tool call, its ids increasing, then `{ done: { output, error? } }`, sent as the script returns or
+ * throws, or as its output passes the limit; a call made after it throws without being sent. The script runs inside a
+ * `node:vm` context whose only
  * globals are the tool functions and `console`, whose `log` and `error` are captured here, never written to stdout. A
  * second layer only: functions passed into the context lead back to the child's realm, so the OS sandbox is the guard.
  * The child exits when its stdin ends. Plain JavaScript in quotes, no template literal, so the text runs as written.
@@ -161,6 +185,7 @@ export const SCRIPT_BOOTSTRAP = [
   `const MAX_OUTPUT = ${MAX_SCRIPT_OUTPUT};`,
   `const MAX_ERROR = ${MAX_ERROR_CHARS};`,
   `const OVERFLOW = ${JSON.stringify(OUTPUT_OVERFLOW)};`,
+  `const ENDED = ${JSON.stringify(SCRIPT_ENDED)};`,
   "const waiting = new Map();",
   "const output = [];",
   "let outputSize = 0;",
@@ -185,7 +210,7 @@ export const SCRIPT_BOOTSTRAP = [
   "function keep(line) {",
   "  if (overflow) throw new ContextError(OVERFLOW);",
   "  outputSize += line.length + 1;",
-  "  if (outputSize > MAX_OUTPUT) { overflow = true; throw new ContextError(OVERFLOW); }",
+  "  if (outputSize > MAX_OUTPUT) { overflow = true; finish(true); throw new ContextError(OVERFLOW); }",
   "  output.push(line);",
   "}",
   'function log(...values) { keep(values.map(shown).join(" ")); }',
@@ -216,6 +241,7 @@ export const SCRIPT_BOOTSTRAP = [
   "  return converted;",
   "}",
   "function call(name, args) {",
+  "  if (finished) return Promise.reject(new ContextError(ENDED));",
   "  return new Promise((resolve, reject) => {",
   "    const frame = { id: ++nextId, name, args: argumentsOf(args) };",
   "    waiting.set(frame.id, { resolve, reject });",
@@ -293,11 +319,13 @@ export function scriptLaunch(
  * rejects. Each call the script asks for is checked here before anything runs (a tool it may call, one object of known
  * arguments, every required one given, at most `MAX_SCRIPT_CALLS`); a refused call throws inside the script. Admitted
  * calls run one at a time, in arrival order, so `Promise.all` works but runs them in turn, under a signal that aborts
- * with `signal` or when the script ends. The result is final once the child has exited and no admitted call is
- * outstanding. `ok`: what the script printed, then its returned value; `error`: that output, then why the script
- * stopped. Fail closed: when `sandbox-exec` is missing or cannot apply the profile, the result is an `error` naming
- * the cause, and the script never runs outside the sandbox. An abort of `signal` kills the child and gives the stopped
- * error; so do the limits and a protocol error, each with its own message.
+ * with `signal` or when the script ends: a call the script did not wait for is aborted, or never run, once it ends.
+ * The result is final once the child has exited and no admitted call is outstanding; a child that does not exit within
+ * `runMs` of its input ending is killed. `ok`: what the script printed, then its returned value; `error`: that output,
+ * then why the script stopped. Fail closed: when `sandbox-exec` is missing or cannot apply the profile, the result is
+ * an `error` naming the cause, and the script never runs outside the sandbox. An abort of `signal` kills the child and
+ * gives the stopped error; so do the limits (`MAX_SCRIPT_CALLS` and `MAX_SCRIPT_ARGUMENTS` refuse the call instead) and
+ * a protocol error, each with its own message.
  */
 export async function runScript(
   code: string,
@@ -362,8 +390,11 @@ export async function scriptProblem(
   return `${what}, which could not run a test script:\n${result.text}`;
 }
 
-/** Why the host ended a script before its done frame settled it. */
-type Ending = { kind: "stopped" } | { kind: "timeout" } | { kind: "protocol"; detail: string };
+/**
+ * Why the host ended a script before its done frame settled it: Stop, the running time, or `killed`, the host's own
+ * reason (a protocol error, a limit), `detail` ending the result's sentence.
+ */
+type Ending = { kind: "stopped" } | { kind: "timeout" } | { kind: "killed"; detail: string };
 
 /** The child's final frame: what the script printed, and why it stopped when it failed. */
 type Done = { output: string; error?: string };
@@ -378,18 +409,24 @@ function runChild(
 ): Promise<ToolResult> {
   return new Promise((resolve) => {
     const runMs = env.runMs ?? SCRIPT_RUN_MS;
+    const memoryBytes = env.memoryBytes ?? SCRIPT_MEMORY_BYTES;
     const inner = new AbortController();
-    const usedIds = new Set<number>();
+    let lastId = 0;
     let ending: Ending | undefined;
     let done: Done | undefined;
     let exit: { code: number | null; signal: NodeJS.Signals | null } | undefined;
     let startFailure: string | undefined;
     let outstanding = 0;
     let calls = 0;
+    let argumentChars = 0;
+    let unread = 0;
     let queue: Promise<void> = Promise.resolve();
     let pendingLine = "";
     let stderr = "";
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let exitTimer: ReturnType<typeof setTimeout> | undefined;
+    let memoryTimer: ReturnType<typeof setInterval> | undefined;
+    let checkingMemory = false;
     let settled = false;
 
     const launch = scriptLaunch(env, SCRIPT_BOOTSTRAP);
@@ -422,6 +459,8 @@ function runChild(
       if (settled || exit === undefined || outstanding > 0) return;
       settled = true;
       stopTimer();
+      clearTimeout(exitTimer);
+      clearInterval(memoryTimer);
       inner.abort();
       signal.removeEventListener("abort", onAbort);
       resolve(
@@ -438,28 +477,60 @@ function runChild(
     };
     const send = (frame: unknown) => {
       if (ending !== undefined || child.stdin?.writable !== true) return;
-      child.stdin.write(`${JSON.stringify(frame)}\n`);
+      const line = `${JSON.stringify(frame)}\n`;
+      // [>]: Counted until the write's callback, which waits on the pipe: `writableLength` stays 0 under bun.
+      unread += line.length;
+      child.stdin.write(line, () => {
+        unread -= line.length;
+      });
+      if (unread > MAX_UNREAD_INPUT) {
+        end({ kind: "killed", detail: `it left more than ${MAX_UNREAD_INPUT} characters of its input unread` });
+      }
     };
     const finishInput = () => {
-      if (done !== undefined && outstanding === 0) child.stdin?.end();
+      if (done === undefined || outstanding > 0 || child.stdin?.writableEnded !== false) return;
+      child.stdin.end();
+      // [!]: The child's done frame is no proof it will exit: a script that left the vm can keep it alive. Once its
+      // input ends, it gets the running time to exit, then it is killed.
+      exitTimer = setTimeout(() => end({ kind: "killed", detail: "it did not exit once it ended" }), runMs);
+    };
+    const checkMemory = () => {
+      if (checkingMemory || exit !== undefined || ending !== undefined || child.pid === undefined) return;
+      checkingMemory = true;
+      execFile(PS, ["-o", "rss=", "-p", String(child.pid)], (error, stdout) => {
+        checkingMemory = false;
+        if (exit !== undefined || ending !== undefined) return;
+        // [>]: `ps` exits 1 for a process that is gone: the child just exited, and its close settles the run.
+        if (error && (error as { code?: unknown }).code === 1 && !isAlive(child.pid)) return;
+        const kib = Number.parseInt(stdout.trim(), 10);
+        // [!]: Fail closed: a limit that cannot be read is not applied, so the script does not go on without it.
+        if (error || !Number.isSafeInteger(kib)) {
+          return end({
+            kind: "killed",
+            detail: `its memory use could not be read (${error ? describeError(error) : stdout.trim()})`,
+          });
+        }
+        if (kib * 1024 > memoryBytes)
+          end({ kind: "killed", detail: `it used more than ${memoryBytes} bytes of memory` });
+      });
     };
 
     const onCall = (frame: Record<string, unknown>) => {
       const id = frame.id;
-      if (done !== undefined) return end({ kind: "protocol", detail: "a tool call came after the script ended" });
-      if (typeof id !== "number" || !Number.isSafeInteger(id) || usedIds.has(id)) {
-        return end({ kind: "protocol", detail: "a tool call came without a new id" });
+      if (done !== undefined) return end({ kind: "killed", detail: "a tool call came after the script ended" });
+      if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= lastId) {
+        return end({ kind: "killed", detail: "a tool call came without a new id" });
       }
-      usedIds.add(id);
+      lastId = id;
       calls += 1;
       const refusal =
         typeof frame.name === "string" && Object.hasOwn(blocked, frame.name) ? blocked[frame.name] : undefined;
       const admitted = calls > MAX_SCRIPT_CALLS ? callLimitText() : (refusal ?? admit(frame, callable));
-      if (typeof admitted === "string") {
-        // [>]: A refusal is answered at once and the running time keeps counting, so a loop of refused calls ends.
-        send({ id, status: "error", text: admitted });
-        return;
-      }
+      // [>]: A refusal is answered at once and the running time keeps counting, so a loop of refused calls ends.
+      if (typeof admitted === "string") return send({ id, status: "error", text: admitted });
+      const size = argumentSize(admitted);
+      if (argumentChars + size > MAX_SCRIPT_ARGUMENTS) return send({ id, status: "error", text: argumentLimitText() });
+      argumentChars += size;
       outstanding += 1;
       stopTimer();
       queue = queue.then(async () => {
@@ -474,12 +545,15 @@ function runChild(
       });
     };
     const onDone = (frame: Record<string, unknown>) => {
-      if (done !== undefined) return end({ kind: "protocol", detail: "the script ended twice" });
+      if (done !== undefined) return end({ kind: "killed", detail: "the script ended twice" });
       if (typeof frame.output !== "string" || (frame.error !== undefined && typeof frame.error !== "string")) {
-        return end({ kind: "protocol", detail: "the script's end came without its output" });
+        return end({ kind: "killed", detail: "the script's end came without its output" });
       }
       done = { output: frame.output, ...(frame.error !== undefined ? { error: frame.error as string } : {}) };
       stopTimer();
+      // [!]: A call the script did not wait for never runs past its end: the one in flight is aborted, as on Stop, and
+      // the queued ones answer stopped without running. The result waits for the one in flight to settle.
+      inner.abort();
       finishInput();
     };
     const onLine = (line: string) => {
@@ -487,11 +561,11 @@ function runChild(
       try {
         frame = JSON.parse(line);
       } catch {
-        return end({ kind: "protocol", detail: "it sent a line that is not JSON" });
+        return end({ kind: "killed", detail: "it sent a line that is not JSON" });
       }
       if (isRecord(frame) && isRecord(frame.call)) return onCall(frame.call);
       if (isRecord(frame) && isRecord(frame.done)) return onDone(frame.done);
-      end({ kind: "protocol", detail: "it sent a message that is neither a tool call nor its end" });
+      end({ kind: "killed", detail: "it sent a message that is neither a tool call nor its end" });
     };
 
     signal.addEventListener("abort", onAbort, { once: true });
@@ -503,12 +577,12 @@ function runChild(
       const parts = (pendingLine + chunk).split("\n");
       pendingLine = parts.pop() ?? "";
       if (pendingLine.length > MAX_FRAME_CHARS) {
-        return end({ kind: "protocol", detail: `it sent a line over ${MAX_FRAME_CHARS} characters` });
+        return end({ kind: "killed", detail: `it sent a line over ${MAX_FRAME_CHARS} characters` });
       }
       for (const line of parts) {
         if (ending !== undefined) return;
         if (line.length > MAX_FRAME_CHARS) {
-          return end({ kind: "protocol", detail: `it sent a line over ${MAX_FRAME_CHARS} characters` });
+          return end({ kind: "killed", detail: `it sent a line over ${MAX_FRAME_CHARS} characters` });
         }
         onLine(line);
       }
@@ -532,6 +606,7 @@ function runChild(
     });
 
     if (signal.aborted) return end({ kind: "stopped" });
+    memoryTimer = setInterval(checkMemory, MEMORY_CHECK_MS);
     const names = [...callable.map((tool) => tool.name), ...Object.keys(blocked)];
     child.stdin?.write(`${JSON.stringify({ code, tools: names })}\n`);
     startTimer();
@@ -550,6 +625,15 @@ async function callSafely(callTool: InnerCalls["run"], call: ToolCall, signal: A
 
 function callLimitText(): string {
   return `${TOOL}: a script may make at most ${MAX_SCRIPT_CALLS} tool calls; this call was not made.`;
+}
+
+function argumentLimitText(): string {
+  return `${TOOL}: the tool calls of a script may pass at most ${MAX_SCRIPT_ARGUMENTS} characters of arguments in all; this call was not made.`;
+}
+
+/** Characters of `call`'s argument names and values. */
+function argumentSize(call: ToolCall): number {
+  return Object.entries(call.args).reduce((total, [name, value]) => total + name.length + value.length, 0);
 }
 
 /**
@@ -602,7 +686,7 @@ function scriptResult(run: {
     const text = `${TOOL}: the script ran for ${seconds} seconds without a tool call and was stopped. The tool calls it made before ran.`;
     return { status: "error", text };
   }
-  if (ending?.kind === "protocol") {
+  if (ending?.kind === "killed") {
     return { status: "error", text: `${TOOL}: the script was stopped, since ${ending.detail}.` };
   }
   if (done !== undefined) {
@@ -646,6 +730,17 @@ function endedEarlyText(
   const messages = stderr.trim();
   const detail = messages === "" ? "" : `:\n${messages}`;
   return `${TOOL}: the script runtime ended before the script did (${how}), so the script may not have run${detail}`;
+}
+
+/** Whether a process `pid` exists, a zombie included. */
+function isAlive(pid: number | undefined): boolean {
+  if (pid === undefined) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as { code?: unknown }).code === "EPERM";
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

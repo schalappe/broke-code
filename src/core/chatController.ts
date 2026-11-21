@@ -305,8 +305,9 @@ type CallSetup = {
  * in call order (the staged steps). The one source of truth for them while the script runs: projected into
  * `ChatState.scriptSteps` while its conversation is shown, and into each save of that conversation after the reply in
  * flight, then appended to the entries, and cleared, in the one update that ends the script (its step, or Stop).
+ * `save`: the save of those steps in flight (`saveScriptSteps`), `again` once a step was staged after it started.
  */
-type ScriptRun = { conversation: Conversation; steps: ToolStep[] };
+type ScriptRun = { conversation: Conversation; steps: ToolStep[]; save?: { again: boolean } };
 
 type UserEntry = ChatEntry & { role: "user" };
 
@@ -1641,9 +1642,28 @@ export class ChatController {
     script.steps.push(ran.step);
     this.state.callRunning = true;
     this.emit();
-    void this.save(script.conversation);
+    this.saveScriptSteps(script);
     // [>]: The step records what the model would read; the script gets the tool's own value for it, when it has one.
     return ran.result.forScript ?? { status: ran.result.status, text: ran.result.text };
+  }
+
+  /**
+   * Save `script`'s conversation with the steps staged so far: at once when no save of the script is in flight, else
+   * once that one has landed, and then once for every step staged meanwhile. A script's calls can complete faster
+   * than the disk takes their saves, and each save holds a copy of the whole record, so at most one is in flight and
+   * the next is taken when it starts, holding every step staged by then.
+   */
+  private saveScriptSteps(script: ScriptRun): void {
+    if (script.save) {
+      script.save.again = true;
+      return;
+    }
+    const save = { again: false };
+    script.save = save;
+    void this.save(script.conversation).then(() => {
+      script.save = undefined;
+      if (save.again) this.saveScriptSteps(script);
+    });
   }
 
   /** The tools a script of a turn in `mode` may name only to be refused: in Plan, those Plan leaves out. */

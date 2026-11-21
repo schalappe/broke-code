@@ -52,12 +52,27 @@ export function formatReport(results: readonly RunResult[], runs: number): { tex
         lines.push(`    ${category}: ${count}`);
       }
       for (const { run, category, detail } of failures) {
-        lines.push(`    run ${run + 1} ${category}: ${detail}`);
+        lines.push(`    run ${run + 1} ${category}: ${printable(detail)}`);
       }
     }
   }
   lines.push("", under.length > 0 ? `Under the bar: ${under.join(", ")}.` : "Every model met the bar.");
   return { text: lines.join("\n"), passed: under.length === 0 };
+}
+
+/**
+ * `text` safe to print on a terminal: each control character (C0, DEL, C1) as a `\u` escape. A verdict's detail holds
+ * what the provider wrote (tool arguments, replies, paths), which could otherwise move the cursor, recolor, or erase
+ * the bench's lines. The JSON Lines dump keeps the text as it was.
+ */
+export function printable(text: string): string {
+  let shown = "";
+  for (const char of text) {
+    const code = char.charCodeAt(0);
+    const control = code < 0x20 || (code >= 0x7f && code <= 0x9f);
+    shown += control ? `\\u${code.toString(16).padStart(4, "0")}` : char;
+  }
+  return shown;
 }
 
 /** `ms` as minutes and zero-padded seconds, such as `2m 05s`. */

@@ -607,9 +607,10 @@ function stockFiles(): WorkspaceFiles {
 
 /**
  * Gather one value from many files: the total of the `quantity` lines of nine depot files. Passes when the answer holds
- * the total as a number token of its own (the `command` scenario's check), an `ok` tool step's text (a direct call's,
- * a script's call's, or the script's output) held the total or every `quantity` line, and no file changed; without
- * such a step it is `wrongTool`. Every command is rejected and the step limit is `CHAIN_STEPS`, as in `rename`.
+ * the total as a number token of its own (the `command` scenario's check), the `ok` `read_file` and `search` steps (a
+ * direct call's or a script's call's) held every `quantity` line between them, and no file changed; otherwise it is
+ * `wrongTool`. A script's own output never counts: it can print the total without reading a file. Every command is
+ * rejected and the step limit is `CHAIN_STEPS`, as in `rename`.
  */
 export const GATHER_SCENARIO: Scenario = {
   name: "gather",
@@ -620,12 +621,13 @@ export const GATHER_SCENARIO: Scenario = {
   maxToolSteps: CHAIN_STEPS,
   check(entries) {
     const steps = entries.filter((entry) => entry.role === "tool");
-    const read = steps.filter((step) => step.status === "ok").map((step) => step.text);
+    const read = steps
+      .filter((step) => step.status === "ok" && (step.name === "read_file" || step.name === "search"))
+      .map((step) => step.text);
     // [>]: A whole line, or a search line's end (`path:4:quantity: 14`), so `quantity: 14` never matches `quantity: 142`.
     const quantities = Object.values(STOCK).map((quantity) => new RegExp(`(^|:)quantity: ${quantity}$`, "m"));
-    const sawTotal = read.some((text) => numberTokens(text).includes(String(STOCK_TOTAL)));
     const sawEach = quantities.every((line) => read.some((text) => line.test(text)));
-    if (!sawTotal && !sawEach) return { pass: false, category: "wrongTool", detail: `steps: ${describeSteps(steps)}` };
+    if (!sawEach) return { pass: false, category: "wrongTool", detail: `steps: ${describeSteps(steps)}` };
     const answer = lastReply(entries).content;
     if (numberTokens(answer).includes(String(STOCK_TOTAL))) return { pass: true };
     return { pass: false, category: "wrongAnswer", detail: `answer: ${excerpt(answer)}` };

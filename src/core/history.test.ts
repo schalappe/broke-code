@@ -617,6 +617,40 @@ describe("steps a script made", () => {
     expect(history.messages.map((message) => message.content).join("\n")).not.toContain("inner result");
   });
 
+  test("a script stopped before any of its calls completed still goes back with its error result", () => {
+    const call = { name: "run_script", args: { code: "console.log(1);" }, start: 0, end: scriptCall.length };
+    const entries: ChatEntry[] = [user("go"), { ...stoppedCall, call } as ChatEntry, user("Continue.")];
+    const history = toHistory(entries, typed, roomy);
+    expect(history.messages).toEqual([
+      { role: "user", content: "go" },
+      { role: "assistant", content: scriptCall },
+      {
+        role: "user",
+        content: [
+          wrapped(
+            "run_script: the script was stopped before it finished, before any of its tool calls completed.",
+            "run_script",
+            "error",
+          ),
+          "Continue.",
+        ].join("\n\n"),
+      },
+    ]);
+  });
+
+  test("a stopped direct call, and a script still running, get no result the history writes", () => {
+    const readCall = { name: "read_file", args: { path: "a.ts" }, start: 0, end: scriptCall.length };
+    const scriptRunning = { name: "run_script", args: { code: "console.log(1);" }, start: 0, end: scriptCall.length };
+    const stoppedRead = { ...stoppedCall, call: readCall } as ChatEntry;
+    const running = { ...stoppedCall, status: "streaming", call: scriptRunning } as ChatEntry;
+    for (const reply of [stoppedRead, running]) {
+      expect(toHistory([user("go"), reply], typed, roomy).messages).toEqual([
+        { role: "user", content: "go" },
+        { role: "assistant", content: scriptCall },
+      ]);
+    }
+  });
+
   test("a group is one step for the context budget: kept among the recent steps, left out as one, never with an undone write", () => {
     const big = lines(100);
     const group = (undone: boolean): ChatEntry[] => [

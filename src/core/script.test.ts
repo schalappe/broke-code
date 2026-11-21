@@ -9,6 +9,7 @@ import { ASK_USER_TOOL } from "./askUser";
 import {
   admit,
   ancestorFolders,
+  MAX_SCRIPT_ARGUMENTS,
   MAX_SCRIPT_CALLS,
   MAX_SCRIPT_OUTPUT,
   RUN_SCRIPT_TOOL,
@@ -151,7 +152,7 @@ describe("runScript", () => {
     expect(tools.calls.map((call) => call.args.path)).toEqual(["a", "b", "c"]);
   });
 
-  test("settles only once a call the script did not wait for has run", async () => {
+  test("settles only once a call the script did not wait for has settled", async () => {
     let finished = false;
     const tools = recorder(async () => {
       await Bun.sleep(100);
@@ -160,7 +161,39 @@ describe("runScript", () => {
     });
     const result = await script("write_file({ path: 'a', content: 'x' }); return 'returned';", tools.run);
     expect(result).toEqual({ status: "ok", text: "returned" });
-    expect(finished).toBe(true);
+    expect(finished || tools.calls.length === 0).toBe(true);
+  });
+
+  test("once the script ends, the call it did not wait for is aborted and the queued ones never run", async () => {
+    const signals: AbortSignal[] = [];
+    const tools = recorder();
+    const run = (call: ToolCall, signal: AbortSignal) => {
+      signals.push(signal);
+      void tools.run(call, signal);
+      return new Promise<ToolResult>((resolve) => {
+        signal.addEventListener("abort", () => resolve({ status: "error", text: "cancelled" }), { once: true });
+      });
+    };
+    const result = await script(
+      "write_file({ path: 'a', content: 'x' }); write_file({ path: 'b', content: 'y' }); return 'returned';",
+      run,
+    );
+    expect(result).toEqual({ status: "ok", text: "returned" });
+    expect(tools.calls.map((call) => call.args.path)).not.toContain("b");
+    expect(signals.every((signal) => signal.aborted)).toBe(true);
+  });
+
+  test("a script that throws while a call is pending never gets to run the calls queued behind it", async () => {
+    const tools = recorder(async () => {
+      await Bun.sleep(50);
+      return { status: "ok", text: "done" };
+    });
+    const result = await script(
+      "await Promise.all([read_file({ path: 'a' }), Promise.reject(new Error('early')), write_file({ path: 'b', content: 'y' })]);",
+      tools.run,
+    );
+    expect(result).toEqual({ status: "error", text: "run_script: the script stopped on an error: early" });
+    expect(tools.calls.map((call) => call.args.path)).not.toContain("b");
   });
 
   test("offers no require, process, fetch, or timers", async () => {
@@ -272,6 +305,95 @@ describe("runScript limits", () => {
     expect(result.text).toEndWith(
       `run_script: the script stopped on an error: the script printed more than ${MAX_SCRIPT_OUTPUT} characters`,
     );
+  });
+
+  test("a call made after catching the output overflow never reaches the tools", async () => {
+    const line = "x".repeat(1000);
+    const tools = recorder();
+    const result = await script(
+      [
+        `for (let i = 0; i < 2000; i++) { try { console.log('${line}'); } catch {} }`,
+        "try { await write_file({ path: 'a', content: 'x' }); } catch {}",
+        "return 'end';",
+      ].join("\n"),
+      tools.run,
+    );
+    expect(tools.calls).toEqual([]);
+    expect(result.status).toBe("error");
+    expect(result.text).toEndWith(
+      `run_script: the script stopped on an error: the script printed more than ${MAX_SCRIPT_OUTPUT} characters`,
+    );
+  });
+
+  test("a call past the arguments budget throws inside the script and is never run", async () => {
+    const tools = recorder(() => ({ status: "ok", text: "written" }));
+    const half = Math.ceil(MAX_SCRIPT_ARGUMENTS / 2) + 1;
+    const result = await script(
+      [
+        `await write_file({ path: 'a', content: 'x'.repeat(${half}) });`,
+        `try { await write_file({ path: 'b', content: 'y'.repeat(${half}) }); } catch (error) { console.log(error.message); }`,
+      ].join("\n"),
+      tools.run,
+    );
+    expect(tools.calls.map((call) => call.args.path)).toEqual(["a"]);
+    expect(result).toEqual({
+      status: "ok",
+      text: `run_script: the tool calls of a script may pass at most ${MAX_SCRIPT_ARGUMENTS} characters of arguments in all; this call was not made.`,
+    });
+  });
+
+  test("a child that ends and then stays alive is killed once its time to exit is up", async () => {
+    // [>]: The vm is no guard: the script reaches the child's process, sends a done frame itself, and keeps it alive.
+    const result = await script(
+      [
+        "const outer = console.log.constructor('return globalThis')();",
+        "outer.process.stdin.removeAllListeners('end');",
+        "outer.setInterval(() => {}, 1000);",
+        "outer.process.stdout.write(JSON.stringify({ done: { output: 'ended' } }) + '\\n');",
+        "await new Promise(() => {});",
+      ].join("\n"),
+      recorder().run,
+      { ...ENV, runMs: 300 },
+    );
+    expect(result).toEqual({
+      status: "error",
+      text: "run_script: the script was stopped, since it did not exit once it ended.",
+    });
+  });
+
+  test("a child past its memory limit is killed", async () => {
+    const memoryBytes = 128 * 1024 * 1024;
+    const started = performance.now();
+    const result = await script(
+      "const kept = []; for (let i = 0; i < 8; i++) kept.push(new Uint8Array(32 * 1024 * 1024).fill(1)); for (;;) {}",
+      recorder().run,
+      { ...ENV, memoryBytes },
+    );
+    expect(result).toEqual({
+      status: "error",
+      text: `run_script: the script was stopped, since it used more than ${memoryBytes} bytes of memory.`,
+    });
+    expect(performance.now() - started).toBeLessThan(5000);
+  });
+
+  test("a child that stops reading its input while it asks for calls is stopped", async () => {
+    const result = await script(
+      [
+        "const outer = console.log.constructor('return globalThis')();",
+        "outer.process.stdin.pause();",
+        "const out = outer.process.stdout;",
+        "for (let id = 1; ; id++) {",
+        "  const sent = out.write(JSON.stringify({ call: { id, name: 'nope', args: {} } }) + '\\n');",
+        "  if (!sent) await new Promise((resolve) => out.once('drain', resolve));",
+        "}",
+      ].join("\n"),
+      recorder().run,
+      { ...ENV, runMs: 30_000 },
+    );
+    expect(result).toEqual({
+      status: "error",
+      text: "run_script: the script was stopped, since it left more than 33554432 characters of its input unread.",
+    });
   });
 
   test("a call frame past the frame bound stops the script, the call never run", async () => {

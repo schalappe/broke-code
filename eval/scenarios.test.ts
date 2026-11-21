@@ -1062,7 +1062,30 @@ describe("judge on the gather scenario", () => {
     expect(judge(GATHER_SCENARIO, entries, untouchedStock)).toEqual({ pass: true });
   });
 
-  test("wrongTool: an answer with the total but no step that held the quantities or the total", () => {
+  test("wrongTool: a script that printed the total without reading the files", () => {
+    const entries: ChatEntry[] = [
+      gatherUser,
+      answer("<run_script>\n<code>\nreturn 766;\n</code>\n</run_script>"),
+      { role: "tool", name: "run_script", args: { code: "return 766;" }, status: "ok", text: "766" },
+      answer("766"),
+    ];
+    expect(judge(GATHER_SCENARIO, entries, untouchedStock)).toMatchObject({ pass: false, category: "wrongTool" });
+  });
+
+  test("wrongTool: a script that printed every quantity line itself, its calls reading nothing of the stock", () => {
+    const printed = Object.values(GATHER_SCENARIO.files).join("\n");
+    const entries: ChatEntry[] = [
+      gatherUser,
+      answer("<run_script>\n<code>\n...\n</code>\n</run_script>"),
+      { ...step("read_file", "README.md", GATHER_SCENARIO.files["README.md"]!), fromScript: true } as ChatEntry,
+      { ...step("list_files", ".", printed), fromScript: true } as ChatEntry,
+      { role: "tool", name: "run_script", args: { code: "..." }, status: "ok", text: printed },
+      answer("766"),
+    ];
+    expect(judge(GATHER_SCENARIO, entries, untouchedStock)).toMatchObject({ pass: false, category: "wrongTool" });
+  });
+
+  test("wrongTool: an answer with the total but no read that held every quantity", () => {
     const some = readAll.slice(0, 4);
     expect(judge(GATHER_SCENARIO, [gatherUser, ...some, answer("766")], untouchedStock)).toMatchObject({
       pass: false,

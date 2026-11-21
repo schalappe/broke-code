@@ -93,8 +93,9 @@ function isSentSummary(entry: ChatEntry): boolean {
  * 0001); an undone step's result ends with `UNDONE_LINE`. A script's group (`toolGroup`) goes as one step: the steps
  * its calls made (`fromScript`) are never sent themselves; its `run_script` result goes with one `SCRIPT_UNDONE_LEAD`
  * line per inner write since undone, in order, inside its wrapper; a script with no step of its own (stopped, or cut
- * by a reload) goes as one `run_script` error result the history writes (`stoppedScriptText`): it was stopped, then
- * one line per call it completed, never their result text, then the same undo lines. Reasoning is never sent. A reply
+ * by a reload) goes as one `run_script` error result the history writes (`stoppedScript`): it was stopped, then
+ * one line per call it completed, never their result text, then the same undo lines; a reply whose `run_script` call
+ * has no step after it at all (stopped before any call completed) gets the same result, with no call line. Reasoning is never sent. A reply
  * without text is left out, unless a tool step follows it: an empty answer goes back with its malformed step. The summary the history starts at
  * goes as a user message, `Summary of the conversation so far:` then its text; an automatic one (`isAutomaticSummary`)
  * is followed by its turn's user message, then by the turn's next reply. Undone steps before the summary, no longer
@@ -209,6 +210,11 @@ function sentMessages(
       if (quoted) push(messages, "user", userText(quoted));
     } else if (entry.content !== "" || entries[index + 1]?.role === "tool") {
       push(messages, "assistant", entry.content);
+      // [!]: A script stopped before any call completed leaves no step at all, yet its call still needs a result.
+      if (entry.call?.name === "run_script" && entry.status !== "streaming" && entries[index + 1]?.role !== "tool") {
+        const own = stoppedScript([]);
+        steps.push({ ...push(messages, "user", toolResultMessage(own, own.text)), step: own, whole: false });
+      }
     }
   }
   return { messages, steps };
@@ -290,14 +296,17 @@ function scriptUndoneLines(inner: readonly ToolStep[]): string {
 /**
  * The `run_script` result the history writes for a script that has no step of its own (Stop, or a reload while it
  * ran): an error saying so, then one line per call it completed (`<tool> <path or the command's first line>: ok` or
- * `error`), never their result text.
+ * `error`), never their result text; with no call completed, a line saying so.
  */
 function stoppedScript(inner: readonly ToolStep[]): ToolStep {
   const calls = inner.map((step) => {
     const target = step.name === "run_command" ? step.args.command?.split("\n")[0] : step.args.path;
     return `${step.name}${target === undefined ? "" : ` ${target}`}: ${step.status === "ok" ? "ok" : "error"}`;
   });
-  const text = ["run_script: the script was stopped before it finished, after these tool calls:", ...calls].join("\n");
+  const text =
+    calls.length === 0
+      ? "run_script: the script was stopped before it finished, before any of its tool calls completed."
+      : ["run_script: the script was stopped before it finished, after these tool calls:", ...calls].join("\n");
   return { role: "tool", name: "run_script", args: {}, status: "error", text };
 }
 

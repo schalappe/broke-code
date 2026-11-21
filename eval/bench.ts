@@ -24,7 +24,7 @@ import { listModels, type ModelListing } from "../src/core/client";
 import { runCommand } from "../src/core/commands";
 import { SANDBOX_EXEC } from "../src/core/fullAccess";
 import { type ScriptEnv, scriptProblem } from "../src/core/script";
-import { formatDuration, formatReport, type RunResult } from "./report";
+import { formatDuration, formatReport, printable, type RunResult } from "./report";
 import { benchCommandEnv, benchScriptEnv, playScenario, type RunOutcome, type RunTarget } from "./run";
 import {
   chainedScript,
@@ -274,7 +274,7 @@ async function main(): Promise<number> {
           const replies = repliesDone(outcome.entries);
           const chained = chainedScript(outcome.entries);
           results.push({ model, scenario: scenario.name, run, verdict, ms, replies, chained });
-          const shown = verdict.pass ? "pass" : `${verdict.category}: ${verdict.detail}`;
+          const shown = verdict.pass ? "pass" : `${verdict.category}: ${printable(verdict.detail)}`;
           console.error(`${model} ${scenario.name} ${run + 1}/${runs} ${formatDuration(ms)} ${shown}`);
           if (dump) await appendFile(dump, dumpLine({ model, scenario, run, verdict, ms, outcome }));
         }

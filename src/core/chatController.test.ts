@@ -7791,6 +7791,32 @@ describe("ChatController run_script", () => {
     expect(outline(await reloaded(files, state().conversationId))).toEqual(expected);
   });
 
+  test("a script's calls that complete faster than the disk saves keep one save of them in flight", async () => {
+    writeFileSync(join(dir, "a.txt"), "a\n");
+    const files = memoryFiles();
+    const write = files.write;
+    let writes = 0;
+    files.write = async (name, content) => {
+      writes += 1;
+      await Bun.sleep(30);
+      return write(name, content);
+    };
+    const reads = 20;
+    const code = `for (let i = 0; i < ${reads}; i++) await read_file({ path: "a.txt" }); console.log("read");`;
+    const { controller, state } = await scriptTurn([{ content: scriptCall(code) }, { content: "Done." }], { files });
+    await controller.send("read it");
+    const expected = ["user", "assistant:done", ...Array(reads).fill("read_file*"), "run_script", "assistant:done"];
+    expect(outline(state().entries)).toEqual(expected);
+    // [>]: The store's queue has drained once no write started for longer than one takes.
+    for (let seen = -1; seen !== writes; ) {
+      seen = writes;
+      await Bun.sleep(150);
+    }
+    // [>]: A record and a summary per save: one save per call would make more than 2 writes per call.
+    expect(writes).toBeLessThan(2 * reads);
+    expect(outline(await reloaded(files, state().conversationId))).toEqual(expected);
+  });
+
   test("Stop during a call's approval cancels it, keeps the calls completed, and drops the script's step", async () => {
     writeFileSync(join(dir, "a.txt"), "old_name()\n");
     writeFileSync(join(dir, "b.txt"), "x = old_name\n");
